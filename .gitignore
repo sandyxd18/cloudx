@@ -1,0 +1,10 @@
+.venv-dev/
+.pytest_cache/
+__pycache__/
+.codex/
+.agents/
+error.txt
+*.pyc
+*.pyo
+*.log
+.env

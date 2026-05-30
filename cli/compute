@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import requests
+import typer
+
+
+API = os.getenv("COMPUTE_API_URL", "http://localhost:8003").rstrip("/")
+CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
+app = typer.Typer(help="CLI for mini OpenStack lab compute-api. Example: compute server create vm1 --image ubuntu --flavor small --network private-net", context_settings=CONTEXT_SETTINGS)
+server_app = typer.Typer(help="Manage Nova-like libvirt servers.", context_settings=CONTEXT_SETTINGS)
+flavor_app = typer.Typer(help="Manage compute flavors.", context_settings=CONTEXT_SETTINGS)
+keypair_app = typer.Typer(help="Manage Nova-like keypairs.", context_settings=CONTEXT_SETTINGS)
+host_app = typer.Typer(help="Inspect compute host readiness.", context_settings=CONTEXT_SETTINGS)
+
+
+def emit(data):
+    typer.echo(json.dumps(data, indent=2, default=str))
+
+
+def request(method, path, **kwargs):
+    response = requests.request(method, f"{API}{path}", timeout=30, **kwargs)
+    if response.status_code >= 400:
+        try:
+            detail = response.json()
+        except ValueError:
+            detail = response.text
+        raise typer.BadParameter(f"API error {response.status_code}: {detail}")
+    return response.json()
+
+
+@server_app.command("create")
+def create(
+    name: str,
+    image: str = typer.Option(..., help="Image name or ID."),
+    flavor: str = typer.Option(..., help="Flavor label, for example small."),
+    network: str = typer.Option(..., help="Network name or ID."),
+    key_name: str | None = typer.Option(None, "--key-name", help="Optional compute keypair name."),
+    backend: str | None = typer.Option(None, "--backend", help="Compatibility option; only libvirt is supported."),
+):
+    if backend == "simulator":
+        raise typer.BadParameter("simulator backend has been removed; only libvirt is supported")
+    if backend and backend != "libvirt":
+        raise typer.BadParameter(f"unsupported compute backend '{backend}'; only libvirt is supported")
+    emit(
+        request(
+            "POST",
+            "/servers",
+            json={"name": name, "image": image, "flavor": flavor, "network": network, "key_name": key_name, "backend": backend},
+        )
+    )
+
+
+@server_app.command("list")
+def list_servers():
+    emit(request("GET", "/servers"))
+
+
+@server_app.command("show")
+def show(ref: str):
+    emit(request("GET", f"/servers/{ref}"))
+
+
+@server_app.command("start")
+def start(ref: str):
+    emit(request("POST", f"/servers/{ref}/start"))
+
+
+@server_app.command("stop")
+def stop(ref: str):
+    emit(request("POST", f"/servers/{ref}/stop"))
+
+
+@server_app.command("reboot")
+def reboot(ref: str):
+    emit(request("POST", f"/servers/{ref}/reboot"))
+
+
+@server_app.command("delete")
+def delete(ref: str):
+    emit(request("DELETE", f"/servers/{ref}"))
+
+
+@server_app.command("console")
+def console(ref: str, json_output: bool = typer.Option(False, "--json", help="Print console metadata instead of opening virsh.")):
+    data = request("GET", f"/servers/{ref}/console")
+    if json_output:
+        emit(data)
+        return
+    domain = data.get("domain")
+    if not domain:
+        raise typer.BadParameter(f"server {ref} has no libvirt domain")
+    command = ["virsh", "-c", "qemu:///system", "console", domain]
+    if shutil.which("virsh") is None:
+        raise typer.BadParameter(f"virsh not found; run manually on the host: {' '.join(command)}")
+    libvirt_sock = Path("/var/run/libvirt/libvirt-sock")
+    if libvirt_sock.exists() and not os.access(libvirt_sock, os.R_OK | os.W_OK):
+        typer.echo(
+            "Current user cannot access /var/run/libvirt/libvirt-sock. "
+            "Add the user to libvirt,kvm and re-login, or run the virsh command with sudo.",
+            err=True,
+        )
+    typer.echo("Opening serial console. Press Ctrl+] to exit.", err=True)
+    raise typer.Exit(subprocess.run(command).returncode)
+
+
+@server_app.command("console-url")
+def console_url(ref: str):
+    emit(request("GET", f"/servers/{ref}/console-url"))
+
+
+@server_app.command("metadata")
+def metadata(ref: str):
+    emit(request("GET", f"/servers/{ref}/metadata"))
+
+
+@server_app.command("user-data")
+def user_data(ref: str):
+    data = request("GET", f"/servers/{ref}/user-data")
+    typer.echo(data["user_data"], nl=False)
+
+
+@server_app.command("set-user-data")
+def set_user_data(ref: str, file: Path = typer.Option(..., "--file", exists=True, help="Path to cloud-init user-data YAML.")):
+    emit(request("PUT", f"/servers/{ref}/user-data", json={"user_data": file.read_text()}))
+
+
+@server_app.command("logs")
+def logs(ref: str):
+    emit(request("GET", f"/servers/{ref}/logs"))
+
+
+@server_app.command("ssh-info")
+def ssh_info(ref: str):
+    emit(request("GET", f"/servers/{ref}/ssh-info"))
+
+
+@flavor_app.command("create")
+def flavor_create(
+    name: str,
+    vcpus: int = typer.Option(..., "--vcpus", help="Number of virtual CPUs."),
+    ram: int = typer.Option(..., "--ram", help="RAM in MiB."),
+    disk: int = typer.Option(..., "--disk", help="Root disk in GiB."),
+    ephemeral: int = typer.Option(0, "--ephemeral", help="Ephemeral disk in GiB."),
+    swap: int = typer.Option(0, "--swap", help="Swap in MiB."),
+    public: bool = typer.Option(True, "--public/--private", help="Flavor visibility metadata."),
+):
+    emit(
+        request(
+            "POST",
+            "/flavors",
+            json={
+                "name": name,
+                "vcpus": vcpus,
+                "ram_mb": ram,
+                "disk_gb": disk,
+                "ephemeral_gb": ephemeral,
+                "swap_mb": swap,
+                "is_public": public,
+            },
+        )
+    )
+
+
+@flavor_app.command("list")
+def flavor_list():
+    emit(request("GET", "/flavors"))
+
+
+@flavor_app.command("show")
+def flavor_show(ref: str):
+    emit(request("GET", f"/flavors/{ref}"))
+
+
+@flavor_app.command("delete")
+def flavor_delete(ref: str):
+    emit(request("DELETE", f"/flavors/{ref}"))
+
+
+@keypair_app.command("create")
+def keypair_create(name: str):
+    data = request("POST", "/keypairs", json={"name": name})
+    typer.echo(data["private_key"], nl=False)
+
+
+@keypair_app.command("import")
+def keypair_import(name: str, public_key: Path = typer.Option(..., "--public-key", help="Path to an OpenSSH public key file.")):
+    key_path = public_key.expanduser()
+    if not key_path.exists():
+        raise typer.BadParameter(f"public key file not found: {key_path}")
+    emit(request("POST", "/keypairs/import", json={"name": name, "public_key": key_path.read_text().strip()}))
+
+
+@keypair_app.command("list")
+def keypair_list():
+    emit(request("GET", "/keypairs"))
+
+
+@keypair_app.command("show")
+def keypair_show(name: str):
+    emit(request("GET", f"/keypairs/{name}"))
+
+
+@keypair_app.command("delete")
+def keypair_delete(name: str):
+    emit(request("DELETE", f"/keypairs/{name}"))
+
+
+@host_app.command("check")
+def host_check():
+    emit(request("GET", "/host/check"))
+
+
+app.add_typer(server_app, name="server")
+app.add_typer(flavor_app, name="flavor")
+app.add_typer(keypair_app, name="keypair")
+app.add_typer(host_app, name="host")
+
+
+if __name__ == "__main__":
+    app()

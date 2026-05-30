@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+import json
+import os
+
+import requests
+import typer
+
+
+API = os.getenv("BLOCK_STORE_API_URL", "http://localhost:8004").rstrip("/")
+CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
+app = typer.Typer(help="CLI for mini OpenStack lab block-store-api. Example: block-store volume create vol1 --size 10", context_settings=CONTEXT_SETTINGS)
+volume_app = typer.Typer(help="Manage Cinder-like volumes.", context_settings=CONTEXT_SETTINGS)
+
+
+def emit(data):
+    typer.echo(json.dumps(data, indent=2, default=str))
+
+
+def request(method, path, **kwargs):
+    response = requests.request(method, f"{API}{path}", timeout=30, **kwargs)
+    if response.status_code >= 400:
+        try:
+            detail = response.json()
+        except ValueError:
+            detail = response.text
+        raise typer.BadParameter(f"API error {response.status_code}: {detail}")
+    return response.json()
+
+
+@volume_app.command("create")
+def create(name: str, size: int = typer.Option(..., "--size")):
+    emit(request("POST", "/volumes", json={"name": name, "size_gb": size}))
+
+
+@volume_app.command("list")
+def list_volumes():
+    emit(request("GET", "/volumes"))
+
+
+@volume_app.command("show")
+def show(ref: str):
+    emit(request("GET", f"/volumes/{ref}"))
+
+
+@volume_app.command("attach")
+def attach(ref: str, server: str = typer.Option(...)):
+    emit(request("POST", f"/volumes/{ref}/attach", json={"server": server}))
+
+
+@volume_app.command("detach")
+def detach(ref: str):
+    emit(request("POST", f"/volumes/{ref}/detach"))
+
+
+@volume_app.command("force-detach")
+def force_detach(ref: str):
+    emit(request("POST", f"/volumes/{ref}/force-detach"))
+
+
+@volume_app.command("delete")
+def delete(ref: str):
+    emit(request("DELETE", f"/volumes/{ref}"))
+
+
+app.add_typer(volume_app, name="volume")
+
+
+if __name__ == "__main__":
+    app()

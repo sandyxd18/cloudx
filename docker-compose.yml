@@ -1,0 +1,264 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mini_openstack}
+      POSTGRES_USER: ${POSTGRES_USER:-mini}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mini}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mini} -d ${POSTGRES_DB:-mini_openstack}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - lab-net
+
+  ovn-nb-db:
+    build:
+      context: ./services/ovn
+      network: host
+    command: ["/usr/local/bin/start-ovn-db.sh", "nb"]
+    ports:
+      - "6641:6641"
+    volumes:
+      - ovn-nb-data:/var/lib/ovn
+    networks:
+      - lab-net
+
+  ovn-sb-db:
+    build:
+      context: ./services/ovn
+      network: host
+    command: ["/usr/local/bin/start-ovn-db.sh", "sb"]
+    ports:
+      - "6642:6642"
+    volumes:
+      - ovn-sb-data:/var/lib/ovn
+    networks:
+      - lab-net
+
+  ovn-northd:
+    build:
+      context: ./services/ovn
+      network: host
+    command: ["/usr/local/bin/start-northd.sh"]
+    depends_on:
+      - ovn-nb-db
+      - ovn-sb-db
+    environment:
+      OVN_NB_DB: tcp:ovn-nb-db:6641
+      OVN_SB_DB: tcp:ovn-sb-db:6642
+    networks:
+      - lab-net
+
+  ovs-ovn-controller:
+    build:
+      context: ./services/ovn
+      network: host
+    command: ["/usr/local/bin/start-controller.sh"]
+    privileged: true
+    depends_on:
+      - ovn-sb-db
+    environment:
+      OVN_SB_DB: tcp:ovn-sb-db:6642
+      OVN_ENCAP_IP: 127.0.0.1
+      PROVIDER_BRIDGE: ${PROVIDER_BRIDGE:-br-ex}
+      PROVIDER_PHYSNET: ${PROVIDER_PHYSNET:-physnet1}
+    volumes:
+      - /var/run/openvswitch:/var/run/openvswitch
+    networks:
+      - lab-net
+
+  networking-api:
+    build:
+      context: ./services/networking
+      network: host
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@postgres:5432/mini_openstack}
+      OVN_NB_DB: tcp:ovn-nb-db:6641
+      PROVIDER_INTERFACE: ${PROVIDER_INTERFACE:-enp0s8}
+      PROVIDER_BRIDGE: ${PROVIDER_BRIDGE:-br-ex}
+      PROVIDER_PHYSNET: ${PROVIDER_PHYSNET:-physnet1}
+      PROVIDER_NETWORK_NAME: ${PROVIDER_NETWORK_NAME:-public-net}
+      PROVIDER_SUBNET_NAME: ${PROVIDER_SUBNET_NAME:-public-subnet}
+      PROVIDER_CIDR: ${PROVIDER_CIDR:-192.168.56.0/24}
+      PROVIDER_GATEWAY: ${PROVIDER_GATEWAY:-192.168.56.1}
+      PROVIDER_ALLOCATION_START: ${PROVIDER_ALLOCATION_START:-192.168.56.100}
+      PROVIDER_ALLOCATION_END: ${PROVIDER_ALLOCATION_END:-192.168.56.200}
+      PROVIDER_DNS: ${PROVIDER_DNS:-8.8.8.8}
+      PROVIDER_ENABLE_DHCP: ${PROVIDER_ENABLE_DHCP:-false}
+    ports:
+      - "8001:8000"
+    volumes:
+      - /var/run/openvswitch:/var/run/openvswitch
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ovn-nb-db:
+        condition: service_started
+    networks:
+      - lab-net
+
+  image-api:
+    build:
+      context: ./services/image
+      network: host
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@postgres:5432/mini_openstack}
+      IMAGE_STORAGE_BACKEND: ${IMAGE_STORAGE_BACKEND:-file}
+      IMAGE_STORE_PATH: ${IMAGE_STORE_PATH:-/var/lib/mini-openstack/images}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-mini-openstack-images}
+      MINIO_SECURE: ${MINIO_SECURE:-false}
+    ports:
+      - "8002:8000"
+    volumes:
+      - image-data:/var/lib/mini-openstack/images
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - lab-net
+
+  metadata-api:
+    build:
+      context: ./services/metadata
+      network: host
+    environment:
+      COMPUTE_API_URL: http://compute-api:8000
+    ports:
+      - "8775:8775"
+    depends_on:
+      compute-api:
+        condition: service_started
+    networks:
+      - lab-net
+
+  minio:
+    image: minio/minio:latest
+    profiles:
+      - minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - lab-net
+
+  minio-init:
+    image: minio/mc:latest
+    profiles:
+      - minio
+    depends_on:
+      - minio
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-mini-openstack-images}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 "$$MINIO_ACCESS_KEY" "$$MINIO_SECRET_KEY"; do
+          sleep 2
+        done
+        mc mb --ignore-existing local/"$$MINIO_BUCKET"
+    networks:
+      - lab-net
+
+  compute-api:
+    build:
+      context: ./services/compute
+      network: host
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@postgres:5432/mini_openstack}
+      IMAGE_API_URL: http://image-api:8000
+      NETWORKING_API_URL: http://networking-api:8000
+      BLOCK_STORE_API_URL: http://block-store-api:8000
+      COMPUTE_BACKEND: ${COMPUTE_BACKEND:-libvirt}
+      COMPUTE_WORKER_URL: ${COMPUTE_WORKER_URL:-http://host.docker.internal:8010}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8003:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      image-api:
+        condition: service_started
+      networking-api:
+        condition: service_started
+    networks:
+      - lab-net
+
+  compute-worker:
+    build:
+      context: ./services/compute_worker
+      network: host
+    privileged: true
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    environment:
+      COMPUTE_API_URL: ${COMPUTE_API_URL:-http://127.0.0.1:8003}
+      IMAGE_API_URL: ${IMAGE_API_URL:-http://127.0.0.1:8002}
+      LIBVIRT_URI: ${LIBVIRT_URI:-qemu:///system}
+      COMPUTE_INSTANCE_DIR: ${COMPUTE_INSTANCE_DIR:-/var/lib/mini-openstack/compute/instances}
+      COMPUTE_IMAGE_CACHE_DIR: ${COMPUTE_IMAGE_CACHE_DIR:-/var/lib/mini-openstack/compute/cache/images}
+      OVS_BRIDGE: ${OVS_BRIDGE:-br-int}
+      VM_NAME_PREFIX: ${VM_NAME_PREFIX:-mini-os}
+    volumes:
+      - ${COMPUTE_INSTANCE_DIR:-/var/lib/mini-openstack/compute/instances}:/var/lib/mini-openstack/compute/instances
+      - ${COMPUTE_CACHE_DIR:-/var/lib/mini-openstack/compute/cache}:/var/lib/mini-openstack/compute/cache
+      - ${VOLUME_STORE_PATH:-/var/lib/mini-openstack/volumes}:/var/lib/mini-openstack/volumes
+      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      - /dev/kvm:/dev/kvm
+      - /dev/net/tun:/dev/net/tun
+      - /var/run/openvswitch:/var/run/openvswitch
+    depends_on:
+      image-api:
+        condition: service_started
+      networking-api:
+        condition: service_started
+  block-store-api:
+    build:
+      context: ./services/block_store
+      network: host
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@postgres:5432/mini_openstack}
+      COMPUTE_API_URL: http://compute-api:8000
+      VOLUME_STORE_PATH: ${VOLUME_STORE_PATH:-/var/lib/mini-openstack/volumes}
+    ports:
+      - "8004:8000"
+    volumes:
+      - ${VOLUME_STORE_PATH:-/var/lib/mini-openstack/volumes}:/var/lib/mini-openstack/volumes
+    depends_on:
+      postgres:
+        condition: service_healthy
+      compute-api:
+        condition: service_started
+    networks:
+      - lab-net
+
+networks:
+  lab-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  ovn-nb-data:
+  ovn-sb-data:
+  image-data:
+  minio-data:
