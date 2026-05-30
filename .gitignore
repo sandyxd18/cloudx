@@ -8,3 +8,4 @@ error.txt
 *.pyo
 *.log
 .env
+.gitignore
