@@ -15,6 +15,67 @@ def domain_name(server_name: str, server_id: str) -> str:
     return f"{VM_NAME_PREFIX}-{safe_name}-{short_id(server_id, 8)}"
 
 
+def _disk_path_type(path: str | Path) -> str:
+    """Detect the storage type from a volume path.
+
+    Returns:
+      'block' — LVM block device  (/dev/...)
+      'rbd'   — Ceph RBD network  (rbd:...)
+      'file'  — legacy file disk  (anything else, e.g. *.qcow2)
+    """
+    s = str(path)
+    if s.startswith("/dev/"):
+        return "block"
+    if s.startswith("rbd:"):
+        return "rbd"
+    return "file"
+
+
+def _rbd_parts(rbd_path: str) -> tuple[str, str, str]:
+    """Parse 'rbd:pool/image' → (pool, image, mon_host)."""
+    import configparser, os as _os
+    without_prefix = rbd_path[len("rbd:"):]
+    pool, _, image = without_prefix.partition("/")
+    image = image.split("@")[0]   # strip snapshot suffix if present
+    # Read mon_host from ceph.conf
+    ceph_conf = _os.getenv("CEPH_CONF", "/etc/ceph/ceph.conf")
+    cfg = configparser.ConfigParser()
+    cfg.read(ceph_conf)
+    mon_host = cfg.get("global", "mon_host", fallback="127.0.0.1")
+    return pool, image, mon_host
+
+
+def _build_boot_disk_element(devices: ET.Element, disk_path: str | Path) -> None:
+    """Append the correct root-disk XML element to <devices> based on path type."""
+    path_type = _disk_path_type(disk_path)
+
+    if path_type == "block":
+        # LVM block device
+        disk = ET.SubElement(devices, "disk", type="block", device="disk")
+        ET.SubElement(disk, "driver", name="qemu", type="raw", cache="none", io="native")
+        ET.SubElement(disk, "source", dev=str(disk_path))
+        ET.SubElement(disk, "target", dev="sda", bus="scsi")
+        ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit="0")
+
+    elif path_type == "rbd":
+        # Ceph RBD network disk
+        pool, image, mon_host = _rbd_parts(str(disk_path))
+        disk = ET.SubElement(devices, "disk", type="network", device="disk")
+        ET.SubElement(disk, "driver", name="qemu", type="raw", cache="none")
+        source = ET.SubElement(disk, "source", protocol="rbd", name=f"{pool}/{image}")
+        ET.SubElement(source, "host", name=mon_host, port="6789")
+        ET.SubElement(disk, "target", dev="sda", bus="scsi")
+        ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit="0")
+
+    else:
+        # Legacy file disk (qcow2)
+        disk = ET.SubElement(devices, "disk", type="file", device="disk")
+        ET.SubElement(disk, "driver", name="qemu", type="qcow2", cache="none")
+        ET.SubElement(disk, "source", file=str(disk_path))
+        ET.SubElement(disk, "target", dev="sda", bus="scsi")
+        ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit="0")
+
+
 def domain_xml(
     name: str,
     memory_mb: int,
@@ -32,7 +93,13 @@ def domain_xml(
     os_el = ET.SubElement(domain, "os")
     ET.SubElement(os_el, "type", arch="x86_64", machine="pc").text = "hvm"
     ET.SubElement(os_el, "boot", dev="hd")
-    ET.SubElement(domain, "features")
+
+    # ACPI dan APIC diperlukan agar VM bisa shutdown/reboot dengan benar
+    # dan agar serial console bekerja dengan baik
+    features = ET.SubElement(domain, "features")
+    ET.SubElement(features, "acpi")
+    ET.SubElement(features, "apic")
+
     ET.SubElement(domain, "clock", offset="utc")
     ET.SubElement(domain, "on_poweroff").text = "destroy"
     ET.SubElement(domain, "on_reboot").text = "restart"
@@ -41,11 +108,8 @@ def domain_xml(
     ET.SubElement(devices, "emulator").text = "/usr/bin/qemu-system-x86_64"
     ET.SubElement(devices, "controller", type="scsi", model="virtio-scsi")
 
-    disk = ET.SubElement(devices, "disk", type="file", device="disk")
-    ET.SubElement(disk, "driver", name="qemu", type="qcow2", cache="none")
-    ET.SubElement(disk, "source", file=str(disk_path))
-    ET.SubElement(disk, "target", dev="sda", bus="scsi")
-    ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit="0")
+    # Root disk — auto-detect LVM block / Ceph RBD / legacy file
+    _build_boot_disk_element(devices, disk_path)
 
     cdrom = ET.SubElement(devices, "disk", type="file", device="cdrom")
     ET.SubElement(cdrom, "driver", name="qemu", type="raw")
@@ -58,11 +122,20 @@ def domain_xml(
     ET.SubElement(iface, "target", dev=tap_name, managed="no")
     ET.SubElement(iface, "model", type="virtio")
 
-    ET.SubElement(devices, "serial", type="pty")
+    # Serial console — explicit target agar virsh console selalu bisa terhubung
+    # CirrOS dan Ubuntu cloud image mengirim output ke ttyS0 (port 0) secara default
+    serial = ET.SubElement(devices, "serial", type="pty")
+    ET.SubElement(serial, "target", type="isa-serial", port="0")
     console = ET.SubElement(devices, "console", type="pty")
     ET.SubElement(console, "target", type="serial", port="0")
-    ET.SubElement(devices, "graphics", type="vnc", port="-1", autoport="yes", listen="0.0.0.0")
+
+    # virtio-balloon untuk memory management yang lebih baik
+    ET.SubElement(devices, "memballoon", model="virtio")
+
+    ET.SubElement(devices, "graphics", type="vnc", port="-1", autoport="yes", listen="127.0.0.1")
     return ET.tostring(domain, encoding="unicode")
+
+
 
 
 def connect():
@@ -138,18 +211,48 @@ def delete(name: str) -> None:
         conn.close()
 
 
-def disk_device_xml(path: str | Path, target_dev: str = "sdb", disk_format: str = "qcow2", bus: str = "scsi") -> str:
-    disk = ET.Element("disk", type="file", device="disk")
-    ET.SubElement(disk, "driver", name="qemu", type=disk_format, cache="none")
-    ET.SubElement(disk, "source", file=str(path))
-    ET.SubElement(disk, "target", dev=target_dev, bus=bus)
-    if bus == "scsi" and target_dev.startswith("sd") and len(target_dev) == 3:
-        unit = str(ord(target_dev[-1]) - ord("a"))
-        ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit=unit)
+def disk_device_xml(path: str | Path, target_dev: str = "sdb", disk_format: str = "auto", bus: str = "scsi") -> str:
+    """Build libvirt disk XML for a data volume.
+
+    Detects path type automatically:
+      /dev/... → block device (LVM)       — type=raw, io=native
+      rbd:...  → Ceph RBD network disk    — type=raw, protocol=rbd
+      other    → file disk (legacy qcow2) — type=qcow2
+    """
+    path_type = _disk_path_type(path)
+
+    if path_type == "block":
+        disk = ET.Element("disk", type="block", device="disk")
+        ET.SubElement(disk, "driver", name="qemu", type="raw", cache="none", io="native")
+        ET.SubElement(disk, "source", dev=str(path))
+        ET.SubElement(disk, "target", dev=target_dev, bus=bus)
+        if bus == "scsi" and target_dev.startswith("sd") and len(target_dev) == 3:
+            unit = str(ord(target_dev[-1]) - ord("a"))
+            ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit=unit)
+
+    elif path_type == "rbd":
+        pool, image, mon_host = _rbd_parts(str(path))
+        disk = ET.Element("disk", type="network", device="disk")
+        ET.SubElement(disk, "driver", name="qemu", type="raw", cache="none")
+        source = ET.SubElement(disk, "source", protocol="rbd", name=f"{pool}/{image}")
+        ET.SubElement(source, "host", name=mon_host, port="6789")
+        ET.SubElement(disk, "target", dev=target_dev, bus=bus)
+
+    else:
+        # Legacy file
+        fmt = disk_format if disk_format != "auto" else "qcow2"
+        disk = ET.Element("disk", type="file", device="disk")
+        ET.SubElement(disk, "driver", name="qemu", type=fmt, cache="none")
+        ET.SubElement(disk, "source", file=str(path))
+        ET.SubElement(disk, "target", dev=target_dev, bus=bus)
+        if bus == "scsi" and target_dev.startswith("sd") and len(target_dev) == 3:
+            unit = str(ord(target_dev[-1]) - ord("a"))
+            ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit=unit)
+
     return ET.tostring(disk, encoding="unicode")
 
 
-def attach_disk(name: str, path: str | Path, target_dev: str = "sdb", disk_format: str = "qcow2", bus: str = "scsi") -> None:
+def attach_disk(name: str, path: str | Path, target_dev: str = "sdb", disk_format: str = "auto", bus: str = "scsi") -> None:
     conn, domain = lookup(name)
     try:
         xml = disk_device_xml(path, target_dev, disk_format, bus)
@@ -161,7 +264,7 @@ def attach_disk(name: str, path: str | Path, target_dev: str = "sdb", disk_forma
         conn.close()
 
 
-def detach_disk(name: str, path: str | Path, target_dev: str = "sdb", disk_format: str = "qcow2", bus: str = "scsi") -> None:
+def detach_disk(name: str, path: str | Path, target_dev: str = "sdb", disk_format: str = "auto", bus: str = "scsi") -> None:
     conn, domain = lookup(name)
     try:
         xml = disk_device_xml(path, target_dev, disk_format, bus)
@@ -173,5 +276,208 @@ def detach_disk(name: str, path: str | Path, target_dev: str = "sdb", disk_forma
         conn.close()
 
 
+
+def interface_xml(tap_name: str, mac_address: str) -> str:
+    iface = ET.Element("interface", type="ethernet")
+    ET.SubElement(iface, "mac", address=mac_address)
+    ET.SubElement(iface, "target", dev=tap_name, managed="no")
+    ET.SubElement(iface, "model", type="virtio")
+    return ET.tostring(iface, encoding="unicode")
+
+
+def attach_interface(name: str, tap_name: str, mac_address: str) -> None:
+    conn, domain = lookup(name)
+    try:
+        flags = getattr(libvirt, "VIR_DOMAIN_AFFECT_CONFIG", 2)
+        if domain.isActive():
+            flags |= getattr(libvirt, "VIR_DOMAIN_AFFECT_LIVE", 1)
+        domain.attachDeviceFlags(interface_xml(tap_name, mac_address), flags)
+    finally:
+        conn.close()
+
+
+def detach_interface(name: str, tap_name: str, mac_address: str) -> None:
+    conn, domain = lookup(name)
+    try:
+        flags = getattr(libvirt, "VIR_DOMAIN_AFFECT_CONFIG", 2)
+        if domain.isActive():
+            flags |= getattr(libvirt, "VIR_DOMAIN_AFFECT_LIVE", 1)
+        domain.detachDeviceFlags(interface_xml(tap_name, mac_address), flags)
+    finally:
+        conn.close()
+
+def vnc_info(name: str) -> dict:
+    conn, domain = lookup(name)
+    try:
+        root = ET.fromstring(domain.XMLDesc(0))
+        graphics = root.find("./devices/graphics[@type='vnc']")
+        if graphics is None:
+            return {"status": "not-configured"}
+        port = graphics.attrib.get("port")
+        listen = graphics.attrib.get("listen", "127.0.0.1")
+        return {"status": "available" if port and port != "-1" else "auto-assigned", "listen": listen, "port": int(port) if port and port != "-1" else None}
+    finally:
+        conn.close()
+
+
 def console_hint(name: str) -> str:
     return f"virsh -c {LIBVIRT_URI} console {name}"
+
+
+# ── Power state management ─────────────────────────────────────────────────────
+
+def pause(name: str) -> None:
+    """Suspend (pause) the VM at the hypervisor level (PAUSED state)."""
+    conn, domain = lookup(name)
+    try:
+        if domain.isActive():
+            domain.suspend()
+    finally:
+        conn.close()
+
+
+def resume(name: str) -> None:
+    """Resume a paused (suspended at hypervisor level) VM."""
+    conn, domain = lookup(name)
+    try:
+        state, _ = domain.state()
+        # VIR_DOMAIN_PAUSED = 3
+        if state == 3:
+            domain.resume()
+    finally:
+        conn.close()
+
+
+def suspend_to_disk(name: str) -> None:
+    """Save VM state to disk (managed save), similar to OS suspend-to-disk."""
+    conn, domain = lookup(name)
+    try:
+        if domain.isActive():
+            domain.managedSave(0)
+    finally:
+        conn.close()
+
+
+def resume_from_disk(name: str) -> None:
+    """Restore a managed-saved VM (starts from saved state)."""
+    conn, domain = lookup(name)
+    try:
+        if not domain.isActive():
+            domain.create()  # restores from managed save if it exists
+    finally:
+        conn.close()
+
+
+# ── Live resize ────────────────────────────────────────────────────────────────
+
+def resize(name: str, new_vcpus: int | None, new_ram_mb: int | None) -> None:
+    """Hot-plug CPU and/or memory.  Both parameters are optional; pass None to skip."""
+    conn, domain = lookup(name)
+    try:
+        live = getattr(libvirt, "VIR_DOMAIN_AFFECT_LIVE", 1)
+        cfg  = getattr(libvirt, "VIR_DOMAIN_AFFECT_CONFIG", 2)
+        flags = live | cfg
+
+        if new_vcpus is not None:
+            # setVcpusFlags can fail if the guest doesn't support VCPU hotplug;
+            # we fall back to config-only so the change takes effect on next boot.
+            try:
+                domain.setVcpusFlags(new_vcpus, flags)
+            except Exception:
+                domain.setVcpusFlags(new_vcpus, cfg)
+
+        if new_ram_mb is not None:
+            ram_kb = new_ram_mb * 1024
+            try:
+                domain.setMemoryFlags(ram_kb, flags)
+            except Exception:
+                domain.setMemoryFlags(ram_kb, cfg)
+    finally:
+        conn.close()
+
+
+# ── Console log ────────────────────────────────────────────────────────────────
+
+def get_console_log(name: str, lines: int = 50) -> str:
+    """Retrieve recent serial console output via libvirt screenshot / log file.
+
+    libvirt itself doesn't expose a "get console log" API; the best we can do
+    is read the PTY log that QEMU writes to the instance directory, or use
+    virsh console with a timeout.  We return an empty string on failure so
+    the caller can always produce a response.
+    """
+    import subprocess
+    from .config import LIBVIRT_URI
+    try:
+        # Attempt to read via `virsh dumpxml` to find the PTY path, then read.
+        result = subprocess.run(
+            ["virsh", "-c", LIBVIRT_URI, "dumpxml", name],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return ""
+        root = ET.fromstring(result.stdout)
+        console_el = root.find("./devices/console[@type='pty']")
+        if console_el is not None:
+            pty_path = console_el.find("source")
+            if pty_path is not None:
+                pty = pty_path.attrib.get("path", "")
+                if pty:
+                    # Read last N bytes of PTY — PTYs are live so we use a
+                    # non-blocking approach via `dd` to avoid hanging.
+                    dd = subprocess.run(
+                        ["bash", "-c", f"timeout 1 cat {pty} 2>/dev/null | tail -n {lines}"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    return dd.stdout
+    except Exception:
+        pass
+    return ""
+
+
+# ── Password injection via QEMU guest agent ────────────────────────────────────
+
+def set_password(name: str, password: str, username: str = "root") -> None:
+    """Inject a password via QEMU Guest Agent (requires qemu-guest-agent in VM)."""
+    import json as _json
+    conn, domain = lookup(name)
+    try:
+        cmd = _json.dumps({
+            "execute": "guest-set-user-password",
+            "arguments": {
+                "username": username,
+                "password": password,
+                "crypted": False,
+            },
+        })
+        result = domain.qemuAgentCommand(cmd, 30, 0)
+        if result and "error" in _json.loads(result):
+            raise RuntimeError(f"guest agent error: {_json.loads(result)['error']}")
+    finally:
+        conn.close()
+
+
+# ── Rebuild (re-provision root disk) ──────────────────────────────────────────
+
+def rebuild(name: str, new_disk_path: str, seed_iso: str, tap_name: str,
+            mac_address: str, ram_mb: int, vcpus: int) -> None:
+    """Destroy current domain, swap root disk, redefine and start."""
+    conn = connect()
+    try:
+        try:
+            domain = conn.lookupByName(name)
+            if domain.isActive():
+                domain.destroy()
+            try:
+                flags = getattr(libvirt, "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", 1) | getattr(libvirt, "VIR_DOMAIN_UNDEFINE_NVRAM", 4)
+                domain.undefineFlags(flags)
+            except Exception:
+                domain.undefine()
+        except Exception:
+            pass
+        xml = domain_xml(name, ram_mb, vcpus, new_disk_path, seed_iso, tap_name, mac_address)
+        new_domain = conn.defineXML(xml)
+        new_domain.create()
+    finally:
+        conn.close()
+

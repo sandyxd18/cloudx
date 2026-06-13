@@ -10,9 +10,16 @@ import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import DateTime, Integer, String, create_engine, inspect, select, text
+from pydantic import BaseModel
+from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+try:
+    from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+except ImportError:
+    from auth_middleware import CurrentUser, AdminUser, OptionalAuth
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
@@ -49,6 +56,8 @@ class Image(Base):
     size: Mapped[int] = mapped_column(Integer)
     checksum: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    visibility: Mapped[str] = mapped_column(String, default="private")
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -181,7 +190,22 @@ def get_db():
 
 
 DB = Annotated[Session, Depends(get_db)]
-app = FastAPI(title="mini OpenStack lab image-api", version="0.1.0")
+app = FastAPI(title="cloudx image-api", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class ImageImportIn(BaseModel):
+    name: str
+    path: str
+    disk_format: str = "qcow2"
+    container_format: str = "bare"
+    visibility: str = "private"
 
 
 @app.on_event("startup")
@@ -202,7 +226,12 @@ def ensure_columns():
         if "object_name" not in columns:
             conn.execute(text("ALTER TABLE image_images ADD COLUMN object_name VARCHAR"))
             conn.execute(text("UPDATE image_images SET object_name = filename WHERE object_name IS NULL"))
+        if "visibility" not in columns:
+            conn.execute(text("ALTER TABLE image_images ADD COLUMN visibility VARCHAR DEFAULT 'private'"))
+        if "project_id" not in columns:
+            conn.execute(text("ALTER TABLE image_images ADD COLUMN project_id VARCHAR"))
         conn.execute(text("UPDATE image_images SET storage_backend = 'file' WHERE storage_backend IS NULL"))
+        conn.execute(text("UPDATE image_images SET visibility = 'private' WHERE visibility IS NULL"))
         conn.execute(text("UPDATE image_images SET object_name = filename WHERE object_name IS NULL"))
 
 
@@ -237,10 +266,12 @@ def health():
 @app.post("/images", status_code=201)
 def upload_image(
     db: DB,
+    current: CurrentUser,
     name: str = Form(...),
     file: UploadFile = File(...),
     disk_format: str = Form("qcow2"),
     container_format: str = Form("bare"),
+    visibility: str = Form("public"),
 ):
     if get_image(db, name):
         raise HTTPException(status_code=409, detail="image already exists")
@@ -262,6 +293,43 @@ def upload_image(
         size=size,
         checksum=checksum,
         status="ACTIVE",
+        visibility=visibility,
+        project_id=current["project_id"],
+    )
+    db.add(image)
+    db.commit()
+    db.refresh(image)
+    return obj_to_dict(image)
+
+
+
+@app.post("/images/import-path", status_code=201)
+def import_image_from_path(payload: ImageImportIn, db: DB):
+    if get_image(db, payload.name):
+        raise HTTPException(status_code=409, detail="image already exists")
+    source = Path(payload.path)
+    if not source.exists() or not source.is_file():
+        raise HTTPException(status_code=404, detail=f"source image path not found: {source}")
+    image_id = new_id()
+    object_name = f"{image_id}-{source.name}"
+    backend = storage_backend()
+    try:
+        with source.open("rb") as handle:
+            size, checksum = backend.save_image(handle, object_name)
+    except ClientError as exc:
+        raise HTTPException(status_code=502, detail=f"image import failed: {exc}") from exc
+    image = Image(
+        id=image_id,
+        name=payload.name,
+        filename=str(IMAGE_STORE_PATH / object_name) if backend.name == "file" else f"s3://{MINIO_BUCKET}/{object_name}",
+        storage_backend=backend.name,
+        object_name=object_name,
+        disk_format=payload.disk_format,
+        container_format=payload.container_format,
+        size=size,
+        checksum=checksum,
+        status="ACTIVE",
+        visibility=payload.visibility,
     )
     db.add(image)
     db.commit()
@@ -270,8 +338,23 @@ def upload_image(
 
 
 @app.get("/images")
-def list_images(db: DB):
-    return {"items": [obj_to_dict(i) for i in db.scalars(select(Image).order_by(Image.created_at)).all()]}
+def list_images(current: CurrentUser, db: DB,
+                visibility: str | None = None,
+                status: str | None = None,
+                limit: int = 50):
+    q = select(Image)
+    if visibility:
+        q = q.where(Image.visibility == visibility)
+    elif current.get("role") != "admin":
+        # Non-admin sees: public images + own private images
+        q = q.where(
+            (Image.visibility == "public") |
+            (Image.project_id == current["project_id"])
+        )
+    if status:
+        q = q.where(Image.status == status)
+    q = q.order_by(Image.created_at).limit(limit)
+    return {"items": [obj_to_dict(i) for i in db.scalars(q).all()]}
 
 
 @app.get("/images/{ref}")
@@ -306,7 +389,7 @@ def download_image(ref: str, db: DB):
 
 
 @app.delete("/images/{ref}")
-def delete_image(ref: str, db: DB):
+def delete_image(ref: str, _: CurrentUser, db: DB):
     image = require_image(db, ref)
     if image.storage_backend == "minio":
         MinioStorageBackend().delete_image(image.object_name)
@@ -315,3 +398,31 @@ def delete_image(ref: str, db: DB):
     db.delete(image)
     db.commit()
     return {"status": "deleted", "id": image.id, "name": image.name}
+
+
+@app.post("/images/{ref}/deactivate")
+def deactivate_image(ref: str, _: CurrentUser, db: DB):
+    image = require_image(db, ref)
+    image.status = "deactivated"
+    db.commit()
+    return obj_to_dict(image)
+
+
+@app.post("/images/{ref}/reactivate")
+def reactivate_image(ref: str, _: CurrentUser, db: DB):
+    image = require_image(db, ref)
+    image.status = "ACTIVE"
+    db.commit()
+    return obj_to_dict(image)
+
+
+@app.patch("/images/{ref}")
+def update_image(ref: str, payload: dict, _: CurrentUser, db: DB):
+    """Partially update image attributes (visibility, name, etc.)"""
+    image = require_image(db, ref)
+    allowed = {"visibility", "name", "disk_format", "container_format"}
+    for key, value in payload.items():
+        if key in allowed:
+            setattr(image, key, value)
+    db.commit()
+    return obj_to_dict(image)

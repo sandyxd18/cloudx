@@ -7,9 +7,15 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+try:
+    from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+except ImportError:
+    from auth_middleware import CurrentUser, AdminUser, OptionalAuth
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
@@ -25,6 +31,14 @@ PROVIDER_ALLOCATION_END = os.getenv("PROVIDER_ALLOCATION_END", "192.168.56.200")
 PROVIDER_DNS = [item.strip() for item in os.getenv("PROVIDER_DNS", "8.8.8.8").split(",") if item.strip()]
 PROVIDER_ENABLE_DHCP = os.getenv("PROVIDER_ENABLE_DHCP", "false").lower() == "true"
 PROVIDER_PHYSNET = os.getenv("PROVIDER_PHYSNET", "physnet1")
+# Strip CIDR notation if present (e.g. "192.168.10.102/24" → "192.168.10.102")
+PROVIDER_HOST_IP_RAW = os.getenv("PROVIDER_HOST_IP", "").split("/")[0].strip()
+METADATA_LINK_LOCAL = "169.254.169.254"
+# Set to "true" to auto-create provider network on startup (legacy behaviour).
+# Default is "false": user creates public-net manually via the CLI / lab-setup.sh.
+PROVIDER_NETWORK_AUTO_CREATE = os.getenv("PROVIDER_NETWORK_AUTO_CREATE", "false").lower() == "true"
+DEFAULT_SECURITY_GROUP_ALLOW_SSH = os.getenv("DEFAULT_SECURITY_GROUP_ALLOW_SSH", "true").lower() == "true"
+DEFAULT_SECURITY_GROUP_ALLOW_ICMP = os.getenv("DEFAULT_SECURITY_GROUP_ALLOW_ICMP", "true").lower() == "true"
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -124,6 +138,7 @@ class Port(Base):
     device_id: Mapped[str | None] = mapped_column(String, nullable=True)
     device_owner: Mapped[str | None] = mapped_column(String, nullable=True)
     security_group_ids: Mapped[str | None] = mapped_column(String, nullable=True)
+    port_security_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
@@ -151,7 +166,9 @@ class SecurityGroup(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String, unique=True, index=True)
     description: Mapped[str | None] = mapped_column(String, nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class SecurityGroupRule(Base):
@@ -165,6 +182,7 @@ class SecurityGroupRule(Base):
     port_min: Mapped[str | None] = mapped_column(String, nullable=True)
     port_max: Mapped[str | None] = mapped_column(String, nullable=True)
     remote_ip_prefix: Mapped[str | None] = mapped_column(String, nullable=True)
+    remote_group_id: Mapped[str | None] = mapped_column(String, nullable=True)
     action: Mapped[str] = mapped_column(String, default="allow")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
@@ -202,6 +220,7 @@ class PortIn(BaseModel):
     device_id: str | None = None
     device_owner: str | None = None
     security_group_ids: list[str] = Field(default_factory=list)
+    port_security_enabled: bool = True
 
 
 class FloatingIPIn(BaseModel):
@@ -224,6 +243,7 @@ class RouterGatewayIn(BaseModel):
 class SecurityGroupIn(BaseModel):
     name: str
     description: str | None = None
+    project_id: str | None = None
 
 
 class SecurityGroupRuleIn(BaseModel):
@@ -233,6 +253,7 @@ class SecurityGroupRuleIn(BaseModel):
     port_min: int | None = None
     port_max: int | None = None
     remote_ip_prefix: str | None = None
+    remote_group_id: str | None = None
     action: str = "allow"
 
 
@@ -325,10 +346,12 @@ def get_local_chassis_id() -> str | None:
         proc = subprocess.run(cmd, text=True, capture_output=True)
         if proc.returncode != 0 or not proc.stdout.strip():
             return None
-        # Returns lines like: "name : <uuid>"
+        # Returns lines like: name : "ddec5957-..."
+        # Must strip surrounding quotes from the value (ovn-sbctl --format=list wraps strings in "")
         for line in proc.stdout.strip().splitlines():
             if line.startswith("name"):
-                return line.split(":", 1)[-1].strip()
+                raw = line.split(":", 1)[-1].strip()
+                return raw.strip('"')  # Remove surrounding quotes e.g. "uuid" → uuid
         return None
     except Exception as exc:
         print(f"get_local_chassis_id failed: {exc}", flush=True)
@@ -549,41 +572,106 @@ def nat_rule_args(router_name: str, external_ip: str, logical_ip: str) -> list[s
     return ["--may-exist", "lr-nat-add", router_name, "dnat_and_snat", external_ip, logical_ip]
 
 
-def acl_match(port_name: str, rule: SecurityGroupRule) -> str:
-    direction = "outport" if rule.direction == "ingress" else "inport"
-    parts = [f'{direction} == "{port_name}"', "ip4"]
-    if rule.protocol and rule.protocol != "any":
-        parts.append(rule.protocol)
-    if rule.protocol in {"tcp", "udp"} and rule.port_min:
-        port_field = f"{rule.protocol}.dst"
-        if rule.port_max and rule.port_max != rule.port_min:
-            parts.append(f"{rule.port_min} <= {port_field} && {port_field} <= {rule.port_max}")
-        else:
-            parts.append(f"{port_field} == {rule.port_min}")
-    if rule.protocol == "icmp":
+def port_group_name(security_group_id: str) -> str:
+    return f"pg_{security_group_id.replace('-', '')}"
+
+
+def acl_match(security_group_id: str, rule: SecurityGroupRule) -> str:
+    port_field = "outport" if rule.direction == "ingress" else "inport"
+    remote_field = "ip4.src" if rule.direction == "ingress" else "ip4.dst"
+    parts = [f"{port_field} == @{port_group_name(security_group_id)}", "ip4"]
+    protocol = rule.protocol or "any"
+    if protocol == "icmp":
         parts.append("icmp4")
+    elif protocol != "any":
+        parts.append(protocol)
+    if protocol in {"tcp", "udp"} and rule.port_min:
+        dst_field = f"{protocol}.dst"
+        if rule.port_max and rule.port_max != rule.port_min:
+            parts.append(f"{rule.port_min} <= {dst_field} && {dst_field} <= {rule.port_max}")
+        else:
+            parts.append(f"{dst_field} == {rule.port_min}")
     if rule.remote_ip_prefix:
-        field = "ip4.src" if rule.direction == "ingress" else "ip4.dst"
-        parts.append(f"{field} == {rule.remote_ip_prefix}")
+        parts.append(f"{remote_field} == {rule.remote_ip_prefix}")
+    if rule.remote_group_id:
+        remote_port_field = "inport" if rule.direction == "ingress" else "outport"
+        parts.append(f"{remote_port_field} == @{port_group_name(rule.remote_group_id)}")
     return " && ".join(parts)
 
 
+def acl_priority(rule: SecurityGroupRule) -> str:
+    if rule.protocol in {"tcp", "udp"} and rule.port_min:
+        return "2002"
+    return "2001"
+
+
+def ensure_security_group_port_group(group: SecurityGroup) -> str:
+    pg = port_group_name(group.id)
+    # pg-add does not support --may-exist; check existence first
+    existing = ovn("--format=list", "--columns=name", "find", "port_group", f"name={pg}", check=False)
+    if not existing:
+        ovn("pg-add", pg)
+    ovn("set", "port_group", pg, "external_ids:mini-openstack-lab=true", f"external_ids:security_group_id={group.id}", f"external_ids:name={group.name}", check=False)
+    return pg
+
+
+def apply_security_group_acls(db: Session, group: SecurityGroup) -> None:
+    pg = ensure_security_group_port_group(group)
+    ovn("--type=port-group", "--if-exists", "acl-del", pg, check=False)
+    rules = db.scalars(select(SecurityGroupRule).where(SecurityGroupRule.security_group_id == group.id)).all()
+    for rule in rules:
+        direction = "to-lport" if rule.direction == "ingress" else "from-lport"
+        action = "allow-related" if rule.action == "allow" else rule.action
+        ovn("--type=port-group", "--may-exist", "acl-add", pg, direction, acl_priority(rule), acl_match(group.id, rule), action)
+    ovn("--type=port-group", "--may-exist", "acl-add", pg, "to-lport", "1001", f"outport == @{pg} && ip4", "drop")
+
+
+def get_lsp_uuid(logical_port_name: str) -> str | None:
+    """Resolve a Logical_Switch_Port name to its OVN NB UUID.
+
+    pg-add-port / pg-del-port require the UUID of the LSP object, not its
+    name string.  Without this look-up the commands fail silently (check=False)
+    and the port is never added to the port group, so ACLs never apply.
+    """
+    out = ovn(
+        "--format=list", "--columns=_uuid",
+        "find", "Logical_Switch_Port", f"name={logical_port_name}",
+        check=False,
+    )
+    # output looks like:  _uuid               : <uuid>
+    for line in out.splitlines():
+        if line.startswith("_uuid"):
+            return line.split(":", 1)[-1].strip()
+    return None
+
+
+def refresh_port_group_membership(db: Session, port: Port) -> None:
+    if not port.logical_port_name:
+        return
+    # pg-add-port / pg-del-port are not available in older OVN versions.
+    # Use the generic OVSDB mutation commands instead:
+    #   ovn-nbctl add    port_group <pg> ports <lsp-uuid>   (idempotent set-add)
+    #   ovn-nbctl remove port_group <pg> ports <lsp-uuid>   (idempotent set-remove)
+    # These require the LSP UUID, not its name.
+    lsp_uuid = get_lsp_uuid(port.logical_port_name)
+    groups = db.scalars(select(SecurityGroup)).all()
+    selected = set(parse_id_list(port.security_group_ids)) if port.port_security_enabled else set()
+    for group in groups:
+        pg = ensure_security_group_port_group(group)
+        if group.id in selected:
+            if lsp_uuid:
+                ovn("add", "port_group", pg, "ports", lsp_uuid, check=False)
+            else:
+                print(f"[warn] refresh_port_group_membership: LSP UUID not found for {port.logical_port_name!r}, skipping", flush=True)
+        else:
+            if lsp_uuid:
+                ovn("remove", "port_group", pg, "ports", lsp_uuid, check=False)
+
+
 def apply_security_groups(db: Session, port: Port) -> None:
-    network = db.get(Network, port.network_id)
-    if not network or not port.logical_port_name:
-        return
-    ovn("--if-exists", "acl-del", network.name, "to-lport", check=False)
-    group_ids = parse_id_list(port.security_group_ids)
-    if not group_ids:
-        return
-    ovn("--may-exist", "acl-add", network.name, "to-lport", "0", f'outport == "{port.logical_port_name}" && ip && ct.est', "allow-related")
-    ovn("--may-exist", "acl-add", network.name, "to-lport", "1", f'outport == "{port.logical_port_name}"', "drop")
-    for group_id in group_ids:
-        rules = db.scalars(select(SecurityGroupRule).where(SecurityGroupRule.security_group_id == group_id)).all()
-        for rule in rules:
-            if rule.direction != "ingress":
-                continue
-            ovn("--may-exist", "acl-add", network.name, "to-lport", "1001", acl_match(port.logical_port_name, rule), "allow-related")
+    refresh_port_group_membership(db, port)
+    for group in db.scalars(select(SecurityGroup)).all():
+        apply_security_group_acls(db, group)
 
 
 def allocate_fixed_ip(db: Session, subnet: Subnet, requested: str | None = None) -> str:
@@ -656,6 +744,8 @@ def ensure_columns():
             ):
                 if column not in columns:
                     conn.execute(text(f"ALTER TABLE networking_ports ADD COLUMN {column} VARCHAR"))
+            if "port_security_enabled" not in columns:
+                conn.execute(text("ALTER TABLE networking_ports ADD COLUMN port_security_enabled BOOLEAN DEFAULT TRUE"))
             conn.execute(text("UPDATE networking_ports SET fixed_ip = ip_address WHERE fixed_ip IS NULL AND ip_address IS NOT NULL"))
         if "networking_routers" in table_names:
             columns = {column["name"] for column in inspector.get_columns("networking_routers")}
@@ -675,6 +765,65 @@ def ensure_columns():
                     conn.execute(text(f"ALTER TABLE networking_floating_ips ADD COLUMN {column} VARCHAR"))
             conn.execute(text("UPDATE networking_floating_ips SET floating_ip_address = floating_ip WHERE floating_ip_address IS NULL"))
             conn.execute(text("UPDATE networking_floating_ips SET port_id = fixed_port_id WHERE port_id IS NULL"))
+        if "networking_security_groups" in table_names:
+            columns = {column["name"] for column in inspector.get_columns("networking_security_groups")}
+            if "project_id" not in columns:
+                conn.execute(text("ALTER TABLE networking_security_groups ADD COLUMN project_id VARCHAR"))
+            if "updated_at" not in columns:
+                conn.execute(text("ALTER TABLE networking_security_groups ADD COLUMN updated_at TIMESTAMP"))
+            conn.execute(text("UPDATE networking_security_groups SET updated_at = created_at WHERE updated_at IS NULL"))
+        if "networking_security_group_rules" in table_names:
+            columns = {column["name"] for column in inspector.get_columns("networking_security_group_rules")}
+            if "remote_group_id" not in columns:
+                conn.execute(text("ALTER TABLE networking_security_group_rules ADD COLUMN remote_group_id VARCHAR"))
+
+
+def bootstrap_default_security_group() -> None:
+    db = SessionLocal()
+    try:
+        group = get_by_ref(db, SecurityGroup, "default")
+        if not group:
+            group = SecurityGroup(name="default", description="Default lab security group", project_id="default")
+            db.add(group)
+            db.commit()
+            db.refresh(group)
+        ensure_security_group_port_group(group)
+
+        def ensure_rule(direction: str, protocol: str, port_min: int | None = None, remote_ip_prefix: str | None = None):
+            existing = db.scalar(
+                select(SecurityGroupRule).where(
+                    SecurityGroupRule.security_group_id == group.id,
+                    SecurityGroupRule.direction == direction,
+                    SecurityGroupRule.protocol == protocol,
+                    SecurityGroupRule.port_min == (str(port_min) if port_min is not None else None),
+                    SecurityGroupRule.remote_ip_prefix == remote_ip_prefix,
+                )
+            )
+            if existing:
+                return
+            db.add(
+                SecurityGroupRule(
+                    security_group_id=group.id,
+                    direction=direction,
+                    protocol=protocol,
+                    port_min=str(port_min) if port_min is not None else None,
+                    port_max=str(port_min) if port_min is not None else None,
+                    remote_ip_prefix=remote_ip_prefix,
+                    action="allow",
+                )
+            )
+
+        ensure_rule("egress", "any", remote_ip_prefix="0.0.0.0/0")
+        if DEFAULT_SECURITY_GROUP_ALLOW_SSH:
+            ensure_rule("ingress", "tcp", 22, "0.0.0.0/0")
+        if DEFAULT_SECURITY_GROUP_ALLOW_ICMP:
+            ensure_rule("ingress", "icmp", remote_ip_prefix="0.0.0.0/0")
+        group.updated_at = now()
+        db.commit()
+        db.refresh(group)
+        apply_security_group_acls(db, group)
+    finally:
+        db.close()
 
 
 def bootstrap_provider_network() -> None:
@@ -721,17 +870,31 @@ def bootstrap_provider_network() -> None:
         db.close()
 
 
-app = FastAPI(title="mini OpenStack lab networking-api", version="0.1.0")
+app = FastAPI(title="cloudx networking-api", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
     ensure_columns()
+    if PROVIDER_NETWORK_AUTO_CREATE:
+        try:
+            bootstrap_provider_network()
+        except Exception as exc:
+            print(f"provider network bootstrap skipped: {exc}", flush=True)
+    else:
+        print("provider network auto-create disabled (PROVIDER_NETWORK_AUTO_CREATE=false); create via CLI", flush=True)
     try:
-        bootstrap_provider_network()
+        bootstrap_default_security_group()
     except Exception as exc:
-        print(f"provider network bootstrap skipped: {exc}", flush=True)
+        print(f"default security group bootstrap skipped: {exc}", flush=True)
 
 
 @app.get("/health")
@@ -740,7 +903,7 @@ def health():
 
 
 @app.post("/networks", status_code=201)
-def create_network(payload: NetworkIn, db: DB):
+def create_network(payload: NetworkIn, current: CurrentUser, db: DB):
     if get_by_ref(db, Network, payload.name):
         raise HTTPException(status_code=409, detail="network already exists")
     provider_defaults = external_network_defaults(payload.name) if payload.external else {}
@@ -773,17 +936,17 @@ def create_network(payload: NetworkIn, db: DB):
 
 
 @app.get("/networks")
-def list_networks(db: DB):
+def list_networks(_: CurrentUser, db: DB):
     return {"items": [obj_to_dict(n) for n in db.scalars(select(Network).order_by(Network.created_at)).all()]}
 
 
 @app.get("/networks/{ref}")
-def show_network(ref: str, db: DB):
+def show_network(ref: str, _: CurrentUser, db: DB):
     return obj_to_dict(require_by_ref(db, Network, ref, "network"))
 
 
 @app.delete("/networks/{ref}")
-def delete_network(ref: str, db: DB):
+def delete_network(ref: str, _: CurrentUser, db: DB):
     network = require_by_ref(db, Network, ref, "network")
     ovn("--if-exists", "ls-del", network.name)
     db.delete(network)
@@ -792,7 +955,7 @@ def delete_network(ref: str, db: DB):
 
 
 @app.post("/subnets", status_code=201)
-def create_subnet(payload: SubnetIn, db: DB):
+def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
     if get_by_ref(db, Subnet, payload.name):
         raise HTTPException(status_code=409, detail="subnet already exists")
     network = require_by_ref(db, Network, payload.network, "network")
@@ -834,19 +997,19 @@ def create_subnet(payload: SubnetIn, db: DB):
 
 
 @app.get("/subnets")
-def list_subnets(db: DB):
+def list_subnets(_: CurrentUser, db: DB):
     return {"items": [obj_to_dict(s) for s in db.scalars(select(Subnet).order_by(Subnet.created_at)).all()]}
 
 
 @app.get("/subnets/{ref}")
-def show_subnet(ref: str, db: DB):
+def show_subnet(ref: str, _: CurrentUser, db: DB):
     data = obj_to_dict(require_by_ref(db, Subnet, ref, "subnet"))
     data["ovn_dhcp_options_uuid"] = data.get("ovn_dhcp_options_uuid") or data.get("dhcp_options_id")
     return data
 
 
 @app.delete("/subnets/{ref}")
-def delete_subnet(ref: str, db: DB):
+def delete_subnet(ref: str, _: CurrentUser, db: DB):
     subnet = require_by_ref(db, Subnet, ref, "subnet")
     if subnet.ovn_dhcp_options_uuid or subnet.dhcp_options_id:
         ovn("--if-exists", "destroy", "DHCP_Options", subnet.ovn_dhcp_options_uuid or subnet.dhcp_options_id, check=False)
@@ -856,7 +1019,7 @@ def delete_subnet(ref: str, db: DB):
 
 
 @app.post("/routers", status_code=201)
-def create_router(payload: RouterIn, db: DB):
+def create_router(payload: RouterIn, current: CurrentUser, db: DB):
     if get_by_ref(db, Router, payload.name):
         raise HTTPException(status_code=409, detail="router already exists")
     router = Router(name=payload.name)
@@ -869,17 +1032,17 @@ def create_router(payload: RouterIn, db: DB):
 
 
 @app.get("/routers")
-def list_routers(db: DB):
+def list_routers(_: CurrentUser, db: DB):
     return {"items": [obj_to_dict(r) for r in db.scalars(select(Router).order_by(Router.created_at)).all()]}
 
 
 @app.get("/routers/{ref}")
-def show_router(ref: str, db: DB):
+def show_router(ref: str, _: CurrentUser, db: DB):
     return obj_to_dict(require_by_ref(db, Router, ref, "router"))
 
 
 @app.delete("/routers/{ref}")
-def delete_router(ref: str, db: DB):
+def delete_router(ref: str, _: CurrentUser, db: DB):
     router = require_by_ref(db, Router, ref, "router")
     ovn("--if-exists", "lr-del", router.name)
     db.delete(router)
@@ -888,7 +1051,7 @@ def delete_router(ref: str, db: DB):
 
 
 @app.post("/routers/{ref}/gateway")
-def set_router_gateway(ref: str, payload: RouterGatewayIn, db: DB):
+def set_router_gateway(ref: str, payload: RouterGatewayIn, _: CurrentUser, db: DB):
     router = require_by_ref(db, Router, ref, "router")
     network = require_by_ref(db, Network, payload.external_network, "network")
     if not network.external:
@@ -902,7 +1065,7 @@ def set_router_gateway(ref: str, payload: RouterGatewayIn, db: DB):
 
 
 @app.post("/routers/{ref}/interfaces", status_code=201)
-def add_router_interface(ref: str, payload: RouterInterfaceIn, db: DB):
+def add_router_interface(ref: str, payload: RouterInterfaceIn, _: CurrentUser, db: DB):
     router = require_by_ref(db, Router, ref, "router")
     subnet = require_by_ref(db, Subnet, payload.subnet, "subnet")
     network = db.get(Network, subnet.network_id)
@@ -924,11 +1087,18 @@ def add_router_interface(ref: str, payload: RouterInterfaceIn, db: DB):
     db.add(iface)
     db.commit()
     db.refresh(iface)
+    # Add OVN static route for Nova metadata (169.254.169.254 → host)
+    # Requires PROVIDER_HOST_IP to be set so OVN knows the nexthop.
+    # On the host, iptables redirects :80 to metadata-proxy (default :8776).
+    if PROVIDER_HOST_IP_RAW:
+        ovn("--may-exist", "lr-route-add", router.name,
+            f"{METADATA_LINK_LOCAL}/32", PROVIDER_HOST_IP_RAW, check=False)
+        print(f"metadata route: {METADATA_LINK_LOCAL}/32 → {PROVIDER_HOST_IP_RAW} on {router.name}", flush=True)
     return obj_to_dict(iface)
 
 
 @app.delete("/routers/{ref}/interfaces/{subnet_ref}")
-def remove_router_interface(ref: str, subnet_ref: str, db: DB):
+def remove_router_interface(ref: str, subnet_ref: str, _: CurrentUser, db: DB):
     router = require_by_ref(db, Router, ref, "router")
     subnet = require_by_ref(db, Subnet, subnet_ref, "subnet")
     iface = db.scalar(select(RouterInterface).where(RouterInterface.router_id == router.id, RouterInterface.subnet_id == subnet.id))
@@ -953,8 +1123,8 @@ def create_port(payload: PortIn, db: DB):
     port_mac = mac()
     logical_switch_name = network.name
     logical_port_name = payload.name
-    for group_id in payload.security_group_ids:
-        require_by_ref(db, SecurityGroup, group_id, "security-group")
+    security_group_ids = payload.security_group_ids or ["default"]
+    groups = [require_by_ref(db, SecurityGroup, group_id, "security-group") for group_id in security_group_ids]
     port = Port(
         name=payload.name,
         network_id=network.id,
@@ -966,7 +1136,8 @@ def create_port(payload: PortIn, db: DB):
         logical_port_name=logical_port_name,
         device_id=payload.device_id,
         device_owner=payload.device_owner,
-        security_group_ids=format_id_list(payload.security_group_ids),
+        security_group_ids=format_id_list([group.id for group in groups]),
+        port_security_enabled=payload.port_security_enabled,
     )
     ovn("--may-exist", "lsp-add", network.name, port.name)
     ovn("set", "logical_switch_port", port.name, "external_ids:mini-openstack-lab=true")
@@ -985,17 +1156,17 @@ def create_port(payload: PortIn, db: DB):
 
 
 @app.get("/ports")
-def list_ports(db: DB):
+def list_ports(_: CurrentUser, db: DB):
     return {"items": [port_to_dict(db, p) for p in db.scalars(select(Port).order_by(Port.created_at)).all()]}
 
 
 @app.get("/ports/{ref}")
-def show_port(ref: str, db: DB):
+def show_port(ref: str, _: CurrentUser, db: DB):
     return port_to_dict(db, require_by_ref(db, Port, ref, "port"))
 
 
 @app.post("/ports/{ref}/security-groups")
-def set_port_security_groups(ref: str, payload: PortSecurityGroupsIn, db: DB):
+def set_port_security_groups(ref: str, payload: PortSecurityGroupsIn, _: CurrentUser, db: DB):
     port = require_by_ref(db, Port, ref, "port")
     groups = [require_by_ref(db, SecurityGroup, item, "security-group") for item in payload.security_group_ids]
     port.security_group_ids = format_id_list([group.id for group in groups])
@@ -1005,9 +1176,61 @@ def set_port_security_groups(ref: str, payload: PortSecurityGroupsIn, db: DB):
     return port_to_dict(db, port)
 
 
-@app.delete("/ports/{ref}")
-def delete_port(ref: str, db: DB):
+@app.post("/ports/{ref}/security-groups/clear")
+def clear_port_security_groups(ref: str, _: CurrentUser, db: DB):
     port = require_by_ref(db, Port, ref, "port")
+    port.security_group_ids = None
+    db.commit()
+    db.refresh(port)
+    apply_security_groups(db, port)
+    return port_to_dict(db, port)
+
+
+@app.post("/ports/{ref}/security/enable")
+def enable_port_security(ref: str, db: DB):
+    port = require_by_ref(db, Port, ref, "port")
+    port.port_security_enabled = True
+    if not parse_id_list(port.security_group_ids):
+        default_group = get_by_ref(db, SecurityGroup, "default")
+        if default_group:
+            port.security_group_ids = format_id_list([default_group.id])
+    db.commit()
+    db.refresh(port)
+    apply_security_groups(db, port)
+    return port_to_dict(db, port)
+
+
+@app.post("/ports/{ref}/security/disable")
+def disable_port_security(ref: str, db: DB):
+    port = require_by_ref(db, Port, ref, "port")
+    port.port_security_enabled = False
+    db.commit()
+    db.refresh(port)
+    apply_security_groups(db, port)
+    return port_to_dict(db, port)
+
+
+@app.get("/ports/{ref}/ovn")
+def port_ovn_show(ref: str, db: DB):
+    port = require_by_ref(db, Port, ref, "port")
+    groups = []
+    for group_id in parse_id_list(port.security_group_ids):
+        group = db.get(SecurityGroup, group_id)
+        if group:
+            groups.append({"id": group.id, "name": group.name, "port_group": port_group_name(group.id)})
+    return {
+        "port": port_to_dict(db, port),
+        "logical_port_name": port.logical_port_name,
+        "port_security_enabled": port.port_security_enabled,
+        "security_groups": groups,
+    }
+
+
+@app.delete("/ports/{ref}")
+def delete_port(ref: str, _: CurrentUser, db: DB):
+    port = require_by_ref(db, Port, ref, "port")
+    port.security_group_ids = None
+    apply_security_groups(db, port)
     ovn("--if-exists", "lsp-del", port.name)
     db.delete(port)
     db.commit()
@@ -1015,7 +1238,7 @@ def delete_port(ref: str, db: DB):
 
 
 @app.post("/floating-ips", status_code=201)
-def create_floating_ip(payload: FloatingIPIn, db: DB):
+def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
     if payload.name and get_by_ref(db, FloatingIP, payload.name):
         raise HTTPException(status_code=409, detail="floating-ip already exists")
     external_network = require_by_ref(db, Network, payload.external_network, "network") if payload.external_network else None
@@ -1046,17 +1269,17 @@ def create_floating_ip(payload: FloatingIPIn, db: DB):
 
 
 @app.get("/floating-ips")
-def list_floating_ips(db: DB):
+def list_floating_ips(_: CurrentUser, db: DB):
     return {"items": [obj_to_dict(f) for f in db.scalars(select(FloatingIP).order_by(FloatingIP.created_at)).all()]}
 
 
 @app.get("/floating-ips/{ref}")
-def show_floating_ip(ref: str, db: DB):
+def show_floating_ip(ref: str, _: CurrentUser, db: DB):
     return obj_to_dict(require_floating_ip(db, ref))
 
 
 @app.post("/floating-ips/{ref}/associate")
-def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, db: DB):
+def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, _: CurrentUser, db: DB):
     fip = require_floating_ip(db, ref)
     port = resolve_association_port(db, payload)
     router = find_router_for_fip(db, payload.router)
@@ -1076,7 +1299,7 @@ def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, db: DB):
 
 
 @app.post("/floating-ips/{ref}/disassociate")
-def disassociate_floating_ip(ref: str, db: DB):
+def disassociate_floating_ip(ref: str, _: CurrentUser, db: DB):
     fip = require_floating_ip(db, ref)
     router = db.get(Router, fip.router_id) if fip.router_id else None
     if router and fip.floating_ip:
@@ -1093,7 +1316,7 @@ def disassociate_floating_ip(ref: str, db: DB):
 
 
 @app.delete("/floating-ips/{ref}")
-def delete_floating_ip(ref: str, db: DB):
+def delete_floating_ip(ref: str, _: CurrentUser, db: DB):
     fip = require_floating_ip(db, ref)
     if fip.router_id and fip.floating_ip:
         router = db.get(Router, fip.router_id)
@@ -1105,23 +1328,24 @@ def delete_floating_ip(ref: str, db: DB):
 
 
 @app.post("/security-groups", status_code=201)
-def create_security_group(payload: SecurityGroupIn, db: DB):
+def create_security_group(payload: SecurityGroupIn, current: CurrentUser, db: DB):
     if get_by_ref(db, SecurityGroup, payload.name):
         raise HTTPException(status_code=409, detail="security-group already exists")
-    group = SecurityGroup(name=payload.name, description=payload.description)
+    group = SecurityGroup(name=payload.name, description=payload.description, project_id=payload.project_id)
     db.add(group)
     db.commit()
     db.refresh(group)
+    apply_security_group_acls(db, group)
     return obj_to_dict(group)
 
 
 @app.get("/security-groups")
-def list_security_groups(db: DB):
+def list_security_groups(_: CurrentUser, db: DB):
     return {"items": [obj_to_dict(group) for group in db.scalars(select(SecurityGroup).order_by(SecurityGroup.created_at)).all()]}
 
 
 @app.get("/security-groups/{ref}")
-def show_security_group(ref: str, db: DB):
+def show_security_group(ref: str, _: CurrentUser, db: DB):
     group = require_by_ref(db, SecurityGroup, ref, "security-group")
     data = obj_to_dict(group)
     data["rules"] = [obj_to_dict(rule) for rule in db.scalars(select(SecurityGroupRule).where(SecurityGroupRule.security_group_id == group.id)).all()]
@@ -1129,17 +1353,21 @@ def show_security_group(ref: str, db: DB):
 
 
 @app.delete("/security-groups/{ref}")
-def delete_security_group(ref: str, db: DB):
+def delete_security_group(ref: str, _: CurrentUser, db: DB):
     group = require_by_ref(db, SecurityGroup, ref, "security-group")
+    in_use = [p.name for p in db.scalars(select(Port).where(Port.security_group_ids.is_not(None))).all() if group.id in parse_id_list(p.security_group_ids)]
+    if in_use:
+        raise HTTPException(status_code=409, detail=f"security-group is still attached to ports: {', '.join(in_use)}")
     for rule in db.scalars(select(SecurityGroupRule).where(SecurityGroupRule.security_group_id == group.id)).all():
         db.delete(rule)
+    ovn("--if-exists", "pg-del", port_group_name(group.id), check=False)
     db.delete(group)
     db.commit()
     return {"status": "deleted", "id": group.id, "name": group.name}
 
 
 @app.post("/security-groups/{ref}/rules", status_code=201)
-def create_security_group_rule(ref: str, payload: SecurityGroupRuleIn, db: DB):
+def create_security_group_rule(ref: str, payload: SecurityGroupRuleIn, _: CurrentUser, db: DB):
     group = require_by_ref(db, SecurityGroup, ref, "security-group")
     if payload.direction not in {"ingress", "egress"}:
         raise HTTPException(status_code=400, detail="direction must be ingress or egress")
@@ -1153,15 +1381,57 @@ def create_security_group_rule(ref: str, payload: SecurityGroupRuleIn, db: DB):
         port_min=str(payload.port_min) if payload.port_min is not None else None,
         port_max=str(payload.port_max or payload.port_min) if payload.port_min is not None else None,
         remote_ip_prefix=payload.remote_ip_prefix,
+        remote_group_id=payload.remote_group_id,
         action=payload.action,
     )
     db.add(rule)
+    group.updated_at = now()
     db.commit()
     db.refresh(rule)
-    for port in db.scalars(select(Port).where(Port.security_group_ids.is_not(None))).all():
-        if group.id in parse_id_list(port.security_group_ids):
-            apply_security_groups(db, port)
+    apply_security_group_acls(db, group)
     return obj_to_dict(rule)
+
+
+@app.get("/security-groups/{ref}/rules")
+def list_security_group_rules(ref: str, _: CurrentUser, db: DB):
+    group = require_by_ref(db, SecurityGroup, ref, "security-group")
+    return {"items": [obj_to_dict(rule) for rule in db.scalars(select(SecurityGroupRule).where(SecurityGroupRule.security_group_id == group.id).order_by(SecurityGroupRule.created_at)).all()]}
+
+
+@app.delete("/security-group-rules/{rule_id}")
+def delete_security_group_rule(rule_id: str, _: CurrentUser, db: DB):
+    rule = require_by_ref(db, SecurityGroupRule, rule_id, "security-group-rule")
+    group = db.get(SecurityGroup, rule.security_group_id)
+    db.delete(rule)
+    if group:
+        group.updated_at = now()
+    db.commit()
+    if group:
+        apply_security_group_acls(db, group)
+    return {"status": "deleted", "id": rule_id}
+
+
+@app.get("/security-groups/{ref}/ovn")
+def security_group_ovn_show(ref: str, db: DB):
+    group = require_by_ref(db, SecurityGroup, ref, "security-group")
+    pg = ensure_security_group_port_group(group)
+    members = []
+    for port in db.scalars(select(Port).where(Port.security_group_ids.is_not(None)).order_by(Port.created_at)).all():
+        if group.id in parse_id_list(port.security_group_ids) and port.port_security_enabled:
+            members.append(port.logical_port_name or port.name)
+    rules = db.scalars(select(SecurityGroupRule).where(SecurityGroupRule.security_group_id == group.id).order_by(SecurityGroupRule.created_at)).all()
+    translated = [
+        {
+            "rule_id": rule.id,
+            "direction": "to-lport" if rule.direction == "ingress" else "from-lport",
+            "priority": acl_priority(rule),
+            "match": acl_match(group.id, rule),
+            "action": "allow-related" if rule.action == "allow" else rule.action,
+        }
+        for rule in rules
+    ]
+    translated.append({"rule_id": "default-drop-ingress", "direction": "to-lport", "priority": "1001", "match": f"outport == @{pg} && ip4", "action": "drop"})
+    return {"security_group": obj_to_dict(group), "port_group": pg, "member_ports": members, "translated_rules": translated}
 
 
 @app.get("/ovn/show")

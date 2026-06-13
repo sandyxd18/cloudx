@@ -13,6 +13,8 @@ API = os.getenv("COMPUTE_API_URL", "http://localhost:8003").rstrip("/")
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 app = typer.Typer(help="CLI for mini OpenStack lab compute-api. Example: compute server create vm1 --image ubuntu --flavor small --network private-net", context_settings=CONTEXT_SETTINGS)
 server_app = typer.Typer(help="Manage Nova-like libvirt servers.", context_settings=CONTEXT_SETTINGS)
+server_snapshot_app = typer.Typer(help="Manage server snapshots.", context_settings=CONTEXT_SETTINGS)
+user_data_app = typer.Typer(help="Manage server cloud-init user-data.", context_settings=CONTEXT_SETTINGS)
 flavor_app = typer.Typer(help="Manage compute flavors.", context_settings=CONTEXT_SETTINGS)
 keypair_app = typer.Typer(help="Manage Nova-like keypairs.", context_settings=CONTEXT_SETTINGS)
 host_app = typer.Typer(help="Inspect compute host readiness.", context_settings=CONTEXT_SETTINGS)
@@ -36,10 +38,13 @@ def request(method, path, **kwargs):
 @server_app.command("create")
 def create(
     name: str,
-    image: str = typer.Option(..., help="Image name or ID."),
+    image: str | None = typer.Option(None, help="Image name or ID. Creates an automatic root volume."),
+    boot_volume: str | None = typer.Option(None, "--boot-volume", help="Existing bootable volume name or ID."),
     flavor: str = typer.Option(..., help="Flavor label, for example small."),
-    network: str = typer.Option(..., help="Network name or ID."),
+    network: str = typer.Option(..., help="Primary network name or ID."),
+    extra_network: list[str] = typer.Option([], "--network-extra", help="Additional network name or ID."),
     key_name: str | None = typer.Option(None, "--key-name", help="Optional compute keypair name."),
+    security_group: list[str] = typer.Option([], "--security-group", help="Security group name or ID. Defaults to default."),
     backend: str | None = typer.Option(None, "--backend", help="Compatibility option; only libvirt is supported."),
 ):
     if backend == "simulator":
@@ -50,7 +55,17 @@ def create(
         request(
             "POST",
             "/servers",
-            json={"name": name, "image": image, "flavor": flavor, "network": network, "key_name": key_name, "backend": backend},
+            json={
+                "name": name,
+                "image": image,
+                "boot_volume": boot_volume,
+                "flavor": flavor,
+                "network": network,
+                "networks": extra_network,
+                "key_name": key_name,
+                "security_groups": security_group,
+                "backend": backend,
+            },
         )
     )
 
@@ -81,8 +96,8 @@ def reboot(ref: str):
 
 
 @server_app.command("delete")
-def delete(ref: str):
-    emit(request("DELETE", f"/servers/{ref}"))
+def delete(ref: str, keep_root_volume: bool = typer.Option(False, "--keep-root-volume")):
+    emit(request("DELETE", f"/servers/{ref}", params={"keep_root_volume": keep_root_volume}))
 
 
 @server_app.command("console")
@@ -118,14 +133,34 @@ def metadata(ref: str):
     emit(request("GET", f"/servers/{ref}/metadata"))
 
 
-@server_app.command("user-data")
-def user_data(ref: str):
+@server_app.command("add-port")
+def add_port(ref: str, port: str):
+    emit(request("POST", f"/servers/{ref}/ports", json={"port": port}))
+
+
+@server_app.command("remove-port")
+def remove_port(ref: str, port: str):
+    emit(request("DELETE", f"/servers/{ref}/ports/{port}"))
+
+
+@server_snapshot_app.command("create")
+def server_snapshot_create(ref: str, name: str):
+    emit(request("POST", f"/servers/{ref}/snapshots", json={"name": name}))
+
+
+@user_data_app.command("show")
+def user_data_show(ref: str):
     data = request("GET", f"/servers/{ref}/user-data")
     typer.echo(data["user_data"], nl=False)
 
 
+@user_data_app.command("set")
+def user_data_set(ref: str, file: Path = typer.Option(..., "--file", exists=True, help="Path to cloud-init user-data YAML.")):
+    emit(request("PUT", f"/servers/{ref}/user-data", json={"user_data": file.read_text()}))
+
+
 @server_app.command("set-user-data")
-def set_user_data(ref: str, file: Path = typer.Option(..., "--file", exists=True, help="Path to cloud-init user-data YAML.")):
+def set_user_data_legacy(ref: str, file: Path = typer.Option(..., "--file", exists=True, help="Path to cloud-init user-data YAML.")):
     emit(request("PUT", f"/servers/{ref}/user-data", json={"user_data": file.read_text()}))
 
 
@@ -215,6 +250,13 @@ def host_check():
     emit(request("GET", "/host/check"))
 
 
+@host_app.command("show")
+def host_show():
+    emit(request("GET", "/host"))
+
+
+server_app.add_typer(user_data_app, name="user-data")
+server_app.add_typer(server_snapshot_app, name="snapshot")
 app.add_typer(server_app, name="server")
 app.add_typer(flavor_app, name="flavor")
 app.add_typer(keypair_app, name="keypair")

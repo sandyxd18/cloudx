@@ -245,12 +245,29 @@ def test_compute_server_create_flow_mocked_worker(monkeypatch, tmp_path: Path):
         assert payload["device_owner"] == "compute:nova-like"
         posted_ports.append(payload["name"])
         return {
-            "id": "port-id",
+            "id": f"port-id-{len(posted_ports)}",
             "name": payload["name"],
             "mac_address": "02:00:00:00:00:01",
             "fixed_ip": "10.10.0.2",
             "logical_port_name": payload["name"],
         }
+
+    created_roots = []
+
+    def fake_block_post(path: str, payload: dict):
+        if path == "/internal/volumes":
+            created_roots.append(payload)
+            return {
+                "id": f"root-vol-{len(created_roots)}",
+                "name": payload["name"],
+                "path": f"/volumes/root-vol-{len(created_roots)}.qcow2",
+                "bootable": True,
+                "status": "available",
+                "image_id": payload.get("image_id"),
+            }
+        if path.endswith("/attach-server"):
+            return {"status": "in-use", "target_device": payload.get("target_device")}
+        raise AssertionError(path)
 
     captured = {}
 
@@ -263,6 +280,9 @@ def test_compute_server_create_flow_mocked_worker(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(compute_main, "api_get", fake_get)
     monkeypatch.setattr(compute_main, "api_post", fake_post)
+    monkeypatch.setattr(compute_main, "block_post", fake_block_post)
+    deleted_volumes = []
+    monkeypatch.setattr(compute_main, "block_delete", lambda path: deleted_volumes.append(path))
     monkeypatch.setattr(compute_main, "worker_post", fake_worker)
     monkeypatch.setattr(compute_main, "worker_delete", lambda path, payload: {"status": "deleted"})
     monkeypatch.setattr(compute_main, "api_delete", lambda url, payload=None: None)
@@ -275,15 +295,21 @@ def test_compute_server_create_flow_mocked_worker(monkeypatch, tmp_path: Path):
     assert server["backend"] == "libvirt"
     assert server["flavor_name"] == "tiny"
     assert server["vcpus"] == 1
+    assert server["root_volume_id"] == "root-vol-1"
+    assert server["boot_source"] == "image"
     assert captured["path"].endswith("/spawn")
+    assert captured["payload"]["root_volume"]["path"] == "/volumes/root-vol-1.qcow2"
     assert isinstance(captured["payload"]["created_at"], str)
 
     deleted = compute_main.delete_server("vm1", db)
     assert deleted["name"] == "vm1"
+    assert deleted["root_volume_deleted"] is True
     assert released_servers == [server["id"]]
+    assert deleted_volumes == ["/volumes/root-vol-1"]
     recreated = compute_main.create_server(compute_main.ServerIn(name="vm1", image="cirros", flavor="tiny", network="private-net"), db)
     assert recreated["status"] == "ACTIVE"
     assert recreated["name"] == "vm1"
+    assert recreated["root_volume_id"] == "root-vol-2"
     assert posted_ports[0].startswith("vm1-")
     assert posted_ports[0].endswith("-port")
     assert posted_ports[1].startswith("vm1-")
@@ -322,6 +348,7 @@ def test_block_store_detach_server_volumes(monkeypatch, tmp_path: Path):
     refreshed = block_main.require_volume(db, "vol1")
     assert refreshed.status == "available"
     assert refreshed.attached_to_server_id is None
+    assert refreshed.target_device is None
 
     refreshed.status = "in-use"
     refreshed.attached_to_server_id = "deleted-server-id"
@@ -329,6 +356,37 @@ def test_block_store_detach_server_volumes(monkeypatch, tmp_path: Path):
     forced = block_main.force_detach_volume("vol1", db)
     assert forced["status"] == "available"
     assert forced["attached_to_server_id"] is None
+    db.close()
+
+
+def test_block_store_snapshot_and_volume_from_snapshot(monkeypatch, tmp_path: Path):
+    db_path = tmp_path / "block-snap.sqlite"
+    volume_root = tmp_path / "volumes"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("VOLUME_STORE_PATH", str(volume_root))
+    monkeypatch.setenv("SNAPSHOT_STORE_PATH", str(volume_root / "snapshots"))
+    import services.block_store.app.main as block_main
+
+    block_main = importlib.reload(block_main)
+    block_main.Base.metadata.create_all(bind=block_main.engine)
+    block_main.VOLUME_STORE_PATH.mkdir(parents=True, exist_ok=True)
+    block_main.SNAPSHOT_STORE_PATH.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(block_main, "qemu_img_available", lambda: False)
+    db = block_main.SessionLocal()
+    volume_path = volume_root / "vol-id.qcow2"
+    volume_path.write_bytes(b"volume-bytes")
+    volume = block_main.Volume(id="vol-id", name="vol1", size_gb=1, status="available", path=str(volume_path), bootable=True)
+    db.add(volume)
+    db.commit()
+
+    snap = block_main.create_volume_snapshot("vol1", block_main.SnapshotIn(name="snap1"), db)
+    assert snap["name"] == "snap1"
+    assert Path(snap["path"]).read_bytes() == b"volume-bytes"
+
+    created = block_main.create_volume(block_main.VolumeIn(name="vol2", size_gb=1, snapshot="snap1"), db)
+    assert created["snapshot_id"] == snap["id"]
+    assert created["source_type"] == "snapshot"
+    assert Path(created["path"]).read_bytes() == b"volume-bytes"
     db.close()
 
 
@@ -361,7 +419,11 @@ def test_cli_short_help(command):
         ["compute", "server", "set-user-data", "-h"],
         ["compute", "server", "logs", "-h"],
         ["compute", "server", "ssh-info", "-h"],
+        ["compute", "server", "snapshot", "create", "-h"],
+        ["compute", "server", "add-port", "-h"],
+        ["compute", "server", "remove-port", "-h"],
         ["compute", "host", "check", "-h"],
+        ["compute", "host", "show", "-h"],
         ["compute", "flavor", "create", "-h"],
         ["compute", "flavor", "list", "-h"],
     ],
@@ -387,6 +449,22 @@ def test_compute_cli_new_help(command):
     ],
 )
 def test_networking_cli_new_help(command):
+    script = Path(__file__).resolve().parents[1] / "cli" / command[0]
+    result = subprocess.run([sys.executable, str(script), *command[1:]], text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert "Usage" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["block-store", "volume", "create", "-h"],
+        ["block-store", "volume", "show", "-h"],
+        ["block-store", "snapshot", "create", "-h"],
+        ["block-store", "snapshot", "list", "-h"],
+    ],
+)
+def test_block_store_cli_new_help(command):
     script = Path(__file__).resolve().parents[1] / "cli" / command[0]
     result = subprocess.run([sys.executable, str(script), *command[1:]], text=True, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
@@ -460,6 +538,23 @@ def test_metadata_service_lookup_by_instance_id(monkeypatch):
     assert captured["params"] == {"instance_id": "server-id"}
     assert metadata_service.public_keys_index(metadata) == "0=mykey\n"
     assert metadata_service.first_public_key(metadata) == "ssh-rsa AAAATEST\n"
+    assert metadata_service.default_user_data({}) == "#cloud-config\npackage_update: false\n"
+
+
+def test_metadata_service_network_data_format():
+    from services.metadata.app import metadata_service
+
+    payload = metadata_service.network_data_json({
+        "port_id": "port-id",
+        "fixed_ip": "10.10.0.5",
+        "mac_address": "02:00:00:00:00:05",
+        "network_id": "network-id",
+        "network": {"cidr": "10.10.0.0/24", "gateway_ip": "10.10.0.1", "dns_nameservers": ["1.1.1.1"]},
+    })
+    assert payload["links"][0]["id"] == "port-id"
+    assert payload["networks"][0]["netmask"] == "255.255.255.0"
+    assert payload["networks"][0]["routes"][0]["gateway"] == "10.10.0.1"
+    assert payload["services"] == [{"type": "dns", "address": "1.1.1.1"}]
 
 
 def test_networking_ovn_command_builders():
@@ -487,10 +582,14 @@ def test_networking_ovn_command_builders():
         port_max="22",
         remote_ip_prefix="0.0.0.0/0",
     )
-    match = net_main.acl_match("vm1-port", rule)
-    assert 'outport == "vm1-port"' in match
+    match = net_main.acl_match("sg-id", rule)
+    assert f"outport == @{net_main.port_group_name('sg-id')}" in match
     assert "tcp.dst == 22" in match
     assert "ip4.src == 0.0.0.0/0" in match
+    assert net_main.acl_priority(rule) == "2002"
+
+    egress = net_main.SecurityGroupRule(security_group_id="sg-id", direction="egress", protocol="any", remote_ip_prefix="0.0.0.0/0")
+    assert f"inport == @{net_main.port_group_name('sg-id')}" in net_main.acl_match("sg-id", egress)
 
     localnet = net_main.localnet_commands("public-net", "physnet1")
     assert ["lsp-set-type", "public-net-localnet", "localnet"] in localnet

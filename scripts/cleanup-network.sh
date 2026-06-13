@@ -116,6 +116,11 @@ if has_cmd docker && docker compose ps ovn-nb-db >/dev/null 2>&1; then
   done < <(docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --bare --columns=_uuid find DHCP_Options external_ids:mini-openstack-lab=true 2>/dev/null || true)
 
   while IFS= read -r lr; do
+  while IFS= read -r pg; do
+    [ -z "$pg" ] && continue
+    add_action "docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --if-exists pg-del '$pg'" "OVN security group port group $pg"
+  done < <(docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --bare --columns=name find port_group external_ids:mini-openstack-lab=true 2>/dev/null || true)
+
     [ -z "$lr" ] && continue
     add_action "docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --if-exists lr-del '$lr'" "marked OVN logical router $lr"
   done < <(docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --bare --columns=name find logical_router external_ids:mini-openstack-lab=true 2>/dev/null || true)

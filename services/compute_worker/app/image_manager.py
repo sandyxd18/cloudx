@@ -11,6 +11,13 @@ def cached_image_path(image: dict) -> Path:
     return IMAGE_CACHE_DIR / f"{image['id']}{suffix}"
 
 
+def fetch_image_meta(image_ref: str) -> dict:
+    """Fetch image metadata from image-api by id or name."""
+    response = requests.get(f"{IMAGE_API_URL}/images/{image_ref}", timeout=15)
+    response.raise_for_status()
+    return response.json()
+
+
 def download_image(image: dict) -> Path:
     ensure_dir(IMAGE_CACHE_DIR)
     target = cached_image_path(image)
@@ -35,3 +42,16 @@ def create_overlay(base_image: Path, overlay: Path, disk_gb: int) -> Path:
         run(["qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", str(base_image), str(overlay)])
     run(["qemu-img", "resize", str(overlay), f"{disk_gb}G"])
     return overlay
+
+
+def download_and_prepare_disk(image_ref: str, target: Path) -> Path:
+    """Download image by ref (id or name), convert to standalone qcow2 at target path.
+
+    Used by rebuild and rescue operations.  If target already exists it is overwritten.
+    """
+    image = fetch_image_meta(image_ref)
+    cached = download_image(image)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Convert to standalone qcow2 (breaks backing-file chain if image is an overlay)
+    run(["qemu-img", "convert", "-O", "qcow2", str(cached), str(target)])
+    return target

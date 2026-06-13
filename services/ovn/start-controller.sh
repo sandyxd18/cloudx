@@ -5,6 +5,7 @@ OVN_SB_DB="${OVN_SB_DB:-tcp:ovn-sb-db:6642}"
 OVN_ENCAP_IP="${OVN_ENCAP_IP:-127.0.0.1}"
 PROVIDER_BRIDGE="${PROVIDER_BRIDGE:-br-ex}"
 PROVIDER_PHYSNET="${PROVIDER_PHYSNET:-physnet1}"
+PROVIDER_INTERFACE="${PROVIDER_INTERFACE:-enp0s8}"
 
 mkdir -p /var/run/ovn /var/log/ovn
 
@@ -25,11 +26,14 @@ if [ ! -S /var/run/openvswitch/db.sock ]; then
 fi
 
 # Configure host OVS to connect to OVN SB DB running in container
+# ovn-bridge-mappings: maps physnet → external bridge (br-ex)
+# ovn-bridge-uplinks:  maps physnet → physical interface (required by OVN 24.x to create patch ports)
 ovs-vsctl --timeout=10 set open . \
   external_ids:ovn-remote="$OVN_SB_DB" \
   external_ids:ovn-encap-type=geneve \
   external_ids:ovn-encap-ip="$OVN_ENCAP_IP" \
-  external_ids:ovn-bridge-mappings="${PROVIDER_PHYSNET}:${PROVIDER_BRIDGE}" || true
+  external_ids:ovn-bridge-mappings="${PROVIDER_PHYSNET}:${PROVIDER_BRIDGE}" \
+  external_ids:ovn-bridge-uplinks="${PROVIDER_PHYSNET}:${PROVIDER_INTERFACE}" || true
 
 echo "Host OVS configured: ovn-remote=$OVN_SB_DB, bridge-mappings=${PROVIDER_PHYSNET}:${PROVIDER_BRIDGE}"
 

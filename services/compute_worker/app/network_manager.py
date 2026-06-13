@@ -6,6 +6,10 @@ def tap_name(server_id: str) -> str:
     return f"tap-mini-{short_id(server_id, 6)}"
 
 
+def port_tap_name(server_id: str, port_id: str) -> str:
+    return f"tap-mini-{short_id(server_id, 3)}{short_id(port_id, 3)}"
+
+
 def create_tap(name: str) -> None:
     delete_tap(name)
     created = run(["ip", "tuntap", "add", "dev", name, "mode", "tap"], check=False)

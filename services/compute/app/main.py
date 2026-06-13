@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import os
+import shutil
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -10,9 +11,15 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.encoders import jsonable_encoder
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+try:
+    from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+except ImportError:
+    from auth_middleware import CurrentUser, AdminUser, OptionalAuth
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
@@ -22,6 +29,7 @@ BLOCK_STORE_API_URL = os.getenv("BLOCK_STORE_API_URL", "http://block-store-api:8
 COMPUTE_BACKEND = os.getenv("COMPUTE_BACKEND", "libvirt").lower()
 COMPUTE_WORKER_URL = os.getenv("COMPUTE_WORKER_URL", "http://compute-worker:8010").rstrip("/")
 DEFAULT_VM_USER = os.getenv("DEFAULT_VM_USER", "ubuntu")
+NOVNC_BASE_URL = os.getenv("NOVNC_BASE_URL", "http://localhost:6080/vnc.html")
 ONLY_BACKEND = "libvirt"
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -45,7 +53,11 @@ class Server(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     image_id: Mapped[str] = mapped_column(String)
+    root_volume_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    boot_source: Mapped[str | None] = mapped_column(String, nullable=True)
+    bootable: Mapped[bool] = mapped_column(Boolean, default=True)
     flavor: Mapped[str] = mapped_column(String)
     flavor_name: Mapped[str | None] = mapped_column(String, nullable=True)
     vcpus: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -53,10 +65,13 @@ class Server(Base):
     disk_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
     network_id: Mapped[str] = mapped_column(String)
     port_id: Mapped[str] = mapped_column(String)
+    extra_port_ids: Mapped[str | None] = mapped_column(String, nullable=True)
     hostname: Mapped[str | None] = mapped_column(String, nullable=True)
     user_data: Mapped[str | None] = mapped_column(String, nullable=True)
+    vendor_data: Mapped[str | None] = mapped_column(String, nullable=True)
     keypair_name: Mapped[str | None] = mapped_column(String, nullable=True)
     public_key_snapshot: Mapped[str | None] = mapped_column(String, nullable=True)
+    server_group_id: Mapped[str | None] = mapped_column(String, nullable=True)
     backend: Mapped[str] = mapped_column(String, default=ONLY_BACKEND)
     host: Mapped[str | None] = mapped_column(String, nullable=True)
     instance_dir: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -86,6 +101,16 @@ class Flavor(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class ServerGroup(Base):
+    __tablename__ = "compute_server_groups"
+    id:         Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:       Mapped[str] = mapped_column(String, index=True)
+    policy:     Mapped[str] = mapped_column(String, default="anti-affinity")  # anti-affinity | affinity | soft-anti-affinity
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    members:    Mapped[str | None] = mapped_column(String, nullable=True)  # comma-separated server IDs
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class Keypair(Base):
     __tablename__ = "compute_keypairs"
 
@@ -98,12 +123,42 @@ class Keypair(Base):
 
 class ServerIn(BaseModel):
     name: str
-    image: str
+    image: str | None = None
+    boot_volume: str | None = None
     flavor: str
     network: str
+    networks: list[str] = Field(default_factory=list)
     key_name: str | None = None
     backend: str | None = None
     user_data: str | None = None
+    security_groups: list[str] = Field(default_factory=list)
+    server_group: str | None = None   # server group id or name
+    volume_size: int | None = None    # root volume size override (GB)
+
+
+class ServerResizeIn(BaseModel):
+    flavor: str
+
+
+class ServerRebuildIn(BaseModel):
+    image: str
+
+
+class ServerRescueIn(BaseModel):
+    image: str | None = None
+
+
+class ServerPasswordIn(BaseModel):
+    password: str
+
+
+class ServerRebootIn(BaseModel):
+    type: str = "soft"  # soft | hard
+
+
+class ServerGroupIn(BaseModel):
+    name: str
+    policy: str = "anti-affinity"
 
 
 class ServerUserDataIn(BaseModel):
@@ -133,6 +188,15 @@ class VolumeAttachIn(BaseModel):
     volume_id: str
     volume_name: str | None = None
     path: str
+    target_dev: str | None = None
+
+
+class ServerSnapshotIn(BaseModel):
+    name: str
+
+
+class ServerPortIn(BaseModel):
+    port: str
 
 
 def get_db():
@@ -144,7 +208,14 @@ def get_db():
 
 
 DB = Annotated[Session, Depends(get_db)]
-app = FastAPI(title="mini OpenStack lab compute-api", version="0.2.0")
+app = FastAPI(title="cloudx compute-api", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
@@ -178,6 +249,12 @@ def ensure_columns():
                 "flavor_name",
                 "hostname",
                 "user_data",
+                "vendor_data",
+                "root_volume_id",
+                "boot_source",
+                "extra_port_ids",
+                "project_id",
+                "server_group_id",
             )
             for column in string_columns:
                 if column not in columns:
@@ -186,6 +263,8 @@ def ensure_columns():
             for column in ("vcpus", "ram_mb", "disk_gb"):
                 if column not in columns:
                     conn.execute(text(f"ALTER TABLE compute_servers ADD COLUMN {column} INTEGER"))
+            if "bootable" not in columns:
+                conn.execute(text("ALTER TABLE compute_servers ADD COLUMN bootable BOOLEAN DEFAULT TRUE"))
             conn.execute(text("UPDATE compute_servers SET backend = 'libvirt' WHERE backend IS NULL OR backend = 'simulator'"))
             conn.execute(text("UPDATE compute_servers SET flavor_name = flavor WHERE flavor_name IS NULL"))
 
@@ -315,7 +394,7 @@ def api_get(url: str):
 
 def api_post(url: str, payload: dict):
     try:
-        response = requests.post(url, json=payload, timeout=8)
+        response = requests.post(url, json=payload, timeout=300)
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if response.status_code >= 400:
@@ -367,6 +446,54 @@ def release_server_volumes(server_id: str) -> dict | None:
     return response.json()
 
 
+def block_get(path: str) -> dict:
+    return api_get(f"{BLOCK_STORE_API_URL}{path}")
+
+
+def block_post(path: str, payload: dict) -> dict:
+    return api_post(f"{BLOCK_STORE_API_URL}{path}", payload)
+
+
+def block_delete(path: str) -> None:
+    api_delete(f"{BLOCK_STORE_API_URL}{path}")
+
+
+def comma_list(value: str | None) -> list[str]:
+    return [item for item in (value or "").split(",") if item]
+
+
+def format_comma_list(values: list[str]) -> str | None:
+    return ",".join(dict.fromkeys([item for item in values if item])) or None
+
+
+def placement_inventory(db: Session) -> dict:
+    active = db.scalars(select(Server).where(Server.status.in_({"BUILD", "ACTIVE", "SHUTOFF", "REBOOT"}))).all()
+    default_disk = shutil.disk_usage("/").total // (1024 ** 3)
+    total_vcpu = int(os.getenv("PLACEMENT_TOTAL_VCPU", str(os.cpu_count() or 1)))
+    total_ram = int(os.getenv("PLACEMENT_TOTAL_RAM_MB", "8192"))
+    total_disk = int(os.getenv("PLACEMENT_TOTAL_DISK_GB", str(default_disk)))
+    used_vcpu = sum(server.vcpus or 0 for server in active)
+    used_ram = sum(server.ram_mb or 0 for server in active)
+    used_disk = sum(server.disk_gb or 0 for server in active)
+    return {
+        "total_vcpu": total_vcpu,
+        "used_vcpu": used_vcpu,
+        "free_vcpu": max(total_vcpu - used_vcpu, 0),
+        "total_ram_mb": total_ram,
+        "used_ram_mb": used_ram,
+        "free_ram_mb": max(total_ram - used_ram, 0),
+        "total_disk_gb": total_disk,
+        "used_disk_gb": used_disk,
+        "free_disk_gb": max(total_disk - used_disk, 0),
+    }
+
+
+def ensure_capacity(db: Session, flavor: Flavor) -> None:
+    inv = placement_inventory(db)
+    if flavor.vcpus > inv["free_vcpu"] or flavor.ram_mb > inv["free_ram_mb"] or flavor.disk_gb > inv["free_disk_gb"]:
+        raise HTTPException(status_code=409, detail={"message": "Insufficient resources", "inventory": inv})
+
+
 def selected_backend(requested: str | None) -> str:
     backend = (requested or COMPUTE_BACKEND or ONLY_BACKEND).lower()
     if backend == "simulator":
@@ -388,7 +515,7 @@ def flavor_snapshot(flavor: Flavor) -> dict:
     }
 
 
-def server_worker_payload(server: Server, port: dict | None = None) -> dict:
+def server_worker_payload(server: Server, port: dict | None = None, ports: list[dict] | None = None, root_volume: dict | None = None) -> dict:
     payload = obj_to_dict(server)
     payload["flavor_snapshot"] = {
         "name": server.flavor_name or server.flavor,
@@ -398,6 +525,10 @@ def server_worker_payload(server: Server, port: dict | None = None) -> dict:
     }
     if port:
         payload["port"] = port
+    if ports:
+        payload["ports"] = ports
+    if root_volume:
+        payload["root_volume"] = root_volume
     return jsonable_encoder(payload)
 
 
@@ -427,6 +558,10 @@ def server_metadata_payload(server: Server) -> dict:
     public_keys = {}
     if server.keypair_name and server.public_key_snapshot:
         public_keys[server.keypair_name] = server.public_key_snapshot
+    try:
+        port = api_get(f"{NETWORKING_API_URL}/ports/{server.port_id}")
+    except Exception:
+        port = {}
     return {
         "uuid": server.id,
         "hostname": server.hostname or server.name,
@@ -436,9 +571,15 @@ def server_metadata_payload(server: Server) -> dict:
         "devices": [],
         "instance_id": server.id,
         "local_hostname": server.hostname or server.name,
+        "instance_type": server.flavor_name or server.flavor,
         "port_id": server.port_id,
         "fixed_ip": server.ip_address,
-        "user_data": server.user_data or default_user_data(server),
+        "network_id": server.network_id,
+        "mac_address": server.mac_address,
+        "created_at": server.created_at.isoformat() if server.created_at else None,
+        "user_data": server.user_data,
+        "vendor_data": server.vendor_data or "{}",
+        "network": port,
     }
 
 
@@ -448,12 +589,18 @@ def health():
 
 
 @app.get("/host/check")
-def host_check():
+def host_check(_: CurrentUser):
     return api_get(f"{COMPUTE_WORKER_URL}/health")
 
 
+@app.get("/host")
+def host_show(_: CurrentUser, db: DB):
+    worker = api_get(f"{COMPUTE_WORKER_URL}/health")
+    return {"host": "single-node", "worker": worker, "placement": placement_inventory(db)}
+
+
 @app.post("/flavors", status_code=201)
-def create_flavor(payload: FlavorIn, db: DB):
+def create_flavor(payload: FlavorIn, _: CurrentUser, db: DB):
     if get_flavor(db, payload.name):
         raise HTTPException(status_code=409, detail="flavor already exists")
     flavor = Flavor(**payload.model_dump())
@@ -464,84 +611,201 @@ def create_flavor(payload: FlavorIn, db: DB):
 
 
 @app.get("/flavors")
-def list_flavors(db: DB):
+def list_flavors(_: CurrentUser, db: DB):
     return {"items": [obj_to_dict(f) for f in db.scalars(select(Flavor).order_by(Flavor.created_at)).all()]}
 
 
 @app.get("/flavors/{ref}")
-def show_flavor(ref: str, db: DB):
+def show_flavor(ref: str, _: CurrentUser, db: DB):
     return obj_to_dict(require_flavor(db, ref))
 
 
 @app.delete("/flavors/{ref}")
-def delete_flavor(ref: str, db: DB):
+def delete_flavor(ref: str, _: AdminUser, db: DB):
     flavor = require_flavor(db, ref)
     db.delete(flavor)
     db.commit()
     return {"status": "deleted", "id": flavor.id, "name": flavor.name}
 
 
+# ── Server Groups ─────────────────────────────────────────────────────────────
+@app.post("/server-groups", status_code=201)
+def create_server_group(payload: ServerGroupIn, current: CurrentUser, db: DB):
+    sg = ServerGroup(
+        name=payload.name,
+        policy=payload.policy,
+        project_id=current["project_id"],
+    )
+    db.add(sg)
+    db.commit()
+    db.refresh(sg)
+    return {**obj_to_dict(sg), "members": []}
+
+
+@app.get("/server-groups")
+def list_server_groups(current: CurrentUser, db: DB):
+    q = select(ServerGroup).where(ServerGroup.project_id == current["project_id"])
+    groups = db.scalars(q).all()
+    return {"items": [{**obj_to_dict(g), "members": [m for m in (g.members or "").split(",") if m]} for g in groups]}
+
+
+@app.get("/server-groups/{ref}")
+def show_server_group(ref: str, current: CurrentUser, db: DB):
+    sg = db.get(ServerGroup, ref) or db.scalar(
+        select(ServerGroup).where(ServerGroup.name == ref, ServerGroup.project_id == current["project_id"]))
+    if not sg:
+        raise HTTPException(status_code=404, detail="server group not found")
+    return {**obj_to_dict(sg), "members": [m for m in (sg.members or "").split(",") if m]}
+
+
+@app.delete("/server-groups/{ref}", status_code=204)
+def delete_server_group(ref: str, current: CurrentUser, db: DB):
+    sg = db.get(ServerGroup, ref) or db.scalar(
+        select(ServerGroup).where(ServerGroup.name == ref, ServerGroup.project_id == current["project_id"]))
+    if not sg:
+        raise HTTPException(status_code=404, detail="server group not found")
+    db.delete(sg)
+    db.commit()
+
+
 @app.post("/servers", status_code=201)
-def create_server(payload: ServerIn, db: DB):
+def create_server(payload: ServerIn, current: CurrentUser, db: DB):
     if get_active_server_by_name(db, payload.name):
         raise HTTPException(status_code=409, detail="server already exists")
+    if bool(payload.image) == bool(payload.boot_volume):
+        raise HTTPException(status_code=400, detail="create server requires exactly one boot source: --image or --boot-volume")
     free_deleted_server_name(db, payload.name)
     backend = selected_backend(payload.backend)
     keypair = require_keypair(db, payload.key_name) if payload.key_name else None
     flavor = require_flavor(db, payload.flavor)
-    image = api_get(f"{IMAGE_API_URL}/images/{payload.image}")
+    ensure_capacity(db, flavor)
+    # Check server group anti-affinity
+    sg_id = None
+    if payload.server_group:
+        sg = db.get(ServerGroup, payload.server_group) or db.scalar(
+            select(ServerGroup).where(ServerGroup.name == payload.server_group,
+                                       ServerGroup.project_id == current["project_id"]))
+        if not sg:
+            raise HTTPException(status_code=404, detail="server group not found")
+        sg_id = sg.id
+        if sg.policy == "anti-affinity":
+            members = [m for m in (sg.members or "").split(",") if m]
+            if len(members) >= 1:
+                raise HTTPException(status_code=409,
+                    detail=f"Server group '{sg.name}' anti-affinity policy violated: {len(members)} member(s) already exist")
     network = api_get(f"{NETWORKING_API_URL}/networks/{payload.network}")
     server_id = new_id()
-    port = api_post(
-        f"{NETWORKING_API_URL}/ports",
-        {
-            "name": server_port_name(payload.name, server_id),
-            "network": network["id"],
-            "device_id": server_id,
-            "device_owner": "compute:nova-like",
-        },
-    )
-    snapshot = flavor_snapshot(flavor)
-    server = Server(
-        id=server_id,
-        name=payload.name,
-        image_id=image["id"],
-        flavor=flavor.name,
-        flavor_name=snapshot["flavor_name"],
-        vcpus=snapshot["vcpus"],
-        ram_mb=snapshot["ram_mb"],
-        disk_gb=snapshot["disk_gb"],
-        network_id=network["id"],
-        port_id=port["id"],
-        hostname=payload.name,
-        user_data=payload.user_data,
-        keypair_name=keypair.name if keypair else None,
-        public_key_snapshot=keypair.public_key if keypair else None,
-        backend=backend,
-        mac_address=port.get("mac_address"),
-        ip_address=port.get("fixed_ip") or port.get("ip_address"),
-        status="BUILD",
-    )
-    db.add(server)
-    db.commit()
-    db.refresh(server)
-    worker_payload = server_worker_payload(server, port)
+    root_volume = None
+    auto_root_volume = False
+    image_id = ""
+    boot_source = "volume"
+    created_ports: list[dict] = []
+    project_id = current["project_id"]
     try:
-        result = worker_post(f"/servers/{server.id}/spawn", worker_payload)
+        if payload.image:
+            image = api_get(f"{IMAGE_API_URL}/images/{payload.image}")
+            image_id = image["id"]
+            root_volume = block_post(
+                "/internal/volumes",
+                {
+                    "name": f"{payload.name}-root-{server_id[:8]}",
+                    "size_gb": flavor.disk_gb,
+                    "image_id": image["id"],
+                    "image_ref": image["id"],
+                    "bootable": True,
+                    "source_type": "image",
+                },
+            )
+            boot_source = "image"
+            auto_root_volume = True
+        else:
+            root_volume = block_get(f"/volumes/{payload.boot_volume}")
+            if not root_volume.get("bootable"):
+                raise HTTPException(status_code=400, detail="boot volume must be bootable=true")
+            if root_volume.get("status") != "available":
+                raise HTTPException(status_code=409, detail=f"boot volume must be available; current status is {root_volume.get('status')}")
+            image_id = root_volume.get("image_id") or ""
+            boot_source = "volume"
+
+        network_refs = [payload.network, *payload.networks]
+        seen_networks = []
+        for item in network_refs:
+            if item and item not in seen_networks:
+                seen_networks.append(item)
+        ports = []
+        for index, network_ref in enumerate(seen_networks):
+            net = network if index == 0 else api_get(f"{NETWORKING_API_URL}/networks/{network_ref}")
+            port = api_post(
+                f"{NETWORKING_API_URL}/ports",
+                {
+                    "name": server_port_name(payload.name, server_id) if index == 0 else f"{payload.name}-{server_id[:8]}-port{index}",
+                    "network": net["id"],
+                    "device_id": server_id,
+                    "device_owner": "compute:nova-like",
+                    "security_group_ids": payload.security_groups,
+                },
+            )
+            ports.append(port)
+            created_ports.append(port)
+        port = ports[0]
+        snapshot = flavor_snapshot(flavor)
+        server = Server(
+            id=server_id,
+            name=payload.name,
+            image_id=image_id,
+            root_volume_id=root_volume["id"],
+            boot_source=boot_source,
+            bootable=True,
+            flavor=flavor.name,
+            flavor_name=snapshot["flavor_name"],
+            vcpus=snapshot["vcpus"],
+            ram_mb=snapshot["ram_mb"],
+            disk_gb=snapshot["disk_gb"],
+            network_id=network["id"],
+            port_id=port["id"],
+            extra_port_ids=format_comma_list([p["id"] for p in ports[1:]]),
+            hostname=payload.name,
+            user_data=payload.user_data,
+            vendor_data="{}",
+            keypair_name=keypair.name if keypair else None,
+            public_key_snapshot=keypair.public_key if keypair else None,
+            backend=backend,
+            mac_address=port.get("mac_address"),
+            ip_address=port.get("fixed_ip") or port.get("ip_address"),
+            status="BUILD",
+        )
+        db.add(server)
+        db.commit()
+        db.refresh(server)
+        result = worker_post(f"/servers/{server.id}/spawn", server_worker_payload(server, port, ports, root_volume))
         update_server_from_worker(server, result)
+        block_post(f"/internal/volumes/{root_volume['id']}/attach-server", {"server_id": server.id, "target_device": "sda"})
         server.status = "ACTIVE"
         server.error_message = None
     except Exception as exc:
-        server.status = "ERROR"
-        server.error_message = str(exc)
+        for created in created_ports:
+            api_delete(f"{NETWORKING_API_URL}/ports/{created['id']}")
+        if auto_root_volume and root_volume:
+            block_delete(f"/volumes/{root_volume['id']}")
+        existing = db.get(Server, server_id)
+        if existing:
+            existing.status = "ERROR"
+            existing.error_message = str(exc)
+            db.commit()
+            db.refresh(existing)
+            return obj_to_dict(existing)
+        raise
     db.commit()
     db.refresh(server)
-    return obj_to_dict(server)
+    return server_to_dict(server)
 
 
 @app.get("/servers")
-def list_servers(db: DB):
-    return {"items": [server_to_dict(s) for s in db.scalars(select(Server).where(Server.status != "DELETED").order_by(Server.created_at)).all()]}
+def list_servers(current: CurrentUser, db: DB):
+    q = select(Server).where(Server.status != "DELETED")
+    if current.get("role") != "admin":
+        q = q.where(Server.project_id == current["project_id"])
+    return {"items": [server_to_dict(s) for s in db.scalars(q.order_by(Server.created_at)).all()]}
 
 
 @app.get("/servers/metadata-lookup")
@@ -560,15 +824,45 @@ def metadata_lookup(
         query = query.where(Server.port_id == port_id)
     else:
         raise HTTPException(status_code=400, detail="instance_id, fixed_ip, or port_id is required")
+    # Order by most recently created to ensure deterministic results when multiple
+    # servers share the same IP (e.g. after repeated lab cleanup/create cycles).
+    query = query.order_by(Server.created_at.desc())
     server = db.scalar(query)
     if not server:
         raise HTTPException(status_code=404, detail="server metadata not found")
     return server_metadata_payload(server)
 
 
+@app.get("/internal/servers/by-instance/{instance_id}")
+def internal_server_by_instance(instance_id: str, db: DB):
+    server = db.scalar(select(Server).where(Server.id == instance_id, Server.status != "DELETED").order_by(Server.created_at.desc()))
+    if not server:
+        raise HTTPException(status_code=404, detail="server metadata not found")
+    return server_metadata_payload(server)
+
+
+@app.get("/internal/servers/by-port/{port_id}")
+def internal_server_by_port(port_id: str, db: DB):
+    server = db.scalar(select(Server).where(Server.port_id == port_id, Server.status != "DELETED").order_by(Server.created_at.desc()))
+    if not server:
+        raise HTTPException(status_code=404, detail="server metadata not found")
+    return server_metadata_payload(server)
+
+
+@app.get("/internal/servers/by-ip/{fixed_ip}")
+def internal_server_by_ip(fixed_ip: str, db: DB):
+    server = db.scalar(select(Server).where(Server.ip_address == fixed_ip, Server.status != "DELETED").order_by(Server.created_at.desc()))
+    if not server:
+        raise HTTPException(status_code=404, detail="server metadata not found")
+    return server_metadata_payload(server)
+
+
 @app.get("/servers/{ref}")
-def show_server(ref: str, db: DB):
-    return server_to_dict(require_server(db, ref))
+def show_server(ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref)
+    if current.get("role") != "admin" and server.project_id and server.project_id != current["project_id"]:
+        raise HTTPException(status_code=403, detail="forbidden")
+    return server_to_dict(server)
 
 
 @app.get("/servers/{ref}/metadata")
@@ -622,12 +916,13 @@ def stop_server(ref: str, db: DB):
 
 
 @app.post("/servers/{ref}/reboot")
-def reboot_server(ref: str, db: DB):
+def reboot_server(ref: str, payload: ServerRebootIn = None, _: CurrentUser = None, db: DB = None):
     server = require_server(db, ref)
     server.status = "REBOOT"
     db.commit()
     try:
-        worker_post(f"/servers/{server.id}/reboot", server_worker_payload(server))
+        rtype = payload.type if payload else "soft"
+        worker_post(f"/servers/{server.id}/reboot", {**server_worker_payload(server), "reboot_type": rtype})
         server.status = "ACTIVE"
         server.error_message = None
     except Exception as exc:
@@ -638,21 +933,202 @@ def reboot_server(ref: str, db: DB):
     return obj_to_dict(server)
 
 
+@app.post("/servers/{ref}/pause")
+def pause_server(ref: str, _: CurrentUser, db: DB):
+    server = require_server(db, ref)
+    try:
+        worker_post(f"/servers/{server.id}/pause", server_worker_payload(server))
+        server.status = "PAUSED"
+        server.error_message = None
+    except Exception as exc:
+        server.status = "ERROR"
+        server.error_message = str(exc)
+    db.commit()
+    db.refresh(server)
+    return obj_to_dict(server)
+
+
+@app.post("/servers/{ref}/resume")
+def resume_server(ref: str, _: CurrentUser, db: DB):
+    server = require_server(db, ref)
+    try:
+        worker_post(f"/servers/{server.id}/resume", server_worker_payload(server))
+        server.status = "ACTIVE"
+        server.error_message = None
+    except Exception as exc:
+        server.status = "ERROR"
+        server.error_message = str(exc)
+    db.commit()
+    db.refresh(server)
+    return obj_to_dict(server)
+
+
+@app.post("/servers/{ref}/suspend")
+def suspend_server(ref: str, _: CurrentUser, db: DB):
+    server = require_server(db, ref)
+    try:
+        worker_post(f"/servers/{server.id}/suspend", server_worker_payload(server))
+        server.status = "SUSPENDED"
+        server.error_message = None
+    except Exception as exc:
+        server.status = "ERROR"
+        server.error_message = str(exc)
+    db.commit()
+    db.refresh(server)
+    return obj_to_dict(server)
+
+
+@app.post("/servers/{ref}/resize")
+def resize_server(ref: str, payload: ServerResizeIn, _: CurrentUser, db: DB):
+    server = require_server(db, ref)
+    flavor = require_flavor(db, payload.flavor)
+    old_flavor = server.flavor_name or server.flavor
+    server.flavor = flavor.id
+    server.flavor_name = flavor.name
+    server.vcpus = flavor.vcpus
+    server.ram_mb = flavor.ram_mb
+    server.disk_gb = flavor.disk_gb
+    db.commit()
+    try:
+        worker_post(f"/servers/{server.id}/resize", {**server_worker_payload(server),
+            "new_vcpus": flavor.vcpus, "new_ram_mb": flavor.ram_mb})
+    except Exception as exc:
+        server.error_message = str(exc)
+        db.commit()
+    db.refresh(server)
+    return {**obj_to_dict(server), "old_flavor": old_flavor, "new_flavor": flavor.name}
+
+
+@app.post("/servers/{ref}/rebuild")
+def rebuild_server(ref: str, payload: ServerRebuildIn, _: CurrentUser, db: DB):
+    server = require_server(db, ref)
+    image = api_get(f"{IMAGE_API_URL}/images/{payload.image}")
+    server.image_id = image["id"]
+    server.status = "REBUILD"
+    db.commit()
+    try:
+        worker_post(f"/servers/{server.id}/rebuild", {**server_worker_payload(server), "image": image})
+        server.status = "ACTIVE"
+        server.error_message = None
+    except Exception as exc:
+        server.status = "ERROR"
+        server.error_message = str(exc)
+    db.commit()
+    db.refresh(server)
+    return obj_to_dict(server)
+
+
+@app.post("/servers/{ref}/rescue")
+def rescue_server(ref: str, payload: ServerRescueIn, _: CurrentUser, db: DB):
+    server = require_server(db, ref)
+    rescue_image_id = server.image_id
+    if payload.image:
+        rescue_img = api_get(f"{IMAGE_API_URL}/images/{payload.image}")
+        rescue_image_id = rescue_img["id"]
+    server.status = "RESCUE"
+    db.commit()
+    try:
+        worker_post(f"/servers/{server.id}/rescue",
+            {**server_worker_payload(server), "rescue_image_id": rescue_image_id})
+    except Exception as exc:
+        server.status = "ERROR"
+        server.error_message = str(exc)
+    db.commit()
+    db.refresh(server)
+    return obj_to_dict(server)
+
+
+@app.post("/servers/{ref}/unrescue")
+def unrescue_server(ref: str, _: CurrentUser, db: DB):
+    server = require_server(db, ref)
+    server.status = "ACTIVE"
+    db.commit()
+    try:
+        worker_post(f"/servers/{server.id}/unrescue", server_worker_payload(server))
+    except Exception as exc:
+        server.error_message = str(exc)
+    db.commit()
+    db.refresh(server)
+    return obj_to_dict(server)
+
+
+@app.post("/servers/{ref}/password")
+def set_server_password(ref: str, payload: ServerPasswordIn, _: CurrentUser, db: DB):
+    server = require_server(db, ref)
+    try:
+        worker_post(f"/servers/{server.id}/password",
+            {**server_worker_payload(server), "password": payload.password})
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"server": server.name, "status": "password injection requested"}
+
+
 @app.delete("/servers/{ref}")
-def delete_server(ref: str, db: DB):
+def delete_server(ref: str, _: CurrentUser, db: DB, keep_root_volume: bool = False):
     server = require_server(db, ref)
     original_name = server.name
+    # Remove from server group if member
+    if server.server_group_id:
+        sg = db.get(ServerGroup, server.server_group_id)
+        if sg:
+            members = [m for m in (sg.members or "").split(",") if m and m != server.id]
+            sg.members = ",".join(members) or None
     try:
         worker_delete(f"/servers/{server.id}", server_worker_payload(server))
         server.error_message = None
     except Exception as exc:
         server.error_message = f"worker cleanup failed: {exc}"
     release_server_volumes(server.id)
-    api_delete(f"{NETWORKING_API_URL}/ports/{server.port_id}")
+    if server.root_volume_id and not keep_root_volume:
+        block_delete(f"/volumes/{server.root_volume_id}")
+    for port_id in [server.port_id, *comma_list(server.extra_port_ids)]:
+        api_delete(f"{NETWORKING_API_URL}/ports/{port_id}")
     server.status = "DELETED"
     server.name = f"{original_name}-deleted-{server.id[:8]}"
     db.commit()
-    return {"status": "deleted", "id": server.id, "name": original_name}
+    return {"status": "deleted", "id": server.id, "name": original_name, "root_volume_deleted": bool(server.root_volume_id and not keep_root_volume)}
+
+
+@app.post("/servers/{ref}/snapshots", status_code=201)
+def create_server_snapshot(ref: str, payload: ServerSnapshotIn, db: DB):
+    server = require_server(db, ref)
+    if not server.root_volume_id:
+        raise HTTPException(status_code=409, detail="server has no root volume")
+    snap = block_post(f"/volumes/{server.root_volume_id}/snapshots", {"name": f"{payload.name}-root"})
+    image = api_post(
+        f"{IMAGE_API_URL}/images/import-path",
+        {"name": payload.name, "path": snap["path"], "disk_format": "qcow2", "container_format": "bare", "visibility": "private"},
+    )
+    return {"server": server.name, "snapshot": snap, "image": image}
+
+
+@app.post("/servers/{ref}/ports")
+def add_server_port(ref: str, payload: ServerPortIn, db: DB):
+    server = require_server(db, ref)
+    if server.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail=f"server must be ACTIVE to add a port; current status is {server.status}")
+    port = api_get(f"{NETWORKING_API_URL}/ports/{payload.port}")
+    if port["id"] in [server.port_id, *comma_list(server.extra_port_ids)]:
+        raise HTTPException(status_code=409, detail="port is already attached to server metadata")
+    result = worker_post(f"/servers/{server.id}/ports/attach", {**server_worker_payload(server), "port": port})
+    server.extra_port_ids = format_comma_list([*comma_list(server.extra_port_ids), port["id"]])
+    db.commit()
+    db.refresh(server)
+    return {"status": "attached", "server_id": server.id, "port_id": port["id"], **result}
+
+
+@app.delete("/servers/{ref}/ports/{port_ref}")
+def remove_server_port(ref: str, port_ref: str, db: DB):
+    server = require_server(db, ref)
+    extra = comma_list(server.extra_port_ids)
+    port = api_get(f"{NETWORKING_API_URL}/ports/{port_ref}")
+    if port["id"] not in extra:
+        raise HTTPException(status_code=404, detail="port is not an attached secondary port")
+    result = worker_post(f"/servers/{server.id}/ports/detach", {**server_worker_payload(server), "port": port})
+    server.extra_port_ids = format_comma_list([item for item in extra if item != port["id"]])
+    db.commit()
+    db.refresh(server)
+    return {"status": "detached", "server_id": server.id, "port_id": port["id"], **result}
 
 
 @app.post("/servers/{ref}/volumes/attach")
@@ -680,45 +1156,58 @@ def detach_volume(ref: str, payload: VolumeAttachIn, db: DB):
 
 
 @app.get("/servers/{ref}/console")
-def console(ref: str, db: DB):
+def console(ref: str, _: CurrentUser, db: DB):
     server = require_server(db, ref)
     return {
         "server": server.name,
         "domain": server.libvirt_domain_name,
+        "domain_name": server.libvirt_domain_name,
         "instruction": f"virsh -c qemu:///system console {server.libvirt_domain_name}",
         "note": "VNC is auto-assigned by libvirt; use virsh dumpxml to inspect the assigned port if needed.",
     }
 
 
 @app.get("/servers/{ref}/console-url")
-def console_url(ref: str, db: DB):
+def console_url(ref: str, _: CurrentUser, db: DB):
     server = require_server(db, ref)
+    vnc = {
+        "status": "auto-assigned-by-libvirt",
+        "inspect": f"virsh -c qemu:///system dumpxml {server.libvirt_domain_name}",
+    }
+    try:
+        vnc = worker_post(f"/servers/{server.id}/console-info", server_worker_payload(server))
+    except Exception:
+        pass
+    novnc_url = NOVNC_BASE_URL
+    if vnc.get("port"):
+        novnc_url = f"{NOVNC_BASE_URL}?host=localhost&port={vnc['port']}"
     return {
         "server": server.name,
         "domain": server.libvirt_domain_name,
         "virsh_console": f"virsh -c qemu:///system console {server.libvirt_domain_name}",
-        "vnc": {
-            "status": "auto-assigned-by-libvirt",
-            "inspect": f"virsh -c qemu:///system dumpxml {server.libvirt_domain_name}",
-        },
-        "novnc_url": None,
-        "note": "noVNC proxy is not bundled yet; inspect the VNC port with virsh dumpxml or use virsh console.",
+        "vnc": vnc,
+        "novnc_url": novnc_url,
+        "note": "noVNC static UI is exposed on port 6080; VNC port is discovered from libvirt when available.",
     }
 
 
 @app.get("/servers/{ref}/logs")
-def logs(ref: str, db: DB):
+def logs(ref: str, _: CurrentUser, db: DB, lines: int = 50):
     server = require_server(db, ref)
-    return {
-        "server": server.name,
-        "domain": server.libvirt_domain_name,
-        "instruction": f"virsh -c qemu:///system console {server.libvirt_domain_name}",
-        "message": "console log streaming is not implemented yet; use virsh console or host libvirt logs",
-    }
+    try:
+        result = worker_post(f"/servers/{server.id}/logs", {**server_worker_payload(server), "lines": lines})
+        return result
+    except Exception:
+        return {
+            "server": server.name,
+            "domain": server.libvirt_domain_name,
+            "output": "",
+            "message": "console log streaming not available; use virsh console or check host libvirt logs",
+        }
 
 
 @app.get("/servers/{ref}/ssh-info")
-def ssh_info(ref: str, db: DB):
+def ssh_info(ref: str, _: CurrentUser, db: DB):
     server = require_server(db, ref)
     command = None
     if server.ip_address and server.keypair_name:
@@ -734,7 +1223,7 @@ def ssh_info(ref: str, db: DB):
 
 
 @app.post("/keypairs", status_code=201)
-def create_keypair(payload: KeypairIn, db: DB):
+def create_keypair(payload: KeypairIn, _: CurrentUser, db: DB):
     if get_keypair(db, payload.name):
         raise HTTPException(status_code=409, detail="keypair already exists")
     private_key, public_key = generate_keypair_material()
@@ -748,7 +1237,7 @@ def create_keypair(payload: KeypairIn, db: DB):
 
 
 @app.post("/keypairs/import", status_code=201)
-def import_keypair(payload: KeypairImportIn, db: DB):
+def import_keypair(payload: KeypairImportIn, _: CurrentUser, db: DB):
     if get_keypair(db, payload.name):
         raise HTTPException(status_code=409, detail="keypair already exists")
     public_key = payload.public_key.strip()
@@ -760,17 +1249,17 @@ def import_keypair(payload: KeypairImportIn, db: DB):
 
 
 @app.get("/keypairs")
-def list_keypairs(db: DB):
+def list_keypairs(_: CurrentUser, db: DB):
     return {"items": [obj_to_dict(k) for k in db.scalars(select(Keypair).order_by(Keypair.created_at)).all()]}
 
 
 @app.get("/keypairs/{name}")
-def show_keypair(name: str, db: DB):
+def show_keypair(name: str, _: CurrentUser, db: DB):
     return obj_to_dict(require_keypair(db, name))
 
 
 @app.delete("/keypairs/{name}")
-def delete_keypair(name: str, db: DB):
+def delete_keypair(name: str, _: CurrentUser, db: DB):
     keypair = require_keypair(db, name)
     db.delete(keypair)
     db.commit()

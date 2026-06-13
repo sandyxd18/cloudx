@@ -33,6 +33,8 @@ args=()
 [ "$DRY_RUN" = true ] && args+=(--dry-run)
 [ "$FORCE" = true ] && args+=(--force)
 
+./scripts/cleanup-metadata-route.sh "${args[@]}"
+./scripts/cleanup-storage.sh "${args[@]}"
 ./scripts/cleanup-compute.sh "${args[@]}"
 ./scripts/cleanup-network.sh "${args[@]}"
 

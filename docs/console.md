@@ -14,4 +14,12 @@ Console metadata:
 compute server console-url vm1
 ```
 
-The current milestone exposes the virsh console instruction and VNC inspection hint. noVNC/websockify is a follow-up item.
+The current milestone exposes virsh console, libvirt VNC inspection, and a basic noVNC UI on port 6080. `compute server console-url` reports the libvirt VNC port when it can be read from domain XML.
+
+
+Basic noVNC UI:
+
+```bash
+compute server console-url vm1
+open http://localhost:6080
+```

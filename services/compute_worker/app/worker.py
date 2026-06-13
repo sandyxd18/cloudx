@@ -3,7 +3,7 @@ from pathlib import Path
 
 import requests
 
-from . import cloudinit, image_manager, libvirt_driver, network_manager
+from . import cloudinit, libvirt_driver, network_manager
 from .config import IMAGE_API_URL, INSTANCE_DIR, OVS_BRIDGE
 from .utils import run, tool_available
 
@@ -49,7 +49,9 @@ def spawn_server(server_id: str, payload: dict) -> dict:
     if missing:
         raise ValueError(f"server payload missing flavor snapshot fields: {', '.join(missing)}")
     server_name = payload["name"]
-    image = fetch_image(payload["image_id"])
+    root_volume = payload.get("root_volume")
+    if not root_volume or not root_volume.get("path"):
+        raise ValueError("server payload missing root_volume path; compute is volume-first")
     port = payload["port"]
     logical_port_name = port.get("logical_port_name") or port.get("name")
     mac_address = payload.get("mac_address") or port["mac_address"]
@@ -59,10 +61,11 @@ def spawn_server(server_id: str, payload: dict) -> dict:
     domain = libvirt_driver.domain_name(server_name, server_id)
     try:
         instance_dir.mkdir(parents=True, exist_ok=True)
-        base_image = image_manager.download_image(image)
-        disk_path = image_manager.create_overlay(base_image, instance_dir / "disk.qcow2", int(flavor["disk_gb"]))
+        disk_path = Path(root_volume["path"])
+        if not disk_path.exists():
+            raise RuntimeError(f"root volume path does not exist: {disk_path}")
         seed_iso = cloudinit.create_config_drive(instance_dir, server_id, server_name, payload.get("public_key_snapshot"), port, payload.get("user_data"))
-        expose_to_host_libvirt(instance_dir, base_image, disk_path, seed_iso)
+        expose_to_host_libvirt(instance_dir, disk_path, seed_iso)
         network_manager.create_tap(tap)
         network_manager.bind_tap_to_ovs(tap, logical_port_name, mac_address, server_id)
         xml = libvirt_driver.domain_xml(domain, int(flavor["ram_mb"]), int(flavor["vcpus"]), disk_path, seed_iso, tap, mac_address)
@@ -100,9 +103,183 @@ def stop_server(payload: dict) -> dict:
 
 
 def reboot_server(payload: dict) -> dict:
-    libvirt_driver.reboot(payload["libvirt_domain_name"])
+    domain = payload["libvirt_domain_name"]
+    reboot_type = payload.get("reboot_type", "soft")
+    if reboot_type == "hard":
+        # Hard reboot: destroy and start (without re-provision)
+        libvirt_driver.delete(domain)
+        # Re-define from saved XML if available
+        instance_dir = Path(payload.get("instance_dir") or INSTANCE_DIR / domain)
+        domain_xml_path = instance_dir / "domain.xml"
+        if domain_xml_path.exists():
+            libvirt_driver.define_and_start(domain_xml_path.read_text())
+        else:
+            libvirt_driver.start(domain)
+    else:
+        libvirt_driver.reboot(domain)
     return {"status": "ACTIVE"}
 
+
+# ── New power state actions ────────────────────────────────────────────────────
+
+def pause_server(payload: dict) -> dict:
+    """Pause VM at hypervisor level (PAUSED in libvirt)."""
+    libvirt_driver.pause(payload["libvirt_domain_name"])
+    return {"status": "PAUSED"}
+
+
+def resume_server(payload: dict) -> dict:
+    """Resume from PAUSED state."""
+    libvirt_driver.resume(payload["libvirt_domain_name"])
+    return {"status": "ACTIVE"}
+
+
+def suspend_server(payload: dict) -> dict:
+    """Save VM state to disk (libvirt managed save → SUSPENDED)."""
+    libvirt_driver.suspend_to_disk(payload["libvirt_domain_name"])
+    return {"status": "SUSPENDED"}
+
+
+def unsuspend_server(payload: dict) -> dict:
+    """Restore from managed save."""
+    libvirt_driver.resume_from_disk(payload["libvirt_domain_name"])
+    return {"status": "ACTIVE"}
+
+
+# ── Resize ─────────────────────────────────────────────────────────────────────
+
+def resize_server(payload: dict) -> dict:
+    """Live resize CPU/RAM; falls back to config-only when hotplug is unsupported."""
+    domain = payload["libvirt_domain_name"]
+    new_vcpus = payload.get("new_vcpus")
+    new_ram_mb = payload.get("new_ram_mb")
+    libvirt_driver.resize(domain, new_vcpus, new_ram_mb)
+    return {"status": "resized", "vcpus": new_vcpus, "ram_mb": new_ram_mb}
+
+
+# ── Rebuild ────────────────────────────────────────────────────────────────────
+
+def rebuild_server(server_id: str, payload: dict) -> dict:
+    """Replace root disk with a new image, keeping the same network config."""
+    domain = payload["libvirt_domain_name"]
+    tap = payload.get("tap_name") or network_manager.tap_name(server_id)
+    mac_address = payload.get("mac_address", "")
+    flavor = payload.get("flavor_snapshot") or {}
+    ram_mb = int(payload.get("ram_mb") or flavor.get("ram_mb") or 512)
+    vcpus = int(payload.get("vcpus") or flavor.get("vcpus") or 1)
+
+    image = payload.get("image") or {}
+    image_ref = image.get("id") or image.get("name") or payload.get("image_id", "")
+    if not image_ref:
+        raise ValueError("rebuild payload missing image.id")
+
+    instance_dir = Path(payload.get("instance_dir") or INSTANCE_DIR / server_id)
+    instance_dir.mkdir(parents=True, exist_ok=True)
+
+    from .image_manager import download_and_prepare_disk
+    new_disk_path = instance_dir / "disk-rebuild.qcow2"
+    download_and_prepare_disk(image_ref, new_disk_path)
+    expose_to_host_libvirt(new_disk_path)
+
+    port = payload.get("port") or {}
+    seed_iso = cloudinit.create_config_drive(
+        instance_dir, server_id, payload.get("name", ""),
+        payload.get("public_key_snapshot"), port, payload.get("user_data"),
+    )
+    expose_to_host_libvirt(seed_iso)
+    libvirt_driver.rebuild(domain, str(new_disk_path), str(seed_iso), tap, mac_address, ram_mb, vcpus)
+    return {"status": "ACTIVE", "disk_path": str(new_disk_path)}
+
+
+# ── Rescue / Unrescue ──────────────────────────────────────────────────────────
+
+def rescue_server(server_id: str, payload: dict) -> dict:
+    """Boot from rescue image while keeping original disk intact."""
+    domain = payload["libvirt_domain_name"]
+    tap = payload.get("tap_name") or network_manager.tap_name(server_id)
+    mac_address = payload.get("mac_address", "")
+    flavor = payload.get("flavor_snapshot") or {}
+    ram_mb = int(payload.get("ram_mb") or flavor.get("ram_mb") or 512)
+    vcpus = int(payload.get("vcpus") or flavor.get("vcpus") or 1)
+
+    rescue_image_id = payload.get("rescue_image_id") or payload.get("image_id")
+    if not rescue_image_id:
+        raise ValueError("rescue payload missing rescue_image_id")
+
+    instance_dir = Path(payload.get("instance_dir") or INSTANCE_DIR / server_id)
+    instance_dir.mkdir(parents=True, exist_ok=True)
+
+    from .image_manager import download_and_prepare_disk
+    rescue_disk = instance_dir / "disk-rescue.qcow2"
+    download_and_prepare_disk(rescue_image_id, rescue_disk)
+    expose_to_host_libvirt(rescue_disk)
+
+    port = payload.get("port") or {}
+    seed_iso = cloudinit.create_config_drive(
+        instance_dir, server_id, payload.get("name", ""),
+        payload.get("public_key_snapshot"), port, payload.get("user_data"),
+    )
+    expose_to_host_libvirt(seed_iso)
+    libvirt_driver.rebuild(domain, str(rescue_disk), str(seed_iso), tap, mac_address, ram_mb, vcpus)
+    return {"status": "RESCUE", "rescue_disk": str(rescue_disk)}
+
+
+def unrescue_server(server_id: str, payload: dict) -> dict:
+    """Restore VM from rescue — boot back from original root disk."""
+    domain = payload["libvirt_domain_name"]
+    tap = payload.get("tap_name") or network_manager.tap_name(server_id)
+    mac_address = payload.get("mac_address", "")
+    flavor = payload.get("flavor_snapshot") or {}
+    ram_mb = int(payload.get("ram_mb") or flavor.get("ram_mb") or 512)
+    vcpus = int(payload.get("vcpus") or flavor.get("vcpus") or 1)
+
+    disk_path = payload.get("disk_path")
+    if not disk_path:
+        raise ValueError("unrescue payload missing disk_path")
+
+    instance_dir = Path(payload.get("instance_dir") or INSTANCE_DIR / server_id)
+    port = payload.get("port") or {}
+    seed_iso = cloudinit.create_config_drive(
+        instance_dir, server_id, payload.get("name", ""),
+        payload.get("public_key_snapshot"), port, payload.get("user_data"),
+    )
+    expose_to_host_libvirt(seed_iso)
+    libvirt_driver.rebuild(domain, disk_path, str(seed_iso), tap, mac_address, ram_mb, vcpus)
+
+    rescue_disk = instance_dir / "disk-rescue.qcow2"
+    if rescue_disk.exists():
+        rescue_disk.unlink()
+
+    return {"status": "ACTIVE"}
+
+
+# ── Password injection ─────────────────────────────────────────────────────────
+
+def set_server_password(payload: dict) -> dict:
+    domain = payload["libvirt_domain_name"]
+    password = payload.get("password", "")
+    username = payload.get("username", "root")
+    if not password:
+        raise ValueError("password is required")
+    libvirt_driver.set_password(domain, password, username)
+    return {"status": "password set", "username": username}
+
+
+# ── Console log ────────────────────────────────────────────────────────────────
+
+def get_server_logs(payload: dict) -> dict:
+    domain = payload["libvirt_domain_name"]
+    lines = payload.get("lines", 50)
+    output = libvirt_driver.get_console_log(domain, lines)
+    return {
+        "server": payload.get("name", ""),
+        "domain": domain,
+        "output": output,
+        "lines": lines,
+    }
+
+
+# ── Delete ─────────────────────────────────────────────────────────────────────
 
 def delete_server(server_id: str, payload: dict) -> dict:
     domain = payload.get("libvirt_domain_name")
@@ -114,3 +291,40 @@ def delete_server(server_id: str, payload: dict) -> dict:
     if instance_dir.exists() and instance_dir.is_dir():
         shutil.rmtree(instance_dir)
     return {"status": "deleted", "id": server_id}
+
+
+# ── Port management ────────────────────────────────────────────────────────────
+
+def attach_port(payload: dict) -> dict:
+    domain = payload.get("libvirt_domain_name")
+    if not domain:
+        raise RuntimeError("server has no libvirt domain name")
+    port = payload["port"]
+    server_id = payload.get("id") or payload.get("server_id") or port.get("device_id")
+    if not server_id:
+        raise RuntimeError("server payload missing id for port tap")
+    logical_port_name = port.get("logical_port_name") or port.get("name")
+    mac_address = port["mac_address"]
+    tap = network_manager.port_tap_name(server_id, port["id"])
+    network_manager.create_tap(tap)
+    network_manager.bind_tap_to_ovs(tap, logical_port_name, mac_address, server_id)
+    try:
+        libvirt_driver.attach_interface(domain, tap, mac_address)
+    except Exception:
+        network_manager.delete_tap(tap)
+        raise
+    return {"tap_name": tap, "logical_port_name": logical_port_name, "mac_address": mac_address}
+
+
+def detach_port(payload: dict) -> dict:
+    domain = payload.get("libvirt_domain_name")
+    if not domain:
+        raise RuntimeError("server has no libvirt domain name")
+    port = payload["port"]
+    server_id = payload.get("id") or payload.get("server_id") or port.get("device_id")
+    tap = network_manager.port_tap_name(server_id, port["id"])
+    try:
+        libvirt_driver.detach_interface(domain, tap, port["mac_address"])
+    finally:
+        network_manager.delete_tap(tap)
+    return {"tap_name": tap}

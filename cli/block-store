@@ -10,6 +10,7 @@ API = os.getenv("BLOCK_STORE_API_URL", "http://localhost:8004").rstrip("/")
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 app = typer.Typer(help="CLI for mini OpenStack lab block-store-api. Example: block-store volume create vol1 --size 10", context_settings=CONTEXT_SETTINGS)
 volume_app = typer.Typer(help="Manage Cinder-like volumes.", context_settings=CONTEXT_SETTINGS)
+snapshot_app = typer.Typer(help="Manage Cinder-like volume snapshots.", context_settings=CONTEXT_SETTINGS)
 
 
 def emit(data):
@@ -28,8 +29,15 @@ def request(method, path, **kwargs):
 
 
 @volume_app.command("create")
-def create(name: str, size: int = typer.Option(..., "--size")):
-    emit(request("POST", "/volumes", json={"name": name, "size_gb": size}))
+def create(
+    name: str,
+    size: int = typer.Option(..., "--size"),
+    image: str | None = typer.Option(None, "--image"),
+    snapshot: str | None = typer.Option(None, "--snapshot"),
+    source_volume: str | None = typer.Option(None, "--source-volume"),
+    bootable: bool = typer.Option(False, "--bootable"),
+):
+    emit(request("POST", "/volumes", json={"name": name, "size_gb": size, "image": image, "snapshot": snapshot, "source_volume": source_volume, "bootable": bootable}))
 
 
 @volume_app.command("list")
@@ -62,7 +70,28 @@ def delete(ref: str):
     emit(request("DELETE", f"/volumes/{ref}"))
 
 
+@snapshot_app.command("create")
+def snapshot_create(volume: str, name: str):
+    emit(request("POST", f"/volumes/{volume}/snapshots", json={"name": name}))
+
+
+@snapshot_app.command("list")
+def snapshot_list():
+    emit(request("GET", "/snapshots"))
+
+
+@snapshot_app.command("show")
+def snapshot_show(ref: str):
+    emit(request("GET", f"/snapshots/{ref}"))
+
+
+@snapshot_app.command("delete")
+def snapshot_delete(ref: str):
+    emit(request("DELETE", f"/snapshots/{ref}"))
+
+
 app.add_typer(volume_app, name="volume")
+app.add_typer(snapshot_app, name="snapshot")
 
 
 if __name__ == "__main__":

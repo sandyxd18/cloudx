@@ -27,6 +27,10 @@ PROVIDER_INTERFACE="${PROVIDER_INTERFACE:-enp0s8}"
 PROVIDER_BRIDGE="${PROVIDER_BRIDGE:-br-ex}"
 PROVIDER_PHYSNET="${PROVIDER_PHYSNET:-physnet1}"
 PROVIDER_HOST_IP="${PROVIDER_HOST_IP:-}"
+PROVIDER_HOST_IP_ADDR="${PROVIDER_HOST_IP%%/*}"   # strip CIDR notation
+PROVIDER_GATEWAY="${PROVIDER_GATEWAY:-192.168.10.254}"  # OVN router external IP on br-ex
+PRIVATE_CIDR="${PRIVATE_CIDR:-192.168.12.0/24}"
+METADATA_IP="169.254.169.254"
 OVN_SB_PORT="${OVN_SB_PORT:-6642}"
 
 step() { echo ""; echo "══════ $* ══════"; }
@@ -48,7 +52,12 @@ step "2/7  Enabling system services"
 systemctl enable --now openvswitch-switch
 systemctl enable --now libvirtd 2>/dev/null || \
     systemctl enable --now libvirt-daemon 2>/dev/null || true
-echo "✓ openvswitch-switch and libvirtd enabled"
+
+# Matikan ovn-controller di HOST — dikelola oleh Docker container (ovs-ovn-controller)
+# Jika dua ovn-controller berjalan bersamaan, mereka akan konflik memperebutkan OVS
+systemctl stop    ovn-controller.service 2>/dev/null || true
+systemctl disable ovn-controller.service 2>/dev/null || true
+echo "✓ openvswitch-switch dan libvirtd enabled, host ovn-controller disabled"
 
 # ── Step 3: User groups ────────────────────────────────────────────────────────
 step "3/7  Configuring user groups"
@@ -101,6 +110,16 @@ fi
 ip link set "$PROVIDER_BRIDGE" up 2>/dev/null || true
 ip link set "$PROVIDER_INTERFACE" up 2>/dev/null || true
 
+# Patch port br-int ↔ br-ex
+# OVN controller container tidak membuat ini otomatis karena tidak berjalan di host network.
+# Patch port ini wajib ada agar traffic provider network bisa masuk ke OVN pipeline di br-int.
+ovs-vsctl \
+    -- --may-exist add-port br-int patch-br-int-to-br-ex \
+    -- set interface patch-br-int-to-br-ex type=patch options:peer=patch-br-ex-to-br-int \
+    -- --may-exist add-port "$PROVIDER_BRIDGE" patch-br-ex-to-br-int \
+    -- set interface patch-br-ex-to-br-int type=patch options:peer=patch-br-int-to-br-ex
+echo "✓ Patch ports: br-int ↔ $PROVIDER_BRIDGE"
+
 # Assign host IP to br-ex if configured
 if [ -n "$PROVIDER_HOST_IP" ]; then
     ip addr replace "$PROVIDER_HOST_IP" dev "$PROVIDER_BRIDGE" 2>/dev/null || \
@@ -108,6 +127,36 @@ if [ -n "$PROVIDER_HOST_IP" ]; then
     echo "✓ IP $PROVIDER_HOST_IP assigned to $PROVIDER_BRIDGE"
 else
     echo "⚠ PROVIDER_HOST_IP not set — br-ex will have no IP (set it in .env)"
+fi
+
+# Metadata proxy setup:
+# 169.254.169.254 on br-ex → iptables DNAT :80→PROVIDER_HOST_IP:8775 → metadata-api
+# This lets cloud-init inside VMs reach the Nova metadata API.
+ip addr replace "$METADATA_IP/32" dev "$PROVIDER_BRIDGE" 2>/dev/null || \
+ip addr add    "$METADATA_IP/32" dev "$PROVIDER_BRIDGE" 2>/dev/null || true
+echo "✓ Metadata IP $METADATA_IP on $PROVIDER_BRIDGE"
+
+# Route PRIVATE_CIDR via the OVN router gateway so the host can send replies back to VMs.
+# Must use "via PROVIDER_GATEWAY" — NOT "scope link" — otherwise the host ARPs for VM IPs
+# directly on br-ex and gets no reply, breaking metadata and floating-IP return traffic.
+if [ -n "$PROVIDER_GATEWAY" ]; then
+    if ip route show dev "$PROVIDER_BRIDGE" | grep -q "^${PRIVATE_CIDR}"; then
+        ip route replace "$PRIVATE_CIDR" via "$PROVIDER_GATEWAY" dev "$PROVIDER_BRIDGE" 2>/dev/null || true
+    else
+        ip route add "$PRIVATE_CIDR" via "$PROVIDER_GATEWAY" dev "$PROVIDER_BRIDGE" 2>/dev/null || true
+    fi
+    echo "✓ Route $PRIVATE_CIDR via $PROVIDER_GATEWAY dev $PROVIDER_BRIDGE (OVN router path)"
+else
+    echo "⚠ PROVIDER_GATEWAY not set — skipping private subnet route (set it in .env)"
+fi
+
+# iptables DNAT: VM → 169.254.169.254:80 → PROVIDER_HOST_IP:8775
+if [ -n "$PROVIDER_HOST_IP_ADDR" ] && command -v iptables >/dev/null 2>&1; then
+    iptables -t nat -C PREROUTING -d "$METADATA_IP" -p tcp --dport 80 \
+        -j DNAT --to-destination "${PROVIDER_HOST_IP_ADDR}:8775" 2>/dev/null || \
+    iptables -t nat -A PREROUTING -d "$METADATA_IP" -p tcp --dport 80 \
+        -j DNAT --to-destination "${PROVIDER_HOST_IP_ADDR}:8775"
+    echo "✓ iptables: $METADATA_IP:80 → ${PROVIDER_HOST_IP_ADDR}:8775 (metadata-api)"
 fi
 
 # ── Step 6: Configure OVS for OVN ─────────────────────────────────────────────
@@ -130,6 +179,10 @@ cat > /etc/mini-openstack/node.env <<EOF
 PROVIDER_BRIDGE=${PROVIDER_BRIDGE}
 PROVIDER_INTERFACE=${PROVIDER_INTERFACE}
 PROVIDER_HOST_IP=${PROVIDER_HOST_IP}
+PROVIDER_HOST_IP_ADDR=${PROVIDER_HOST_IP_ADDR}
+PROVIDER_GATEWAY=${PROVIDER_GATEWAY}
+PRIVATE_CIDR=${PRIVATE_CIDR}
+METADATA_IP=${METADATA_IP}
 EOF
 
 cat > /etc/systemd/system/mini-openstack-network.service <<'UNIT'
@@ -150,8 +203,25 @@ ExecStart=/bin/bash -c '\
     if [ -n "${PROVIDER_HOST_IP:-}" ]; then \
         ip addr replace "${PROVIDER_HOST_IP}" dev "${PROVIDER_BRIDGE:-br-ex}" 2>/dev/null || \
         ip addr add    "${PROVIDER_HOST_IP}" dev "${PROVIDER_BRIDGE:-br-ex}" 2>/dev/null || true; \
-        echo "mini-openstack-network: ${PROVIDER_HOST_IP} on ${PROVIDER_BRIDGE:-br-ex} ready"; \
-    fi'
+    fi; \
+    ip addr replace "${METADATA_IP:-169.254.169.254}/32" dev "${PROVIDER_BRIDGE:-br-ex}" 2>/dev/null || \
+    ip addr add    "${METADATA_IP:-169.254.169.254}/32" dev "${PROVIDER_BRIDGE:-br-ex}" 2>/dev/null || true; \
+    if [ -n "${PROVIDER_GATEWAY:-}" ]; then \
+        ip route replace "${PRIVATE_CIDR:-192.168.12.0/24}" via "${PROVIDER_GATEWAY}" dev "${PROVIDER_BRIDGE:-br-ex}" 2>/dev/null || \
+        ip route add    "${PRIVATE_CIDR:-192.168.12.0/24}" via "${PROVIDER_GATEWAY}" dev "${PROVIDER_BRIDGE:-br-ex}" 2>/dev/null || true; \
+    fi; \
+    ovs-vsctl \
+        -- --may-exist add-port br-int patch-br-int-to-br-ex \
+        -- set interface patch-br-int-to-br-ex type=patch options:peer=patch-br-ex-to-br-int \
+        -- --may-exist add-port "${PROVIDER_BRIDGE:-br-ex}" patch-br-ex-to-br-int \
+        -- set interface patch-br-ex-to-br-int type=patch options:peer=patch-br-int-to-br-ex 2>/dev/null || true; \
+    if [ -n "${PROVIDER_HOST_IP_ADDR:-}" ]; then \
+        iptables -t nat -C PREROUTING -d "${METADATA_IP:-169.254.169.254}" -p tcp --dport 80 \
+            -j DNAT --to-destination "${PROVIDER_HOST_IP_ADDR}:8775" 2>/dev/null || \
+        iptables -t nat -A PREROUTING -d "${METADATA_IP:-169.254.169.254}" -p tcp --dport 80 \
+            -j DNAT --to-destination "${PROVIDER_HOST_IP_ADDR}:8775"; \
+    fi; \
+    echo "mini-openstack-network: provider bridge and metadata proxy ready"'
 
 [Install]
 WantedBy=multi-user.target

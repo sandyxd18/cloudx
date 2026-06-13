@@ -199,6 +199,26 @@ def port_set_security_group(ref: str, security_group: list[str] = typer.Option(.
     emit(request("POST", f"/ports/{ref}/security-groups", json={"security_group_ids": security_group}))
 
 
+@port_app.command("clear-security-groups")
+def port_clear_security_groups(ref: str):
+    emit(request("POST", f"/ports/{ref}/security-groups/clear"))
+
+
+@port_app.command("security-enable")
+def port_security_enable(ref: str):
+    emit(request("POST", f"/ports/{ref}/security/enable"))
+
+
+@port_app.command("security-disable")
+def port_security_disable(ref: str):
+    emit(request("POST", f"/ports/{ref}/security/disable"))
+
+
+@port_app.command("ovn-show")
+def port_ovn_show(ref: str):
+    emit(request("GET", f"/ports/{ref}/ovn"))
+
+
 @fip_app.command("create")
 def fip_create(
     external_network: str,
@@ -261,6 +281,11 @@ def sg_delete(ref: str):
     emit(request("DELETE", f"/security-groups/{ref}"))
 
 
+@sg_app.command("ovn-show")
+def sg_ovn_show(ref: str):
+    emit(request("GET", f"/security-groups/{ref}/ovn"))
+
+
 @sg_rule_app.command("create")
 def sg_rule_create(
     security_group: str,
@@ -268,14 +293,32 @@ def sg_rule_create(
     protocol: str = typer.Option("any", "--protocol"),
     port: int | None = typer.Option(None, "--port"),
     remote_ip: str | None = typer.Option(None, "--remote-ip"),
+    remote_group: str | None = typer.Option(None, "--remote-group"),
 ):
     emit(
         request(
             "POST",
             f"/security-groups/{security_group}/rules",
-            json={"direction": direction, "protocol": protocol, "port_min": port, "port_max": port, "remote_ip_prefix": remote_ip},
+            json={
+                "direction": direction,
+                "protocol": protocol,
+                "port_min": port,
+                "port_max": port,
+                "remote_ip_prefix": remote_ip,
+                "remote_group_id": remote_group,
+            },
         )
     )
+
+
+@sg_rule_app.command("list")
+def sg_rule_list(security_group: str):
+    emit(request("GET", f"/security-groups/{security_group}/rules"))
+
+
+@sg_rule_app.command("delete")
+def sg_rule_delete(rule_id: str):
+    emit(request("DELETE", f"/security-group-rules/{rule_id}"))
 
 
 @ovn_app.command("show")

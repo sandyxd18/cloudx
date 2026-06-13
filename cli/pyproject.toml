@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "cloudx"
+version = "1.0.0"
+description = "Unified CLI for cloudx cloud platform"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1",
+    "requests>=2.31",
+    "tabulate>=0.9",
+]
+
+[project.scripts]
+cloudx = "cloudx_cli.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]

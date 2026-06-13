@@ -18,7 +18,7 @@ def attach_volume(payload: dict) -> dict:
     if not path.exists():
         raise RuntimeError(f"volume path does not exist: {path}")
     disk_format = "qcow2" if path.suffix == ".qcow2" else "raw"
-    target = _target_dev(volume["volume_id"])
+    target = volume.get("target_dev") or _target_dev(volume["volume_id"])
     libvirt_driver.attach_disk(domain, path, target, disk_format)
     return {"target_dev": target, "path": str(path)}
 
@@ -30,6 +30,6 @@ def detach_volume(payload: dict) -> dict:
         raise RuntimeError("server has no libvirt domain name")
     path = Path(volume["path"])
     disk_format = "qcow2" if path.suffix == ".qcow2" else "raw"
-    target = _target_dev(volume["volume_id"])
+    target = volume.get("target_dev") or _target_dev(volume["volume_id"])
     libvirt_driver.detach_disk(domain, path, target, disk_format)
     return {"target_dev": target, "path": str(path)}
