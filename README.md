@@ -1,6 +1,6 @@
-# cloudx — Private Cloud Lab
+# CloudX — Private Cloud Lab
 
-**cloudx** adalah private cloud platform single-node berbasis Docker Compose yang mengimplementasikan API mirip OpenStack. Compute menggunakan libvirt + QEMU/KVM, networking menggunakan OVN/OVS, dan seluruh stack dikelola melalui CLI `cloudx` serta web Dashboard.
+**CloudX** adalah private cloud platform single-node berbasis Docker Compose yang mengimplementasikan API mirip OpenStack. Compute menggunakan libvirt + QEMU/KVM, networking menggunakan OVN/OVS, inter-service communication via **RabbitMQ** (AMQP), dan seluruh stack dikelola melalui CLI `cloudx` serta web Dashboard.
 
 > **Untuk lab lokal & pembelajaran.** Bukan untuk production. Single-node tanpa live migration atau multi-scheduler.
 
@@ -13,6 +13,9 @@
 - Flavor management (vCPU, RAM, Disk)
 - Keypair management (SSH public key injection via cloud-init)
 - Server actions: start, stop, reboot (soft/hard), **pause/resume**, **suspend/unsuspend**, **resize** (live vCPU+RAM), **rebuild**, **rescue/unrescue**
+- **Async operations via RabbitMQ** — server create/delete/actions return immediately with transitional status
+- **Conductor service** (nova-conductor equivalent) — workers never access DB directly
+- **Live Dashboard updates via WebSocket** — status changes pushed in real-time
 - Password injection via QEMU Guest Agent
 - Console log retrieval via PTY
 - Server Groups (affinity / anti-affinity)
@@ -36,6 +39,7 @@
 - Snapshot & backup volume
 - **Volume Types**: AWS EBS-style performance profiles (gp2, gp3, io1, io2, sc1, st1, dll.) — admin-defined, tidak ada default
 - **Backend**: LVM block device (`/dev/VG/LV`) dan/atau Ceph RBD (network disk) — dipilih saat membuat volume type
+- **Async operations via RabbitMQ** — create/delete/extend/snapshot langsung return, worker kerjakan di background
 - Boot-from-volume architecture (semua VM boot dari persistent root volume)
 - Volume transfer antar-project
 
@@ -69,6 +73,7 @@
 - React + Vite frontend dengan dark theme premium
 - Real-time stats: CPU/RAM usage charts, resource utilization bars
 - Full CRUD untuk semua resource via web UI
+- **WebSocket live events** — server status updates tanpa manual refresh
 - Served via FastAPI proxy di port 8080
 
 ---
@@ -316,16 +321,20 @@ Yang otomatis terjadi:
 
 | Service | URL | Keterangan |
 |---|---|---|
-| **Dashboard** | http://localhost:8080 | Web UI (React + Vite) |
+| **Dashboard** | http://localhost:8080 | Web UI (React + Vite) + WebSocket |
 | `auth-api` | http://localhost:8005 | Identity & token service |
-| `compute-api` | http://localhost:8003 | Nova-like compute API |
-| `compute-worker` | http://localhost:8010 | Libvirt provisioning worker |
+| `compute-api` | http://localhost:8003 | Nova-like compute API (RPC publisher) |
+| `compute-worker` | *(AMQP consumer)* | Libvirt provisioning worker (no HTTP port) |
+| `conductor` | *(AMQP consumer)* | DB proxy for workers (nova-conductor equivalent) |
 | `networking-api` | http://localhost:8001 | Neutron-like networking API |
 | `image-api` | http://localhost:8002 | Glance-like image API |
-| `block-store-api` | http://localhost:8004 | Cinder-like volume API |
+| `block-store-api` | http://localhost:8004 | Cinder-like volume API (RPC publisher, no privileged) |
+| `block-store-worker` | *(AMQP consumer)* | LVM/Ceph storage worker (privileged, no HTTP port) |
 | `placement-api` | http://localhost:8006 | Resource placement & tracking |
 | `metadata-api` | http://localhost:8775 | Nova metadata HTTP API |
 | `metadata-proxy` | http://localhost:8776 | Metadata proxy (169.254.169.254) |
+| **RabbitMQ** | amqp://localhost:5672 | AMQP message broker |
+| RabbitMQ Management | http://localhost:15672 | RabbitMQ web UI (cloudx/cloudx) |
 | MinIO API | http://localhost:9000 | S3-compatible object storage |
 | MinIO Console | http://localhost:9001 | MinIO web UI |
 

@@ -2,9 +2,17 @@ import { useEffect, useState, useRef } from 'react'
 import { Play, Square, RotateCcw, Trash2, Plus, MoreVertical, Terminal, PauseCircle, PowerOff, Wrench, KeyRound } from 'lucide-react'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
+import useEventStream from '../hooks/useEventStream.js'
 
 function statusClass(s) {
-  const m = { ACTIVE: 'active', SHUTOFF: 'shutoff', ERROR: 'error', BUILD: 'building', PAUSED: 'paused', SUSPENDED: 'suspended', RESCUE: 'rescue' }
+  const m = {
+    ACTIVE: 'active', SHUTOFF: 'shutoff', ERROR: 'error', BUILD: 'building',
+    PAUSED: 'paused', SUSPENDED: 'suspended', RESCUE: 'rescue',
+    STARTING: 'building', STOPPING: 'building', REBOOT: 'building',
+    PAUSING: 'building', RESUMING: 'building', SUSPENDING: 'building',
+    DELETING: 'building', REBUILD: 'building', RESIZE: 'building',
+    UNRESCUING: 'building',
+  }
   return 'status-badge status-' + (m[s] || 'inactive').toLowerCase()
 }
 
@@ -199,6 +207,8 @@ export default function ServersPage() {
   const [showLogs, setShowLogs] = useState(null)
   const toast = useToast()
 
+  const { lastEvent } = useEventStream()
+
   const load = () => {
     setLoading(true)
     api.getServers()
@@ -207,6 +217,14 @@ export default function ServersPage() {
   }
 
   useEffect(() => { load() }, [])
+
+  // Auto-refresh when a server event arrives from RabbitMQ
+  useEffect(() => {
+    if (!lastEvent) return
+    if (lastEvent.type === 'server.update' || lastEvent.type === 'server.delete') {
+      load()
+    }
+  }, [lastEvent])
 
   const handleAction = async (server, action) => {
     if (action === 'delete') {

@@ -23,6 +23,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy FastAPI proxy
 COPY app/ ./app/
 
+# Copy shared RPC library for event consumer
+COPY ../shared/rpc.py ./shared/rpc.py
+
 # Copy built React app into static dir
 COPY --from=frontend-builder /app/frontend/dist ./app/static
 

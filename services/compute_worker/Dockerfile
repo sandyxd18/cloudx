@@ -18,6 +18,9 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy shared RPC library
+COPY ../shared/rpc.py ./shared/rpc.py
 COPY app ./app
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]
+CMD ["python", "-m", "app.main"]

@@ -17,6 +17,25 @@ services:
     networks:
       - lab-net
 
+  # ── RabbitMQ (AMQP Message Broker) ───────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-cloudx}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-cloudx}
+    ports:
+      - "5672:5672"      # AMQP protocol
+      - "15672:15672"    # Management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - lab-net
+
   ovn-nb-db:
     build:
       context: ./services/ovn
@@ -238,13 +257,16 @@ services:
       PLACEMENT_API_URL: http://placement-api:8000
       NOVNC_BASE_URL: ${NOVNC_BASE_URL:-http://localhost:6080/vnc.html}
       COMPUTE_BACKEND: ${COMPUTE_BACKEND:-libvirt}
-      COMPUTE_WORKER_URL: ${COMPUTE_WORKER_URL:-http://host.docker.internal:8010}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@rabbitmq:5672/}
+      RPC_CALL_TIMEOUT: ${RPC_CALL_TIMEOUT:-30}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "8003:8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
       auth-api:
         condition: service_started
@@ -267,13 +289,14 @@ services:
       - NET_ADMIN
       - SYS_ADMIN
     environment:
-      COMPUTE_API_URL: ${COMPUTE_API_URL:-http://127.0.0.1:8003}
       IMAGE_API_URL: ${IMAGE_API_URL:-http://127.0.0.1:8002}
+      BLOCK_STORE_API_URL: ${BLOCK_STORE_API_URL:-http://127.0.0.1:8004}
       LIBVIRT_URI: ${LIBVIRT_URI:-qemu:///system}
       COMPUTE_INSTANCE_DIR: ${COMPUTE_INSTANCE_DIR:-/var/lib/mini-openstack/compute/instances}
       COMPUTE_IMAGE_CACHE_DIR: ${COMPUTE_IMAGE_CACHE_DIR:-/var/lib/mini-openstack/compute/cache/images}
       OVS_BRIDGE: ${OVS_BRIDGE:-br-int}
       VM_NAME_PREFIX: ${VM_NAME_PREFIX:-mini-os}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@127.0.0.1:5672/}
     volumes:
       - ${COMPUTE_INSTANCE_DIR:-/var/lib/mini-openstack/compute/instances}:/var/lib/mini-openstack/compute/instances
       - ${COMPUTE_CACHE_DIR:-/var/lib/mini-openstack/compute/cache}:/var/lib/mini-openstack/compute/cache
@@ -288,35 +311,47 @@ services:
       networking-api:
         condition: service_started
 
+  # ── Conductor (nova-conductor equivalent) ───────────────────────────────
+  conductor:
+    build:
+      context: ./services/conductor
+      network: host
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@postgres:5432/mini_openstack}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@rabbitmq:5672/}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - lab-net
+
   block-store-api:
     build:
       context: ./services/block_store
       network: host
-    privileged: true               # Required for lvcreate / vgcreate / pvcreate
+    # No privileged — storage ops delegated to block-store-worker via RabbitMQ
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@postgres:5432/mini_openstack}
       AUTH_API_URL: http://auth-api:8000
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-cloudx-secret-key-change-in-production-min32chars!}
       COMPUTE_API_URL: http://compute-api:8000
       IMAGE_API_URL: http://image-api:8000
-      # ── Storage drivers ────────────────────────────────────────────────────
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@rabbitmq:5672/}
+      RPC_CALL_TIMEOUT: ${RPC_CALL_TIMEOUT:-30}
+      # Driver flags (API uses these for health/validation only — no actual calls)
       STORAGE_LVM_DRIVER: ${STORAGE_LVM_DRIVER:-true}
       STORAGE_CEPH_RBD_DRIVER: ${STORAGE_CEPH_RBD_DRIVER:-false}
-      # ── LVM config (required when STORAGE_LVM_DRIVER=true) ─────────────────
-      LVM_PV_NAME: ${LVM_PV_NAME:-}
       LVM_VG_NAME: ${LVM_VG_NAME:-vg-cloudx}
-      # ── Ceph config (required when STORAGE_CEPH_RBD_DRIVER=true) ──────────
       CEPH_POOL: ${CEPH_POOL:-}
-      CEPH_CONF: ${CEPH_CONF:-/etc/ceph/ceph.conf}
-      CEPH_KEYRING: ${CEPH_KEYRING:-}
     ports:
       - "8004:8000"
-    volumes:
-      - /dev:/dev                  # LVM: access to block devices on host
-      - /run/lvm:/run/lvm          # LVM: lock files
-      - /etc/ceph:/etc/ceph:ro     # Ceph: config + keyring (optional)
     depends_on:
       postgres:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
       auth-api:
         condition: service_started
@@ -324,6 +359,33 @@ services:
         condition: service_started
     networks:
       - lab-net
+
+  # ── Block Storage Worker (cinder-volume equivalent) ─────────────────────────
+  block-store-worker:
+    build:
+      context: ./services/block_store_worker
+      network: host
+    privileged: true               # Required for lvcreate / vgcreate / pvcreate
+    environment:
+      IMAGE_API_URL: ${IMAGE_API_URL:-http://127.0.0.1:8002}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@127.0.0.1:5672/}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # ── Storage drivers ─────────────────────────────────────────────────────
+      STORAGE_LVM_DRIVER: ${STORAGE_LVM_DRIVER:-true}
+      STORAGE_CEPH_RBD_DRIVER: ${STORAGE_CEPH_RBD_DRIVER:-false}
+      # ── LVM config (required when STORAGE_LVM_DRIVER=true) ─────────────────
+      LVM_PV_NAME: ${LVM_PV_NAME:-}
+      LVM_VG_NAME: ${LVM_VG_NAME:-vg-cloudx}
+      # ── Ceph config (required when STORAGE_CEPH_RBD_DRIVER=true) ───────────
+      CEPH_POOL: ${CEPH_POOL:-}
+      CEPH_CONF: ${CEPH_CONF:-/etc/ceph/ceph.conf}
+      CEPH_KEYRING: ${CEPH_KEYRING:-}
+    volumes:
+      - /dev:/dev                  # LVM: access to block devices on host
+      - /run/lvm:/run/lvm          # LVM: lock files
+      - /etc/ceph:/etc/ceph:ro     # Ceph: config + keyring (optional)
+    network_mode: host             # RabbitMQ is on 127.0.0.1 from compute-worker perspective
+
 
   # ── Placement API ───────────────────────────────────────────────────────────
   placement-api:
@@ -356,6 +418,7 @@ services:
       IMAGE_API_URL: http://image-api:8000
       BLOCK_STORE_API_URL: http://block-store-api:8000
       PLACEMENT_API_URL: http://placement-api:8000
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@rabbitmq:5672/}
     ports:
       - "8080:8000"
     depends_on:
@@ -365,6 +428,8 @@ services:
         condition: service_started
       networking-api:
         condition: service_started
+      rabbitmq:
+        condition: service_healthy
     networks:
       - lab-net
 
@@ -388,3 +453,4 @@ volumes:
   ovn-sb-data:
   image-data:
   minio-data:
+  rabbitmq-data:

@@ -1,24 +1,25 @@
 """
-cloudx block-store-api
+cloudx block-store-api (refactored — stateless, no privileged)
+================================================================
 
-Supported backends: LVM (block device) and/or Ceph RBD (network disk).
-File/qcow2 backend has been removed.
+Handles CRUD, status management, and volume type management.
+All storage backend operations (LVM/Ceph) are delegated to block-store-worker
+via RabbitMQ (AMQP) RPC.
 
-Configuration:
-  STORAGE_LVM_DRIVER=true|false      — enable LVM backend
-  STORAGE_CEPH_RBD_DRIVER=true|false — enable Ceph RBD backend
-  LVM_PV_NAME=/dev/sdb,/dev/sdc     — PVs for auto VG creation (LVM only)
-  LVM_VG_NAME=vg-cloudx              — VG name to create/use (LVM only)
-  CEPH_POOL=volumes                  — Ceph pool (Ceph only)
-  CEPH_CONF=/etc/ceph/ceph.conf
-  CEPH_KEYRING=                      — optional
+Queue used:
+  Cast → 'block-store'   for async ops (create, delete, extend, snapshot)
+  Call → 'block-store'   for sync ops (attach/detach via compute-worker)
 
-At least one driver must be enabled, otherwise the service refuses to start.
+Status transitions:
+  create_volume  → status='creating'  → worker → 'available' (or 'error')
+  delete_volume  → status='deleting'  → worker → (record deleted)
+  extend_volume  → status='extending' → worker → 'available'
+  snapshot       → status='creating'  → worker → 'available'
 """
 
 import logging
-import math
 import os
+import sys
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -32,26 +33,34 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 try:
     from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
-    from app.drivers import lvm, ceph
 except ImportError:
     from auth_middleware import CurrentUser, AdminUser, OptionalAuth
-    from drivers import lvm, ceph
 
-log = logging.getLogger(__name__)
+# Import shared RPC library
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+try:
+    from shared.rpc import RPCClient
+except ImportError:
+    from rpc import RPCClient
+
+log = logging.getLogger("block-store-api")
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-DATABASE_URL   = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
+DATABASE_URL    = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
 COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
 IMAGE_API_URL   = os.getenv("IMAGE_API_URL", "http://image-api:8000").rstrip("/")
+RABBITMQ_URL    = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@rabbitmq:5672/")
+RPC_CALL_TIMEOUT = int(os.getenv("RPC_CALL_TIMEOUT", "30"))
 
+# These are kept only for the health endpoint — the API itself doesn't use drivers
 STORAGE_LVM_DRIVER      = os.getenv("STORAGE_LVM_DRIVER", "false").lower() == "true"
 STORAGE_CEPH_RBD_DRIVER = os.getenv("STORAGE_CEPH_RBD_DRIVER", "false").lower() == "true"
-
 LVM_VG_NAME  = os.getenv("LVM_VG_NAME", "")
-LVM_PV_NAME  = os.getenv("LVM_PV_NAME", "")
 CEPH_POOL    = os.getenv("CEPH_POOL", "")
-CEPH_CONF    = os.getenv("CEPH_CONF", "/etc/ceph/ceph.conf")
+
+# ── RPC Client (initialized on startup) ───────────────────────────────────────
+_rpc: RPCClient | None = None
 
 # ── Database ───────────────────────────────────────────────────────────────────
 
@@ -69,26 +78,19 @@ def new_id() -> str:
 
 # ── ORM models ─────────────────────────────────────────────────────────────────
 
-# Valid disk_type values (informational — not enforced at hardware level)
 DISK_TYPES = ("sata_ssd", "sas_ssd", "nvme_ssd", "sata_hdd", "sas_hdd")
 
 
 class VolumeType(Base):
-    """Performance profile for volumes — analogous to AWS EBS volume types.
-
-    disk_type   : hardware tier hint (sata_ssd, sas_ssd, nvme_ssd, sata_hdd, sas_hdd)
-    backend     : storage infrastructure to use (lvm | ceph)
-    max_iops    : informational upper bound IOPS (not enforced by hypervisor)
-    max_throughput : informational upper bound MB/s (not enforced by hypervisor)
-    """
+    """Performance profile for volumes — analogous to AWS EBS volume types."""
     __tablename__ = "block_store_volume_types"
     id:             Mapped[str]      = mapped_column(String, primary_key=True, default=new_id)
     name:           Mapped[str]      = mapped_column(String, unique=True, index=True)
-    backend:        Mapped[str]      = mapped_column(String, default="lvm")    # lvm | ceph
-    disk_type:      Mapped[str]      = mapped_column(String, default="sata_ssd")  # informational
+    backend:        Mapped[str]      = mapped_column(String, default="lvm")
+    disk_type:      Mapped[str]      = mapped_column(String, default="sata_ssd")
     description:    Mapped[str|None] = mapped_column(String, nullable=True)
-    max_iops:       Mapped[int|None] = mapped_column(Integer, nullable=True)    # informational
-    max_throughput: Mapped[int|None] = mapped_column(Integer, nullable=True)    # MB/s, informational
+    max_iops:       Mapped[int|None] = mapped_column(Integer, nullable=True)
+    max_throughput: Mapped[int|None] = mapped_column(Integer, nullable=True)
     is_public:      Mapped[bool]     = mapped_column(Boolean, default=True)
     created_at:     Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -99,9 +101,9 @@ class Volume(Base):
     id:                    Mapped[str]      = mapped_column(String, primary_key=True, default=new_id)
     name:                  Mapped[str]      = mapped_column(String, unique=True, index=True)
     size_gb:               Mapped[int]      = mapped_column(Integer)
-    status:                Mapped[str]      = mapped_column(String, default="available")
+    status:                Mapped[str]      = mapped_column(String, default="creating")
     attached_to_server_id: Mapped[str|None] = mapped_column(String, nullable=True)
-    path:                  Mapped[str]      = mapped_column(String)   # /dev/VG/LV  or  rbd:pool/image
+    path:                  Mapped[str]      = mapped_column(String, default="")
     backend:               Mapped[str|None] = mapped_column(String, nullable=True, default="lvm")
     bootable:              Mapped[bool]     = mapped_column(Boolean, default=False)
     image_id:              Mapped[str|None] = mapped_column(String, nullable=True)
@@ -110,7 +112,8 @@ class Volume(Base):
     source_type:           Mapped[str|None] = mapped_column(String, nullable=True)
     target_device:         Mapped[str|None] = mapped_column(String, nullable=True)
     project_id:            Mapped[str|None] = mapped_column(String, nullable=True, index=True)
-    volume_type:           Mapped[str|None] = mapped_column(String, nullable=True, default="lvm")
+    volume_type:           Mapped[str|None] = mapped_column(String, nullable=True)
+    error_message:         Mapped[str|None] = mapped_column(String, nullable=True)
     created_at:            Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -121,8 +124,8 @@ class Snapshot(Base):
     name:       Mapped[str]      = mapped_column(String, unique=True, index=True)
     volume_id:  Mapped[str]      = mapped_column(String)
     size_gb:    Mapped[int]      = mapped_column(Integer)
-    status:     Mapped[str]      = mapped_column(String, default="available")
-    path:       Mapped[str]      = mapped_column(String)  # /dev/VG/snap or rbd:pool/image@snap
+    status:     Mapped[str]      = mapped_column(String, default="creating")
+    path:       Mapped[str]      = mapped_column(String, default="")
     backend:    Mapped[str|None] = mapped_column(String, nullable=True, default="lvm")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -132,13 +135,13 @@ class Snapshot(Base):
 class VolumeIn(BaseModel):
     name:          str
     size_gb:       int | None = Field(None, gt=0)
-    size:          int | None = None    # alias — CLI sends 'size'
+    size:          int | None = None
     image:         str | None = None
     image_id:      str | None = None
     snapshot:      str | None = None
     source_volume: str | None = None
     bootable:      bool = False
-    volume_type:   str | None = None   # volume type name; None → auto-select first available
+    volume_type:   str | None = None
 
 
 class VolumeInternalIn(BaseModel):
@@ -150,7 +153,7 @@ class VolumeInternalIn(BaseModel):
     source_volume_id: str | None = None
     bootable:         bool = False
     source_type:      str | None = None
-    volume_type:      str | None = None  # type name or None → auto-select
+    volume_type:      str | None = None
 
 
 class AttachIn(BaseModel):
@@ -166,6 +169,16 @@ class InternalAttachIn(BaseModel):
     target_device: str | None = None
 
 
+class VolumeTypeIn(BaseModel):
+    name:           str
+    description:    str | None = None
+    backend:        str = "lvm"
+    disk_type:      str = "sata_ssd"
+    max_iops:       int | None = None
+    max_throughput: int | None = None
+    is_public:      bool = True
+
+
 # ── FastAPI app ────────────────────────────────────────────────────────────────
 
 def get_db():
@@ -177,7 +190,7 @@ def get_db():
 
 
 DB = Annotated[Session, Depends(get_db)]
-app = FastAPI(title="cloudx block-store-api", version="2.0.0")
+app = FastAPI(title="cloudx block-store-api", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -191,39 +204,23 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup():
-    # 1. Validate at least one driver is enabled
+    global _rpc
     if not STORAGE_LVM_DRIVER and not STORAGE_CEPH_RBD_DRIVER:
         raise RuntimeError(
             "No storage driver is enabled! "
             "Set STORAGE_LVM_DRIVER=true and/or STORAGE_CEPH_RBD_DRIVER=true in .env"
         )
-
-    # 2. Create DB tables
     Base.metadata.create_all(bind=engine)
     ensure_columns()
+    _rpc = RPCClient(RABBITMQ_URL)
+    log.info("Block-store-api ready (RabbitMQ RPC mode)")
+    log.info("Drivers: lvm=%s ceph=%s", STORAGE_LVM_DRIVER, STORAGE_CEPH_RBD_DRIVER)
 
-    # 3. Initialize LVM: auto-create VG from PVs if needed
-    if STORAGE_LVM_DRIVER:
-        if not LVM_VG_NAME:
-            raise RuntimeError("STORAGE_LVM_DRIVER=true but LVM_VG_NAME is not set")
-        if not LVM_PV_NAME:
-            raise RuntimeError("STORAGE_LVM_DRIVER=true but LVM_PV_NAME is not set")
-        try:
-            lvm.ensure_vg()
-            log.info("LVM VG '%s' is ready", LVM_VG_NAME)
-        except Exception as exc:
-            log.error("LVM VG initialization failed: %s", exc)
-            raise RuntimeError(f"LVM VG initialization failed: {exc}") from exc
 
-    # 4. Validate Ceph connectivity (light check)
-    if STORAGE_CEPH_RBD_DRIVER:
-        if not CEPH_POOL:
-            raise RuntimeError("STORAGE_CEPH_RBD_DRIVER=true but CEPH_POOL is not set")
-        log.info("Ceph RBD driver enabled, pool='%s'", CEPH_POOL)
-
-    # 5. Volume types are NOT auto-bootstrapped.
-    # Admin must create volume types manually via: cloudx volume-type create
-    log.info("Block-store-api ready. No volume types are pre-created — admin must add them.")
+@app.on_event("shutdown")
+def shutdown():
+    if _rpc:
+        _rpc.close()
 
 
 def ensure_columns() -> None:
@@ -244,6 +241,7 @@ def ensure_columns() -> None:
                 ("project_id",       "VARCHAR"),
                 ("volume_type",      "VARCHAR"),
                 ("backend",          "VARCHAR DEFAULT 'lvm'"),
+                ("error_message",    "VARCHAR"),
             ):
                 if col not in columns:
                     conn.execute(text(f"ALTER TABLE block_store_volumes ADD COLUMN {col} {ddl}"))
@@ -265,16 +263,13 @@ def ensure_columns() -> None:
             ):
                 if col not in columns:
                     conn.execute(text(f"ALTER TABLE block_store_volume_types ADD COLUMN {col} {ddl}"))
-            # Remove stale auto-bootstrapped 'lvm' and 'ceph' types that have
-            # no meaningful disk_type — they were created by the old bootstrap logic.
-            # Only remove if disk_type is NULL (meaning created before migration).
             conn.execute(text(
                 "DELETE FROM block_store_volume_types "
                 "WHERE name IN ('lvm', 'ceph') AND disk_type IS NULL"
             ))
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── DB helpers ─────────────────────────────────────────────────────────────────
 
 def obj_to_dict(obj):
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
@@ -303,12 +298,6 @@ def require_snapshot(db: Session, ref: str) -> Snapshot:
 
 
 def _resolve_volume_type(db: Session, type_name: str | None) -> VolumeType:
-    """Resolve a volume type name to the VolumeType object.
-
-    - If type_name is given: look up by name, raise 400 if not found.
-    - If type_name is None: take the first available type ordered by name.
-    - If no types exist at all: raise 400 with a clear admin instruction.
-    """
     if type_name:
         vt = db.scalar(select(VolumeType).where(VolumeType.name == type_name))
         if not vt:
@@ -320,7 +309,6 @@ def _resolve_volume_type(db: Session, type_name: str | None) -> VolumeType:
             )
         return vt
 
-    # No type specified — pick the first one alphabetically
     vt = db.scalar(select(VolumeType).order_by(VolumeType.name))
     if not vt:
         raise HTTPException(
@@ -341,37 +329,7 @@ def _validate_backend(vt: VolumeType) -> None:
         raise HTTPException(status_code=400, detail="Ceph driver is disabled (STORAGE_CEPH_RBD_DRIVER=false)")
 
 
-# ── Image download helper ──────────────────────────────────────────────────────
-
-def image_get(ref: str) -> dict:
-    try:
-        response = requests.get(f"{IMAGE_API_URL}/images/{ref}", timeout=15)
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"image-api lookup failed: {exc}") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_response_detail(response))
-    return response.json()
-
-
-def download_image_to_tmp(image_ref: str) -> tuple[str, dict]:
-    """Download image to a temporary file. Returns (tmp_path, image_dict)."""
-    import tempfile
-    image = image_get(image_ref)
-    tmp = tempfile.NamedTemporaryFile(prefix=".img-", delete=False)
-    try:
-        with requests.get(f"{IMAGE_API_URL}/images/{image['id']}/download",
-                          timeout=300, stream=True) as response:
-            if response.status_code >= 400:
-                raise HTTPException(status_code=response.status_code, detail=_response_detail(response))
-            for chunk in response.iter_content(chunk_size=4 * 1024 * 1024):
-                if chunk:
-                    tmp.write(chunk)
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"image download failed: {exc}") from exc
-    finally:
-        tmp.close()
-    return tmp.name, image
-
+# ── HTTP helpers ───────────────────────────────────────────────────────────────
 
 def _response_detail(response: requests.Response) -> str:
     try:
@@ -390,253 +348,12 @@ def get_server(ref: str) -> dict:
     return response.json()
 
 
-def compute_post(path: str, payload: dict) -> dict:
-    try:
-        response = requests.post(f"{COMPUTE_API_URL}{path}", json=payload, timeout=60)
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_response_detail(response))
-    return response.json()
+# ── RPC helpers ────────────────────────────────────────────────────────────────
 
-
-# ── Volume creation (backend-routed) ──────────────────────────────────────────
-
-def _lv_name(volume_id: str) -> str:
-    """Generate a safe LV/RBD image name from a volume UUID."""
-    return f"vol-{volume_id.replace('-', '')[:24]}"
-
-
-def _snap_lv_name(snapshot_id: str) -> str:
-    return f"snap-{snapshot_id.replace('-', '')[:22]}"
-
-
-def _create_backend_volume(
-    volume_id: str,
-    backend: str,
-    size_gb: int,
-    image_ref: str | None = None,
-    snapshot: Snapshot | None = None,
-    source_volume: Volume | None = None,
-) -> str:
-    """
-    Create the actual block/network storage and return its path.
-
-    Path conventions:
-      LVM  → /dev/{VG}/{lv_name}
-      Ceph → rbd:{pool}/{image_name}
-    """
-    lv = _lv_name(volume_id)
-
-    # ── source: image ───────────────────────────────────────────────────────
-    if image_ref:
-        tmp_path, _ = download_image_to_tmp(image_ref)
-        try:
-            if backend == "lvm":
-                return lvm.create_from_source(lv, tmp_path, size_gb)
-            else:
-                return ceph.create_from_source(lv, tmp_path, size_gb)
-        finally:
-            import os as _os
-            try:
-                _os.unlink(tmp_path)
-            except Exception:
-                pass
-
-    # ── source: snapshot ────────────────────────────────────────────────────
-    if snapshot:
-        snap_lv = _snap_lv_name(snapshot.id)
-        if backend == "lvm":
-            # Restore from LVM snapshot: create new LV and dd from snapshot device
-            snap_dev = snapshot.path    # e.g. /dev/vg-cloudx/snap-xxx
-            dev = lvm.create(lv, size_gb)
-            import subprocess as _sp
-            _sp.run(["dd", f"if={snap_dev}", f"of={dev}", "bs=4M", "status=none"], check=False)
-            return dev
-        else:
-            # Ceph clone from snapshot
-            snap_img, _, snap_name = snapshot.path.partition("@")
-            snap_img = snap_img.replace("rbd:", "").split("/", 1)[-1]  # pool/image → image
-            return ceph.clone(snap_img, snap_name, lv)
-
-    # ── source: volume clone ────────────────────────────────────────────────
-    if source_volume:
-        if backend == "lvm":
-            src_dev = source_volume.path
-            dev = lvm.create(lv, size_gb)
-            import subprocess as _sp
-            _sp.run(["dd", f"if={src_dev}", f"of={dev}", "bs=4M", "status=none"], check=False)
-            return dev
-        else:
-            # Ceph: snapshot source then clone
-            snap_name = f"clone-src-{_snap_lv_name(volume_id)}"
-            src_img = source_volume.path.replace("rbd:", "").split("/", 1)[-1]
-            return ceph.clone(src_img, snap_name, lv)
-
-    # ── blank volume ────────────────────────────────────────────────────────
-    if backend == "lvm":
-        return lvm.create(lv, size_gb)
-    else:
-        return ceph.create(lv, size_gb)
-
-
-def create_volume_record(db: Session, payload: VolumeInternalIn) -> Volume:
-    if get_volume(db, payload.name):
-        raise HTTPException(status_code=409, detail="volume already exists")
-
-    source_count = sum(bool(x) for x in (
-        payload.image_ref or payload.image_id,
-        payload.snapshot_id,
-        payload.source_volume_id,
-    ))
-    if source_count > 1:
-        raise HTTPException(status_code=400, detail="choose only one source: image, snapshot, or source_volume")
-
-    # Resolve volume type
-    vt = _resolve_volume_type(db, payload.volume_type)
-    _validate_backend(vt)
-    backend = vt.backend
-
-    volume_id   = new_id()
-    image_id    = None
-    snapshot_id = None
-    source_volume_id = None
-    source_type = payload.source_type
-    bootable    = payload.bootable
-    snapshot    = None
-    source_vol  = None
-
-    image_ref = payload.image_ref or payload.image_id
-    if image_ref:
-        image_meta = image_get(image_ref)
-        image_id   = image_meta["id"]
-        image_ref  = image_ref   # keep original ref for download
-        source_type = "image"
-        bootable    = True
-    elif payload.snapshot_id:
-        snapshot = require_snapshot(db, payload.snapshot_id)
-        snapshot_id = snapshot.id
-        source_type = "snapshot"
-        # Inherit backend from snapshot
-        backend = snapshot.backend or backend
-    elif payload.source_volume_id:
-        source_vol = require_volume(db, payload.source_volume_id)
-        source_volume_id = source_vol.id
-        source_type = "volume"
-        bootable    = source_vol.bootable
-        backend     = source_vol.backend or backend
-    else:
-        source_type = source_type or "blank"
-
-    # Actually create the block storage
-    try:
-        path = _create_backend_volume(
-            volume_id=volume_id,
-            backend=backend,
-            size_gb=payload.size_gb,
-            image_ref=image_ref if (payload.image_ref or payload.image_id) else None,
-            snapshot=snapshot,
-            source_volume=source_vol,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"storage creation failed: {exc}") from exc
-
-    volume = Volume(
-        id=volume_id,
-        name=payload.name,
-        size_gb=payload.size_gb,
-        status="available",
-        path=path,
-        backend=backend,
-        bootable=bootable,
-        image_id=image_id,
-        snapshot_id=snapshot_id,
-        source_volume_id=source_volume_id,
-        source_type=source_type,
-        volume_type=vt.name,
-    )
-    db.add(volume)
-    db.commit()
-    db.refresh(volume)
-    return volume
-
-
-def _delete_backend_volume(volume: Volume) -> None:
-    """Delete the actual block/network storage."""
-    lv = _lv_name(volume.id)
-    try:
-        if volume.backend == "lvm":
-            lvm.delete(lv)
-        elif volume.backend == "ceph":
-            ceph.delete(lv)
-    except Exception as exc:
-        log.warning("Backend delete failed for volume %s (%s): %s", volume.name, volume.backend, exc)
-
-
-def _delete_backend_snapshot(snapshot: Snapshot) -> None:
-    lv = _snap_lv_name(snapshot.id)
-    try:
-        if snapshot.backend == "lvm":
-            lvm.delete(lv)
-        elif snapshot.backend == "ceph":
-            ceph.delete(lv)
-    except Exception as exc:
-        log.warning("Backend delete failed for snapshot %s: %s", snapshot.name, exc)
-
-
-# ── API Routes ─────────────────────────────────────────────────────────────────
-
-@app.get("/health")
-def health():
-    return {
-        "status": "ok",
-        "service": "block-store-api",
-        "drivers": {
-            "lvm":  STORAGE_LVM_DRIVER,
-            "ceph": STORAGE_CEPH_RBD_DRIVER,
-        },
-        "lvm_vg":   LVM_VG_NAME if STORAGE_LVM_DRIVER else None,
-        "ceph_pool": CEPH_POOL if STORAGE_CEPH_RBD_DRIVER else None,
-    }
-
-
-@app.post("/volumes", status_code=201)
-def create_volume(payload: VolumeIn, current: CurrentUser, db: DB):
-    size = payload.size_gb or payload.size
-    if not size:
-        raise HTTPException(status_code=400, detail="size_gb is required")
-    internal = VolumeInternalIn(
-        name=payload.name,
-        size_gb=size,
-        image_ref=payload.image or payload.image_id,
-        snapshot_id=payload.snapshot,
-        source_volume_id=payload.source_volume,
-        bootable=payload.bootable,
-        volume_type=payload.volume_type,
-    )
-    vol = create_volume_record(db, internal)
-    vol.project_id = current["project_id"]
-    db.commit()
-    db.refresh(vol)
-    return obj_to_dict(vol)
-
-
-@app.post("/internal/volumes", status_code=201)
-def create_volume_internal(payload: VolumeInternalIn, db: DB):
-    return obj_to_dict(create_volume_record(db, payload))
-
-
-@app.get("/volumes")
-def list_volumes(current: CurrentUser, db: DB):
-    q = select(Volume)
-    if current.get("role") != "admin":
-        q = q.where(Volume.project_id == current["project_id"])
-    return {"items": [obj_to_dict(v) for v in db.scalars(q.order_by(Volume.created_at)).all()]}
-
-
-@app.get("/volumes/{ref}")
-def show_volume(ref: str, _: CurrentUser, db: DB):
-    return obj_to_dict(require_volume(db, ref))
+def cast_to_worker(method: str, payload: dict) -> None:
+    """Fire-and-forget to block-store-worker via RabbitMQ."""
+    _rpc.cast("block-store", method, payload)
+    log.info("CAST block-store.%s for %s", method, payload.get("volume_id") or payload.get("snapshot_id", "?"))
 
 
 def next_target_device(db: Session, server_id: str) -> str:
@@ -656,8 +373,180 @@ def next_target_device(db: Session, server_id: str) -> str:
     raise HTTPException(status_code=409, detail="no available disk target devices for server")
 
 
+# ── Health ─────────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "service": "block-store-api",
+        "mode": "rpc",
+        "drivers": {
+            "lvm":  STORAGE_LVM_DRIVER,
+            "ceph": STORAGE_CEPH_RBD_DRIVER,
+        },
+        "lvm_vg":    LVM_VG_NAME if STORAGE_LVM_DRIVER else None,
+        "ceph_pool": CEPH_POOL if STORAGE_CEPH_RBD_DRIVER else None,
+    }
+
+
+# ── Volume CRUD ────────────────────────────────────────────────────────────────
+
+@app.post("/volumes", status_code=201)
+def create_volume(payload: VolumeIn, current: CurrentUser, db: DB):
+    size = payload.size_gb or payload.size
+    if not size:
+        raise HTTPException(status_code=400, detail="size_gb is required")
+    internal = VolumeInternalIn(
+        name=payload.name,
+        size_gb=size,
+        image_ref=payload.image or payload.image_id,
+        snapshot_id=payload.snapshot,
+        source_volume_id=payload.source_volume,
+        bootable=payload.bootable,
+        volume_type=payload.volume_type,
+    )
+    return _create_volume_record(db, internal, project_id=current["project_id"])
+
+
+@app.post("/internal/volumes", status_code=201)
+def create_volume_internal(payload: VolumeInternalIn, db: DB):
+    return _create_volume_record(db, payload)
+
+
+def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: str | None = None) -> dict:
+    if get_volume(db, payload.name):
+        raise HTTPException(status_code=409, detail="volume already exists")
+
+    source_count = sum(bool(x) for x in (
+        payload.image_ref or payload.image_id,
+        payload.snapshot_id,
+        payload.source_volume_id,
+    ))
+    if source_count > 1:
+        raise HTTPException(status_code=400, detail="choose only one source: image, snapshot, or source_volume")
+
+    vt = _resolve_volume_type(db, payload.volume_type)
+    _validate_backend(vt)
+    backend = vt.backend
+
+    volume_id = new_id()
+    image_ref = payload.image_ref or payload.image_id
+    source_type = payload.source_type
+    bootable    = payload.bootable
+    snapshot_id = None
+    source_volume_id = None
+
+    # Validate sources exist before creating record
+    if image_ref:
+        source_type = "image"
+        bootable = True
+    elif payload.snapshot_id:
+        snap = require_snapshot(db, payload.snapshot_id)
+        snapshot_id = snap.id
+        source_type = "snapshot"
+        backend = snap.backend or backend
+    elif payload.source_volume_id:
+        src = require_volume(db, payload.source_volume_id)
+        source_volume_id = src.id
+        source_type = "volume"
+        bootable = src.bootable
+        backend = src.backend or backend
+    else:
+        source_type = source_type or "blank"
+
+    # Create DB record immediately with status='creating'
+    volume = Volume(
+        id=volume_id,
+        name=payload.name,
+        size_gb=payload.size_gb,
+        status="creating",
+        path="",                          # worker fills this in
+        backend=backend,
+        bootable=bootable,
+        image_id=image_ref or None,
+        snapshot_id=snapshot_id,
+        source_volume_id=source_volume_id,
+        source_type=source_type,
+        volume_type=vt.name,
+        project_id=project_id,
+    )
+    db.add(volume)
+    db.commit()
+    db.refresh(volume)
+
+    # Cast to worker for actual storage creation
+    cast_to_worker("create_volume", {
+        "volume_id":       volume_id,
+        "name":            payload.name,
+        "size_gb":         payload.size_gb,
+        "backend":         backend,
+        "image_ref":       image_ref,
+        "snapshot_id":     snapshot_id,
+        "source_volume_id": source_volume_id,
+        "bootable":        bootable,
+        "_image_api_url":  IMAGE_API_URL,
+    })
+
+    return obj_to_dict(volume)
+
+
+@app.get("/volumes")
+def list_volumes(current: CurrentUser, db: DB):
+    q = select(Volume)
+    if current.get("role") != "admin":
+        q = q.where(Volume.project_id == current["project_id"])
+    return {"items": [obj_to_dict(v) for v in db.scalars(q.order_by(Volume.created_at)).all()]}
+
+
+@app.get("/volumes/{ref}")
+def show_volume(ref: str, _: CurrentUser, db: DB):
+    return obj_to_dict(require_volume(db, ref))
+
+
+@app.delete("/volumes/{ref}")
+def delete_volume(ref: str, _: CurrentUser, db: DB):
+    volume = require_volume(db, ref)
+    if volume.status == "in-use":
+        raise HTTPException(status_code=409, detail="detach volume before delete")
+    volume.status = "deleting"
+    db.commit()
+    # Cast to worker for backend cleanup, then conductor will delete the record
+    cast_to_worker("delete_volume", {
+        "volume_id": volume.id,
+        "name":      volume.name,
+        "path":      volume.path,
+        "backend":   volume.backend,
+    })
+    return {"status": "deleting", "id": volume.id, "name": volume.name}
+
+
+@app.post("/volumes/{ref}/extend")
+def extend_volume(ref: str, payload: dict, _: CurrentUser, db: DB):
+    volume = require_volume(db, ref)
+    if volume.status == "in-use":
+        raise HTTPException(status_code=409, detail="cannot extend an attached volume")
+    new_size = payload.get("new_size") or payload.get("new_size_gb")
+    if not new_size or new_size <= volume.size_gb:
+        raise HTTPException(status_code=400, detail=f"new_size must be > current size ({volume.size_gb} GB)")
+    volume.status = "extending"
+    db.commit()
+    cast_to_worker("extend_volume", {
+        "volume_id": volume.id,
+        "name":      volume.name,
+        "path":      volume.path,
+        "backend":   volume.backend,
+        "new_size_gb": new_size,
+    })
+    db.refresh(volume)
+    return obj_to_dict(volume)
+
+
+# ── Internal volume attachment (called by compute-worker) ──────────────────────
+
 @app.post("/internal/volumes/{ref}/attach-server")
 def internal_attach_server(ref: str, payload: InternalAttachIn, db: DB):
+    """Called by compute-worker after spawning a VM to mark root volume as in-use."""
     volume = require_volume(db, ref)
     if volume.status == "in-use" and volume.attached_to_server_id != payload.server_id:
         raise HTTPException(status_code=409, detail="volume is already attached")
@@ -673,6 +562,7 @@ def internal_attach_server(ref: str, payload: InternalAttachIn, db: DB):
 
 @app.post("/internal/volumes/{ref}/detach-server")
 def internal_detach_server(ref: str, db: DB):
+    """Called by compute-worker to release a volume after VM destruction."""
     volume = require_volume(db, ref)
     volume.attached_to_server_id = None
     volume.target_device = None
@@ -682,57 +572,18 @@ def internal_detach_server(ref: str, db: DB):
     return obj_to_dict(volume)
 
 
-@app.post("/volumes/{ref}/attach")
-def attach_volume(ref: str, payload: AttachIn, db: DB):
-    volume = require_volume(db, ref)
-    if volume.status == "in-use":
-        raise HTTPException(status_code=409, detail="volume is already attached")
-    server = get_server(payload.server)
-    if server.get("status") not in {"ACTIVE", "SHUTOFF"}:
-        raise HTTPException(
-            status_code=409,
-            detail=f"VM must be ACTIVE or SHUTOFF before attach; current status is {server.get('status')}",
-        )
-    target_device = next_target_device(db, server["id"])
-    compute_post(
-        f"/servers/{server['id']}/volumes/attach",
-        {
-            "volume_id":   volume.id,
-            "volume_name": volume.name,
-            "path":        volume.path,
-            "backend":     volume.backend or "lvm",
-            "target_dev":  target_device,
-        },
-    )
-    volume.attached_to_server_id = server["id"]
-    volume.target_device = target_device
-    volume.status = "in-use"
+@app.post("/servers/{server_id}/volumes/detach-all")
+def detach_server_volumes(server_id: str, db: DB):
+    """Release all volumes attached to a server (called during VM delete)."""
+    volumes = db.scalars(select(Volume).where(Volume.attached_to_server_id == server_id)).all()
+    detached = []
+    for volume in volumes:
+        volume.attached_to_server_id = None
+        volume.target_device = None
+        volume.status = "available"
+        detached.append(obj_to_dict(volume))
     db.commit()
-    db.refresh(volume)
-    return obj_to_dict(volume)
-
-
-@app.post("/volumes/{ref}/detach")
-def detach_volume(ref: str, db: DB):
-    volume = require_volume(db, ref)
-    if volume.status != "in-use" or not volume.attached_to_server_id:
-        raise HTTPException(status_code=409, detail="volume is not attached")
-    compute_post(
-        f"/servers/{volume.attached_to_server_id}/volumes/detach",
-        {
-            "volume_id":   volume.id,
-            "volume_name": volume.name,
-            "path":        volume.path,
-            "backend":     volume.backend or "lvm",
-            "target_dev":  volume.target_device,
-        },
-    )
-    volume.attached_to_server_id = None
-    volume.target_device = None
-    volume.status = "available"
-    db.commit()
-    db.refresh(volume)
-    return obj_to_dict(volume)
+    return {"server_id": server_id, "detached": detached}
 
 
 @app.post("/volumes/{ref}/force-detach")
@@ -746,49 +597,70 @@ def force_detach_volume(ref: str, db: DB):
     return obj_to_dict(volume)
 
 
-@app.post("/servers/{server_id}/volumes/detach-all")
-def detach_server_volumes(server_id: str, db: DB):
-    volumes = db.scalars(select(Volume).where(Volume.attached_to_server_id == server_id)).all()
-    detached = []
-    for volume in volumes:
-        volume.attached_to_server_id = None
-        volume.target_device = None
-        volume.status = "available"
-        detached.append(obj_to_dict(volume))
-    db.commit()
-    return {"server_id": server_id, "detached": detached}
-
-
-@app.delete("/volumes/{ref}")
-def delete_volume(ref: str, _: CurrentUser, db: DB):
+@app.post("/volumes/{ref}/attach")
+def attach_volume(ref: str, payload: AttachIn, db: DB):
+    """Hotplug attach via compute-api → compute-worker (hotplug path)."""
     volume = require_volume(db, ref)
     if volume.status == "in-use":
-        raise HTTPException(status_code=409, detail="detach volume before delete")
-    _delete_backend_volume(volume)
-    db.delete(volume)
-    db.commit()
-    return {"status": "deleted", "id": volume.id, "name": volume.name}
-
-
-@app.post("/volumes/{ref}/extend")
-def extend_volume(ref: str, payload: dict, _: CurrentUser, db: DB):
-    volume = require_volume(db, ref)
-    if volume.status == "in-use":
-        raise HTTPException(status_code=409, detail="cannot extend an attached volume")
-    new_size = payload.get("new_size") or payload.get("new_size_gb")
-    if not new_size or new_size <= volume.size_gb:
-        raise HTTPException(status_code=400, detail=f"new_size must be > current size ({volume.size_gb} GB)")
-    lv = _lv_name(volume.id)
+        raise HTTPException(status_code=409, detail="volume is already attached")
+    server = get_server(payload.server)
+    if server.get("status") not in {"ACTIVE", "SHUTOFF"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"VM must be ACTIVE or SHUTOFF before attach; current status is {server.get('status')}",
+        )
+    target_device = next_target_device(db, server["id"])
+    # Call compute-api which casts to compute-worker
     try:
-        if volume.backend == "lvm":
-            lvm.extend(lv, new_size)
-        elif volume.backend == "ceph":
-            ceph.extend(lv, new_size)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown backend: {volume.backend}")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"extend failed: {exc}") from exc
-    volume.size_gb = new_size
+        resp = requests.post(
+            f"{COMPUTE_API_URL}/servers/{server['id']}/volumes/attach",
+            json={
+                "volume_id":   volume.id,
+                "volume_name": volume.name,
+                "path":        volume.path,
+                "backend":     volume.backend or "lvm",
+                "target_dev":  target_device,
+            },
+            timeout=60,
+        )
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"compute-api attach failed: {_response_detail(resp)}")
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    volume.attached_to_server_id = server["id"]
+    volume.target_device = target_device
+    volume.status = "in-use"
+    db.commit()
+    db.refresh(volume)
+    return obj_to_dict(volume)
+
+
+@app.post("/volumes/{ref}/detach")
+def detach_volume(ref: str, db: DB):
+    """Hotplug detach via compute-api → compute-worker (hotplug path)."""
+    volume = require_volume(db, ref)
+    if volume.status != "in-use" or not volume.attached_to_server_id:
+        raise HTTPException(status_code=409, detail="volume is not attached")
+    try:
+        resp = requests.post(
+            f"{COMPUTE_API_URL}/servers/{volume.attached_to_server_id}/volumes/detach",
+            json={
+                "volume_id":   volume.id,
+                "volume_name": volume.name,
+                "path":        volume.path,
+                "backend":     volume.backend or "lvm",
+                "target_dev":  volume.target_device,
+            },
+            timeout=60,
+        )
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"compute-api detach failed: {_response_detail(resp)}")
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    volume.attached_to_server_id = None
+    volume.target_device = None
+    volume.status = "available"
     db.commit()
     db.refresh(volume)
     return obj_to_dict(volume)
@@ -812,33 +684,32 @@ def _do_create_snapshot(db: Session, volume_ref: str, snap_name: str) -> dict:
     source = require_volume(db, volume_ref)
 
     snapshot_id = new_id()
-    lv          = _lv_name(source.id)
-    snap_lv     = _snap_lv_name(snapshot_id)
-    # Snapshot COW size = 20% of volume size, minimum 1 GB
+    import math
     cow_gb = max(1, math.ceil(source.size_gb * 0.2))
 
-    try:
-        if source.backend == "lvm":
-            path = lvm.snapshot(lv, snap_lv, cow_gb)
-        elif source.backend == "ceph":
-            path = ceph.snapshot(lv, snap_lv, cow_gb)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown backend: {source.backend}")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"snapshot failed: {exc}") from exc
-
+    # Create record with status='creating'
     snap = Snapshot(
         id=snapshot_id,
         name=snap_name,
         volume_id=source.id,
         size_gb=source.size_gb,
-        status="available",
-        path=path,
+        status="creating",
+        path="",
         backend=source.backend,
     )
     db.add(snap)
     db.commit()
     db.refresh(snap)
+
+    cast_to_worker("create_snapshot", {
+        "snapshot_id":  snapshot_id,
+        "name":         snap_name,
+        "volume_id":    source.id,
+        "volume_path":  source.path,
+        "backend":      source.backend,
+        "cow_gb":       cow_gb,
+    })
+
     return obj_to_dict(snap)
 
 
@@ -855,65 +726,53 @@ def show_snapshot(ref: str, _: CurrentUser, db: DB):
 @app.delete("/snapshots/{ref}")
 def delete_snapshot(ref: str, _: CurrentUser, db: DB):
     snapshot = require_snapshot(db, ref)
-    _delete_backend_snapshot(snapshot)
-    db.delete(snapshot)
+    snapshot.status = "deleting"
     db.commit()
-    return {"status": "deleted", "id": snapshot.id, "name": snapshot.name}
+    cast_to_worker("delete_snapshot", {
+        "snapshot_id": snapshot.id,
+        "name":        snapshot.name,
+        "path":        snapshot.path,
+        "backend":     snapshot.backend,
+    })
+    return {"status": "deleting", "id": snapshot.id, "name": snapshot.name}
 
 
 # ── Backup ─────────────────────────────────────────────────────────────────────
 
 @app.post("/volumes/{ref}/backup")
 def backup_volume(ref: str, payload: SnapshotIn, _: CurrentUser, db: DB):
-    """Create a snapshot as backup (re-uses snapshot logic with backup_ prefix)."""
+    """Create a snapshot as backup (async)."""
     volume = require_volume(db, ref)
     backup_id = new_id()
-    snap_lv   = f"bkp-{backup_id.replace('-', '')[:22]}"
-    lv        = _lv_name(volume.id)
-    cow_gb    = max(1, math.ceil(volume.size_gb * 0.2))
+    import math
+    cow_gb = max(1, math.ceil(volume.size_gb * 0.2))
 
-    try:
-        if volume.backend == "lvm":
-            path = lvm.snapshot(lv, snap_lv, cow_gb)
-        elif volume.backend == "ceph":
-            path = ceph.snapshot(lv, snap_lv, cow_gb)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown backend: {volume.backend}")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"backup failed: {exc}") from exc
+    snap = Snapshot(
+        id=backup_id,
+        name=f"bkp-{payload.name}",
+        volume_id=volume.id,
+        size_gb=volume.size_gb,
+        status="creating",
+        path="",
+        backend=volume.backend,
+    )
+    db.add(snap)
+    db.commit()
+    db.refresh(snap)
 
-    return {
-        "id":        backup_id,
-        "name":      payload.name,
-        "volume_id": volume.id,
-        "size_gb":   volume.size_gb,
-        "path":      path,
-        "backend":   volume.backend,
-        "status":    "available",
-    }
+    cast_to_worker("create_snapshot", {
+        "snapshot_id": backup_id,
+        "name":        f"bkp-{backup_id.replace('-', '')[:22]}",
+        "volume_id":   volume.id,
+        "volume_path": volume.path,
+        "backend":     volume.backend,
+        "cow_gb":      cow_gb,
+    })
+
+    return obj_to_dict(snap)
 
 
 # ── Volume Types ───────────────────────────────────────────────────────────────
-#
-# Volume types are AWS EBS-style performance profiles.
-# They are NOT auto-created on startup — admin must create them.
-#
-# Each volume type specifies:
-#   name           : user-facing label  (gp2, gp3, io1, io2, sc1, st1 ...)
-#   disk_type      : hardware tier hint (sata_ssd, sas_ssd, nvme_ssd, sata_hdd, sas_hdd)
-#   backend        : storage driver     (lvm | ceph)
-#   max_iops       : informational IOPS upper bound
-#   max_throughput : informational throughput upper bound (MB/s)
-
-class VolumeTypeIn(BaseModel):
-    name:           str
-    description:    str | None = None
-    disk_type:      str        = "sata_ssd"   # sata_ssd|sas_ssd|nvme_ssd|sata_hdd|sas_hdd
-    backend:        str        = "lvm"         # lvm | ceph
-    max_iops:       int | None = None          # informational
-    max_throughput: int | None = None          # MB/s, informational
-    is_public:      bool       = True
-
 
 def _vt_to_dict(vt: VolumeType) -> dict:
     return {c.name: getattr(vt, c.name) for c in vt.__table__.columns}
@@ -921,23 +780,15 @@ def _vt_to_dict(vt: VolumeType) -> dict:
 
 @app.post("/volume-types", status_code=201)
 def create_volume_type(payload: VolumeTypeIn, _: AdminUser, db: DB):
-    # Validate backend
-    if payload.backend not in ("lvm", "ceph"):
-        raise HTTPException(status_code=400, detail="backend must be 'lvm' or 'ceph'")
-    if payload.backend == "lvm" and not STORAGE_LVM_DRIVER:
-        raise HTTPException(status_code=400, detail="LVM driver is disabled (STORAGE_LVM_DRIVER=false)")
-    if payload.backend == "ceph" and not STORAGE_CEPH_RBD_DRIVER:
-        raise HTTPException(status_code=400, detail="Ceph driver is disabled (STORAGE_CEPH_RBD_DRIVER=false)")
-    # Validate disk_type
     if payload.disk_type not in DISK_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=f"disk_type '{payload.disk_type}' is not valid. Choose from: {', '.join(DISK_TYPES)}"
+            detail=f"Invalid disk_type '{payload.disk_type}'. Valid values: {', '.join(DISK_TYPES)}"
         )
-    # Duplicate check
+    if payload.backend not in ("lvm", "ceph"):
+        raise HTTPException(status_code=400, detail="backend must be 'lvm' or 'ceph'")
     if db.scalar(select(VolumeType).where(VolumeType.name == payload.name)):
-        raise HTTPException(status_code=409, detail=f"Volume type '{payload.name}' already exists")
-
+        raise HTTPException(status_code=409, detail=f"volume type '{payload.name}' already exists")
     vt = VolumeType(**payload.model_dump())
     db.add(vt)
     db.commit()
@@ -947,44 +798,25 @@ def create_volume_type(payload: VolumeTypeIn, _: AdminUser, db: DB):
 
 @app.get("/volume-types")
 def list_volume_types(db: DB, _: CurrentUser = None):
-    types = db.scalars(select(VolumeType).order_by(VolumeType.name)).all()
-    return {"items": [_vt_to_dict(vt) for vt in types]}
+    return {"items": [_vt_to_dict(vt) for vt in db.scalars(select(VolumeType).order_by(VolumeType.name)).all()]}
 
 
 @app.get("/volume-types/{ref}")
 def show_volume_type(ref: str, _: CurrentUser, db: DB):
     vt = db.get(VolumeType, ref) or db.scalar(select(VolumeType).where(VolumeType.name == ref))
     if not vt:
-        raise HTTPException(status_code=404, detail="volume type not found")
+        raise HTTPException(status_code=404, detail=f"volume type '{ref}' not found")
     return _vt_to_dict(vt)
 
 
-@app.patch("/volume-types/{ref}")
-def update_volume_type(ref: str, payload: dict, _: AdminUser, db: DB):
-    """Update description, max_iops, max_throughput, is_public of a volume type."""
-    vt = db.get(VolumeType, ref) or db.scalar(select(VolumeType).where(VolumeType.name == ref))
-    if not vt:
-        raise HTTPException(status_code=404, detail="volume type not found")
-    allowed = {"description", "max_iops", "max_throughput", "is_public"}
-    for key, val in payload.items():
-        if key in allowed:
-            setattr(vt, key, val)
-    db.commit()
-    db.refresh(vt)
-    return _vt_to_dict(vt)
-
-
-@app.delete("/volume-types/{ref}", status_code=204)
+@app.delete("/volume-types/{ref}")
 def delete_volume_type(ref: str, _: AdminUser, db: DB):
     vt = db.get(VolumeType, ref) or db.scalar(select(VolumeType).where(VolumeType.name == ref))
     if not vt:
-        raise HTTPException(status_code=404, detail="volume type not found")
-    # Prevent deletion if volumes are using this type
+        raise HTTPException(status_code=404, detail=f"volume type '{ref}' not found")
     in_use = db.scalar(select(Volume).where(Volume.volume_type == vt.name))
     if in_use:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot delete volume type '{vt.name}': it is in use by one or more volumes"
-        )
+        raise HTTPException(status_code=409, detail=f"volume type '{vt.name}' is in use by existing volumes")
     db.delete(vt)
     db.commit()
+    return {"status": "deleted", "name": vt.name}

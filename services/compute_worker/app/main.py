@@ -1,46 +1,105 @@
-from pathlib import Path
+"""
+cloudx Compute Worker — AMQP Consumer (nova-compute equivalent)
+================================================================
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+Consumes messages from RabbitMQ queue ``compute``.
+Uses existing libvirt/worker modules for hypervisor operations.
+DB updates go through the Conductor service via RPC.
 
-from . import libvirt_driver, volume_manager, worker
-from .config import LIBVIRT_URI, OVS_BRIDGE
-from .utils import run, tool_available
+All lifecycle operations (spawn, delete, start, stop, etc.) are async
+RPC Cast handlers. Console log and VNC info are RPC Call handlers
+(they return a reply to the caller).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+import time
+
+import requests
+
+# Append parent so shared/ is importable
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from shared.rpc import RPCClient, RPCConsumer  # noqa: E402
+
+from . import libvirt_driver, volume_manager, worker  # noqa: E402
+from .config import LIBVIRT_URI, OVS_BRIDGE, IMAGE_API_URL, BLOCK_STORE_API_URL  # noqa: E402
+from .utils import run, tool_available  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@rabbitmq:5672/")
+LOG_LEVEL    = os.getenv("LOG_LEVEL", "INFO")
+
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
+    format="%(asctime)s [%(name)s] %(levelname)s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("compute-worker")
+
+# RPC client for calling conductor
+_rpc = RPCClient(RABBITMQ_URL)
 
 
-class ServerAction(BaseModel):
-    name: str | None = None
-    image_id: str | None = None
-    image: dict | None = None
-    flavor: str | None = None
-    port: dict | None = None
-    keypair_name: str | None = None
-    public_key_snapshot: str | None = None
-    libvirt_domain_name: str | None = None
-    instance_dir: str | None = None
-    disk_path: str | None = None
-    tap_name: str | None = None
-    mac_address: str | None = None
-    vcpus: int | None = None
-    ram_mb: int | None = None
-    disk_gb: int | None = None
-    flavor_name: str | None = None
-    flavor_snapshot: dict | None = None
-    volume: dict | None = None
-    reboot_type: str | None = "soft"
-    new_vcpus: int | None = None
-    new_ram_mb: int | None = None
-    rescue_image_id: str | None = None
-    password: str | None = None
-    username: str | None = "root"
-    lines: int | None = 50
-    user_data: str | None = None
+# ═══════════════════════════════════════════════════════════════════════════════
+# Conductor helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def conductor_update_server(server_id: str, fields: dict) -> None:
+    """Call conductor to update server fields (status, host, mac, etc.)."""
+    _rpc.cast("conductor", "update_server", {
+        "server_id": server_id,
+        "fields": fields,
+    })
 
 
-app = FastAPI(title="cloudx compute-worker", version="1.0.0")
+def conductor_mark_error(server_id: str, error_message: str) -> None:
+    """Call conductor to mark server as ERROR."""
+    _rpc.cast("conductor", "mark_server_error", {
+        "server_id": server_id,
+        "error_message": error_message,
+    })
 
 
-def preflight() -> dict:
+def conductor_delete_record(server_id: str) -> None:
+    """Call conductor to hard-delete server record."""
+    _rpc.cast("conductor", "delete_server_record", {
+        "server_id": server_id,
+    })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HTTP helpers (for calling other services)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _http_post(url: str, payload: dict, timeout: int = 60) -> dict | None:
+    try:
+        response = requests.post(url, json=payload, timeout=timeout)
+        if response.status_code < 400:
+            return response.json()
+        log.warning("HTTP POST %s → %d: %s", url, response.status_code, response.text[:200])
+    except Exception as exc:
+        log.warning("HTTP POST %s failed: %s", url, exc)
+    return None
+
+
+def _http_delete(url: str, timeout: int = 20) -> None:
+    try:
+        requests.delete(url, timeout=timeout)
+    except Exception:
+        pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Health check
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def handle_health(args: dict) -> dict:
+    """RPC Call — return worker health status."""
     kvm_available = Path("/dev/kvm").exists()
     tun_available = Path("/dev/net/tun").exists()
     qemu_img_available = tool_available("qemu-img")
@@ -72,131 +131,290 @@ def preflight() -> dict:
     }
 
 
-def run_worker(fn, *args):
+# ═══════════════════════════════════════════════════════════════════════════════
+# Lifecycle handlers (RPC Cast — no reply expected)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def handle_build_instance(args: dict) -> None:
+    """Spawn a new VM via libvirt. Orchestrates full build flow."""
+    server_id = args.get("id")
+    root_volume_id = args.get("_root_volume_id")
+    block_store_url = args.get("_block_store_url", BLOCK_STORE_API_URL)
     try:
-        return fn(*args)
+        result = worker.spawn_server(server_id, args)
+
+        # Update server with hypervisor details (host, mac, tap, etc.)
+        update_fields = {}
+        for field in ("host", "instance_dir", "disk_path", "config_drive_path",
+                      "libvirt_domain_name", "tap_name", "mac_address", "ip_address"):
+            if field in result:
+                update_fields[field] = result[field]
+
+        # Attach root volume via block-store API
+        if root_volume_id:
+            _http_post(
+                f"{block_store_url}/internal/volumes/{root_volume_id}/attach-server",
+                {"server_id": server_id, "target_device": "sda"},
+            )
+
+        # Set status ACTIVE via conductor
+        update_fields["status"] = "ACTIVE"
+        update_fields["error_message"] = None
+        conductor_update_server(server_id, update_fields)
+
+        log.info("VM %s spawned successfully", server_id)
+
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        log.error("Failed to spawn VM %s: %s", server_id, exc, exc_info=True)
+        conductor_mark_error(server_id, str(exc))
 
 
-@app.get("/health")
-def health():
-    return preflight()
+def handle_delete_instance(args: dict) -> None:
+    """Destroy a VM and clean up resources."""
+    server_id = args.get("id")
+    original_name = args.get("_original_name", "")
+    keep_root_volume = args.get("_keep_root_volume", False)
+    root_volume_id = args.get("_root_volume_id")
+    port_id = args.get("_port_id")
+    extra_port_ids = args.get("_extra_port_ids", "")
+    block_store_url = args.get("_block_store_url", BLOCK_STORE_API_URL)
+    networking_url = args.get("_networking_url", "http://localhost:8001")
+
+    try:
+        # 1. Destroy libvirt domain
+        try:
+            worker.delete_server(server_id, args)
+        except Exception as exc:
+            log.warning("Worker delete for %s: %s", server_id, exc)
+
+        # 2. Release volumes via block-store API
+        _http_post(f"{block_store_url}/servers/{server_id}/volumes/detach-all", {})
+        if root_volume_id and not keep_root_volume:
+            _http_delete(f"{block_store_url}/volumes/{root_volume_id}")
+
+        # 3. Delete ports via networking API
+        port_ids = [port_id] if port_id else []
+        if extra_port_ids:
+            port_ids.extend([p for p in extra_port_ids.split(",") if p.strip()])
+        for pid in port_ids:
+            if pid:
+                _http_delete(f"{networking_url}/ports/{pid}")
+
+        # 4. Update status via conductor
+        conductor_update_server(server_id, {
+            "status": "DELETED",
+        })
+
+        log.info("VM %s deleted successfully", server_id)
+
+    except Exception as exc:
+        log.error("Failed to delete VM %s: %s", server_id, exc, exc_info=True)
+        conductor_mark_error(server_id, f"delete failed: {exc}")
 
 
-# ── Lifecycle ─────────────────────────────────────────────────────────────────
-
-@app.post("/servers/{server_id}/spawn")
-def spawn(server_id: str, payload: ServerAction):
-    return run_worker(worker.spawn_server, server_id, payload.model_dump(exclude_none=True))
-
-
-@app.post("/servers/{server_id}/start")
-def start(server_id: str, payload: ServerAction):
-    return run_worker(worker.start_server, payload.model_dump(exclude_none=True))
-
-
-@app.post("/servers/{server_id}/stop")
-def stop(server_id: str, payload: ServerAction):
-    return run_worker(worker.stop_server, payload.model_dump(exclude_none=True))
+def _simple_action(method_name: str, success_status: str, args: dict) -> None:
+    """Generic handler for simple lifecycle actions (start/stop/etc.)."""
+    server_id = args.get("id")
+    try:
+        fn = getattr(worker, method_name)
+        fn(args)
+        conductor_update_server(server_id, {"status": success_status, "error_message": None})
+        log.info("%s %s → %s", method_name, server_id, success_status)
+    except Exception as exc:
+        log.error("%s %s failed: %s", method_name, server_id, exc, exc_info=True)
+        conductor_mark_error(server_id, str(exc))
 
 
-@app.post("/servers/{server_id}/reboot")
-def reboot(server_id: str, payload: ServerAction):
-    return run_worker(worker.reboot_server, payload.model_dump(exclude_none=True))
+def handle_start(args: dict) -> None:
+    _simple_action("start_server", "ACTIVE", args)
+
+def handle_stop(args: dict) -> None:
+    _simple_action("stop_server", "SHUTOFF", args)
+
+def handle_reboot(args: dict) -> None:
+    _simple_action("reboot_server", "ACTIVE", args)
+
+def handle_pause(args: dict) -> None:
+    _simple_action("pause_server", "PAUSED", args)
+
+def handle_resume(args: dict) -> None:
+    _simple_action("resume_server", "ACTIVE", args)
+
+def handle_suspend(args: dict) -> None:
+    _simple_action("suspend_server", "SUSPENDED", args)
+
+def handle_unsuspend(args: dict) -> None:
+    _simple_action("unsuspend_server", "ACTIVE", args)
+
+def handle_resize(args: dict) -> None:
+    _simple_action("resize_server", "ACTIVE", args)
 
 
-@app.post("/servers/{server_id}/pause")
-def pause(server_id: str, payload: ServerAction):
-    return run_worker(worker.pause_server, payload.model_dump(exclude_none=True))
+def handle_rebuild(args: dict) -> None:
+    server_id = args.get("id")
+    try:
+        worker.rebuild_server(server_id, args)
+        conductor_update_server(server_id, {"status": "ACTIVE", "error_message": None})
+    except Exception as exc:
+        log.error("rebuild %s failed: %s", server_id, exc, exc_info=True)
+        conductor_mark_error(server_id, str(exc))
 
 
-@app.post("/servers/{server_id}/resume")
-def resume(server_id: str, payload: ServerAction):
-    return run_worker(worker.resume_server, payload.model_dump(exclude_none=True))
+def handle_rescue(args: dict) -> None:
+    server_id = args.get("id")
+    try:
+        worker.rescue_server(server_id, args)
+        # status stays RESCUE (already set by API)
+        log.info("rescue %s done", server_id)
+    except Exception as exc:
+        log.error("rescue %s failed: %s", server_id, exc, exc_info=True)
+        conductor_mark_error(server_id, str(exc))
 
 
-@app.post("/servers/{server_id}/suspend")
-def suspend(server_id: str, payload: ServerAction):
-    return run_worker(worker.suspend_server, payload.model_dump(exclude_none=True))
+def handle_unrescue(args: dict) -> None:
+    server_id = args.get("id")
+    try:
+        worker.unrescue_server(server_id, args)
+        conductor_update_server(server_id, {"status": "ACTIVE", "error_message": None})
+    except Exception as exc:
+        log.error("unrescue %s failed: %s", server_id, exc, exc_info=True)
+        conductor_mark_error(server_id, str(exc))
 
 
-@app.post("/servers/{server_id}/unsuspend")
-def unsuspend(server_id: str, payload: ServerAction):
-    return run_worker(worker.unsuspend_server, payload.model_dump(exclude_none=True))
+def handle_set_password(args: dict) -> None:
+    server_id = args.get("id")
+    try:
+        worker.set_server_password(args)
+        log.info("password set for %s", server_id)
+    except Exception as exc:
+        log.error("set_password %s failed: %s", server_id, exc, exc_info=True)
 
 
-@app.post("/servers/{server_id}/resize")
-def resize(server_id: str, payload: ServerAction):
-    return run_worker(worker.resize_server, payload.model_dump(exclude_none=True))
+# ═══════════════════════════════════════════════════════════════════════════════
+# RPC Call handlers (synchronous — must return a reply)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def handle_get_logs(args: dict) -> dict:
+    """RPC Call — return console log output."""
+    return worker.get_server_logs(args)
 
 
-@app.post("/servers/{server_id}/rebuild")
-def rebuild(server_id: str, payload: ServerAction):
-    return run_worker(worker.rebuild_server, server_id, payload.model_dump(exclude_none=True))
-
-
-@app.post("/servers/{server_id}/rescue")
-def rescue(server_id: str, payload: ServerAction):
-    return run_worker(worker.rescue_server, server_id, payload.model_dump(exclude_none=True))
-
-
-@app.post("/servers/{server_id}/unrescue")
-def unrescue(server_id: str, payload: ServerAction):
-    return run_worker(worker.unrescue_server, server_id, payload.model_dump(exclude_none=True))
-
-
-@app.post("/servers/{server_id}/password")
-def set_password(server_id: str, payload: ServerAction):
-    return run_worker(worker.set_server_password, payload.model_dump(exclude_none=True))
-
-
-@app.post("/servers/{server_id}/logs")
-def get_logs(server_id: str, payload: ServerAction):
-    return run_worker(worker.get_server_logs, payload.model_dump(exclude_none=True))
-
-
-# ── Delete ─────────────────────────────────────────────────────────────────────
-
-@app.delete("/servers/{server_id}")
-def delete(server_id: str, payload: ServerAction | None = None):
-    return run_worker(worker.delete_server, server_id, payload.model_dump(exclude_none=True) if payload else {})
-
-
-# ── Volumes ───────────────────────────────────────────────────────────────────
-
-@app.post("/servers/{server_id}/volumes/attach")
-def attach_volume(server_id: str, payload: ServerAction):
-    return run_worker(volume_manager.attach_volume, payload.model_dump(exclude_none=True))
-
-
-@app.post("/servers/{server_id}/volumes/detach")
-def detach_volume(server_id: str, payload: ServerAction):
-    return run_worker(volume_manager.detach_volume, payload.model_dump(exclude_none=True))
-
-
-# ── Console ───────────────────────────────────────────────────────────────────
-
-@app.post("/servers/{server_id}/console-info")
-def console_info(server_id: str, payload: ServerAction):
-    data = payload.model_dump(exclude_none=True)
-    domain = data.get("libvirt_domain_name")
+def handle_get_console_info(args: dict) -> dict:
+    """RPC Call — return VNC console info."""
+    domain = args.get("libvirt_domain_name")
     if not domain:
-        raise HTTPException(status_code=404, detail="server has no libvirt domain")
-    return run_worker(libvirt_driver.vnc_info, domain)
+        return {"error": "server has no libvirt domain"}
+    return libvirt_driver.vnc_info(domain)
 
 
-# ── Ports ─────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# Volume/Port hotplug handlers (RPC Cast)
+# ═══════════════════════════════════════════════════════════════════════════════
 
-@app.post("/servers/{server_id}/ports/attach")
-def attach_port(server_id: str, payload: ServerAction):
-    data = payload.model_dump(exclude_none=True)
+def handle_attach_volume(args: dict) -> None:
+    server_id = args.get("id")
+    try:
+        volume_manager.attach_volume(args)
+        log.info("volume attached to %s", server_id)
+    except Exception as exc:
+        log.error("attach_volume %s failed: %s", server_id, exc, exc_info=True)
+
+
+def handle_detach_volume(args: dict) -> None:
+    server_id = args.get("id")
+    try:
+        volume_manager.detach_volume(args)
+        log.info("volume detached from %s", server_id)
+    except Exception as exc:
+        log.error("detach_volume %s failed: %s", server_id, exc, exc_info=True)
+
+
+def handle_attach_port(args: dict) -> None:
+    server_id = args.get("id")
+    data = dict(args)
     data["id"] = server_id
-    return run_worker(worker.attach_port, data)
+    try:
+        worker.attach_port(data)
+        log.info("port attached to %s", server_id)
+    except Exception as exc:
+        log.error("attach_port %s failed: %s", server_id, exc, exc_info=True)
 
 
-@app.post("/servers/{server_id}/ports/detach")
-def detach_port(server_id: str, payload: ServerAction):
-    data = payload.model_dump(exclude_none=True)
+def handle_detach_port(args: dict) -> None:
+    server_id = args.get("id")
+    data = dict(args)
     data["id"] = server_id
-    return run_worker(worker.detach_port, data)
+    try:
+        worker.detach_port(data)
+        log.info("port detached from %s", server_id)
+    except Exception as exc:
+        log.error("detach_port %s failed: %s", server_id, exc, exc_info=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Handler dispatch table
+# ═══════════════════════════════════════════════════════════════════════════════
+
+HANDLERS = {
+    # Lifecycle (Cast)
+    "build_instance":   handle_build_instance,
+    "delete_instance":  handle_delete_instance,
+    "start":            handle_start,
+    "stop":             handle_stop,
+    "reboot":           handle_reboot,
+    "pause":            handle_pause,
+    "resume":           handle_resume,
+    "suspend":          handle_suspend,
+    "unsuspend":        handle_unsuspend,
+    "resize":           handle_resize,
+    "rebuild":          handle_rebuild,
+    "rescue":           handle_rescue,
+    "unrescue":         handle_unrescue,
+    "set_password":     handle_set_password,
+    # Call (sync reply)
+    "health":           handle_health,
+    "get_logs":         handle_get_logs,
+    "get_console_info": handle_get_console_info,
+    # Hotplug (Cast)
+    "attach_volume":    handle_attach_volume,
+    "detach_volume":    handle_detach_volume,
+    "attach_port":      handle_attach_port,
+    "detach_port":      handle_detach_port,
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Entry point
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def main():
+    log.info("=" * 60)
+    log.info("cloudx Compute Worker starting (AMQP consumer)")
+    log.info("  RabbitMQ: %s", RABBITMQ_URL.split("@")[-1])
+    log.info("  Libvirt:  %s", LIBVIRT_URI)
+    log.info("  Handlers: %s", ", ".join(HANDLERS.keys()))
+    log.info("=" * 60)
+
+    # Wait for RabbitMQ to be ready
+    for attempt in range(30):
+        try:
+            _rpc._ensure_connection()
+            log.info("RabbitMQ connection OK")
+            break
+        except Exception as exc:
+            log.warning("Waiting for RabbitMQ (%d/30): %s", attempt + 1, exc)
+            time.sleep(2)
+    else:
+        log.error("Could not connect to RabbitMQ after 30 attempts")
+        sys.exit(1)
+
+    consumer = RPCConsumer(
+        queue_name="compute",
+        handlers=HANDLERS,
+        rabbitmq_url=RABBITMQ_URL,
+    )
+    consumer.run()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,7 +1,9 @@
 import base64
 import hashlib
+import logging
 import os
 import shutil
+import sys
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -21,16 +23,27 @@ try:
 except ImportError:
     from auth_middleware import CurrentUser, AdminUser, OptionalAuth
 
+# Import shared RPC library
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+try:
+    from shared.rpc import RPCClient
+except ImportError:
+    from rpc import RPCClient  # fallback for local dev
+
+log = logging.getLogger("compute-api")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
 IMAGE_API_URL = os.getenv("IMAGE_API_URL", "http://image-api:8000").rstrip("/")
 NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
 BLOCK_STORE_API_URL = os.getenv("BLOCK_STORE_API_URL", "http://block-store-api:8000").rstrip("/")
 COMPUTE_BACKEND = os.getenv("COMPUTE_BACKEND", "libvirt").lower()
-COMPUTE_WORKER_URL = os.getenv("COMPUTE_WORKER_URL", "http://compute-worker:8010").rstrip("/")
 DEFAULT_VM_USER = os.getenv("DEFAULT_VM_USER", "ubuntu")
 NOVNC_BASE_URL = os.getenv("NOVNC_BASE_URL", "http://localhost:6080/vnc.html")
+RPC_CALL_TIMEOUT = int(os.getenv("RPC_CALL_TIMEOUT", "30"))
 ONLY_BACKEND = "libvirt"
+
+# ── RPC Client (initialized on startup) ──────────────────────────────────────
+_rpc: RPCClient | None = None
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -416,24 +429,17 @@ def response_detail(response: requests.Response):
         return response.text
 
 
-def worker_post(path: str, payload: dict):
-    try:
-        response = requests.post(f"{COMPUTE_WORKER_URL}{path}", json=payload, timeout=300)
-    except requests.RequestException as exc:
-        raise RuntimeError(str(exc)) from exc
-    if response.status_code >= 400:
-        raise RuntimeError(str(response_detail(response)))
-    return response.json()
+# ── RPC helpers (replaces worker_post / worker_delete) ────────────────────────
+
+def cast_to_worker(method: str, payload: dict) -> None:
+    """Fire-and-forget to compute worker via RabbitMQ (async)."""
+    _rpc.cast("compute", method, payload)
+    log.info("CAST compute.%s for server %s", method, payload.get("id", "?"))
 
 
-def worker_delete(path: str, payload: dict):
-    try:
-        response = requests.delete(f"{COMPUTE_WORKER_URL}{path}", json=payload, timeout=120)
-    except requests.RequestException as exc:
-        raise RuntimeError(str(exc)) from exc
-    if response.status_code >= 400:
-        raise RuntimeError(str(response_detail(response)))
-    return response.json()
+def call_worker(method: str, payload: dict, timeout: int | None = None) -> dict:
+    """Synchronous RPC call — waits for worker reply."""
+    return _rpc.call("compute", method, payload, timeout=timeout or RPC_CALL_TIMEOUT)
 
 
 def release_server_volumes(server_id: str) -> dict | None:
@@ -583,6 +589,19 @@ def server_metadata_payload(server: Server) -> dict:
     }
 
 
+@app.on_event("startup")
+def _startup_rpc():
+    global _rpc
+    _rpc = RPCClient()
+    log.info("RPC client initialized")
+
+
+@app.on_event("shutdown")
+def _shutdown_rpc():
+    if _rpc:
+        _rpc.close()
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "compute-api", "default_backend": ONLY_BACKEND}
@@ -590,12 +609,18 @@ def health():
 
 @app.get("/host/check")
 def host_check(_: CurrentUser):
-    return api_get(f"{COMPUTE_WORKER_URL}/health")
+    try:
+        return call_worker("health", {}, timeout=5)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Worker unreachable: {exc}") from exc
 
 
 @app.get("/host")
 def host_show(_: CurrentUser, db: DB):
-    worker = api_get(f"{COMPUTE_WORKER_URL}/health")
+    try:
+        worker = call_worker("health", {}, timeout=5)
+    except Exception:
+        worker = {"status": "unreachable"}
     return {"host": "single-node", "worker": worker, "placement": placement_inventory(db)}
 
 
@@ -777,11 +802,17 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
         db.add(server)
         db.commit()
         db.refresh(server)
-        result = worker_post(f"/servers/{server.id}/spawn", server_worker_payload(server, port, ports, root_volume))
-        update_server_from_worker(server, result)
-        block_post(f"/internal/volumes/{root_volume['id']}/attach-server", {"server_id": server.id, "target_device": "sda"})
-        server.status = "ACTIVE"
-        server.error_message = None
+        # ── Async via RabbitMQ ──────────────────────────────────────────────
+        # Cast build_instance to compute-worker queue. Worker will:
+        #   1. Spawn VM (libvirt)
+        #   2. Call conductor to update server fields (host, mac, etc.)
+        #   3. Call block-store to attach root volume
+        #   4. Call conductor to set status ACTIVE
+        worker_payload = server_worker_payload(server, port, ports, root_volume)
+        worker_payload["_root_volume_id"] = root_volume["id"]
+        worker_payload["_block_store_url"] = BLOCK_STORE_API_URL
+        cast_to_worker("build_instance", worker_payload)
+        # API returns immediately with status=BUILD
     except Exception as exc:
         for created in created_ports:
             api_delete(f"{NETWORKING_API_URL}/ports/{created['id']}")
@@ -888,14 +919,9 @@ def set_server_user_data(ref: str, payload: ServerUserDataIn, db: DB):
 @app.post("/servers/{ref}/start")
 def start_server(ref: str, db: DB):
     server = require_server(db, ref)
-    try:
-        worker_post(f"/servers/{server.id}/start", server_worker_payload(server))
-        server.status = "ACTIVE"
-        server.error_message = None
-    except Exception as exc:
-        server.status = "ERROR"
-        server.error_message = str(exc)
+    server.status = "STARTING"
     db.commit()
+    cast_to_worker("start", server_worker_payload(server))
     db.refresh(server)
     return obj_to_dict(server)
 
@@ -903,14 +929,9 @@ def start_server(ref: str, db: DB):
 @app.post("/servers/{ref}/stop")
 def stop_server(ref: str, db: DB):
     server = require_server(db, ref)
-    try:
-        worker_post(f"/servers/{server.id}/stop", server_worker_payload(server))
-        server.status = "SHUTOFF"
-        server.error_message = None
-    except Exception as exc:
-        server.status = "ERROR"
-        server.error_message = str(exc)
+    server.status = "STOPPING"
     db.commit()
+    cast_to_worker("stop", server_worker_payload(server))
     db.refresh(server)
     return obj_to_dict(server)
 
@@ -918,17 +939,10 @@ def stop_server(ref: str, db: DB):
 @app.post("/servers/{ref}/reboot")
 def reboot_server(ref: str, payload: ServerRebootIn = None, _: CurrentUser = None, db: DB = None):
     server = require_server(db, ref)
+    rtype = payload.type if payload else "soft"
     server.status = "REBOOT"
     db.commit()
-    try:
-        rtype = payload.type if payload else "soft"
-        worker_post(f"/servers/{server.id}/reboot", {**server_worker_payload(server), "reboot_type": rtype})
-        server.status = "ACTIVE"
-        server.error_message = None
-    except Exception as exc:
-        server.status = "ERROR"
-        server.error_message = str(exc)
-    db.commit()
+    cast_to_worker("reboot", {**server_worker_payload(server), "reboot_type": rtype})
     db.refresh(server)
     return obj_to_dict(server)
 
@@ -936,14 +950,9 @@ def reboot_server(ref: str, payload: ServerRebootIn = None, _: CurrentUser = Non
 @app.post("/servers/{ref}/pause")
 def pause_server(ref: str, _: CurrentUser, db: DB):
     server = require_server(db, ref)
-    try:
-        worker_post(f"/servers/{server.id}/pause", server_worker_payload(server))
-        server.status = "PAUSED"
-        server.error_message = None
-    except Exception as exc:
-        server.status = "ERROR"
-        server.error_message = str(exc)
+    server.status = "PAUSING"
     db.commit()
+    cast_to_worker("pause", server_worker_payload(server))
     db.refresh(server)
     return obj_to_dict(server)
 
@@ -951,14 +960,9 @@ def pause_server(ref: str, _: CurrentUser, db: DB):
 @app.post("/servers/{ref}/resume")
 def resume_server(ref: str, _: CurrentUser, db: DB):
     server = require_server(db, ref)
-    try:
-        worker_post(f"/servers/{server.id}/resume", server_worker_payload(server))
-        server.status = "ACTIVE"
-        server.error_message = None
-    except Exception as exc:
-        server.status = "ERROR"
-        server.error_message = str(exc)
+    server.status = "RESUMING"
     db.commit()
+    cast_to_worker("resume", server_worker_payload(server))
     db.refresh(server)
     return obj_to_dict(server)
 
@@ -966,14 +970,9 @@ def resume_server(ref: str, _: CurrentUser, db: DB):
 @app.post("/servers/{ref}/suspend")
 def suspend_server(ref: str, _: CurrentUser, db: DB):
     server = require_server(db, ref)
-    try:
-        worker_post(f"/servers/{server.id}/suspend", server_worker_payload(server))
-        server.status = "SUSPENDED"
-        server.error_message = None
-    except Exception as exc:
-        server.status = "ERROR"
-        server.error_message = str(exc)
+    server.status = "SUSPENDING"
     db.commit()
+    cast_to_worker("suspend", server_worker_payload(server))
     db.refresh(server)
     return obj_to_dict(server)
 
@@ -988,13 +987,10 @@ def resize_server(ref: str, payload: ServerResizeIn, _: CurrentUser, db: DB):
     server.vcpus = flavor.vcpus
     server.ram_mb = flavor.ram_mb
     server.disk_gb = flavor.disk_gb
+    server.status = "RESIZE"
     db.commit()
-    try:
-        worker_post(f"/servers/{server.id}/resize", {**server_worker_payload(server),
-            "new_vcpus": flavor.vcpus, "new_ram_mb": flavor.ram_mb})
-    except Exception as exc:
-        server.error_message = str(exc)
-        db.commit()
+    cast_to_worker("resize", {**server_worker_payload(server),
+        "new_vcpus": flavor.vcpus, "new_ram_mb": flavor.ram_mb})
     db.refresh(server)
     return {**obj_to_dict(server), "old_flavor": old_flavor, "new_flavor": flavor.name}
 
@@ -1006,14 +1002,7 @@ def rebuild_server(ref: str, payload: ServerRebuildIn, _: CurrentUser, db: DB):
     server.image_id = image["id"]
     server.status = "REBUILD"
     db.commit()
-    try:
-        worker_post(f"/servers/{server.id}/rebuild", {**server_worker_payload(server), "image": image})
-        server.status = "ACTIVE"
-        server.error_message = None
-    except Exception as exc:
-        server.status = "ERROR"
-        server.error_message = str(exc)
-    db.commit()
+    cast_to_worker("rebuild", {**server_worker_payload(server), "image": image})
     db.refresh(server)
     return obj_to_dict(server)
 
@@ -1027,13 +1016,7 @@ def rescue_server(ref: str, payload: ServerRescueIn, _: CurrentUser, db: DB):
         rescue_image_id = rescue_img["id"]
     server.status = "RESCUE"
     db.commit()
-    try:
-        worker_post(f"/servers/{server.id}/rescue",
-            {**server_worker_payload(server), "rescue_image_id": rescue_image_id})
-    except Exception as exc:
-        server.status = "ERROR"
-        server.error_message = str(exc)
-    db.commit()
+    cast_to_worker("rescue", {**server_worker_payload(server), "rescue_image_id": rescue_image_id})
     db.refresh(server)
     return obj_to_dict(server)
 
@@ -1041,13 +1024,9 @@ def rescue_server(ref: str, payload: ServerRescueIn, _: CurrentUser, db: DB):
 @app.post("/servers/{ref}/unrescue")
 def unrescue_server(ref: str, _: CurrentUser, db: DB):
     server = require_server(db, ref)
-    server.status = "ACTIVE"
+    server.status = "UNRESCUING"
     db.commit()
-    try:
-        worker_post(f"/servers/{server.id}/unrescue", server_worker_payload(server))
-    except Exception as exc:
-        server.error_message = str(exc)
-    db.commit()
+    cast_to_worker("unrescue", server_worker_payload(server))
     db.refresh(server)
     return obj_to_dict(server)
 
@@ -1055,11 +1034,7 @@ def unrescue_server(ref: str, _: CurrentUser, db: DB):
 @app.post("/servers/{ref}/password")
 def set_server_password(ref: str, payload: ServerPasswordIn, _: CurrentUser, db: DB):
     server = require_server(db, ref)
-    try:
-        worker_post(f"/servers/{server.id}/password",
-            {**server_worker_payload(server), "password": payload.password})
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+    cast_to_worker("set_password", {**server_worker_payload(server), "password": payload.password})
     return {"server": server.name, "status": "password injection requested"}
 
 
@@ -1073,20 +1048,23 @@ def delete_server(ref: str, _: CurrentUser, db: DB, keep_root_volume: bool = Fal
         if sg:
             members = [m for m in (sg.members or "").split(",") if m and m != server.id]
             sg.members = ",".join(members) or None
-    try:
-        worker_delete(f"/servers/{server.id}", server_worker_payload(server))
-        server.error_message = None
-    except Exception as exc:
-        server.error_message = f"worker cleanup failed: {exc}"
-    release_server_volumes(server.id)
-    if server.root_volume_id and not keep_root_volume:
-        block_delete(f"/volumes/{server.root_volume_id}")
-    for port_id in [server.port_id, *comma_list(server.extra_port_ids)]:
-        api_delete(f"{NETWORKING_API_URL}/ports/{port_id}")
-    server.status = "DELETED"
-    server.name = f"{original_name}-deleted-{server.id[:8]}"
+    server.status = "DELETING"
     db.commit()
-    return {"status": "deleted", "id": server.id, "name": original_name, "root_volume_deleted": bool(server.root_volume_id and not keep_root_volume)}
+    # Cast delete to worker — worker will:
+    # 1. Destroy libvirt domain
+    # 2. Cleanup ports and volumes via HTTP
+    # 3. Call conductor to mark DELETED or hard-delete
+    cast_to_worker("delete_instance", {
+        **server_worker_payload(server),
+        "_original_name": original_name,
+        "_keep_root_volume": keep_root_volume,
+        "_root_volume_id": server.root_volume_id,
+        "_port_id": server.port_id,
+        "_extra_port_ids": server.extra_port_ids,
+        "_block_store_url": BLOCK_STORE_API_URL,
+        "_networking_url": NETWORKING_API_URL,
+    })
+    return {"status": "deleting", "id": server.id, "name": original_name}
 
 
 @app.post("/servers/{ref}/snapshots", status_code=201)
@@ -1110,11 +1088,12 @@ def add_server_port(ref: str, payload: ServerPortIn, db: DB):
     port = api_get(f"{NETWORKING_API_URL}/ports/{payload.port}")
     if port["id"] in [server.port_id, *comma_list(server.extra_port_ids)]:
         raise HTTPException(status_code=409, detail="port is already attached to server metadata")
-    result = worker_post(f"/servers/{server.id}/ports/attach", {**server_worker_payload(server), "port": port})
+    # Update DB immediately, cast hotplug to worker
     server.extra_port_ids = format_comma_list([*comma_list(server.extra_port_ids), port["id"]])
     db.commit()
+    cast_to_worker("attach_port", {**server_worker_payload(server), "port": port})
     db.refresh(server)
-    return {"status": "attached", "server_id": server.id, "port_id": port["id"], **result}
+    return {"status": "attaching", "server_id": server.id, "port_id": port["id"]}
 
 
 @app.delete("/servers/{ref}/ports/{port_ref}")
@@ -1124,11 +1103,11 @@ def remove_server_port(ref: str, port_ref: str, db: DB):
     port = api_get(f"{NETWORKING_API_URL}/ports/{port_ref}")
     if port["id"] not in extra:
         raise HTTPException(status_code=404, detail="port is not an attached secondary port")
-    result = worker_post(f"/servers/{server.id}/ports/detach", {**server_worker_payload(server), "port": port})
     server.extra_port_ids = format_comma_list([item for item in extra if item != port["id"]])
     db.commit()
+    cast_to_worker("detach_port", {**server_worker_payload(server), "port": port})
     db.refresh(server)
-    return {"status": "detached", "server_id": server.id, "port_id": port["id"], **result}
+    return {"status": "detaching", "server_id": server.id, "port_id": port["id"]}
 
 
 @app.post("/servers/{ref}/volumes/attach")
@@ -1136,11 +1115,8 @@ def attach_volume(ref: str, payload: VolumeAttachIn, db: DB):
     server = require_server(db, ref)
     if server.status != "ACTIVE":
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE to attach volume; current status is {server.status}")
-    try:
-        result = worker_post(f"/servers/{server.id}/volumes/attach", {**server_worker_payload(server), "volume": payload.model_dump()})
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=f"volume attach failed on compute-worker: {exc}") from exc
-    return {"status": "attached", "server_id": server.id, "volume_id": payload.volume_id, **result}
+    cast_to_worker("attach_volume", {**server_worker_payload(server), "volume": payload.model_dump()})
+    return {"status": "attaching", "server_id": server.id, "volume_id": payload.volume_id}
 
 
 @app.post("/servers/{ref}/volumes/detach")
@@ -1148,11 +1124,8 @@ def detach_volume(ref: str, payload: VolumeAttachIn, db: DB):
     server = require_server(db, ref)
     if server.status not in {"ACTIVE", "SHUTOFF"}:
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE or SHUTOFF to detach volume; current status is {server.status}")
-    try:
-        result = worker_post(f"/servers/{server.id}/volumes/detach", {**server_worker_payload(server), "volume": payload.model_dump()})
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=f"volume detach failed on compute-worker: {exc}") from exc
-    return {"status": "detached", "server_id": server.id, "volume_id": payload.volume_id, **result}
+    cast_to_worker("detach_volume", {**server_worker_payload(server), "volume": payload.model_dump()})
+    return {"status": "detaching", "server_id": server.id, "volume_id": payload.volume_id}
 
 
 @app.get("/servers/{ref}/console")
@@ -1175,7 +1148,7 @@ def console_url(ref: str, _: CurrentUser, db: DB):
         "inspect": f"virsh -c qemu:///system dumpxml {server.libvirt_domain_name}",
     }
     try:
-        vnc = worker_post(f"/servers/{server.id}/console-info", server_worker_payload(server))
+        vnc = call_worker("get_console_info", server_worker_payload(server), timeout=RPC_CALL_TIMEOUT)
     except Exception:
         pass
     novnc_url = NOVNC_BASE_URL
@@ -1195,7 +1168,7 @@ def console_url(ref: str, _: CurrentUser, db: DB):
 def logs(ref: str, _: CurrentUser, db: DB, lines: int = 50):
     server = require_server(db, ref)
     try:
-        result = worker_post(f"/servers/{server.id}/logs", {**server_worker_payload(server), "lines": lines})
+        result = call_worker("get_logs", {**server_worker_payload(server), "lines": lines}, timeout=RPC_CALL_TIMEOUT)
         return result
     except Exception:
         return {
