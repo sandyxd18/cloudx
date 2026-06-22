@@ -1329,7 +1329,7 @@ def volume_type(ctx):
     """Manage volume types (AWS EBS-style performance profiles)"""
 
 @volume_type.command("create")
-@click.argument("name", metavar="NAME", help="Type name, e.g. gp2, gp3, io1, io2, sc1, st1")
+@click.argument("name", metavar="NAME")
 @click.option("--backend", type=click.Choice(["lvm", "ceph"]), required=True,
               help="Storage backend: lvm (block device) or ceph (RBD network disk)")
 @click.option("--disk-type", "disk_type",
