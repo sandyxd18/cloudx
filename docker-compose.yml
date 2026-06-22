@@ -291,19 +291,20 @@ services:
       dockerfile: compute_worker/Dockerfile
       network: host
     privileged: true
-    network_mode: host
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
     environment:
-      IMAGE_API_URL: ${IMAGE_API_URL:-http://127.0.0.1:8002}
-      BLOCK_STORE_API_URL: ${BLOCK_STORE_API_URL:-http://127.0.0.1:8004}
+      IMAGE_API_URL: http://image-api:8000
+      BLOCK_STORE_API_URL: http://block-store-api:8000
       LIBVIRT_URI: ${LIBVIRT_URI:-qemu:///system}
       COMPUTE_INSTANCE_DIR: ${COMPUTE_INSTANCE_DIR:-/var/lib/mini-openstack/compute/instances}
       COMPUTE_IMAGE_CACHE_DIR: ${COMPUTE_IMAGE_CACHE_DIR:-/var/lib/mini-openstack/compute/cache/images}
       OVS_BRIDGE: ${OVS_BRIDGE:-br-int}
       VM_NAME_PREFIX: ${VM_NAME_PREFIX:-mini-os}
-      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@127.0.0.1:5672/}
+      RABBITMQ_URL: amqp://cloudx:cloudx@rabbitmq:5672/
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ${COMPUTE_INSTANCE_DIR:-/var/lib/mini-openstack/compute/instances}:/var/lib/mini-openstack/compute/instances
       - ${COMPUTE_CACHE_DIR:-/var/lib/mini-openstack/compute/cache}:/var/lib/mini-openstack/compute/cache
@@ -313,10 +314,14 @@ services:
       - /dev/net/tun:/dev/net/tun
       - /var/run/openvswitch:/var/run/openvswitch
     depends_on:
+      rabbitmq:
+        condition: service_healthy
       image-api:
         condition: service_started
       networking-api:
         condition: service_started
+    networks:
+      - lab-net
 
   # ── Conductor (nova-conductor equivalent) ───────────────────────────────
   conductor:
@@ -377,8 +382,8 @@ services:
       network: host
     privileged: true               # Required for lvcreate / vgcreate / pvcreate
     environment:
-      IMAGE_API_URL: ${IMAGE_API_URL:-http://127.0.0.1:8002}
-      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@127.0.0.1:5672/}
+      IMAGE_API_URL: http://image-api:8000
+      RABBITMQ_URL: amqp://cloudx:cloudx@rabbitmq:5672/
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # ── Storage drivers ─────────────────────────────────────────────────────
       STORAGE_LVM_DRIVER: ${STORAGE_LVM_DRIVER:-true}
@@ -394,7 +399,13 @@ services:
       - /dev:/dev                  # LVM: access to block devices on host
       - /run/lvm:/run/lvm          # LVM: lock files
       - /etc/ceph:/etc/ceph:ro     # Ceph: config + keyring (optional)
-    network_mode: host             # RabbitMQ is on 127.0.0.1 from compute-worker perspective
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      image-api:
+        condition: service_started
+    networks:
+      - lab-net
 
 
   # ── Placement API ───────────────────────────────────────────────────────────
