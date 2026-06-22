@@ -21,7 +21,7 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy import (
     Boolean, DateTime, ForeignKey, String, Text,
@@ -44,7 +44,6 @@ ADMIN_PROJECT  = os.getenv("AUTH_ADMIN_PROJECT",  "admin")
 
 engine       = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-pwd_ctx      = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 # ── ORM ────────────────────────────────────────────────────────────────────────
@@ -131,11 +130,14 @@ def _gen_secret_key() -> str:
 
 
 def _hash_password(plain: str) -> str:
-    return pwd_ctx.hash(plain)
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
 
 
 def _verify_password(plain: str, hashed: str) -> bool:
-    return pwd_ctx.verify(plain, hashed)
+    try:
+        return bcrypt.checkpw(plain.encode(), hashed.encode())
+    except Exception:
+        return False
 
 
 def _create_token(user: User) -> str:
