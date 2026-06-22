@@ -66,6 +66,20 @@ def _load_creds(profile: str = "default") -> dict:
     return creds
 
 
+def _is_token_expired(token: str) -> bool:
+    """Check if a JWT is expired without verifying signature."""
+    try:
+        import time
+        from jose import jwt as _jwt
+        claims = _jwt.get_unverified_claims(token)
+        exp = claims.get("exp")
+        if exp and time.time() > exp:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _get_token(profile: str = "default") -> str | None:
     # 1. Env var (highest priority)
     if t := os.getenv("CLOUDX_TOKEN"):
@@ -87,7 +101,11 @@ def _get_token(profile: str = "default") -> str | None:
             pass
     # 3. Cached token file
     if TOKEN_FILE.exists():
-        return TOKEN_FILE.read_text().strip()
+        token = TOKEN_FILE.read_text().strip()
+        if token and _is_token_expired(token):
+            click.echo("⚠️  Session expired. Please login again: cloudx auth login", err=True)
+            sys.exit(1)
+        return token if token else None
     return None
 
 
@@ -95,6 +113,7 @@ def _headers(profile: str = "default") -> dict:
     token = _get_token(profile)
     if not token:
         click.echo("❌ Not authenticated. Run: cloudx auth login", err=True)
+        click.echo(f"   (looking for token in {TOKEN_FILE})", err=True)
         sys.exit(1)
     return {"X-Auth-Token": token, "Content-Type": "application/json"}
 
