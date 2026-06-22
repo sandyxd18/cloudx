@@ -95,7 +95,8 @@ services:
   # ── Auth API (Keystone-like) ────────────────────────────────────────────────
   auth-api:
     build:
-      context: ./services/auth
+      context: ./services
+      dockerfile: auth/Dockerfile
       network: host
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@postgres:5432/mini_openstack}
@@ -115,7 +116,8 @@ services:
 
   networking-api:
     build:
-      context: ./services/networking
+      context: ./services
+      dockerfile: networking/Dockerfile
       network: host
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@postgres:5432/mini_openstack}
@@ -153,7 +155,8 @@ services:
 
   image-api:
     build:
-      context: ./services/image
+      context: ./services
+      dockerfile: image/Dockerfile
       network: host
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@postgres:5432/mini_openstack}
@@ -180,7 +183,8 @@ services:
 
   metadata-api:
     build:
-      context: ./services/metadata
+      context: ./services
+      dockerfile: metadata/Dockerfile
       network: host
     environment:
       COMPUTE_API_URL: http://localhost:8003
@@ -193,7 +197,8 @@ services:
 
   metadata-proxy:
     build:
-      context: ./services/metadata_proxy
+      context: ./services
+      dockerfile: metadata_proxy/Dockerfile
       network: host
     environment:
       METADATA_API_URL: ${METADATA_API_URL:-http://127.0.0.1:8775}
@@ -245,7 +250,8 @@ services:
 
   compute-api:
     build:
-      context: ./services/compute
+      context: ./services
+      dockerfile: compute/Dockerfile
       network: host
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@postgres:5432/mini_openstack}
@@ -281,7 +287,8 @@ services:
 
   compute-worker:
     build:
-      context: ./services/compute_worker
+      context: ./services
+      dockerfile: compute_worker/Dockerfile
       network: host
     privileged: true
     network_mode: host
@@ -314,7 +321,8 @@ services:
   # ── Conductor (nova-conductor equivalent) ───────────────────────────────
   conductor:
     build:
-      context: ./services/conductor
+      context: ./services
+      dockerfile: conductor/Dockerfile
       network: host
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@postgres:5432/mini_openstack}
@@ -330,7 +338,8 @@ services:
 
   block-store-api:
     build:
-      context: ./services/block_store
+      context: ./services
+      dockerfile: block_store/Dockerfile
       network: host
     # No privileged — storage ops delegated to block-store-worker via RabbitMQ
     environment:
@@ -363,7 +372,8 @@ services:
   # ── Block Storage Worker (cinder-volume equivalent) ─────────────────────────
   block-store-worker:
     build:
-      context: ./services/block_store_worker
+      context: ./services
+      dockerfile: block_store_worker/Dockerfile
       network: host
     privileged: true               # Required for lvcreate / vgcreate / pvcreate
     environment:
@@ -390,7 +400,8 @@ services:
   # ── Placement API ───────────────────────────────────────────────────────────
   placement-api:
     build:
-      context: ./services/placement
+      context: ./services
+      dockerfile: placement/Dockerfile
       network: host
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@postgres:5432/mini_openstack}
@@ -409,7 +420,8 @@ services:
   # ── Dashboard (React + FastAPI proxy) ───────────────────────────────────────
   dashboard:
     build:
-      context: ./services/dashboard
+      context: ./services
+      dockerfile: dashboard/Dockerfile
       network: host
     environment:
       AUTH_API_URL: http://auth-api:8000
