@@ -330,8 +330,28 @@ def ovn(*args: str, check: bool = True) -> str:
     return proc.stdout.strip()
 
 
+def _find_ovs_vsctl() -> str | None:
+    """Find ovs-vsctl binary in common installation paths."""
+    import shutil
+    # Try PATH first, then common OVS installation directories
+    for candidate in ["ovs-vsctl", "/usr/bin/ovs-vsctl", "/usr/local/bin/ovs-vsctl",
+                      "/sbin/ovs-vsctl", "/usr/sbin/ovs-vsctl"]:
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return None
+
+_OVS_VSCTL: str | None = _find_ovs_vsctl()
+if _OVS_VSCTL is None:
+    print("[networking-api] WARNING: ovs-vsctl not found — OVS bridge-mapping updates will be skipped.", flush=True)
+
+
 def ovs(*args: str, check: bool = True) -> str:
-    cmd = ["ovs-vsctl", "--timeout=8", *args]
+    if _OVS_VSCTL is None:
+        if check:
+            raise HTTPException(status_code=503, detail={"message": "ovs-vsctl not available in this environment"})
+        return ""
+    cmd = [_OVS_VSCTL, "--timeout=8", *args]
     proc = subprocess.run(cmd, text=True, capture_output=True)
     if check and proc.returncode != 0:
         raise HTTPException(status_code=502, detail={"message": "ovs-vsctl failed", "stderr": proc.stderr.strip()})
@@ -407,6 +427,10 @@ def localnet_commands(network_name: str, physnet: str) -> list[list[str]]:
 
 
 def ensure_ovn_bridge_mapping(physnet: str, bridge: str) -> None:
+    """Add physnet:bridge mapping to OVS external_ids. Non-fatal if OVS unavailable."""
+    if _OVS_VSCTL is None:
+        print(f"[networking-api] WARNING: skipping bridge-mapping update ({physnet}:{bridge}) — ovs-vsctl not found", flush=True)
+        return
     existing = ovs("get", "open", ".", "external_ids:ovn-bridge-mappings", check=False).strip().strip('"')
     mapping = f"{physnet}:{bridge}"
     if existing and existing != "[]":

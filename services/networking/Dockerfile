@@ -4,7 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ovn-central openvswitch-common netcat-openbsd \
+    && apt-get install -y --no-install-recommends ovn-central openvswitch-switch openvswitch-common netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
