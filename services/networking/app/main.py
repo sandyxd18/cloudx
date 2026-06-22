@@ -1075,7 +1075,7 @@ def delete_router(ref: str, _: CurrentUser, db: DB):
     ).all()
     for iface in interfaces:
         ovn("--if-exists", "lsp-del", iface.switch_port_name)
-        ovn("--if-exists", "lrp-del", router.name, iface.router_port_name)
+        ovn("--if-exists", "lrp-del", iface.router_port_name)
         db.delete(iface)
     db.flush()  # apply interface deletes before router delete
 
@@ -1144,7 +1144,7 @@ def remove_router_interface(ref: str, subnet_ref: str, _: CurrentUser, db: DB):
         raise HTTPException(status_code=404, detail="router interface not found")
     network = db.get(Network, subnet.network_id)
     ovn("--if-exists", "lsp-del", iface.switch_port_name)
-    ovn("--if-exists", "lrp-del", router.name, iface.router_port_name)
+    ovn("--if-exists", "lrp-del", iface.router_port_name)
     db.delete(iface)
     db.commit()
     return {"status": "deleted", "router": router.name, "subnet": subnet.name, "network": network.name}
