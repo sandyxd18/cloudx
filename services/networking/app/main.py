@@ -1068,7 +1068,21 @@ def show_router(ref: str, _: CurrentUser, db: DB):
 @app.delete("/routers/{ref}")
 def delete_router(ref: str, _: CurrentUser, db: DB):
     router = require_by_ref(db, Router, ref, "router")
+
+    # ── 1. Remove all router interfaces (lrp + lsp) from OVN and DB ──────────
+    interfaces = db.scalars(
+        select(RouterInterface).where(RouterInterface.router_id == router.id)
+    ).all()
+    for iface in interfaces:
+        ovn("--if-exists", "lsp-del", iface.switch_port_name)
+        ovn("--if-exists", "lrp-del", router.name, iface.router_port_name)
+        db.delete(iface)
+    db.flush()  # apply interface deletes before router delete
+
+    # ── 2. Remove the logical router from OVN (also removes its gateway port) ─
     ovn("--if-exists", "lr-del", router.name)
+
+    # ── 3. Delete router record ───────────────────────────────────────────────
     db.delete(router)
     db.commit()
     return {"status": "deleted", "id": router.id, "name": router.name}
