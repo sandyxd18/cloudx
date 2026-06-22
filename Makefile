@@ -54,10 +54,10 @@ cleanup-all:
 # ── CLI install ───────────────────────────────────────────────────────────────
 # Installs the unified 'cloudx' command to ~/.local/bin
 install-cli:
-	pip install --quiet --user --break-system-packages tabulate click requests 2>/dev/null || \
-	pip install --quiet --user tabulate click requests 2>/dev/null || true
-	pip install --quiet --user --break-system-packages -e ./cli 2>/dev/null || \
-	pip install --quiet --user -e ./cli 2>/dev/null || true
+	pip install --user --break-system-packages tabulate click requests || \
+	pip install --user tabulate click requests
+	pip install --user --break-system-packages -e ./cli || \
+	pip install --user -e ./cli
 	@echo ""
 	@echo "✓ cloudx CLI installed. Make sure ~/.local/bin is in your PATH:"
 	@echo "  export PATH=\"\$$HOME/.local/bin:\$$PATH\""
