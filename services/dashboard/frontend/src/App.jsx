@@ -1,5 +1,6 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { ToastProvider, AuthProvider, useAuth } from './context.jsx'
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import { useEffect } from 'react'
+import { ToastProvider, AuthProvider, useAuth, useToast } from './context.jsx'
 import Layout from './components/Layout.jsx'
 import LoginPage from './pages/Login.jsx'
 import OverviewPage from './pages/Overview.jsx'
@@ -22,29 +23,52 @@ function PrivateRoute({ children }) {
   return user ? children : <Navigate to="/login" replace />
 }
 
+// Listens for the cloudx:session-expired event dispatched by api.js
+// and redirects to /login with a toast message instead of a hard refresh.
+function SessionExpiredHandler() {
+  const { logout } = useAuth()
+  const navigate = useNavigate()
+  const toast = useToast()
+
+  useEffect(() => {
+    const handler = () => {
+      logout()
+      toast('Session expired. Please log in again.', 'error')
+      navigate('/login', { replace: true })
+    }
+    window.addEventListener('cloudx:session-expired', handler)
+    return () => window.removeEventListener('cloudx:session-expired', handler)
+  }, [logout, navigate, toast])
+
+  return null
+}
+
 function AppRoutes() {
   const { user } = useAuth()
   return (
-    <Routes>
-      <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
-      <Route path="/" element={<PrivateRoute><Layout /></PrivateRoute>}>
-        <Route index element={<OverviewPage />} />
-        <Route path="servers" element={<ServersPage />} />
-        <Route path="flavors" element={<FlavorsPage />} />
-        <Route path="keypairs" element={<KeypairsPage />} />
-        <Route path="server-groups" element={<ServerGroupsPage />} />
-        <Route path="networks" element={<NetworksPage />} />
-        <Route path="routers" element={<RoutersPage />} />
-        <Route path="floating-ips" element={<FloatingIPsPage />} />
-        <Route path="security-groups" element={<SecurityGroupsPage />} />
-        <Route path="images" element={<ImagesPage />} />
-        <Route path="volumes" element={<VolumesPage />} />
-        <Route path="volume-types" element={<VolumeTypesPage />} />
-        <Route path="snapshots" element={<SnapshotsPage />} />
-        <Route path="admin" element={<AdminPage />} />
-      </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <>
+      <SessionExpiredHandler />
+      <Routes>
+        <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
+        <Route path="/" element={<PrivateRoute><Layout /></PrivateRoute>}>
+          <Route index element={<OverviewPage />} />
+          <Route path="servers" element={<ServersPage />} />
+          <Route path="flavors" element={<FlavorsPage />} />
+          <Route path="keypairs" element={<KeypairsPage />} />
+          <Route path="server-groups" element={<ServerGroupsPage />} />
+          <Route path="networks" element={<NetworksPage />} />
+          <Route path="routers" element={<RoutersPage />} />
+          <Route path="floating-ips" element={<FloatingIPsPage />} />
+          <Route path="security-groups" element={<SecurityGroupsPage />} />
+          <Route path="images" element={<ImagesPage />} />
+          <Route path="volumes" element={<VolumesPage />} />
+          <Route path="volume-types" element={<VolumeTypesPage />} />
+          <Route path="snapshots" element={<SnapshotsPage />} />
+          <Route path="admin" element={<AdminPage />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </>
   )
 }
 

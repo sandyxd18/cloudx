@@ -22,10 +22,15 @@ async function request(method, path, body = null, opts = {}) {
 
   const resp = await fetch(`${BASE}${path}`, config)
   if (resp.status === 401) {
+    // Clear stale token
     localStorage.removeItem('cloudx_token')
     localStorage.removeItem('cloudx_user')
-    window.location.href = '/login'
-    return
+    // Dispatch a custom event so the app can handle it gracefully
+    // (show a toast + redirect) rather than forcing a hard navigation
+    // in the middle of an unrelated component render.
+    window.dispatchEvent(new CustomEvent('cloudx:session-expired'))
+    // Return a rejected promise so callers can catch and show their own error
+    throw new Error('Session expired. Please log in again.')
   }
   if (!resp.ok) {
     let detail = `HTTP ${resp.status}`

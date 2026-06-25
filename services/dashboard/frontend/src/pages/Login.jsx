@@ -19,14 +19,14 @@ export default function LoginPage() {
       const data = await api.login({
         username: form.username,
         password: form.password,
-        project_name: form.project || undefined,
       })
+      // auth-api returns: { token, user: {...}, project: {...} }
       login(data.token, {
-        username: data.username,
-        user_id: data.user_id,
-        role: data.role,
-        project_id: data.project_id,
-        project_name: data.project_name,
+        username:     data.user?.username     || form.username,
+        user_id:      data.user?.id           || '',
+        role:         data.user?.role         || 'member',
+        project_id:   data.project?.id        || data.user?.project_id || '',
+        project_name: data.project?.name      || '',
       })
       toast('Login berhasil!', 'success')
       navigate('/')
