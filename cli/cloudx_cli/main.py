@@ -5,11 +5,12 @@ cloudx — Unified CLI for cloudx cloud platform
 Usage: cloudx [OPTIONS] COMMAND [ARGS]...
 
 Authentication:
-  Reads ~/.cloudx/config and ~/.cloudx/credentials (INI format)
-  or uses CLOUDX_TOKEN / CLOUDX_ACCESS_KEY_ID + CLOUDX_SECRET_ACCESS_KEY env vars.
+  Reads ~/.cloudx/credentials (INI format) for access key authentication.
+  Configure with: cloudx auth configure
+  Or set env vars: CLOUDX_ACCESS_KEY_ID + CLOUDX_SECRET_ACCESS_KEY
 
 Examples:
-  cloudx auth login
+  cloudx auth configure
   cloudx server list
   cloudx network create my-net
   cloudx volume create my-vol --size 20
@@ -28,7 +29,6 @@ from tabulate import tabulate
 CLOUDX_DIR = Path.home() / ".cloudx"
 CONFIG_FILE = CLOUDX_DIR / "config"
 CREDS_FILE  = CLOUDX_DIR / "credentials"
-TOKEN_FILE  = CLOUDX_DIR / "token"
 
 DEFAULT_URLS = {
     "auth":     os.getenv("CLOUDX_AUTH_URL",        "http://localhost:8005"),
@@ -66,28 +66,20 @@ def _load_creds(profile: str = "default") -> dict:
     return creds
 
 
-def _is_token_expired(token: str) -> bool:
-    """Check if a JWT is expired without verifying signature."""
-    try:
-        import time
-        from jose import jwt as _jwt
-        claims = _jwt.get_unverified_claims(token)
-        exp = claims.get("exp")
-        if exp and time.time() > exp:
-            return True
-    except Exception:
-        pass
-    return False
-
-
 def _get_token(profile: str = "default") -> str | None:
+    """Obtain a JWT token via access key exchange.
+
+    Sources (checked in order):
+      1. CLOUDX_TOKEN env var (pre-existing token)
+      2. Access key exchange: env vars or ~/.cloudx/credentials
+    """
     # 1. Env var (highest priority)
     if t := os.getenv("CLOUDX_TOKEN"):
         return t
     # 2. Access key exchange
     creds = _load_creds(profile)
     key_id = os.getenv("CLOUDX_ACCESS_KEY_ID") or creds.get("access_key_id", "")
-    secret  = os.getenv("CLOUDX_SECRET_ACCESS_KEY") or creds.get("secret_access_key", "")
+    secret = os.getenv("CLOUDX_SECRET_ACCESS_KEY") or creds.get("secret_access_key", "")
     if key_id and secret:
         try:
             r = requests.post(
@@ -97,29 +89,28 @@ def _get_token(profile: str = "default") -> str | None:
             )
             if r.status_code == 201:
                 return r.json()["token"]
-        except Exception:
-            pass
-    # 3. Cached token file
-    if TOKEN_FILE.exists():
-        token = TOKEN_FILE.read_text().strip()
-        if token and _is_token_expired(token):
-            click.echo("⚠️  Session expired. Please login again: cloudx auth login", err=True)
+            click.echo(f"❌ Access key authentication failed (HTTP {r.status_code})", err=True)
             sys.exit(1)
-        return token if token else None
+        except requests.ConnectionError:
+            click.echo(f"❌ Cannot connect to auth-api at {DEFAULT_URLS['auth']}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"❌ Access key authentication error: {e}", err=True)
+            sys.exit(1)
     return None
 
 
 def _headers(profile: str = "default") -> dict:
     token = _get_token(profile)
     if not token:
-        click.echo("❌ Not authenticated. Run: cloudx auth login", err=True)
-        click.echo(f"   (looking for token in {TOKEN_FILE})", err=True)
+        click.echo("❌ Not authenticated. Run: cloudx auth configure", err=True)
+        click.echo(f"   (credentials file: {CREDS_FILE})", err=True)
         sys.exit(1)
     return {"X-Auth-Token": token, "Content-Type": "application/json"}
 
 
 def _output(data, fmt: str, headers: list | None = None):
-    """Print data as json or table."""
+    """Print data as json or table (OpenStack-style grid)."""
     if fmt == "json":
         click.echo(json.dumps(data, indent=2, default=str))
     else:
@@ -130,10 +121,10 @@ def _output(data, fmt: str, headers: list | None = None):
             if headers is None:
                 headers = list(data[0].keys()) if data else []
             rows = [[item.get(h, "") for h in headers] for item in data]
-            click.echo(tabulate(rows, headers=headers, tablefmt="simple"))
+            click.echo(tabulate(rows, headers=headers, tablefmt="grid"))
         elif isinstance(data, dict):
             rows = [[k, v] for k, v in data.items()]
-            click.echo(tabulate(rows, headers=["Field", "Value"], tablefmt="simple"))
+            click.echo(tabulate(rows, headers=["Field", "Value"], tablefmt="grid"))
         else:
             click.echo(str(data))
 
@@ -186,82 +177,76 @@ def auth(ctx):
     """Authentication and identity management"""
 
 
-@auth.command("login")
-@click.option("--username", "-u", prompt=True)
-@click.option("--password", "-p", prompt=True, hide_input=True)
-@click.pass_context
-def auth_login(ctx, username, password):
-    """Login and save token to ~/.cloudx/token"""
-    url = f"{DEFAULT_URLS['auth']}/auth/tokens"
-    try:
-        r = requests.post(url, json={"username": username, "password": password}, timeout=10)
-        if not r.ok:
-            click.echo(f"❌ Login failed: {r.json().get('detail', 'unknown error')}", err=True)
-            sys.exit(1)
-        data = r.json()
-        CLOUDX_DIR.mkdir(parents=True, exist_ok=True)
-        TOKEN_FILE.write_text(data["token"])
-        TOKEN_FILE.chmod(0o600)
-        click.echo(f"✓ Logged in as {data['user']['username']} (project: {data['project']['name']})")
-        click.echo(f"  Token saved to {TOKEN_FILE}")
-    except requests.ConnectionError:
-        click.echo(f"❌ Cannot connect to auth-api at {DEFAULT_URLS['auth']}", err=True)
-        sys.exit(1)
-
-
-@auth.command("logout")
-@click.pass_context
-def auth_logout(ctx):
-    """Logout and revoke current token"""
-    profile = ctx.obj["profile"]
-    try:
-        _api("delete", f"{DEFAULT_URLS['auth']}/auth/tokens/current", profile)
-    except SystemExit:
-        pass
-    if TOKEN_FILE.exists():
-        TOKEN_FILE.unlink()
-    click.echo("✓ Logged out")
-
-
 @auth.command("configure")
 @click.pass_context
 def auth_configure(ctx):
-    """Interactive wizard to create ~/.cloudx/config and credentials"""
+    """Configure access key credentials and CLI preferences"""
     click.echo("☁  cloudx configure\n")
     CLOUDX_DIR.mkdir(parents=True, exist_ok=True)
-    profile = click.prompt("Profile name", default="default")
-    project = click.prompt("Default project", default="admin")
-    fmt     = click.prompt("Default output format", type=click.Choice(["json", "table"]), default="table")
-    access_key_id  = click.prompt("Access Key ID (leave blank to skip)")
-    secret_key     = click.prompt("Secret Access Key", default="", hide_input=True) if access_key_id else ""
+
+    # Load existing values as defaults
+    existing_creds = _load_creds("default")
+    existing_config = _load_config("default")
+
+    access_key_id = click.prompt(
+        "CloudX Access Key ID",
+        default=existing_creds.get("access_key_id", "") or None,
+    )
+    secret_key = click.prompt(
+        "CloudX Secret Access Key",
+        default=existing_creds.get("secret_access_key", "") or None,
+        hide_input=True,
+    )
+    project = click.prompt(
+        "Default project",
+        default=existing_config.get("project", "admin"),
+    )
+    fmt = click.prompt(
+        "Default output format",
+        type=click.Choice(["json", "table"]),
+        default=existing_config.get("output", "table"),
+    )
 
     # Write config
     cfg = configparser.ConfigParser()
     if CONFIG_FILE.exists():
         cfg.read(CONFIG_FILE)
-    section = f"profile {profile}" if profile != "default" else "default"
-    if not cfg.has_section(section) and section != "default":
-        cfg.add_section(section)
-    target = cfg[section] if section != "default" else cfg["DEFAULT"]
-    target["project"] = project
-    target["output"]  = fmt
+    if not cfg.has_section("default"):
+        cfg["DEFAULT"] = {}
+    cfg["DEFAULT"]["project"] = project
+    cfg["DEFAULT"]["output"]  = fmt
     with open(CONFIG_FILE, "w") as f:
         cfg.write(f)
     CONFIG_FILE.chmod(0o600)
 
     # Write credentials
-    if access_key_id:
-        crd = configparser.ConfigParser()
-        if CREDS_FILE.exists():
-            crd.read(CREDS_FILE)
-        if not crd.has_section(profile) and profile != "default":
-            crd.add_section(profile)
-        target_crd = crd[profile] if profile != "default" else crd["DEFAULT"]
-        target_crd["access_key_id"]     = access_key_id
-        target_crd["secret_access_key"] = secret_key
-        with open(CREDS_FILE, "w") as f:
-            crd.write(f)
-        CREDS_FILE.chmod(0o600)
+    crd = configparser.ConfigParser()
+    if CREDS_FILE.exists():
+        crd.read(CREDS_FILE)
+    if not crd.has_section("default"):
+        crd["DEFAULT"] = {}
+    crd["DEFAULT"]["access_key_id"]     = access_key_id
+    crd["DEFAULT"]["secret_access_key"] = secret_key
+    with open(CREDS_FILE, "w") as f:
+        crd.write(f)
+    CREDS_FILE.chmod(0o600)
+
+    # Validate credentials
+    click.echo("\nValidating credentials...", nl=False)
+    try:
+        r = requests.post(
+            f"{DEFAULT_URLS['auth']}/auth/tokens/access-key",
+            headers={"X-Access-Key-Id": access_key_id, "X-Secret-Access-Key": secret_key},
+            timeout=5,
+        )
+        if r.status_code == 201:
+            click.echo(" ✓")
+        else:
+            click.echo(f" ✗ (HTTP {r.status_code})")
+            click.echo("⚠️  Credentials saved but validation failed. Check your access key.", err=True)
+    except requests.ConnectionError:
+        click.echo(f" ✗ (connection failed)")
+        click.echo(f"⚠️  Credentials saved but could not reach auth-api at {DEFAULT_URLS['auth']}", err=True)
 
     click.echo(f"\n✓ Configuration saved to {CLOUDX_DIR}")
 

@@ -64,7 +64,6 @@ install-cli:
 	@echo ""
 	@echo "Quick start:"
 	@echo "  cloudx auth configure        # Setup credentials"
-	@echo "  cloudx auth login            # Login"
 	@echo "  cloudx server list           # List servers"
 
 # ── Tests ─────────────────────────────────────────────────────────────────────

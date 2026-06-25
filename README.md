@@ -148,17 +148,11 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-### Langkah 3 — Setup Credentials & Login
+### Langkah 3 — Setup Credentials
 
 ```bash
-# Konfigurasi credentials
+# Konfigurasi access key credentials (dari Dashboard)
 cloudx auth configure
-
-# Login dan dapatkan token
-cloudx auth login
-
-# Atau login dengan project scope langsung
-cloudx auth login --project default
 ```
 
 File credentials tersimpan di `~/.cloudx/credentials` dan `~/.cloudx/config`.
@@ -347,9 +341,7 @@ Swagger API tersedia di `/docs` pada masing-masing port service.
 ### Auth
 
 ```bash
-cloudx auth configure            # Setup credentials file
-cloudx auth login                # Login (simpan token)
-cloudx auth logout               # Hapus token
+cloudx auth configure            # Setup access key credentials
 cloudx auth show                 # Tampilkan info token aktif
 cloudx project list              # List projects
 cloudx project create myproject  # Buat project
