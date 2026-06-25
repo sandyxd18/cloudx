@@ -117,10 +117,35 @@ function GenerateKeyModal({ onClose, onGenerate }) {
   }
 
   const copyToClipboard = async (text, field) => {
-    await navigator.clipboard.writeText(text)
-    setCopied(field)
-    setTimeout(() => setCopied(''), 2000)
-    toast(`${field} copied to clipboard`, 'success')
+    // navigator.clipboard is only available on HTTPS or localhost.
+    // Fall back to execCommand for plain HTTP access (e.g. internal IP).
+    let success = false
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text)
+        success = true
+      } catch (_) { /* fall through to execCommand */ }
+    }
+    if (!success) {
+      // execCommand fallback: create hidden textarea, select, copy
+      const el = document.createElement('textarea')
+      el.value = text
+      el.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0'
+      document.body.appendChild(el)
+      el.focus()
+      el.select()
+      try {
+        success = document.execCommand('copy')
+      } catch (_) { /* ignored */ }
+      document.body.removeChild(el)
+    }
+    if (success) {
+      setCopied(field)
+      setTimeout(() => setCopied(''), 2000)
+      toast(`${field} copied to clipboard`, 'success')
+    } else {
+      toast('Copy failed — please select and copy manually', 'error')
+    }
   }
 
   if (result) {

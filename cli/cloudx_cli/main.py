@@ -45,11 +45,11 @@ def _load_config(profile: str = "default") -> dict:
     if CONFIG_FILE.exists():
         parser = configparser.ConfigParser()
         parser.read(CONFIG_FILE)
-        section = f"profile {profile}" if profile != "default" else "default"
-        if parser.has_section(section):
+        # [DEFAULT] is read via parser.defaults() — has_section("default") is False
+        cfg.update(dict(parser.defaults()))
+        section = f"profile {profile}" if profile != "default" else None
+        if section and parser.has_section(section):
             cfg.update(dict(parser[section]))
-        elif parser.has_section("default"):
-            cfg.update(dict(parser["default"]))
     return cfg
 
 
@@ -58,11 +58,13 @@ def _load_creds(profile: str = "default") -> dict:
     if CREDS_FILE.exists():
         parser = configparser.ConfigParser()
         parser.read(CREDS_FILE)
-        section = profile
-        if parser.has_section(section):
-            creds.update(dict(parser[section]))
-        elif parser.has_section("default"):
-            creds.update(dict(parser["default"]))
+        # configparser treats [DEFAULT] as special fallback values, not a named
+        # section — parser.has_section("default") returns False for [DEFAULT].
+        # Use parser.defaults() to always read DEFAULT values first, then
+        # override with the named profile section if it exists.
+        creds.update(dict(parser.defaults()))          # reads [DEFAULT]
+        if parser.has_section(profile):                # named [profile]
+            creds.update(dict(parser[profile]))
     return creds
 
 
