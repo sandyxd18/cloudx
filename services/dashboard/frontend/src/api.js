@@ -49,6 +49,11 @@ export const api = {
   createUser: (b) => request('POST', '/auth/users', b),
   deleteUser: (id) => request('DELETE', `/auth/users/${id}`),
 
+  // Auth — Access Keys
+  getAccessKeys: () => request('GET', '/auth/access-keys'),
+  createAccessKey: (b) => request('POST', '/auth/access-keys', b),
+  deleteAccessKey: (id) => request('DELETE', `/auth/access-keys/${id}`),
+
   // Compute — Servers
   getServers: () => request('GET', '/compute/servers'),
   createServer: (b) => request('POST', '/compute/servers', b),
