@@ -36,11 +36,46 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgre
 IMAGE_API_URL = os.getenv("IMAGE_API_URL", "http://image-api:8000").rstrip("/")
 NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
 BLOCK_STORE_API_URL = os.getenv("BLOCK_STORE_API_URL", "http://block-store-api:8000").rstrip("/")
+AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
+AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
+AUTH_ADMIN_PASSWORD = os.getenv("AUTH_ADMIN_PASSWORD", "admin123")
 COMPUTE_BACKEND = os.getenv("COMPUTE_BACKEND", "libvirt").lower()
 DEFAULT_VM_USER = os.getenv("DEFAULT_VM_USER", "ubuntu")
 NOVNC_BASE_URL = os.getenv("NOVNC_BASE_URL", "http://localhost:6080/vnc.html")
 RPC_CALL_TIMEOUT = int(os.getenv("RPC_CALL_TIMEOUT", "30"))
 ONLY_BACKEND = "libvirt"
+
+# ── Internal Service Token ────────────────────────────────────────────────────
+# JWT obtained at startup for service-to-service calls (networking, image, block-store).
+_svc_token: str | None = None
+
+
+def _get_svc_token() -> str | None:
+    """Return a cached service token, refreshing if None."""
+    global _svc_token
+    if _svc_token:
+        return _svc_token
+    try:
+        resp = requests.post(
+            f"{AUTH_API_URL}/auth/tokens",
+            json={"username": AUTH_ADMIN_USERNAME, "password": AUTH_ADMIN_PASSWORD},
+            timeout=10,
+        )
+        if resp.status_code == 201:
+            _svc_token = resp.json().get("token")
+            log.info("compute-api: service token obtained")
+        else:
+            log.warning("compute-api: failed to obtain service token: HTTP %s", resp.status_code)
+    except Exception as exc:
+        log.warning("compute-api: could not reach auth-api for service token: %s", exc)
+    return _svc_token
+
+
+def _svc_headers() -> dict:
+    token = _get_svc_token()
+    if token:
+        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    return {"Content-Type": "application/json"}
 
 # ── RPC Client (initialized on startup) ──────────────────────────────────────
 _rpc: RPCClient | None = None
@@ -397,9 +432,18 @@ def generate_keypair_material() -> tuple[str, str]:
 
 def api_get(url: str):
     try:
-        response = requests.get(url, timeout=8)
+        response = requests.get(url, headers=_svc_headers(), timeout=8)
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if response.status_code == 401:
+        # Token may have expired — clear and retry once with fresh token
+        global _svc_token
+        _svc_token = None
+        fresh_headers = _svc_headers()
+        try:
+            response = requests.get(url, headers=fresh_headers, timeout=8)
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     if response.status_code >= 400:
         raise HTTPException(status_code=response.status_code, detail=response_detail(response))
     return response.json()
@@ -407,9 +451,16 @@ def api_get(url: str):
 
 def api_post(url: str, payload: dict):
     try:
-        response = requests.post(url, json=payload, timeout=300)
+        response = requests.post(url, json=payload, headers=_svc_headers(), timeout=300)
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if response.status_code == 401:
+        global _svc_token
+        _svc_token = None
+        try:
+            response = requests.post(url, json=payload, headers=_svc_headers(), timeout=300)
+        except requests.RequestException as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     if response.status_code >= 400:
         raise HTTPException(status_code=response.status_code, detail=response_detail(response))
     return response.json()
@@ -417,7 +468,11 @@ def api_post(url: str, payload: dict):
 
 def api_delete(url: str, payload: dict | None = None):
     try:
-        requests.delete(url, json=payload, timeout=20)
+        resp = requests.delete(url, json=payload, headers=_svc_headers(), timeout=20)
+        if resp.status_code == 401:
+            global _svc_token
+            _svc_token = None
+            requests.delete(url, json=payload, headers=_svc_headers(), timeout=20)
     except requests.RequestException:
         pass
 

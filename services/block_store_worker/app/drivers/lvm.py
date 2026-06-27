@@ -88,10 +88,25 @@ def ensure_vg() -> None:
     log.info("LVM: VG '%s' created successfully", vg)
 
 
+def _cleanup_stale_lv(volume_name: str, vg: str) -> None:
+    """Remove stale device-mapper entry and LV if they exist but were not cleanly removed.
+    
+    The 'device not cleared' error happens when a previous lvcreate left a stale
+    device-mapper mapping. This cleans it up before creating a new LV.
+    """
+    dev_path = f"/dev/{vg}/{volume_name}"
+    dm_name = f"{vg}-{volume_name}"
+    # Remove stale dm entry if exists
+    subprocess.run(["dmsetup", "remove", "--force", dm_name], capture_output=True)
+    # Remove LV if it exists (lvremove -f is safe; no-op if not found)
+    subprocess.run(["lvremove", "-f", dev_path], capture_output=True)
+
+
 def create(volume_name: str, size_gb: int) -> str:
     """Create an LV and return its device path (/dev/VG/LV)."""
     vg = vg_name()
-    _run(["lvcreate", "-L", f"{size_gb}G", "-n", volume_name, vg])
+    _cleanup_stale_lv(volume_name, vg)
+    _run(["lvcreate", "-y", "-W", "y", "-L", f"{size_gb}G", "-n", volume_name, vg])
     return f"/dev/{vg}/{volume_name}"
 
 
@@ -100,15 +115,19 @@ def create_from_source(volume_name: str, source_path: str, size_gb: int) -> str:
     
     Used when creating a volume from an image (boot volume).
     Steps:
-      1. lvcreate with requested size
-      2. dd source_path → /dev/VG/LV
-      3. Resize filesystem if needed (best-effort)
+      1. Cleanup stale device-mapper entry (prevents 'device not cleared' error)
+      2. lvcreate with requested size
+      3. qemu-img convert source → /dev/VG/LV (dd fallback)
+      4. Resize filesystem if needed (best-effort)
     """
     vg = vg_name()
     dev = f"/dev/{vg}/{volume_name}"
 
-    # Create the LV
-    _run(["lvcreate", "-L", f"{size_gb}G", "-n", volume_name, vg])
+    # Cleanup stale entries before creating
+    _cleanup_stale_lv(volume_name, vg)
+
+    # Create the LV, explicitly wiping any leftover signatures
+    _run(["lvcreate", "-y", "-W", "y", "-L", f"{size_gb}G", "-n", volume_name, vg])
 
     # Write image to block device using qemu-img convert for format compatibility
     result = subprocess.run(
@@ -178,5 +197,6 @@ def snapshot(volume_name: str, snapshot_name: str, size_gb: int) -> str:
     Returns the snapshot device path.
     """
     vg = vg_name()
-    _run(["lvcreate", "-L", f"{size_gb}G", "-s", "-n", snapshot_name, f"{vg}/{volume_name}"])
+    _cleanup_stale_lv(snapshot_name, vg)
+    _run(["lvcreate", "-y", "-W", "y", "-L", f"{size_gb}G", "-s", "-n", snapshot_name, f"{vg}/{volume_name}"])
     return f"/dev/{vg}/{snapshot_name}"
