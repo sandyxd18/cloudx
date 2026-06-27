@@ -918,7 +918,7 @@ def router_delete(ctx, ref):
 @click.pass_context
 def router_set_gateway(ctx, ref, network):
     _api("post", f"{DEFAULT_URLS['network']}/routers/{ref}/gateway",
-         ctx.obj["profile"], json={"network": network})
+         ctx.obj["profile"], json={"external_network": network})
     click.echo(f"✓ Gateway set on router {ref}")
 
 @router.command("add-interface")

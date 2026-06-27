@@ -237,7 +237,13 @@ class FloatingIPAssociateIn(BaseModel):
 
 
 class RouterGatewayIn(BaseModel):
-    external_network: str
+    external_network: str | None = None
+    # backward-compat: some callers send 'network' instead of 'external_network'
+    network: str | None = None
+
+    @property
+    def resolved_network(self) -> str | None:
+        return self.external_network or self.network
 
 
 class SecurityGroupIn(BaseModel):
@@ -1090,8 +1096,11 @@ def delete_router(ref: str, _: CurrentUser, db: DB):
 
 @app.post("/routers/{ref}/gateway")
 def set_router_gateway(ref: str, payload: RouterGatewayIn, _: CurrentUser, db: DB):
+    network_ref = payload.resolved_network
+    if not network_ref:
+        raise HTTPException(status_code=422, detail="'external_network' field is required")
     router = require_by_ref(db, Router, ref, "router")
-    network = require_by_ref(db, Network, payload.external_network, "network")
+    network = require_by_ref(db, Network, network_ref, "network")
     if not network.external:
         raise HTTPException(status_code=400, detail="router gateway requires an external network")
     ensure_router_gateway_ovn(router, network)
