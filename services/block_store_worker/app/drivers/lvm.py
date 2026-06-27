@@ -20,6 +20,15 @@ log = logging.getLogger(__name__)
 LVM_VG_NAME = os.getenv("LVM_VG_NAME", "")
 LVM_PV_NAME = os.getenv("LVM_PV_NAME", "")   # comma-separated, e.g. "/dev/sdb,/dev/sdc"
 
+# LVM global config overrides for container environments:
+# - udev_sync=0: don't wait for udev to process events (udev socket may not be available)
+# - udev_rules=0: don't install udev rules for devices
+# These prevent 'device not cleared' errors when running inside Docker.
+LVM_CONTAINER_CFG = [
+    "--config",
+    "global { udev_sync=0 udev_rules=0 } activation { udev_sync=0 udev_rules=0 }",
+]
+
 
 def _run(cmd: list[str], check: bool = True) -> str:
     """Run an LVM command, raise RuntimeError on failure."""
@@ -88,25 +97,46 @@ def ensure_vg() -> None:
     log.info("LVM: VG '%s' created successfully", vg)
 
 
+def _udev_settle() -> None:
+    """Ask udev to process pending events, ensuring dm entries are up-to-date."""
+    subprocess.run(["udevadm", "settle", "--timeout=10"], capture_output=True)
+
+
 def _cleanup_stale_lv(volume_name: str, vg: str) -> None:
     """Remove stale device-mapper entry and LV if they exist but were not cleanly removed.
-    
+
     The 'device not cleared' error happens when a previous lvcreate left a stale
     device-mapper mapping. This cleans it up before creating a new LV.
     """
     dev_path = f"/dev/{vg}/{volume_name}"
     dm_name = f"{vg}-{volume_name}"
-    # Remove stale dm entry if exists
-    subprocess.run(["dmsetup", "remove", "--force", dm_name], capture_output=True)
-    # Remove LV if it exists (lvremove -f is safe; no-op if not found)
-    subprocess.run(["lvremove", "-f", dev_path], capture_output=True)
+
+    # Check if this LV already exists
+    lv_exists = subprocess.run(
+        ["lvs", "--noheadings", "-o", "lv_name", f"{vg}/{volume_name}"],
+        capture_output=True,
+    ).returncode == 0
+
+    if lv_exists:
+        log.info("LVM: removing existing LV %s before re-creating", dev_path)
+        subprocess.run(["lvremove", "-f", dev_path], capture_output=True)
+        _udev_settle()
+
+    # Also forcibly remove stale dm entry (no-op if not present)
+    r = subprocess.run(["dmsetup", "info", dm_name], capture_output=True)
+    if r.returncode == 0:
+        log.info("LVM: removing stale dm entry %s", dm_name)
+        subprocess.run(["dmsetup", "remove", "--force", "--retry", dm_name], capture_output=True)
+        _udev_settle()
+
+
 
 
 def create(volume_name: str, size_gb: int) -> str:
     """Create an LV and return its device path (/dev/VG/LV)."""
     vg = vg_name()
     _cleanup_stale_lv(volume_name, vg)
-    _run(["lvcreate", "-y", "-W", "y", "-L", f"{size_gb}G", "-n", volume_name, vg])
+    _run(["lvcreate", "-y", "-W", "y", "-Z", "y", "-L", f"{size_gb}G", "-n", volume_name, vg] + LVM_CONTAINER_CFG)
     return f"/dev/{vg}/{volume_name}"
 
 
@@ -116,7 +146,7 @@ def create_from_source(volume_name: str, source_path: str, size_gb: int) -> str:
     Used when creating a volume from an image (boot volume).
     Steps:
       1. Cleanup stale device-mapper entry (prevents 'device not cleared' error)
-      2. lvcreate with requested size
+      2. lvcreate with requested size (udev sync disabled for container compat)
       3. qemu-img convert source → /dev/VG/LV (dd fallback)
       4. Resize filesystem if needed (best-effort)
     """
@@ -126,8 +156,11 @@ def create_from_source(volume_name: str, source_path: str, size_gb: int) -> str:
     # Cleanup stale entries before creating
     _cleanup_stale_lv(volume_name, vg)
 
-    # Create the LV, explicitly wiping any leftover signatures
-    _run(["lvcreate", "-y", "-W", "y", "-L", f"{size_gb}G", "-n", volume_name, vg])
+    # Create the LV with udev sync disabled (required inside Docker containers)
+    _run(["lvcreate", "-y", "-W", "y", "-Z", "y", "-L", f"{size_gb}G", "-n", volume_name, vg] + LVM_CONTAINER_CFG)
+
+    # Give the kernel a moment to register the new device node
+    _udev_settle()
 
     # Write image to block device using qemu-img convert for format compatibility
     result = subprocess.run(
@@ -198,5 +231,5 @@ def snapshot(volume_name: str, snapshot_name: str, size_gb: int) -> str:
     """
     vg = vg_name()
     _cleanup_stale_lv(snapshot_name, vg)
-    _run(["lvcreate", "-y", "-W", "y", "-L", f"{size_gb}G", "-s", "-n", snapshot_name, f"{vg}/{volume_name}"])
+    _run(["lvcreate", "-y", "-W", "y", "-L", f"{size_gb}G", "-s", "-n", snapshot_name, f"{vg}/{volume_name}"] + LVM_CONTAINER_CFG)
     return f"/dev/{vg}/{snapshot_name}"

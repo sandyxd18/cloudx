@@ -17,6 +17,14 @@ services:
     networks:
       - lab-net
 
+  # ── Memcached (Session Cache) ────────────────────────────────────────────────
+  memcached:
+    image: memcached:1.6-alpine
+    ports:
+      - "11211:11211"
+    networks:
+      - lab-net
+
   # ── RabbitMQ (AMQP Message Broker) ───────────────────────────────────────
   rabbitmq:
     image: rabbitmq:3-management
@@ -398,6 +406,7 @@ services:
     volumes:
       - /dev:/dev                  # LVM: access to block devices on host
       - /run/lvm:/run/lvm          # LVM: lock files
+      - /run/udev:/run/udev        # LVM: udev socket for udevadm settle
       - /etc/ceph:/etc/ceph:ro     # Ceph: config + keyring (optional)
     depends_on:
       rabbitmq:
@@ -442,6 +451,7 @@ services:
       BLOCK_STORE_API_URL: http://block-store-api:8000
       PLACEMENT_API_URL: http://placement-api:8000
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@rabbitmq:5672/}
+      MEMCACHED_URL: memcached:11211
     ports:
       - "8080:8000"
     depends_on:
@@ -453,6 +463,8 @@ services:
         condition: service_started
       rabbitmq:
         condition: service_healthy
+      memcached:
+        condition: service_started
     networks:
       - lab-net
 
