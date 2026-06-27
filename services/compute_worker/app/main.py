@@ -251,8 +251,9 @@ def handle_build_instance(args: dict) -> None:
 
         # Attach root volume via block-store API
         if root_volume_id:
+            bs_url = _probe_block_store_url(block_store_url)
             _http_post(
-                f"{block_store_url}/internal/volumes/{root_volume_id}/attach-server",
+                f"{bs_url}/internal/volumes/{root_volume_id}/attach-server",
                 {"server_id": server_id, "target_device": "sda"},
             )
 
