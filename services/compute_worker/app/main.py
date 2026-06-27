@@ -94,6 +94,48 @@ def _http_delete(url: str, timeout: int = 20) -> None:
         pass
 
 
+def wait_for_volume_ready(
+    volume_id: str,
+    block_store_url: str,
+    timeout_sec: int = 300,
+    poll_interval: float = 2.0,
+) -> dict:
+    """Poll block-store API until volume is 'available' with a valid path.
+
+    Volume creation is async (block-store-worker via RabbitMQ). compute-api
+    dispatches build_instance immediately after POST /internal/volumes, so
+    compute-worker may receive an empty path. We must wait here.
+
+    Raises RuntimeError if volume reaches error status or timeout expires.
+    """
+    url = f"{block_store_url}/internal/volumes/{volume_id}"
+    deadline = time.time() + timeout_sec
+    log.info("Waiting for volume %s to become available (timeout=%ds)...", volume_id, timeout_sec)
+    while time.time() < deadline:
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                vol = resp.json()
+                status = vol.get("status", "")
+                path = vol.get("path", "")
+                if status == "available" and path:
+                    log.info("Volume %s is ready at %s", volume_id, path)
+                    return vol
+                if status == "error":
+                    raise RuntimeError(
+                        f"Volume {volume_id} entered error state: {vol.get('error_message', 'unknown')}"
+                    )
+                log.debug("Volume %s status=%s path=%r — waiting...", volume_id, status, path)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            log.debug("Volume poll failed: %s", exc)
+        time.sleep(poll_interval)
+    raise RuntimeError(
+        f"Timed out waiting for volume {volume_id} to become available after {timeout_sec}s"
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Health check
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -141,6 +183,18 @@ def handle_build_instance(args: dict) -> None:
     root_volume_id = args.get("_root_volume_id")
     block_store_url = args.get("_block_store_url", BLOCK_STORE_API_URL)
     try:
+        # ── Wait for root volume to be ready (async creation race condition) ──
+        # block-store-worker creates the LV asynchronously via RabbitMQ.
+        # compute-api sends build_instance immediately after POST /internal/volumes,
+        # so root_volume.path may be empty. Poll until volume is available.
+        if root_volume_id:
+            ready_volume = wait_for_volume_ready(root_volume_id, block_store_url)
+            # Inject the real path into args so worker.spawn_server can use it
+            if args.get("root_volume") is not None:
+                args["root_volume"]["path"] = ready_volume.get("path", "")
+            else:
+                args["root_volume"] = ready_volume
+
         result = worker.spawn_server(server_id, args)
 
         # Update server with hypervisor details (host, mac, tap, etc.)
