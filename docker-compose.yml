@@ -302,17 +302,16 @@ services:
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
+    network_mode: host       # REQUIRED: tap devices must be in host netns for libvirt
     environment:
-      IMAGE_API_URL: http://image-api:8000
-      BLOCK_STORE_API_URL: http://block-store-api:8000
+      IMAGE_API_URL: ${IMAGE_API_URL:-http://127.0.0.1:8002}
+      BLOCK_STORE_API_URL: ${BLOCK_STORE_API_URL:-http://127.0.0.1:8004}
+      RABBITMQ_URL: amqp://cloudx:cloudx@127.0.0.1:5672/
       LIBVIRT_URI: ${LIBVIRT_URI:-qemu:///system}
       COMPUTE_INSTANCE_DIR: ${COMPUTE_INSTANCE_DIR:-/var/lib/mini-openstack/compute/instances}
       COMPUTE_IMAGE_CACHE_DIR: ${COMPUTE_IMAGE_CACHE_DIR:-/var/lib/mini-openstack/compute/cache/images}
       OVS_BRIDGE: ${OVS_BRIDGE:-br-int}
       VM_NAME_PREFIX: ${VM_NAME_PREFIX:-mini-os}
-      RABBITMQ_URL: amqp://cloudx:cloudx@rabbitmq:5672/
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ${COMPUTE_INSTANCE_DIR:-/var/lib/mini-openstack/compute/instances}:/var/lib/mini-openstack/compute/instances
       - ${COMPUTE_CACHE_DIR:-/var/lib/mini-openstack/compute/cache}:/var/lib/mini-openstack/compute/cache
@@ -328,8 +327,6 @@ services:
         condition: service_started
       networking-api:
         condition: service_started
-    networks:
-      - lab-net
 
   # ── Conductor (nova-conductor equivalent) ───────────────────────────────
   conductor:
