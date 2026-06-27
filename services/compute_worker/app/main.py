@@ -244,7 +244,7 @@ def handle_delete_instance(args: dict) -> None:
         # 2. Release volumes via block-store API
         _http_post(f"{block_store_url}/servers/{server_id}/volumes/detach-all", {})
         if root_volume_id and not keep_root_volume:
-            _http_delete(f"{block_store_url}/volumes/{root_volume_id}")
+            _http_delete(f"{block_store_url}/internal/volumes/{root_volume_id}")
 
         # 3. Delete ports via networking API
         port_ids = [port_id] if port_id else []

@@ -122,7 +122,7 @@ def _cleanup_stale_lv(volume_name: str, vg: str) -> None:
 
     if lv_exists:
         log.info("LVM: removing existing LV %s before re-creating", dev_path)
-        subprocess.run(["lvremove", "-f", dev_path], capture_output=True)
+        subprocess.run(["lvremove", "-f", dev_path] + LVM_CONTAINER_CFG, capture_output=True)
         _udev_settle()
 
     # Also forcibly remove stale dm entry (no-op if not present)
@@ -197,13 +197,13 @@ def _try_resize_fs(dev: str) -> None:
 def delete(volume_name: str) -> None:
     """Remove an LV."""
     vg = vg_name()
-    _run(["lvremove", "-f", f"{vg}/{volume_name}"])
+    _run(["lvremove", "-f", f"{vg}/{volume_name}"] + LVM_CONTAINER_CFG)
 
 
 def extend(volume_name: str, new_size_gb: int) -> None:
     """Resize an LV to new_size_gb (must be larger than current)."""
     vg = vg_name()
-    _run(["lvextend", "-L", f"{new_size_gb}G", f"{vg}/{volume_name}"])
+    _run(["lvextend", "-L", f"{new_size_gb}G", f"{vg}/{volume_name}"] + LVM_CONTAINER_CFG)
     # Try to extend the filesystem in-place
     dev = f"/dev/{vg}/{volume_name}"
     _try_resize_fs(dev)
