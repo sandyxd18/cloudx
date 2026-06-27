@@ -455,7 +455,7 @@ def server_create(ctx, name, image, flavor, network, key_name, security_groups, 
 def server_list(ctx):
     data = _api("get", f"{DEFAULT_URLS['compute']}/servers", ctx.obj["profile"])
     _output(data.get("items", data), ctx.obj["fmt"],
-            ["id", "name", "status", "flavor", "fixed_ip", "floating_ip"])
+            ["id", "name", "status", "flavor", "ip_address", "floating_ip"])
 
 @server.command("show")
 @click.argument("ref")
@@ -557,9 +557,15 @@ def server_unrescue(ctx, ref):
 def server_console(ctx, ref):
     """Open serial console (Ctrl+] to exit)"""
     data = _api("get", f"{DEFAULT_URLS['compute']}/servers/{ref}/console", ctx.obj["profile"])
+    import shutil
     import subprocess
     virsh_uri = "qemu:///system"
     domain = data.get("domain_name", ref)
+    if shutil.which("virsh") is None:
+        click.echo(f"❌ 'virsh' is not installed on this host.", err=True)
+        click.echo(f"To access the console, either install libvirt-clients, or run from the compute-worker container:", err=True)
+        click.echo(f"  docker exec -it mini-openstack-lab-compute-worker-1 virsh -c qemu:///system console {domain}", err=True)
+        sys.exit(1)
     os.execvp("virsh", ["virsh", "-c", virsh_uri, "console", domain])
 
 @server.command("console-url")

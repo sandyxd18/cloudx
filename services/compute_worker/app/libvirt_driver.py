@@ -124,10 +124,15 @@ def domain_xml(
 
     # Serial console — explicit target agar virsh console selalu bisa terhubung
     # CirrOS dan Ubuntu cloud image mengirim output ke ttyS0 (port 0) secara default
+    instance_dir = Path(seed_iso).parent
+    console_log_path = instance_dir / "console.log"
+
     serial = ET.SubElement(devices, "serial", type="pty")
     ET.SubElement(serial, "target", type="isa-serial", port="0")
+    
     console = ET.SubElement(devices, "console", type="pty")
     ET.SubElement(console, "target", type="serial", port="0")
+    ET.SubElement(console, "log", file=str(console_log_path), append="on")
 
     # virtio-balloon untuk memory management yang lebih baik
     ET.SubElement(devices, "memballoon", model="virtio")
@@ -401,15 +406,13 @@ def resize(name: str, new_vcpus: int | None, new_ram_mb: int | None) -> None:
 def get_console_log(name: str, lines: int = 50) -> str:
     """Retrieve recent serial console output via libvirt screenshot / log file.
 
-    libvirt itself doesn't expose a "get console log" API; the best we can do
-    is read the PTY log that QEMU writes to the instance directory, or use
-    virsh console with a timeout.  We return an empty string on failure so
-    the caller can always produce a response.
+    We configure the VM with <log file="...console.log" append="on"/> on its
+    PTY console, so we can just read that log file from the instance directory.
     """
     import subprocess
     from .config import LIBVIRT_URI
     try:
-        # Attempt to read via `virsh dumpxml` to find the PTY path, then read.
+        # Read XML to find the log file path
         result = subprocess.run(
             ["virsh", "-c", LIBVIRT_URI, "dumpxml", name],
             capture_output=True, text=True, timeout=10,
@@ -419,19 +422,17 @@ def get_console_log(name: str, lines: int = 50) -> str:
         root = ET.fromstring(result.stdout)
         console_el = root.find("./devices/console[@type='pty']")
         if console_el is not None:
-            pty_path = console_el.find("source")
-            if pty_path is not None:
-                pty = pty_path.attrib.get("path", "")
-                if pty:
-                    # Read last N bytes of PTY — PTYs are live so we use a
-                    # non-blocking approach via `dd` to avoid hanging.
-                    dd = subprocess.run(
-                        ["bash", "-c", f"timeout 1 cat {pty} 2>/dev/null | tail -n {lines}"],
+            log_el = console_el.find("log")
+            if log_el is not None:
+                log_file = log_el.attrib.get("file", "")
+                if log_file and Path(log_file).exists():
+                    tail = subprocess.run(
+                        ["tail", "-n", str(lines), log_file],
                         capture_output=True, text=True, timeout=5,
                     )
-                    return dd.stdout
-    except Exception:
-        pass
+                    return tail.stdout
+    except Exception as exc:
+        return f"[Error fetching logs: {exc}]"
     return ""
 
 

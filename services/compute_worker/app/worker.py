@@ -65,7 +65,10 @@ def spawn_server(server_id: str, payload: dict) -> dict:
         if not disk_path.exists():
             raise RuntimeError(f"root volume path does not exist: {disk_path}")
         seed_iso = cloudinit.create_config_drive(instance_dir, server_id, server_name, payload.get("public_key_snapshot"), port, payload.get("user_data"))
-        expose_to_host_libvirt(instance_dir, disk_path, seed_iso)
+        console_log = instance_dir / "console.log"
+        console_log.touch(exist_ok=True)
+        console_log.chmod(0o666)
+        expose_to_host_libvirt(instance_dir, disk_path, seed_iso, console_log)
         network_manager.create_tap(tap)
         network_manager.bind_tap_to_ovs(tap, logical_port_name, mac_address, server_id)
         xml = libvirt_driver.domain_xml(domain, int(flavor["ram_mb"]), int(flavor["vcpus"]), disk_path, seed_iso, tap, mac_address)
