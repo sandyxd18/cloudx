@@ -491,6 +491,40 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
     return obj_to_dict(volume)
 
 
+@app.get("/internal/volumes/{ref}")
+def get_volume_internal(ref: str, db: DB):
+    """No-auth endpoint for internal services (e.g. compute-worker) to poll volume status."""
+    volume = require_volume(db, ref)
+    return {
+        "id":       volume.id,
+        "name":     volume.name,
+        "size_gb":  volume.size_gb,
+        "status":   volume.status,
+        "path":     volume.path,
+        "bootable": volume.bootable,
+        "backend":  volume.backend,
+        "target_device": volume.target_device,
+        "error_message": volume.error_message,
+    }
+
+
+@app.delete("/internal/volumes/{ref}", status_code=202)
+def delete_volume_internal(ref: str, db: DB):
+    """No-auth endpoint for internal services (e.g. compute-worker) to delete root volumes."""
+    volume = require_volume(db, ref)
+    if volume.status == "in-use":
+        raise HTTPException(status_code=409, detail="volume is in-use, detach first")
+    volume.status = "deleting"
+    db.commit()
+    cast_to_worker("delete_volume", {
+        "volume_id": volume.id,
+        "name":      volume.name,
+        "path":      volume.path,
+        "backend":   volume.backend,
+    })
+    return {"status": "deleting", "id": volume.id}
+
+
 @app.get("/volumes")
 def list_volumes(current: CurrentUser, db: DB):
     q = select(Volume)

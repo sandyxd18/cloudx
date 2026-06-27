@@ -21,12 +21,14 @@ LVM_VG_NAME = os.getenv("LVM_VG_NAME", "")
 LVM_PV_NAME = os.getenv("LVM_PV_NAME", "")   # comma-separated, e.g. "/dev/sdb,/dev/sdc"
 
 # LVM global config overrides for container environments:
-# - udev_sync=0: don't wait for udev to process events (udev socket may not be available)
-# - udev_rules=0: don't install udev rules for devices
-# These prevent 'device not cleared' errors when running inside Docker.
+# - global/udev_sync=0: don't wait for udev events
+# - global/udev_rules=0: don't install udev rules
+# - activation/udev_sync=0: don't sync LV activation with udev
+# These prevent 'device not cleared' and udev-related hangs inside Docker.
+# Format: global/key=0 is universally supported across LVM2 versions.
 LVM_CONTAINER_CFG = [
     "--config",
-    "global { udev_sync=0 udev_rules=0 } activation { udev_sync=0 udev_rules=0 }",
+    "global/udev_sync=0 global/udev_rules=0 activation/udev_sync=0 activation/udev_rules=0",
 ]
 
 
