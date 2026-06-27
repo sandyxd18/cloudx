@@ -41,6 +41,9 @@ logging.basicConfig(
 )
 log = logging.getLogger("compute-worker")
 
+# Cached resolved URL for block-store-api (probed at first use)
+_resolved_block_store_url: str = ""
+
 # RPC client for calling conductor
 _rpc = RPCClient(RABBITMQ_URL)
 
@@ -94,6 +97,44 @@ def _http_delete(url: str, timeout: int = 20) -> None:
         pass
 
 
+def _probe_block_store_url(base_url: str) -> str:
+    """Find a reachable block-store-api URL from a set of candidates.
+
+    When compute-worker runs in host network mode (network_mode: host),
+    Docker service names are not resolvable. We try several candidates
+    and return the first one that responds.
+    """
+    global _resolved_block_store_url
+    if _resolved_block_store_url:
+        return _resolved_block_store_url
+
+    candidates = [
+        base_url,                          # from env (may be 127.0.0.1 or docker name)
+        "http://127.0.0.1:8004",           # host-mode direct
+        "http://172.17.0.1:8004",          # Docker bridge gateway
+    ]
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+
+    for url in unique:
+        try:
+            r = requests.get(f"{url}/volume-types", timeout=3)
+            if r.status_code < 500:
+                log.info("block-store-api reachable at %s", url)
+                _resolved_block_store_url = url
+                return url
+        except Exception:
+            pass
+    log.warning("No block-store-api URL responded; defaulting to %s", base_url)
+    _resolved_block_store_url = base_url
+    return base_url
+
+
 def wait_for_volume_ready(
     volume_id: str,
     block_store_url: str,
@@ -108,9 +149,12 @@ def wait_for_volume_ready(
 
     Raises RuntimeError if volume reaches error status or timeout expires.
     """
-    url = f"{block_store_url}/internal/volumes/{volume_id}"
+    # Find the correct base URL (important when running in host network mode)
+    resolved_url = _probe_block_store_url(block_store_url)
+    url = f"{resolved_url}/internal/volumes/{volume_id}"
     deadline = time.time() + timeout_sec
-    log.info("Waiting for volume %s to become available (timeout=%ds)...", volume_id, timeout_sec)
+    log.info("Waiting for volume %s to become available (timeout=%ds, url=%s)...",
+             volume_id, timeout_sec, url)
     while time.time() < deadline:
         try:
             resp = requests.get(url, timeout=10)
@@ -134,6 +178,7 @@ def wait_for_volume_ready(
     raise RuntimeError(
         f"Timed out waiting for volume {volume_id} to become available after {timeout_sec}s"
     )
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -241,10 +286,11 @@ def handle_delete_instance(args: dict) -> None:
         except Exception as exc:
             log.warning("Worker delete for %s: %s", server_id, exc)
 
-        # 2. Release volumes via block-store API
-        _http_post(f"{block_store_url}/servers/{server_id}/volumes/detach-all", {})
+        # 2. Release volumes via block-store API (use probed URL for host network mode)
+        bs_url = _probe_block_store_url(block_store_url)
+        _http_post(f"{bs_url}/servers/{server_id}/volumes/detach-all", {})
         if root_volume_id and not keep_root_volume:
-            _http_delete(f"{block_store_url}/internal/volumes/{root_volume_id}")
+            _http_delete(f"{bs_url}/internal/volumes/{root_volume_id}")
 
         # 3. Delete ports via networking API
         port_ids = [port_id] if port_id else []
