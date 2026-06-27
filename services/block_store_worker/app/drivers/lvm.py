@@ -98,8 +98,11 @@ def ensure_vg() -> None:
 
 
 def _udev_settle() -> None:
-    """Ask udev to process pending events, ensuring dm entries are up-to-date."""
-    subprocess.run(["udevadm", "settle", "--timeout=10"], capture_output=True)
+    """Ask udev to process pending events. No-op if udevadm is not available."""
+    try:
+        subprocess.run(["udevadm", "settle", "--timeout=10"], capture_output=True)
+    except FileNotFoundError:
+        pass  # udevadm not in container — safe to skip when LVM udev_sync=0
 
 
 def _cleanup_stale_lv(volume_name: str, vg: str) -> None:
