@@ -452,6 +452,143 @@ def handle_detach_port(args: dict) -> None:
         log.error("detach_port %s failed: %s", server_id, exc, exc_info=True)
 
 
+def handle_shelve(args: dict) -> None:
+    """
+    Shelve a server:
+    1. Stop VM (if running)
+    2. Create a snapshot image of the root volume via block-store
+    3. Mark server SHELVED_OFFLOADED in conductor
+    """
+    server_id = args.get("id")
+    root_volume_id = args.get("root_volume_id") or args.get("_root_volume_id")
+    image_api_url = args.get("_image_api_url", IMAGE_API_URL)
+    block_store_url = args.get("_block_store_url", BLOCK_STORE_API_URL)
+
+    try:
+        # Stop VM
+        domain_name = args.get("libvirt_domain_name")
+        if domain_name:
+            try:
+                import libvirt as _libvirt
+                conn = libvirt_driver.connect()
+                domain = conn.lookupByName(domain_name)
+                if domain.isActive():
+                    domain.destroy()
+                conn.close()
+            except Exception as exc:
+                log.warning("shelve: could not stop VM %s: %s", domain_name, exc)
+
+        # Create volume snapshot
+        shelved_image_id = None
+        if root_volume_id:
+            try:
+                bsu = _probe_block_store_url(block_store_url)
+                snap_resp = requests.post(
+                    f"{bsu}/internal/volumes/{root_volume_id}/snapshots",
+                    json={"name": f"shelved-{server_id}"},
+                    timeout=60,
+                )
+                if snap_resp.status_code < 300:
+                    snap = snap_resp.json()
+                    # Import snapshot as an image record
+                    img_resp = requests.post(
+                        f"{image_api_url}/images/import-path",
+                        json={
+                            "name": f"shelved-{server_id}",
+                            "path": snap.get("path", ""),
+                            "disk_format": "qcow2",
+                            "container_format": "bare",
+                            "visibility": "private",
+                        },
+                        timeout=60,
+                    )
+                    if img_resp.status_code < 300:
+                        shelved_image_id = img_resp.json().get("id")
+                        log.info("shelve: created shelved image %s for server %s", shelved_image_id, server_id)
+                    else:
+                        log.warning("shelve: image import failed: %s", img_resp.text[:200])
+                else:
+                    log.warning("shelve: snapshot failed: %s", snap_resp.text[:200])
+            except Exception as exc:
+                log.warning("shelve: volume snapshot failed: %s", exc)
+
+        # Update conductor
+        fields = {"status": "SHELVED_OFFLOADED"}
+        if shelved_image_id:
+            fields["shelved_image_id"] = shelved_image_id
+        conductor_update_server(server_id, fields)
+        log.info("shelve: server %s is SHELVED_OFFLOADED", server_id)
+
+    except Exception as exc:
+        log.error("shelve %s failed: %s", server_id, exc, exc_info=True)
+        conductor_mark_error(server_id, str(exc))
+
+
+def handle_unshelve(args: dict) -> None:
+    """
+    Unshelve a server:
+    1. Restore volume from shelved image (qemu-img convert or rebase)
+    2. Start the VM
+    3. Mark server ACTIVE in conductor
+    """
+    server_id = args.get("id")
+    shelved_image_id = args.get("shelved_image_id")
+    root_volume_id = args.get("root_volume_id") or args.get("_root_volume_id") or args.get("root_volume", {}).get("id")
+    image_api_url = args.get("_image_api_url", IMAGE_API_URL)
+
+    try:
+        # If we have a shelved image, restore it
+        if shelved_image_id and root_volume_id:
+            try:
+                bsu = _probe_block_store_url(args.get("_block_store_url", BLOCK_STORE_API_URL))
+                vol_resp = requests.get(f"{bsu}/internal/volumes/{root_volume_id}", timeout=10)
+                if vol_resp.status_code == 200:
+                    vol = vol_resp.json()
+                    vol_path = vol.get("path", "")
+                    # Download shelved image and restore to volume path
+                    img_resp = requests.get(f"{image_api_url}/images/{shelved_image_id}/download", stream=True, timeout=300)
+                    if img_resp.status_code == 200 and vol_path:
+                        import subprocess
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(suffix=".qcow2", delete=False) as tmp:
+                            for chunk in img_resp.iter_content(chunk_size=65536):
+                                if chunk:
+                                    tmp.write(chunk)
+                            tmp_path = tmp.name
+                        subprocess.run(
+                            ["qemu-img", "convert", "-O", "raw", tmp_path, vol_path],
+                            check=True, timeout=600
+                        )
+                        import os as _os
+                        _os.unlink(tmp_path)
+                        log.info("unshelve: volume %s restored from image %s", root_volume_id, shelved_image_id)
+            except Exception as exc:
+                log.warning("unshelve: volume restore failed: %s", exc)
+
+        # Start the VM
+        domain_name = args.get("libvirt_domain_name")
+        if domain_name:
+            try:
+                conn = libvirt_driver.connect()
+                domain = conn.lookupByName(domain_name)
+                if not domain.isActive():
+                    domain.create()
+                conn.close()
+                log.info("unshelve: VM %s started", domain_name)
+            except Exception as exc:
+                log.warning("unshelve: could not start VM %s: %s", domain_name, exc)
+
+        conductor_update_server(server_id, {
+            "status": "ACTIVE",
+            "shelved_image_id": None,
+        })
+        log.info("unshelve: server %s is ACTIVE", server_id)
+
+    except Exception as exc:
+        log.error("unshelve %s failed: %s", server_id, exc, exc_info=True)
+        conductor_mark_error(server_id, str(exc))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Handler dispatch table
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -472,6 +609,8 @@ HANDLERS = {
     "rescue":           handle_rescue,
     "unrescue":         handle_unrescue,
     "set_password":     handle_set_password,
+    "shelve":           handle_shelve,
+    "unshelve":         handle_unshelve,
     # Call (sync reply)
     "health":           handle_health,
     "get_logs":         handle_get_logs,
@@ -482,6 +621,7 @@ HANDLERS = {
     "attach_port":      handle_attach_port,
     "detach_port":      handle_detach_port,
 }
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

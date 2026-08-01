@@ -149,6 +149,7 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-mini-openstack-images}
       MINIO_SECURE: ${MINIO_SECURE:-false}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@127.0.0.1:5672/}
     network_mode: host
     volumes:
       - image-data:/var/lib/mini-openstack/images
@@ -421,6 +422,44 @@ services:
     environment:
       DISPLAY_WIDTH: 1280
       DISPLAY_HEIGHT: 720
+
+  # ── noVNC WebSocket Proxy ─────────────────────────────────────────────────────
+  # websockify bridges browser WebSocket to libvirt TCP VNC ports.
+  # Port 6080 is the standard OpenStack noVNC proxy port.
+  novnc-proxy:
+    image: python:3.12-slim
+    network_mode: host
+    command: >
+      bash -c "pip install websockify --quiet &&
+      websockify 0.0.0.0:6080
+      --web /opt/novnc
+      --wrap-mode ignore"
+    restart: unless-stopped
+
+  # ── Image Worker (Glance task-based import) ───────────────────────────────────
+  image-worker:
+    build:
+      context: ./services
+      dockerfile: image_worker/Dockerfile
+      network: host
+    environment:
+      IMAGE_API_URL: http://127.0.0.1:8002
+      IMAGE_STORE_PATH: ${IMAGE_STORE_PATH:-/var/lib/mini-openstack/images}
+      IMAGE_STORAGE_BACKEND: ${IMAGE_STORAGE_BACKEND:-file}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://127.0.0.1:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-mini-openstack-images}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@127.0.0.1:5672/}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    network_mode: host
+    volumes:
+      - image-data:/var/lib/mini-openstack/images
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      image-api:
+        condition: service_started
 
   # ── HAProxy (Load Balancer / API Gateway) ─────────────────────────────────────
   # Listens on all interfaces (0.0.0.0) and proxies to local API services.

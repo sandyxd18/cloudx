@@ -181,7 +181,7 @@ class SecurityGroupRule(Base):
     __tablename__ = "networking_security_group_rules"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    security_group_id: Mapped[str] = mapped_column(String, ForeignKey("networking_security_groups.id"))
+    security_group_id: Mapped[str] = mapped_column(String, ForeignKey("networking_security_groups.id", ondelete="CASCADE"))
     direction: Mapped[str] = mapped_column(String)
     ethertype: Mapped[str] = mapped_column(String, default="IPv4")
     protocol: Mapped[str] = mapped_column(String, default="any")
@@ -191,6 +191,42 @@ class SecurityGroupRule(Base):
     remote_group_id: Mapped[str | None] = mapped_column(String, nullable=True)
     action: Mapped[str] = mapped_column(String, default="allow")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class QosPolicy(Base):
+    """QoS policy (Neutron QoS extension)."""
+    __tablename__ = "networking_qos_policies"
+    id:          Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:        Mapped[str] = mapped_column(String, unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
+    shared:      Mapped[bool] = mapped_column(Boolean, default=False)
+    project_id:  Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class QosBandwidthLimitRule(Base):
+    """Bandwidth-limit rule attached to a QoS policy."""
+    __tablename__ = "networking_qos_bw_limit_rules"
+    id:                Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    qos_policy_id:     Mapped[str] = mapped_column(String, ForeignKey("networking_qos_policies.id", ondelete="CASCADE"))
+    max_kbps:          Mapped[int] = mapped_column(Integer)       # kilobits per second
+    max_burst_kbps:    Mapped[int] = mapped_column(Integer, default=0)
+    direction:         Mapped[str] = mapped_column(String, default="egress")  # egress | ingress
+    created_at:        Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class SubnetPool(Base):
+    """Pre-defined CIDR pool from which subnets can be auto-allocated."""
+    __tablename__ = "networking_subnet_pools"
+    id:              Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:            Mapped[str] = mapped_column(String, unique=True, index=True)
+    prefixes:        Mapped[str] = mapped_column(String)       # comma-separated CIDR list
+    default_prefixlen: Mapped[int] = mapped_column(Integer, default=24)
+    min_prefixlen:   Mapped[int] = mapped_column(Integer, default=8)
+    max_prefixlen:   Mapped[int] = mapped_column(Integer, default=32)
+    shared:          Mapped[bool] = mapped_column(Boolean, default=False)
+    project_id:      Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at:      Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class NetworkIn(BaseModel):
@@ -1058,6 +1094,10 @@ def ensure_columns():
             if "updated_at" not in columns:
                 conn.execute(text("ALTER TABLE networking_security_groups ADD COLUMN updated_at TIMESTAMP"))
             conn.execute(text("UPDATE networking_security_groups SET updated_at = created_at WHERE updated_at IS NULL"))
+        if "networking_ports" in table_names:
+            port_cols = {column["name"] for column in inspector.get_columns("networking_ports")}
+            if "qos_policy_id" not in port_cols:
+                conn.execute(text("ALTER TABLE networking_ports ADD COLUMN qos_policy_id VARCHAR"))
         if "networking_security_group_rules" in table_names:
             columns = {column["name"] for column in inspector.get_columns("networking_security_group_rules")}
             if "remote_group_id" not in columns:
@@ -1702,3 +1742,216 @@ def security_group_ovn_show(ref: str, db: DB):
 @app.get("/ovn/show")
 def ovn_show():
     return {"output": ovn("show")}
+
+
+# ── QoS Policies (Neutron QoS Extension) ────────────────────────────────────────────────────────
+
+class QosPolicyIn(BaseModel):
+    name: str
+    description: str | None = None
+    shared: bool = False
+
+
+class QosBwLimitRuleIn(BaseModel):
+    max_kbps: int
+    max_burst_kbps: int = 0
+    direction: str = "egress"  # egress | ingress
+
+
+def _qos_to_dict(policy: QosPolicy, rules: list) -> dict:
+    return {
+        "id": policy.id,
+        "name": policy.name,
+        "description": policy.description,
+        "shared": policy.shared,
+        "project_id": policy.project_id,
+        "rules": [
+            {
+                "id": r.id,
+                "max_kbps": r.max_kbps,
+                "max_burst_kbps": r.max_burst_kbps,
+                "direction": r.direction,
+                "type": "bandwidth_limit",
+            }
+            for r in rules
+        ],
+        "created_at": policy.created_at.isoformat(),
+    }
+
+
+@app.post("/qos/policies", status_code=201)
+def create_qos_policy(payload: QosPolicyIn, current: CurrentUser, db: DB):
+    if db.scalar(select(QosPolicy).where(QosPolicy.name == payload.name)):
+        raise HTTPException(status_code=409, detail="QoS policy already exists")
+    policy = QosPolicy(**payload.model_dump(), project_id=current.get("project_id"))
+    db.add(policy)
+    db.commit()
+    db.refresh(policy)
+    return _qos_to_dict(policy, [])
+
+
+@app.get("/qos/policies")
+def list_qos_policies(current: CurrentUser, db: DB):
+    q = select(QosPolicy)
+    if current.get("role") != "admin":
+        q = q.where(
+            (QosPolicy.shared == True) | (QosPolicy.project_id == current.get("project_id"))
+        )
+    policies = db.scalars(q).all()
+    result = []
+    for p in policies:
+        rules = db.scalars(select(QosBandwidthLimitRule).where(QosBandwidthLimitRule.qos_policy_id == p.id)).all()
+        result.append(_qos_to_dict(p, rules))
+    return {"policies": result}
+
+
+@app.get("/qos/policies/{policy_id}")
+def show_qos_policy(policy_id: str, _: CurrentUser, db: DB):
+    policy = db.get(QosPolicy, policy_id) or db.scalar(select(QosPolicy).where(QosPolicy.name == policy_id))
+    if not policy:
+        raise HTTPException(status_code=404, detail="QoS policy not found")
+    rules = db.scalars(select(QosBandwidthLimitRule).where(QosBandwidthLimitRule.qos_policy_id == policy.id)).all()
+    return _qos_to_dict(policy, rules)
+
+
+@app.delete("/qos/policies/{policy_id}", status_code=204)
+def delete_qos_policy(policy_id: str, _: AdminUser, db: DB):
+    policy = db.get(QosPolicy, policy_id)
+    if not policy:
+        raise HTTPException(status_code=404, detail="QoS policy not found")
+    db.delete(policy)
+    db.commit()
+
+
+@app.post("/qos/policies/{policy_id}/bandwidth_limit_rules", status_code=201)
+def create_bw_limit_rule(policy_id: str, payload: QosBwLimitRuleIn, _: CurrentUser, db: DB):
+    policy = db.get(QosPolicy, policy_id)
+    if not policy:
+        raise HTTPException(status_code=404, detail="QoS policy not found")
+    rule = QosBandwidthLimitRule(
+        qos_policy_id=policy_id,
+        max_kbps=payload.max_kbps,
+        max_burst_kbps=payload.max_burst_kbps,
+        direction=payload.direction,
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    # Apply OVN QoS on affected ports
+    _apply_qos_to_policy_ports(policy_id, rule, db)
+    return {
+        "id": rule.id, "max_kbps": rule.max_kbps,
+        "max_burst_kbps": rule.max_burst_kbps, "direction": rule.direction,
+    }
+
+
+@app.delete("/qos/policies/{policy_id}/bandwidth_limit_rules/{rule_id}", status_code=204)
+def delete_bw_limit_rule(policy_id: str, rule_id: str, _: CurrentUser, db: DB):
+    rule = db.get(QosBandwidthLimitRule, rule_id)
+    if not rule or rule.qos_policy_id != policy_id:
+        raise HTTPException(status_code=404, detail="rule not found")
+    db.delete(rule)
+    db.commit()
+
+
+def _apply_qos_to_policy_ports(policy_id: str, rule: QosBandwidthLimitRule, db) -> None:
+    """Apply OVN QoS meter to all ports associated with this policy."""
+    ports = db.scalars(select(Port).where(Port.qos_policy_id == policy_id)).all()
+    for port in ports:
+        if port.logical_switch_name and port.logical_port_name:
+            _apply_ovn_qos(port.logical_switch_name, port.logical_port_name, rule)
+
+
+def _apply_ovn_qos(ls_name: str, lp_name: str, rule: QosBandwidthLimitRule) -> None:
+    """Set OVN QoS bandwidth limit on a logical switch port."""
+    # Convert kbps to bps for OVN
+    rate_bps = rule.max_kbps * 1000
+    burst_bps = rule.max_burst_kbps * 1000 if rule.max_burst_kbps else rate_bps
+    direction = "from-lport" if rule.direction == "egress" else "to-lport"
+    try:
+        # Remove existing QoS rule for this port
+        ovn(f'--where direction={direction} --data-bare --no-heading --columns _uuid find QoS '
+            f'match="inport == \'{lp_name}\'"')
+        # Add new bandwidth rule
+        ovn(
+            f'set Logical_Switch {ls_name} '
+            f'qos_rules=[{{"direction": "{direction}", '
+            f'"match": "inport == \'{lp_name}\'", '
+            f'"bandwidth": {{"rate": {rate_bps}, "burst": {burst_bps}}}, '
+            f'"priority": 100}}]'
+        )
+    except Exception as exc:
+        import logging
+        logging.getLogger("networking-api").warning("OVN QoS apply failed for port %s: %s", lp_name, exc)
+
+
+# ── Subnet Pools ────────────────────────────────────────────────────────────────────────────
+
+class SubnetPoolIn(BaseModel):
+    name: str
+    prefixes: list[str]         # e.g. ["10.0.0.0/8", "192.168.0.0/16"]
+    default_prefixlen: int = 24
+    min_prefixlen: int = 8
+    max_prefixlen: int = 32
+    shared: bool = False
+
+
+def _pool_to_dict(pool: SubnetPool) -> dict:
+    return {
+        "id": pool.id,
+        "name": pool.name,
+        "prefixes": pool.prefixes.split(",") if pool.prefixes else [],
+        "default_prefixlen": pool.default_prefixlen,
+        "min_prefixlen": pool.min_prefixlen,
+        "max_prefixlen": pool.max_prefixlen,
+        "shared": pool.shared,
+        "project_id": pool.project_id,
+        "created_at": pool.created_at.isoformat(),
+    }
+
+
+@app.post("/subnetpools", status_code=201)
+def create_subnet_pool(payload: SubnetPoolIn, current: CurrentUser, db: DB):
+    if db.scalar(select(SubnetPool).where(SubnetPool.name == payload.name)):
+        raise HTTPException(status_code=409, detail="subnet pool already exists")
+    pool = SubnetPool(
+        name=payload.name,
+        prefixes=",".join(payload.prefixes),
+        default_prefixlen=payload.default_prefixlen,
+        min_prefixlen=payload.min_prefixlen,
+        max_prefixlen=payload.max_prefixlen,
+        shared=payload.shared,
+        project_id=current.get("project_id"),
+    )
+    db.add(pool)
+    db.commit()
+    db.refresh(pool)
+    return _pool_to_dict(pool)
+
+
+@app.get("/subnetpools")
+def list_subnet_pools(current: CurrentUser, db: DB):
+    q = select(SubnetPool)
+    if current.get("role") != "admin":
+        q = q.where(
+            (SubnetPool.shared == True) | (SubnetPool.project_id == current.get("project_id"))
+        )
+    return {"subnet_pools": [_pool_to_dict(p) for p in db.scalars(q).all()]}
+
+
+@app.get("/subnetpools/{pool_id}")
+def show_subnet_pool(pool_id: str, _: CurrentUser, db: DB):
+    pool = db.get(SubnetPool, pool_id) or db.scalar(select(SubnetPool).where(SubnetPool.name == pool_id))
+    if not pool:
+        raise HTTPException(status_code=404, detail="subnet pool not found")
+    return _pool_to_dict(pool)
+
+
+@app.delete("/subnetpools/{pool_id}", status_code=204)
+def delete_subnet_pool(pool_id: str, _: AdminUser, db: DB):
+    pool = db.get(SubnetPool, pool_id)
+    if not pool:
+        raise HTTPException(status_code=404, detail="subnet pool not found")
+    db.delete(pool)
+    db.commit()
+

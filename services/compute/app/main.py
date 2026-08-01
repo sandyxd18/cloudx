@@ -143,6 +143,10 @@ class Server(Base):
     status: Mapped[str] = mapped_column(String, default="BUILD")
     locked: Mapped[bool] = mapped_column(Boolean, default=False)
     locked_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    shelved_image_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    original_flavor: Mapped[str | None] = mapped_column(String, nullable=True)   # flavor id before resize
+    original_vcpus: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    original_ram_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -336,6 +340,14 @@ def ensure_columns():
                 conn.execute(text("ALTER TABLE compute_servers ADD COLUMN bootable BOOLEAN DEFAULT TRUE"))
             if "locked" not in columns:
                 conn.execute(text("ALTER TABLE compute_servers ADD COLUMN locked BOOLEAN DEFAULT FALSE"))
+            if "shelved_image_id" not in columns:
+                conn.execute(text("ALTER TABLE compute_servers ADD COLUMN shelved_image_id VARCHAR"))
+            if "original_flavor" not in columns:
+                conn.execute(text("ALTER TABLE compute_servers ADD COLUMN original_flavor VARCHAR"))
+            if "original_vcpus" not in columns:
+                conn.execute(text("ALTER TABLE compute_servers ADD COLUMN original_vcpus INTEGER"))
+            if "original_ram_mb" not in columns:
+                conn.execute(text("ALTER TABLE compute_servers ADD COLUMN original_ram_mb INTEGER"))
             conn.execute(text("UPDATE compute_servers SET backend = 'libvirt' WHERE backend IS NULL OR backend = 'simulator'"))
             conn.execute(text("UPDATE compute_servers SET flavor_name = flavor WHERE flavor_name IS NULL"))
             conn.execute(text("UPDATE compute_servers SET locked = FALSE WHERE locked IS NULL"))
@@ -1077,7 +1089,10 @@ def suspend_server(ref: str, _: CurrentUser, db: DB):
 def resize_server(ref: str, payload: ServerResizeIn, _: CurrentUser, db: DB):
     server = require_server(db, ref)
     flavor = require_flavor(db, payload.flavor)
-    old_flavor = server.flavor_name or server.flavor
+    # Snapshot original flavor for potential revert
+    server.original_flavor = server.flavor
+    server.original_vcpus = server.vcpus
+    server.original_ram_mb = server.ram_mb
     server.flavor = flavor.id
     server.flavor_name = flavor.name
     server.vcpus = flavor.vcpus
@@ -1088,7 +1103,50 @@ def resize_server(ref: str, payload: ServerResizeIn, _: CurrentUser, db: DB):
     cast_to_worker("resize", {**server_worker_payload(server),
         "new_vcpus": flavor.vcpus, "new_ram_mb": flavor.ram_mb})
     db.refresh(server)
-    return {**obj_to_dict(server), "old_flavor": old_flavor, "new_flavor": flavor.name}
+    return {**obj_to_dict(server), "new_flavor": flavor.name}
+
+
+@app.post("/servers/{ref}/confirmResize")
+def confirm_resize(ref: str, _: CurrentUser, db: DB):
+    """Confirm a completed resize, clearing the rollback snapshot."""
+    server = require_server(db, ref)
+    if server.status not in ("VERIFY_RESIZE", "RESIZE", "ACTIVE"):
+        raise HTTPException(status_code=409, detail=f"server is not in VERIFY_RESIZE status (current: {server.status})")
+    # Clear backup state
+    server.original_flavor = None
+    server.original_vcpus = None
+    server.original_ram_mb = None
+    server.status = "ACTIVE"
+    db.commit()
+    db.refresh(server)
+    return obj_to_dict(server)
+
+
+@app.post("/servers/{ref}/revertResize")
+def revert_resize(ref: str, _: CurrentUser, db: DB):
+    """Revert a resize, restoring the original flavor."""
+    server = require_server(db, ref)
+    if not server.original_flavor:
+        raise HTTPException(status_code=409, detail="no resize snapshot found for this server")
+    original_flavor = db.get(Flavor, server.original_flavor)
+    # Restore original flavor resources
+    server.flavor = server.original_flavor
+    if original_flavor:
+        server.flavor_name = original_flavor.name
+    server.vcpus = server.original_vcpus
+    server.ram_mb = server.original_ram_mb
+    server.original_flavor = None
+    server.original_vcpus = None
+    server.original_ram_mb = None
+    server.status = "RESIZE"
+    db.commit()
+    # Cast revert to worker (hotplug rollback)
+    cast_to_worker("resize", {**server_worker_payload(server),
+        "new_vcpus": server.vcpus, "new_ram_mb": server.ram_mb})
+    server.status = "ACTIVE"
+    db.commit()
+    db.refresh(server)
+    return obj_to_dict(server)
 
 
 @app.post("/servers/{ref}/rebuild")
@@ -1261,6 +1319,86 @@ def console_url(ref: str, _: CurrentUser, db: DB):
         "novnc_url": novnc_url,
         "note": "noVNC static UI is exposed on port 6080; VNC port is discovered from libvirt when available.",
     }
+
+
+@app.post("/servers/{ref}/remote-consoles")
+def remote_console(ref: str, payload: dict, _: CurrentUser, db: DB):
+    """
+    OpenStack-compatible remote console endpoint.
+    Returns a noVNC URL for in-browser VM console access.
+
+    Request body: {"remote_console": {"type": "novnc", "protocol": "vnc"}}
+    """
+    server = require_server(db, ref)
+    if server.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail=f"server must be ACTIVE to get a console (current: {server.status})")
+
+    vnc_info: dict = {}
+    try:
+        vnc_info = call_worker("get_console_info", server_worker_payload(server), timeout=RPC_CALL_TIMEOUT)
+    except Exception:
+        pass
+
+    novnc_url = NOVNC_BASE_URL
+    if vnc_info.get("port"):
+        novnc_url = f"{NOVNC_BASE_URL}?host=localhost&port={vnc_info['port']}"
+
+    return {
+        "remote_console": {
+            "type": "novnc",
+            "protocol": "vnc",
+            "url": novnc_url,
+            "vnc_port": vnc_info.get("port"),
+            "server": server.name,
+        }
+    }
+
+
+@app.post("/servers/{ref}/shelve")
+def shelve_server(ref: str, current: CurrentUser, db: DB):
+    """
+    Shelve a server: snapshot its state to an image, then stop and free resources.
+    Status: ACTIVE/SHUTOFF → SHELVED_OFFLOADED
+    """
+    server = require_server(db, ref)
+    if server.locked and current.get("role") != "admin":
+        raise HTTPException(status_code=409, detail="server is locked")
+    if server.status not in ("ACTIVE", "SHUTOFF", "PAUSED", "SUSPENDED"):
+        raise HTTPException(status_code=409, detail=f"cannot shelve server in state {server.status}")
+    if not server.root_volume_id:
+        raise HTTPException(status_code=409, detail="shelve requires a root volume (boot-from-volume)")
+
+    server.status = "SHELVING"
+    db.commit()
+    cast_to_worker("shelve", {
+        **server_worker_payload(server),
+        "_image_api_url": IMAGE_API_URL,
+        "_block_store_url": BLOCK_STORE_API_URL,
+    })
+    return {"server": server.name, "status": "shelving"}
+
+
+@app.post("/servers/{ref}/unshelve")
+def unshelve_server(ref: str, current: CurrentUser, db: DB):
+    """
+    Unshelve a server: restore from shelved image and restart.
+    Status: SHELVED_OFFLOADED → ACTIVE
+    """
+    server = require_server(db, ref)
+    if server.locked and current.get("role") != "admin":
+        raise HTTPException(status_code=409, detail="server is locked")
+    if server.status != "SHELVED_OFFLOADED":
+        raise HTTPException(status_code=409, detail=f"server must be SHELVED_OFFLOADED to unshelve (current: {server.status})")
+
+    server.status = "UNSHELVING"
+    db.commit()
+    cast_to_worker("unshelve", {
+        **server_worker_payload(server),
+        "_image_api_url": IMAGE_API_URL,
+        "_block_store_url": BLOCK_STORE_API_URL,
+        "_networking_url": NETWORKING_API_URL,
+    })
+    return {"server": server.name, "status": "unshelving"}
 
 
 @app.get("/servers/{ref}/logs")

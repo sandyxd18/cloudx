@@ -398,7 +398,7 @@ def get_usages(current: CurrentUser, db: DB, project_id: str | None = None):
     return {"usages": usages, "project_id": project_id or current["project_id"]}
 
 
-@app.get("/resource_providers/{rp_uuid}/usages")
+@app.get(\"/resource_providers/{rp_uuid}/usages\")
 def get_rp_usages(rp_uuid: str, _: CurrentUser, db: DB):
     rp = _get_rp(db, rp_uuid)
     inventories = db.scalars(select(Inventory).where(Inventory.resource_provider_id == rp.uuid)).all()
@@ -412,3 +412,189 @@ def get_rp_usages(rp_uuid: str, _: CurrentUser, db: DB):
             "available": int((inv.total - inv.reserved) * inv.allocation_ratio) - used,
         }
     return {"usages": result, "resource_provider_uuid": rp.uuid}
+
+
+# ── Microversions ──────────────────────────────────────────────────────────────
+# OpenStack Placement uses the "OpenStack-API-Version: placement X.Y" header.
+# We support a version range of 1.0 – 1.36.
+
+PLACEMENT_MIN_VERSION = "1.0"
+PLACEMENT_MAX_VERSION = "1.36"
+PLACEMENT_CURRENT_VERSION = "1.36"
+
+
+@app.middleware("http")
+async def microversion_middleware(request, call_next):
+    """Respond with OpenStack-Placement-Microversion headers on every response."""
+    response = await call_next(request)
+    response.headers["OpenStack-API-Version"] = f"placement {PLACEMENT_CURRENT_VERSION}"
+    response.headers["X-OpenStack-Nova-API-Version"] = PLACEMENT_CURRENT_VERSION
+    response.headers["Vary"] = "OpenStack-API-Version"
+    return response
+
+
+@app.get("/")
+def placement_root(_: CurrentUser):
+    """Placement API root — version discovery."""
+    return {
+        "versions": [{
+            "id": "v1.0",
+            "max_version": PLACEMENT_MAX_VERSION,
+            "min_version": PLACEMENT_MIN_VERSION,
+            "status": "CURRENT",
+            "links": [{"href": "/", "rel": "self"}],
+        }]
+    }
+
+
+# ── Allocation Candidates ──────────────────────────────────────────────────────
+
+@app.get("/allocation_candidates")
+def get_allocation_candidates(
+    resources: str,
+    _: CurrentUser,
+    db: DB,
+    limit: int = 1000,
+):
+    """
+    Find resource providers that can satisfy the given resource request.
+
+    resources query parameter format: RESOURCE_CLASS:amount[,RESOURCE_CLASS:amount]
+    Example: VCPU:2,MEMORY_MB:4096,DISK_GB:50
+
+    Returns a list of candidate provider summaries and allocation requests.
+    """
+    # Parse resources string
+    requested: dict[str, int] = {}
+    try:
+        for part in resources.split(","):
+            rc, amount = part.strip().split(":")
+            requested[rc.strip()] = int(amount.strip())
+    except Exception:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Invalid resources format. Use RESOURCE_CLASS:amount[,...]")
+
+    rps = db.scalars(select(ResourceProvider)).all()
+    candidates = []
+
+    for rp in rps:
+        inventories = db.scalars(
+            select(Inventory).where(Inventory.resource_provider_id == rp.uuid)
+        ).all()
+        inv_map = {inv.resource_class: inv for inv in inventories}
+
+        # Check if this RP can satisfy ALL requested resources
+        can_satisfy = True
+        allocation_request: dict[str, int] = {}
+
+        for rc, amount in requested.items():
+            inv = inv_map.get(rc)
+            if inv is None:
+                can_satisfy = False
+                break
+            used = _get_used(db, rp.uuid, rc)
+            available = int((inv.total - inv.reserved) * inv.allocation_ratio) - used
+            if amount > available:
+                can_satisfy = False
+                break
+            allocation_request[rc] = amount
+
+        if can_satisfy:
+            # Build provider summary
+            summary = {
+                "uuid": rp.uuid,
+                "name": rp.name,
+                "generation": rp.generation,
+                "resources": {},
+            }
+            for rc, inv in inv_map.items():
+                used = _get_used(db, rp.uuid, rc)
+                summary["resources"][rc] = {
+                    "total": inv.total,
+                    "reserved": inv.reserved,
+                    "used": used,
+                    "available": int((inv.total - inv.reserved) * inv.allocation_ratio) - used,
+                }
+
+            candidates.append({
+                "request": {rp.uuid: {"resources": allocation_request}},
+                "provider_summaries": {rp.uuid: summary},
+            })
+
+        if len(candidates) >= limit:
+            break
+
+    return {
+        "allocation_requests": [c["request"] for c in candidates],
+        "provider_summaries": {
+            rp_uuid: c["provider_summaries"][rp_uuid]
+            for c in candidates
+            for rp_uuid in c["provider_summaries"]
+        },
+    }
+
+
+# ── Reshaper ──────────────────────────────────────────────────────────────────
+
+class ReshaperIn(BaseModel):
+    inventories:  dict[str, dict]   # rp_uuid → {inventories: {...}}
+    allocations:  dict[str, dict]   # consumer_uuid → {allocations: {...}, project_id: str}
+
+
+@app.post("/reshaper", status_code=204)
+def reshape(payload: ReshaperIn, _: CurrentUser, db: DB):
+    """
+    Atomically move inventories and allocations between resource providers.
+    Used when restructuring resource providers (e.g., adding nested providers).
+
+    This is a simplified implementation that:
+    1. Updates inventories for each specified RP.
+    2. Replaces allocations for each specified consumer.
+    """
+    # Update inventories
+    for rp_uuid, inv_data in payload.inventories.items():
+        rp = _get_rp(db, rp_uuid)
+        new_inventories = inv_data.get("inventories", {})
+        # Delete existing
+        existing = db.scalars(
+            select(Inventory).where(Inventory.resource_provider_id == rp.uuid)
+        ).all()
+        for inv in existing:
+            db.delete(inv)
+        # Add new
+        for rc, item in new_inventories.items():
+            db.add(Inventory(
+                resource_provider_id=rp.uuid,
+                resource_class=rc,
+                total=item.get("total", 0),
+                reserved=item.get("reserved", 0),
+                min_unit=item.get("min_unit", 1),
+                max_unit=item.get("max_unit", item.get("total", 1)),
+                step_size=item.get("step_size", 1),
+                allocation_ratio=item.get("allocation_ratio", 1.0),
+            ))
+        rp.generation += 1
+
+    # Replace allocations
+    for consumer_uuid, alloc_data in payload.allocations.items():
+        # Delete existing for consumer
+        existing = db.scalars(
+            select(Allocation).where(Allocation.consumer_uuid == consumer_uuid)
+        ).all()
+        for a in existing:
+            db.delete(a)
+        # Add new
+        project_id = alloc_data.get("project_id", "")
+        for rp_uuid, resources in alloc_data.get("allocations", {}).items():
+            rp = _get_rp(db, rp_uuid)
+            for rc, amount in resources.get("resources", {}).items():
+                db.add(Allocation(
+                    consumer_uuid=consumer_uuid,
+                    project_id=project_id,
+                    resource_provider_id=rp.uuid,
+                    resource_class=rc,
+                    used=amount,
+                ))
+
+    db.commit()
+

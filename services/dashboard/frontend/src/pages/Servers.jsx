@@ -2,7 +2,8 @@ import { useEffect, useState, useRef } from 'react'
 import {
   Play, Square, RotateCcw, Trash2, Plus, MoreVertical, Terminal,
   PauseCircle, PowerOff, Wrench, Camera, RefreshCw, ChevronDown,
-  Shield, HardDrive, Link, Unlink, Lock, Unlock, Server
+  Shield, HardDrive, Link, Unlink, Lock, Unlock, Server, Monitor,
+  Archive, ArchiveRestore, CheckCircle, XCircle
 } from 'lucide-react'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
@@ -15,7 +16,8 @@ function statusBadge(s) {
     STARTING: 'building', STOPPING: 'building', REBOOT: 'building',
     PAUSING: 'building', RESUMING: 'building', SUSPENDING: 'building',
     DELETING: 'building', REBUILD: 'building', RESIZE: 'building',
-    UNRESCUING: 'building',
+    UNRESCUING: 'building', SHELVING: 'building', UNSHELVING: 'building',
+    SHELVED_OFFLOADED: 'inactive', VERIFY_RESIZE: 'paused',
   }
   return 'status-badge status-' + (m[s] || 'inactive').toLowerCase()
 }
@@ -57,32 +59,40 @@ function ActionsDropdown({ server, onAction }) {
   }, [])
 
   const isActive  = server.status === 'ACTIVE'
-  const isShutoff = server.status === 'SHUTOFF'
-  const isPaused  = server.status === 'PAUSED'
+  const isShutoff    = server.status === 'SHUTOFF'
+  const isPaused     = server.status === 'PAUSED'
+  const isShelved    = server.status === 'SHELVED_OFFLOADED'
+  const isVerifyResize = server.status === 'VERIFY_RESIZE' || server.status === 'RESIZE'
 
   const items = [
     { label: 'Create Snapshot', icon: <Camera size={13}/>, action: 'snapshot', primary: true },
+    { sep: true },
+    { label: 'Open Console',   icon: <Monitor size={13}/>,     action: 'open-console', disabled: !isActive },
+    { label: 'View Log',       icon: <Terminal size={13}/>,    action: 'logs' },
     { sep: true },
     { label: 'Associate Floating IP', icon: <Link size={13}/>,   action: 'associate-fip' },
     { label: 'Attach Volume',  icon: <HardDrive size={13}/>, action: 'attach-vol' },
     { label: 'Detach Volume',  icon: <Unlink size={13}/>,    action: 'detach-vol' },
     { label: 'Edit Security Groups', icon: <Shield size={13}/>, action: 'edit-sg' },
     { sep: true },
-    { label: 'Console',        icon: <Terminal size={13}/>,  action: 'console' },
-    { label: 'View Log',       icon: <Terminal size={13}/>,  action: 'logs' },
+    { label: 'Rescue VM',      icon: <Wrench size={13}/>,       action: 'rescue',       disabled: !isActive },
+    { label: 'Pause VM',       icon: <PauseCircle size={13}/>,  action: 'pause',        disabled: !isActive },
+    { label: 'Resume VM',      icon: <Play size={13}/>,         action: 'resume',       disabled: !isPaused },
+    { label: 'Suspend VM',     icon: <PowerOff size={13}/>,     action: 'suspend',      disabled: !isActive },
     { sep: true },
-    { label: 'Rescue VM',      icon: <Wrench size={13}/>,   action: 'rescue',   disabled: !isActive },
-    { label: 'Pause VM',       icon: <PauseCircle size={13}/>, action: 'pause', disabled: !isActive },
-    { label: 'Resume VM',      icon: <Play size={13}/>,      action: 'resume',   disabled: !isPaused },
-    { label: 'Suspend VM',     icon: <PowerOff size={13}/>,  action: 'suspend',  disabled: !isActive },
+    { label: 'Shelve VM',      icon: <Archive size={13}/>,      action: 'shelve',       disabled: !isActive && !isShutoff },
+    { label: 'Unshelve VM',    icon: <ArchiveRestore size={13}/>, action: 'unshelve',   disabled: !isShelved },
     { sep: true },
-    { label: 'Soft Reboot VM', icon: <RotateCcw size={13}/>, action: 'reboot',   disabled: !isActive },
-    { label: 'Hard Reboot VM', icon: <RefreshCw size={13}/>, action: 'hard_reboot', disabled: !isActive },
-    { label: 'Shut Off VM',    icon: <Square size={13}/>,    action: 'stop',     disabled: !isActive },
-    { label: 'Start VM',       icon: <Play size={13}/>,      action: 'start',    disabled: !isShutoff },
-    { label: 'Lock VM',        icon: <Lock size={13}/>,      action: 'lock' },
+    { label: 'Confirm Resize', icon: <CheckCircle size={13}/>,  action: 'confirmResize', disabled: !isVerifyResize },
+    { label: 'Revert Resize',  icon: <XCircle size={13}/>,      action: 'revertResize',  disabled: !isVerifyResize },
     { sep: true },
-    { label: 'Delete VM',      icon: <Trash2 size={13}/>,    action: 'delete',   danger: true },
+    { label: 'Soft Reboot VM', icon: <RotateCcw size={13}/>,    action: 'reboot',       disabled: !isActive },
+    { label: 'Hard Reboot VM', icon: <RefreshCw size={13}/>,    action: 'hard_reboot',  disabled: !isActive },
+    { label: 'Shut Off VM',    icon: <Square size={13}/>,       action: 'stop',         disabled: !isActive },
+    { label: 'Start VM',       icon: <Play size={13}/>,         action: 'start',        disabled: !isShutoff },
+    { label: 'Lock VM',        icon: <Lock size={13}/>,         action: 'lock' },
+    { sep: true },
+    { label: 'Delete VM',      icon: <Trash2 size={13}/>,       action: 'delete',       danger: true },
   ]
 
   return (
@@ -109,6 +119,53 @@ function ActionsDropdown({ server, onAction }) {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── noVNC Console Modal ──────────────────────────────────────────────────────
+function ConsoleModal({ server, onClose }) {
+  const [url, setUrl] = useState(null)
+  const [err, setErr] = useState('')
+  const toast = useToast()
+
+  useEffect(() => {
+    api.getRemoteConsole(server.id)
+      .then(data => {
+        const consoleUrl = data?.remote_console?.url
+        if (consoleUrl) setUrl(consoleUrl)
+        else setErr('No console URL returned')
+      })
+      .catch(e => setErr(e.message))
+  }, [server.id])
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ width: '90vw', maxWidth: 1100, height: '85vh', display: 'flex', flexDirection: 'column' }}>
+        <div className="modal-header">
+          <span className="modal-title"><Monitor size={15} style={{marginRight:6}}/>Console — {server.name}</span>
+          <button className="modal-close btn" onClick={onClose}>✕</button>
+        </div>
+        <div style={{ flex: 1, background: '#000', borderRadius: '0 0 8px 8px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {err ? (
+            <div style={{ color: '#f87171', textAlign: 'center', padding: 24 }}>
+              <Monitor size={40} style={{ opacity: 0.4, marginBottom: 12 }} />
+              <p style={{ marginBottom: 8 }}>Console unavailable</p>
+              <p style={{ fontSize: 12, opacity: 0.7 }}>{err}</p>
+              <p style={{ fontSize: 12, opacity: 0.5, marginTop: 12 }}>Make sure the VM is ACTIVE and novnc-proxy is running.</p>
+            </div>
+          ) : !url ? (
+            <div style={{ color: '#9ca3af' }}><span className="spinner" /> Loading console…</div>
+          ) : (
+            <iframe
+              src={url}
+              title={`Console — ${server.name}`}
+              style={{ width: '100%', height: '100%', border: 'none' }}
+              allow="fullscreen"
+            />
+          )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -275,31 +332,46 @@ export default function ServersPage() {
   const [selected, setSelected] = useState([])
   const [showCreate, setShowCreate] = useState(false)
   const [showLogs, setShowLogs] = useState(null)
+  const [showConsole, setShowConsole] = useState(null)
   const toast = useToast()
-  const { lastEvent } = useEventStream()
+  useEventStream('/api/compute/events', load)
 
   const load = () => {
     setLoading(true)
     api.getServers().then(r => setServers(r?.items || [])).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
-  useEffect(() => {
-    if (!lastEvent) return
-    if (lastEvent.type === 'server.update' || lastEvent.type === 'server.delete') load()
-  }, [lastEvent])
 
-  const handleAction = async (server, action) => {
+  async function handleAction(server, action) {
     if (action === 'delete') {
       if (!confirm(`Delete instance "${server.name}"?`)) return
       try { await api.deleteServer(server.id); toast('Instance deleted', 'success'); load() }
       catch (e) { toast(e.message, 'error') }
       return
     }
-    if (action === 'logs')    { setShowLogs(server); return }
-    if (action === 'console') { toast('Connect via CLI: cloudx server console ' + server.name, 'info'); return }
-    if (action === 'snapshot') { toast('Snapshot feature coming soon', 'info'); return }
-    if (action === 'associate-fip') { toast('Use CLI: cloudx floating-ip associate <ip> --server ' + server.name, 'info'); return }
-    if (action === 'edit-sg') { toast('Use CLI: cloudx server edit-sg ' + server.name, 'info'); return }
+    if (action === 'logs')         { setShowLogs(server); return }
+    if (action === 'open-console') { setShowConsole(server); return }
+    if (action === 'snapshot')     { toast('Snapshot feature coming soon', 'info'); return }
+    if (action === 'associate-fip'){ toast('Use CLI: cloudx floating-ip associate <ip> --server ' + server.name, 'info'); return }
+    if (action === 'edit-sg')      { toast('Use CLI: cloudx server edit-sg ' + server.name, 'info'); return }
+    if (action === 'attach-vol')   { toast('Use CLI: cloudx volume attach --server ' + server.name, 'info'); return }
+    if (action === 'detach-vol')   { toast('Use CLI: cloudx volume detach --server ' + server.name, 'info'); return }
+    if (action === 'shelve') {
+      try { await api.shelveServer(server.id); toast('Shelving…', 'success'); setTimeout(load, 2000) } catch(e) { toast(e.message, 'error') }
+      return
+    }
+    if (action === 'unshelve') {
+      try { await api.unshelveServer(server.id); toast('Unshelving…', 'success'); setTimeout(load, 2000) } catch(e) { toast(e.message, 'error') }
+      return
+    }
+    if (action === 'confirmResize') {
+      try { await api.confirmResize(server.id); toast('Resize confirmed', 'success'); setTimeout(load, 1500) } catch(e) { toast(e.message, 'error') }
+      return
+    }
+    if (action === 'revertResize') {
+      try { await api.revertResize(server.id); toast('Resize reverted', 'success'); setTimeout(load, 1500) } catch(e) { toast(e.message, 'error') }
+      return
+    }
     try {
       await api.serverAction(server.id, action)
       toast(`Action "${action}" sent`, 'success')
@@ -417,8 +489,9 @@ export default function ServersPage() {
         )}
       </div>
 
-      {showCreate && <LaunchModal onClose={() => setShowCreate(false)} onCreate={async (form) => { await api.createServer({ name: form.name, flavor: form.flavor, image: form.image, network: form.network, keypair: form.keypair || undefined }); load() }} />}
-      {showLogs   && <LogsModal server={showLogs} onClose={() => setShowLogs(null)} />}
+      {showCreate  && <LaunchModal onClose={() => setShowCreate(false)} onCreate={async (form) => { await api.createServer({ name: form.name, flavor: form.flavor, image: form.image, network: form.network, keypair: form.keypair || undefined }); load() }} />}
+      {showLogs    && <LogsModal server={showLogs} onClose={() => setShowLogs(null)} />}
+      {showConsole && <ConsoleModal server={showConsole} onClose={() => setShowConsole(null)} />}
     </div>
   )
 }

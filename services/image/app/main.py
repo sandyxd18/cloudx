@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, inspect, select, text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 try:
@@ -32,6 +32,13 @@ except ImportError:
     except ImportError:
         RequestIDMiddleware = None
 
+# Import shared RPC library (for image task dispatching)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+try:
+    from shared.rpc import RPCClient
+except ImportError:
+    RPCClient = None
+
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
 IMAGE_STORE_PATH = Path(os.getenv("IMAGE_STORE_PATH", "/var/lib/mini-openstack/images"))
@@ -41,6 +48,7 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "mini-openstack-images")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -84,6 +92,20 @@ class ImageMember(Base):
     member_id:  Mapped[str] = mapped_column(String, primary_key=True)  # project_id
     status:     Mapped[str] = mapped_column(String, default="pending")  # pending | accepted | rejected
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ImageTask(Base):
+    """Asynchronous image import task (Glance task API)."""
+    __tablename__ = "image_tasks"
+    id:         Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    type:       Mapped[str] = mapped_column(String, default="import")  # import
+    status:     Mapped[str] = mapped_column(String, default="pending")  # pending|processing|success|failure
+    input:      Mapped[str | None] = mapped_column(Text, nullable=True)   # JSON input
+    result:     Mapped[str | None] = mapped_column(Text, nullable=True)   # JSON result
+    message:    Mapped[str | None] = mapped_column(String, nullable=True) # error message
+    owner:      Mapped[str | None] = mapped_column(String, nullable=True) # project_id
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class StorageBackend(ABC):
@@ -226,6 +248,18 @@ app.add_middleware(
 if RequestIDMiddleware:
     app.add_middleware(RequestIDMiddleware)
 
+# RPC client (lazy init)
+_rpc: "RPCClient | None" = None
+
+def _get_rpc():
+    global _rpc
+    if _rpc is None and RPCClient:
+        try:
+            _rpc = RPCClient(RABBITMQ_URL)
+        except Exception:
+            pass
+    return _rpc
+
 
 class ImageImportIn(BaseModel):
     name: str
@@ -245,22 +279,21 @@ def startup():
 def ensure_columns():
     inspector = inspect(engine)
     table_names = inspector.get_table_names()
-    if "image_images" not in table_names:
-        return
-    columns = {column["name"] for column in inspector.get_columns("image_images")}
-    with engine.begin() as conn:
-        if "storage_backend" not in columns:
-            conn.execute(text("ALTER TABLE image_images ADD COLUMN storage_backend VARCHAR DEFAULT 'file'"))
-        if "object_name" not in columns:
-            conn.execute(text("ALTER TABLE image_images ADD COLUMN object_name VARCHAR"))
+    if "image_images" in table_names:
+        columns = {column["name"] for column in inspector.get_columns("image_images")}
+        with engine.begin() as conn:
+            if "storage_backend" not in columns:
+                conn.execute(text("ALTER TABLE image_images ADD COLUMN storage_backend VARCHAR DEFAULT 'file'"))
+            if "object_name" not in columns:
+                conn.execute(text("ALTER TABLE image_images ADD COLUMN object_name VARCHAR"))
+                conn.execute(text("UPDATE image_images SET object_name = filename WHERE object_name IS NULL"))
+            if "visibility" not in columns:
+                conn.execute(text("ALTER TABLE image_images ADD COLUMN visibility VARCHAR DEFAULT 'private'"))
+            if "project_id" not in columns:
+                conn.execute(text("ALTER TABLE image_images ADD COLUMN project_id VARCHAR"))
+            conn.execute(text("UPDATE image_images SET storage_backend = 'file' WHERE storage_backend IS NULL"))
+            conn.execute(text("UPDATE image_images SET visibility = 'private' WHERE visibility IS NULL"))
             conn.execute(text("UPDATE image_images SET object_name = filename WHERE object_name IS NULL"))
-        if "visibility" not in columns:
-            conn.execute(text("ALTER TABLE image_images ADD COLUMN visibility VARCHAR DEFAULT 'private'"))
-        if "project_id" not in columns:
-            conn.execute(text("ALTER TABLE image_images ADD COLUMN project_id VARCHAR"))
-        conn.execute(text("UPDATE image_images SET storage_backend = 'file' WHERE storage_backend IS NULL"))
-        conn.execute(text("UPDATE image_images SET visibility = 'private' WHERE visibility IS NULL"))
-        conn.execute(text("UPDATE image_images SET object_name = filename WHERE object_name IS NULL"))
 
 
 def storage_backend() -> StorageBackend:
@@ -446,9 +479,10 @@ def reactivate_image(ref: str, _: CurrentUser, db: DB):
 
 @app.patch("/images/{ref}")
 def update_image(ref: str, payload: dict, _: CurrentUser, db: DB):
-    """Partially update image attributes (visibility, name, etc.)"""
+    """Partially update image attributes (visibility, name, status, etc.). Also called by image-worker."""
     image = require_image(db, ref)
-    allowed = {"visibility", "name", "disk_format", "container_format"}
+    allowed = {"visibility", "name", "disk_format", "container_format",
+               "status", "size", "checksum", "object_name", "filename", "storage_backend"}
     for key, value in payload.items():
         if key in allowed:
             setattr(image, key, value)
@@ -539,3 +573,147 @@ def remove_image_member(ref: str, member_id: str, _: CurrentUser, db: DB):
         db.delete(member)
         db.commit()
 
+
+# ── Glance Task API (async import) ────────────────────────────────────────────
+
+import json as _json
+
+
+class TaskIn(BaseModel):
+    type: str = "import"   # import
+    input: dict            # {import_from, import_from_format, image_properties}
+
+
+class TaskPatchIn(BaseModel):
+    status: str | None = None
+    message: str | None = None
+    result: dict | None = None
+
+
+def _task_to_dict(task: ImageTask) -> dict:
+    return {
+        "id": task.id,
+        "type": task.type,
+        "status": task.status,
+        "input": _json.loads(task.input) if task.input else {},
+        "result": _json.loads(task.result) if task.result else None,
+        "message": task.message,
+        "owner": task.owner,
+        "created_at": task.created_at.isoformat(),
+        "updated_at": task.updated_at.isoformat(),
+    }
+
+
+@app.post("/v2/tasks", status_code=201)
+def create_task(payload: TaskIn, current: CurrentUser, db: DB):
+    """
+    Create an asynchronous image import task.
+
+    Expected input:
+      {
+        "type": "import",
+        "input": {
+          "import_from": "http://...",
+          "import_from_format": "qcow2",
+          "image_properties": {"name": "...", "disk_format": "qcow2", ...}
+        }
+      }
+    """
+    if payload.type != "import":
+        raise HTTPException(status_code=400, detail="only 'import' task type is supported")
+
+    task_input = payload.input
+    import_from = task_input.get("import_from", "")
+    import_format = task_input.get("import_from_format", "qcow2")
+    image_props = task_input.get("image_properties", {})
+
+    if not import_from:
+        raise HTTPException(status_code=400, detail="input.import_from is required")
+
+    image_name = image_props.get("name") or f"imported-{new_id()[:8]}"
+
+    # Pre-create image record in 'importing' status
+    image_id = new_id()
+    image = Image(
+        id=image_id,
+        name=image_name,
+        filename=f"{image_id}.{import_format}",
+        storage_backend=IMAGE_STORAGE_BACKEND,
+        object_name=f"{image_id}.{import_format}",
+        disk_format=image_props.get("disk_format", import_format),
+        container_format=image_props.get("container_format", "bare"),
+        size=0,
+        checksum="",
+        status="importing",
+        visibility=image_props.get("visibility", "private"),
+        project_id=current["project_id"],
+    )
+    db.add(image)
+    db.flush()
+
+    # Create task record
+    task = ImageTask(
+        type="import",
+        status="pending",
+        input=_json.dumps(task_input),
+        owner=current["project_id"],
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    # Dispatch to image-worker via RabbitMQ (fire-and-forget)
+    rpc = _get_rpc()
+    if rpc:
+        try:
+            rpc.cast("image", "import_image_task", {
+                "task_id": task.id,
+                "image_id": image_id,
+                "import_from": import_from,
+                "image_properties": {**image_props, "disk_format": import_format},
+            })
+        except Exception as exc:
+            # Non-fatal — task can be retried
+            import logging
+            logging.getLogger("image-api").warning("Failed to dispatch task to image-worker: %s", exc)
+    else:
+        import logging
+        logging.getLogger("image-api").warning("RPC not available — image-worker task will not be dispatched")
+
+    return _task_to_dict(task)
+
+
+@app.get("/v2/tasks/{task_id}")
+def get_task(task_id: str, current: CurrentUser, db: DB):
+    task = db.get(ImageTask, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    if current.get("role") != "admin" and task.owner != current["project_id"]:
+        raise HTTPException(status_code=403, detail="access denied")
+    return _task_to_dict(task)
+
+
+@app.get("/v2/tasks")
+def list_tasks(current: CurrentUser, db: DB):
+    q = select(ImageTask)
+    if current.get("role") != "admin":
+        q = q.where(ImageTask.owner == current["project_id"])
+    tasks = db.scalars(q.order_by(ImageTask.created_at.desc())).all()
+    return {"tasks": [_task_to_dict(t) for t in tasks]}
+
+
+@app.patch("/v2/tasks/{task_id}")
+def update_task(task_id: str, payload: TaskPatchIn, db: DB):
+    """Internal endpoint called by image-worker to update task status."""
+    task = db.get(ImageTask, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    if payload.status:
+        task.status = payload.status
+    if payload.message:
+        task.message = payload.message
+    if payload.result:
+        task.result = _json.dumps(payload.result)
+    task.updated_at = datetime.utcnow()
+    db.commit()
+    return _task_to_dict(task)

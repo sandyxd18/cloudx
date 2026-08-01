@@ -4,7 +4,7 @@ import {
   Network, Globe, ArrowLeftRight, Shield,
   HardDrive, Database, Camera, LogOut,
   ChevronRight, Settings, Layers, Layers2,
-  ChevronDown, ChevronUp, FolderOpen
+  ChevronDown, ChevronUp, FolderOpen, GitBranch
 } from 'lucide-react'
 import { useAuth } from '../context.jsx'
 import { useState, useRef, useEffect } from 'react'
@@ -32,6 +32,7 @@ const NAV = [
       { to: '/routers',        icon: Globe,          label: 'Routers'        },
       { to: '/security-groups',icon: Shield,         label: 'Security Groups'},
       { to: '/floating-ips',   icon: ArrowLeftRight, label: 'Floating IPs'  },
+      { to: '/topology',       icon: GitBranch,      label: 'Topology'       },
     ]
   },
   { section: 'Admin' },

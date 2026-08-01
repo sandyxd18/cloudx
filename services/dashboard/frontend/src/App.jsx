@@ -17,6 +17,7 @@ import SnapshotsPage from './pages/Snapshots.jsx'
 import VolumeTypesPage from './pages/VolumeTypes.jsx'
 import ServerGroupsPage from './pages/ServerGroups.jsx'
 import AdminPage from './pages/Admin.jsx'
+import TopologyPage from './pages/Topology.jsx'
 
 function PrivateRoute({ children }) {
   const { user } = useAuth()
@@ -64,6 +65,7 @@ function AppRoutes() {
           <Route path="volumes" element={<VolumesPage />} />
           <Route path="volume-types" element={<VolumeTypesPage />} />
           <Route path="snapshots" element={<SnapshotsPage />} />
+          <Route path="topology" element={<TopologyPage />} />
           <Route path="admin" element={<AdminPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

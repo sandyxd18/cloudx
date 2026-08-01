@@ -8,9 +8,6 @@ async function request(method, path, body = null, opts = {}) {
   const config = {
     method,
     headers,
-    // ensure cookies are sent with requests to /api
-    // although not strictly needed for same-origin if not explicitly set to 'omit'
-    // but good practice.
     credentials: 'same-origin',
     ...opts,
   }
@@ -20,11 +17,7 @@ async function request(method, path, body = null, opts = {}) {
 
   const resp = await fetch(`${BASE}${path}`, config)
   if (resp.status === 401) {
-    // Dispatch a custom event so the app can handle it gracefully
-    // (show a toast + redirect) rather than forcing a hard navigation
-    // in the middle of an unrelated component render.
     window.dispatchEvent(new CustomEvent('cloudx:session-expired'))
-    // Return a rejected promise so callers can catch and show their own error
     throw new Error('Session expired. Please log in again.')
   }
   if (!resp.ok) {
@@ -57,6 +50,11 @@ export const api = {
   createAccessKey: (b) => request('POST', '/auth/access-keys', b),
   deleteAccessKey: (id) => request('DELETE', `/auth/access-keys/${id}`),
 
+  // Auth — Domains (Keystone v3)
+  getDomains: () => request('GET', '/auth/v3/domains'),
+  createDomain: (b) => request('POST', '/auth/v3/domains', b),
+  deleteDomain: (id) => request('DELETE', `/auth/v3/domains/${id}`),
+
   // Compute — Servers
   getServers: () => request('GET', '/compute/servers'),
   createServer: (b) => request('POST', '/compute/servers', b),
@@ -64,6 +62,19 @@ export const api = {
   deleteServer: (id) => request('DELETE', `/compute/servers/${id}`),
   serverAction: (id, action, body={}) => request('POST', `/compute/servers/${id}/${action}`, body),
   getServerLogs: (id) => request('POST', `/compute/servers/${id}/logs`, {}),
+
+  // Compute — Console (noVNC)
+  getRemoteConsole: (id) => request('POST', `/compute/servers/${id}/remote-consoles`, {
+    remote_console: { type: 'novnc', protocol: 'vnc' }
+  }),
+
+  // Compute — Shelve / Unshelve
+  shelveServer: (id) => request('POST', `/compute/servers/${id}/shelve`, {}),
+  unshelveServer: (id) => request('POST', `/compute/servers/${id}/unshelve`, {}),
+
+  // Compute — Resize confirm / revert
+  confirmResize: (id) => request('POST', `/compute/servers/${id}/confirmResize`, {}),
+  revertResize: (id) => request('POST', `/compute/servers/${id}/revertResize`, {}),
 
   // Compute — Flavors
   getFlavors: () => request('GET', '/compute/flavors'),
@@ -112,12 +123,48 @@ export const api = {
   createSecurityGroupRule: (id, b) => request('POST', `/networking/security-groups/${id}/rules`, b),
   deleteSecurityGroupRule: (ruleId) => request('DELETE', `/networking/security-group-rules/${ruleId}`),
 
+  // Networking — QoS Policies
+  getQosPolicies: () => request('GET', '/networking/qos/policies'),
+  createQosPolicy: (b) => request('POST', '/networking/qos/policies', b),
+  deleteQosPolicy: (id) => request('DELETE', `/networking/qos/policies/${id}`),
+  createQosBwRule: (policyId, b) => request('POST', `/networking/qos/policies/${policyId}/bandwidth_limit_rules`, b),
+
+  // Networking — Subnet Pools
+  getSubnetPools: () => request('GET', '/networking/subnetpools'),
+  createSubnetPool: (b) => request('POST', '/networking/subnetpools', b),
+  deleteSubnetPool: (id) => request('DELETE', `/networking/subnetpools/${id}`),
+
+  // Network Topology (aggregated client-side)
+  async getNetworkTopology() {
+    const [networks, subnets, routers, ports, floatingIPs, servers] = await Promise.allSettled([
+      request('GET', '/networking/networks'),
+      request('GET', '/networking/subnets'),
+      request('GET', '/networking/routers'),
+      request('GET', '/networking/ports'),  // may 404 if no port list endpoint
+      request('GET', '/networking/floating-ips'),
+      request('GET', '/compute/servers'),
+    ])
+    return {
+      networks: networks.status === 'fulfilled' ? (networks.value.items || networks.value.networks || []) : [],
+      subnets: subnets.status === 'fulfilled' ? (subnets.value.items || subnets.value.subnets || []) : [],
+      routers: routers.status === 'fulfilled' ? (routers.value.items || routers.value.routers || []) : [],
+      ports: ports.status === 'fulfilled' ? (ports.value.items || ports.value.ports || []) : [],
+      floatingIPs: floatingIPs.status === 'fulfilled' ? (floatingIPs.value.items || floatingIPs.value.floating_ips || []) : [],
+      servers: servers.status === 'fulfilled' ? (servers.value.items || []) : [],
+    }
+  },
+
   // Images
   getImages: () => request('GET', '/image/images'),
   deleteImage: (id) => request('DELETE', `/image/images/${id}`),
   deactivateImage: (id) => request('POST', `/image/images/${id}/deactivate`, {}),
   reactivateImage: (id) => request('POST', `/image/images/${id}/reactivate`, {}),
   updateImage: (id, b) => request('PATCH', `/image/images/${id}`, b),
+
+  // Glance Tasks (async image import)
+  createImageTask: (b) => request('POST', '/image/v2/tasks', b),
+  getImageTask: (id) => request('GET', `/image/v2/tasks/${id}`),
+  getImageTasks: () => request('GET', '/image/v2/tasks'),
 
   // Block Store — Volumes
   getVolumes: () => request('GET', '/block-store/volumes'),
@@ -141,6 +188,7 @@ export const api = {
   // Placement
   getUsages: () => request('GET', '/placement/usages'),
   getProviders: () => request('GET', '/placement/resource-providers'),
+  getAllocationCandidates: (resources) => request('GET', `/placement/allocation_candidates?resources=${encodeURIComponent(resources)}`),
 
   // Volume Quotas
   getQuota: (projectId, withUsage = true) =>
@@ -180,3 +228,6 @@ export const api = {
     })
   },
 }
+
+
+

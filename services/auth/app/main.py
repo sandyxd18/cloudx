@@ -158,6 +158,16 @@ class AccessKey(Base):
     created_at:      Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class Domain(Base):
+    """Keystone v3 Domain (top-level organizational unit)."""
+    __tablename__ = "auth_domains"
+    id:          Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:        Mapped[str] = mapped_column(String, unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled:     Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def _gen_access_key_id() -> str:
     """Generate CLDX-prefixed 20-char access key ID."""
@@ -371,18 +381,62 @@ class AccessKeyIn(BaseModel):
 
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
+def _ensure_domain_columns():
+    """Add domain_id column to auth_projects and auth_users if missing, then migrate."""
+    inspector = inspect(engine)
+    table_names = inspector.get_table_names()
+
+    if "auth_projects" in table_names:
+        proj_cols = {c["name"] for c in inspector.get_columns("auth_projects")}
+        with engine.begin() as conn:
+            if "domain_id" not in proj_cols:
+                conn.execute(text("ALTER TABLE auth_projects ADD COLUMN domain_id VARCHAR"))
+
+    if "auth_users" in table_names:
+        user_cols = {c["name"] for c in inspector.get_columns("auth_users")}
+        with engine.begin() as conn:
+            if "domain_id" not in user_cols:
+                conn.execute(text("ALTER TABLE auth_users ADD COLUMN domain_id VARCHAR"))
+
+
 def _bootstrap():
     db = SessionLocal()
     try:
         Base.metadata.create_all(bind=engine)
-        # Create admin project
+        _ensure_domain_columns()
+
+        # ── Ensure default domain exists ──────────────────────────────────────
+        default_domain = db.scalar(select(Domain).where(Domain.name == "Default"))
+        if not default_domain:
+            default_domain = Domain(id="default", name="Default", description="Default domain")
+            db.add(default_domain)
+            db.commit()
+            db.refresh(default_domain)
+            print("[auth] bootstrap: default domain created", flush=True)
+
+        # ── Migrate existing projects / users to default domain ───────────────
+        with engine.begin() as conn:
+            conn.execute(text(
+                "UPDATE auth_projects SET domain_id = 'default' WHERE domain_id IS NULL"
+            ))
+            conn.execute(text(
+                "UPDATE auth_users SET domain_id = 'default' WHERE domain_id IS NULL"
+            ))
+
+        # ── Create admin project ──────────────────────────────────────────────
         proj = db.scalar(select(Project).where(Project.name == ADMIN_PROJECT))
         if not proj:
             proj = Project(name=ADMIN_PROJECT, description="Default admin project")
             db.add(proj)
             db.commit()
             db.refresh(proj)
-        # Create admin user
+        # Ensure admin project has domain_id
+        with engine.begin() as conn:
+            conn.execute(text(
+                "UPDATE auth_projects SET domain_id = 'default' WHERE domain_id IS NULL"
+            ))
+
+        # ── Create admin user ─────────────────────────────────────────────────
         user = db.scalar(select(User).where(User.username == ADMIN_USERNAME))
         if not user:
             user = User(
@@ -397,7 +451,8 @@ def _bootstrap():
             print(f"[auth] bootstrap: admin user '{ADMIN_USERNAME}' created in project '{ADMIN_PROJECT}'", flush=True)
         else:
             print(f"[auth] bootstrap: admin user '{ADMIN_USERNAME}' already exists", flush=True)
-        # Bootstrap service catalog
+
+        # ── Bootstrap service catalog ─────────────────────────────────────────
         _bootstrap_service_catalog(db)
     finally:
         db.close()
@@ -869,3 +924,84 @@ def delete_endpoint(endpoint_id: str, _: AdminUser, db: DB):
 def get_catalog(current: CurrentUser, db: DB):
     """Return the full service catalog for the authenticated user."""
     return {"catalog": _build_catalog(db)}
+
+
+# ── Domain Management (Keystone v3) ──────────────────────────────────────────────────────
+
+class DomainIn(BaseModel):
+    name: str
+    description: str | None = None
+    enabled: bool = True
+
+
+class DomainUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+
+
+def _domain_to_dict(d: Domain) -> dict:
+    return {
+        "id": d.id,
+        "name": d.name,
+        "description": d.description,
+        "enabled": d.enabled,
+        "created_at": d.created_at.isoformat(),
+    }
+
+
+@app.post("/v3/domains", status_code=201)
+def create_domain(payload: DomainIn, _: AdminUser, db: DB):
+    """Create a new domain (admin only)."""
+    if db.scalar(select(Domain).where(Domain.name == payload.name)):
+        raise HTTPException(status_code=409, detail="domain already exists")
+    domain = Domain(**payload.model_dump())
+    db.add(domain)
+    db.commit()
+    db.refresh(domain)
+    return _domain_to_dict(domain)
+
+
+@app.get("/v3/domains")
+def list_domains(current: CurrentUser, db: DB):
+    """List all domains."""
+    domains = db.scalars(select(Domain).order_by(Domain.name)).all()
+    return {"domains": [_domain_to_dict(d) for d in domains]}
+
+
+@app.get("/v3/domains/{domain_id}")
+def show_domain(domain_id: str, current: CurrentUser, db: DB):
+    """Get a specific domain by ID or name."""
+    domain = db.get(Domain, domain_id)
+    if not domain:
+        domain = db.scalar(select(Domain).where(Domain.name == domain_id))
+    if not domain:
+        raise HTTPException(status_code=404, detail="domain not found")
+    return _domain_to_dict(domain)
+
+
+@app.patch("/v3/domains/{domain_id}")
+def update_domain(domain_id: str, payload: DomainUpdate, _: AdminUser, db: DB):
+    """Update domain properties (admin only)."""
+    domain = db.get(Domain, domain_id)
+    if not domain:
+        raise HTTPException(status_code=404, detail="domain not found")
+    if domain.id == "default" and payload.enabled is False:
+        raise HTTPException(status_code=403, detail="cannot disable the default domain")
+    for field, value in payload.model_dump(exclude_none=True).items():
+        setattr(domain, field, value)
+    db.commit()
+    db.refresh(domain)
+    return _domain_to_dict(domain)
+
+
+@app.delete("/v3/domains/{domain_id}", status_code=204)
+def delete_domain(domain_id: str, _: AdminUser, db: DB):
+    """Delete a domain (admin only). Cannot delete the default domain."""
+    if domain_id == "default":
+        raise HTTPException(status_code=403, detail="cannot delete the default domain")
+    domain = db.get(Domain, domain_id)
+    if not domain:
+        raise HTTPException(status_code=404, detail="domain not found")
+    db.delete(domain)
+    db.commit()
