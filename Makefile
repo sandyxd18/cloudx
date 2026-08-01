@@ -1,6 +1,6 @@
 .PHONY: up up-minio down logs ps reset install-cli test test-real-vm test-floating-ip test-metadata test-security-group test-volume-boot test-multi-network \
         cleanup-network cleanup-compute cleanup-storage cleanup-all \
-        node-bootstrap lab-setup dashboard-dev
+        node-bootstrap dashboard-dev
 
 # ── Bootstrap (run in order on fresh node) ────────────────────────────────────
 # Step 1: Prepare the host OS (packages, OVS bridges, systemd service)
@@ -16,14 +16,9 @@ up:
 up-minio:
 	docker compose --profile minio up -d --build
 
-# Step 3: Create lab networks, router, download CirrOS, configure routes
-#         Idempotent — safe to re-run.
-lab-setup:
-	./scripts/lab-setup.sh
-
 # ── Shortcut: restart lab after reboot (no node-bootstrap needed) ─────────────
-start: up lab-setup
-start-minio: up-minio lab-setup
+start: up
+start-minio: up-minio
 
 # ── Service management ────────────────────────────────────────────────────────
 down:

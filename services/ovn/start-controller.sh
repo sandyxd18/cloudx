@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OVN_SB_DB="${OVN_SB_DB:-tcp:ovn-sb-db:6642}"
-OVN_ENCAP_IP="${OVN_ENCAP_IP:-127.0.0.1}"
+OVN_SB_DB="${OVN_SB_DB:-tcp:127.0.0.1:6642}"
 PROVIDER_BRIDGE="${PROVIDER_BRIDGE:-br-ex}"
 PROVIDER_PHYSNET="${PROVIDER_PHYSNET:-physnet1}"
 PROVIDER_INTERFACE="${PROVIDER_INTERFACE:-enp0s8}"
+NETWORK_INTERFACE="${NETWORK_INTERFACE:-}"
+
+# Determine encap IP from NETWORK_INTERFACE for multi-node Geneve tunnels.
+# For single-node, fall back to OVN_ENCAP_IP env or 127.0.0.1.
+if [ -n "$NETWORK_INTERFACE" ]; then
+  _ENCAP_IP="$(ip -4 addr show dev "$NETWORK_INTERFACE" 2>/dev/null | awk '/inet /{gsub(/\/.*/, "", $2); print $2; exit}')"
+fi
+OVN_ENCAP_IP="${_ENCAP_IP:-${OVN_ENCAP_IP:-127.0.0.1}}"
 
 mkdir -p /var/run/ovn /var/log/ovn
 

@@ -1,0 +1,103 @@
+global
+    log /dev/log    local0
+    log /dev/log    local1 notice
+    maxconn         4096
+    daemon
+
+defaults
+    log             global
+    mode            http
+    option          httplog
+    option          dontlognull
+    option          forwardfor
+    option          http-server-close
+    timeout connect 5s
+    timeout client  30s
+    timeout server  60s
+    retries         3
+    errorfile 400   /dev/null
+    errorfile 408   /dev/null
+    errorfile 502   /dev/null
+    errorfile 503   /dev/null
+    errorfile 504   /dev/null
+
+# ── Stats & Monitoring ────────────────────────────────────────────────────────
+frontend stats
+    bind *:${HAPROXY_STATS_PORT:-8404}
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+    stats admin if TRUE
+    stats show-legends
+    stats show-node
+
+# ── Dashboard ────────────────────────────────────────────────────────────────
+frontend dashboard_front
+    bind *:${DASHBOARD_PORT:-8080}
+    option httpchk
+    default_backend dashboard_back
+
+backend dashboard_back
+    option httpchk GET /health
+    http-check expect status 200
+    server node1 127.0.0.1:${DASHBOARD_PORT:-8080} check inter 5s fall 3 rise 2
+
+# ── Auth API ─────────────────────────────────────────────────────────────────
+frontend auth_front
+    bind *:${AUTH_PORT:-8005}
+    default_backend auth_back
+
+backend auth_back
+    option httpchk GET /health
+    http-check expect status 200
+    server node1 127.0.0.1:${AUTH_PORT:-8005} check inter 5s fall 3 rise 2
+
+# ── Networking API ────────────────────────────────────────────────────────────
+frontend networking_front
+    bind *:${NETWORKING_PORT:-8001}
+    default_backend networking_back
+
+backend networking_back
+    option httpchk GET /health
+    http-check expect status 200
+    server node1 127.0.0.1:${NETWORKING_PORT:-8001} check inter 5s fall 3 rise 2
+
+# ── Image API ─────────────────────────────────────────────────────────────────
+frontend image_front
+    bind *:${IMAGE_PORT:-8002}
+    default_backend image_back
+
+backend image_back
+    option httpchk GET /health
+    http-check expect status 200
+    server node1 127.0.0.1:${IMAGE_PORT:-8002} check inter 5s fall 3 rise 2
+
+# ── Compute API ───────────────────────────────────────────────────────────────
+frontend compute_front
+    bind *:${COMPUTE_PORT:-8003}
+    default_backend compute_back
+
+backend compute_back
+    option httpchk GET /health
+    http-check expect status 200
+    server node1 127.0.0.1:${COMPUTE_PORT:-8003} check inter 5s fall 3 rise 2
+
+# ── Block Store API ───────────────────────────────────────────────────────────
+frontend block_store_front
+    bind *:${BLOCK_STORE_PORT:-8004}
+    default_backend block_store_back
+
+backend block_store_back
+    option httpchk GET /health
+    http-check expect status 200
+    server node1 127.0.0.1:${BLOCK_STORE_PORT:-8004} check inter 5s fall 3 rise 2
+
+# ── Placement API ─────────────────────────────────────────────────────────────
+frontend placement_front
+    bind *:${PLACEMENT_PORT:-8006}
+    default_backend placement_back
+
+backend placement_back
+    option httpchk GET /health
+    http-check expect status 200
+    server node1 127.0.0.1:${PLACEMENT_PORT:-8006} check inter 5s fall 3 rise 2

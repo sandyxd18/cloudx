@@ -23,13 +23,15 @@ elif [ -f "$ROOT_DIR/.env.example" ]; then
     set -a; source "$ROOT_DIR/.env.example"; set +a
 fi
 
+NETWORK_INTERFACE="${NETWORK_INTERFACE:-enp0s3}"
 PROVIDER_INTERFACE="${PROVIDER_INTERFACE:-enp0s8}"
-PROVIDER_BRIDGE="${PROVIDER_BRIDGE:-br-ex}"
-PROVIDER_PHYSNET="${PROVIDER_PHYSNET:-physnet1}"
-PROVIDER_HOST_IP="${PROVIDER_HOST_IP:-}"
+PROVIDER_BRIDGE="br-ex"
+PROVIDER_PHYSNET="physnet1"
+INTERNAL_VIP_ADDRESS="${INTERNAL_VIP_ADDRESS:-}"
+PROVIDER_HOST_IP="${INTERNAL_VIP_ADDRESS}"
 PROVIDER_HOST_IP_ADDR="${PROVIDER_HOST_IP%%/*}"   # strip CIDR notation
 PROVIDER_GATEWAY="${PROVIDER_GATEWAY:-192.168.10.254}"  # OVN router external IP on br-ex
-PRIVATE_CIDR="${PRIVATE_CIDR:-192.168.12.0/24}"
+
 METADATA_IP="169.254.169.254"
 OVN_SB_PORT="${OVN_SB_PORT:-6642}"
 
@@ -58,6 +60,18 @@ systemctl enable --now libvirtd 2>/dev/null || \
 systemctl stop    ovn-controller.service 2>/dev/null || true
 systemctl disable ovn-controller.service 2>/dev/null || true
 echo "✓ openvswitch-switch dan libvirtd enabled, host ovn-controller disabled"
+
+# ── Step 2b: Kernel networking parameters ──────────────────────────────────────
+# ip_nonlocal_bind  — wajib agar HAProxy/Keepalived bisa bind ke INTERNAL_VIP_ADDRESS
+#                     meskipun VIP belum aktif (state Backup) di node ini.
+# ip_forward        — wajib untuk routing antara jaringan (VM ↔ provider network).
+cat > /etc/sysctl.d/90-cloudx.conf << 'SYSCTL'
+net.ipv4.ip_nonlocal_bind = 1
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+SYSCTL
+sysctl -p /etc/sysctl.d/90-cloudx.conf > /dev/null
+echo "✓ sysctl: ip_nonlocal_bind=1, ip_forward=1 (persisted to /etc/sysctl.d/90-cloudx.conf)"
 
 # ── Step 3: User groups ────────────────────────────────────────────────────────
 step "3/7  Configuring user groups"
@@ -136,19 +150,7 @@ ip addr replace "$METADATA_IP/32" dev "$PROVIDER_BRIDGE" 2>/dev/null || \
 ip addr add    "$METADATA_IP/32" dev "$PROVIDER_BRIDGE" 2>/dev/null || true
 echo "✓ Metadata IP $METADATA_IP on $PROVIDER_BRIDGE"
 
-# Route PRIVATE_CIDR via the OVN router gateway so the host can send replies back to VMs.
-# Must use "via PROVIDER_GATEWAY" — NOT "scope link" — otherwise the host ARPs for VM IPs
-# directly on br-ex and gets no reply, breaking metadata and floating-IP return traffic.
-if [ -n "$PROVIDER_GATEWAY" ]; then
-    if ip route show dev "$PROVIDER_BRIDGE" | grep -q "^${PRIVATE_CIDR}"; then
-        ip route replace "$PRIVATE_CIDR" via "$PROVIDER_GATEWAY" dev "$PROVIDER_BRIDGE" 2>/dev/null || true
-    else
-        ip route add "$PRIVATE_CIDR" via "$PROVIDER_GATEWAY" dev "$PROVIDER_BRIDGE" 2>/dev/null || true
-    fi
-    echo "✓ Route $PRIVATE_CIDR via $PROVIDER_GATEWAY dev $PROVIDER_BRIDGE (OVN router path)"
-else
-    echo "⚠ PROVIDER_GATEWAY not set — skipping private subnet route (set it in .env)"
-fi
+
 
 # iptables DNAT: VM → 169.254.169.254:80 → PROVIDER_HOST_IP:8775
 if [ -n "$PROVIDER_HOST_IP_ADDR" ] && command -v iptables >/dev/null 2>&1; then
@@ -176,12 +178,14 @@ mkdir -p /etc/mini-openstack
 
 # Write node config (read by the systemd service at boot)
 cat > /etc/mini-openstack/node.env <<EOF
+NETWORK_INTERFACE=${NETWORK_INTERFACE}
 PROVIDER_BRIDGE=${PROVIDER_BRIDGE}
 PROVIDER_INTERFACE=${PROVIDER_INTERFACE}
 PROVIDER_HOST_IP=${PROVIDER_HOST_IP}
 PROVIDER_HOST_IP_ADDR=${PROVIDER_HOST_IP_ADDR}
 PROVIDER_GATEWAY=${PROVIDER_GATEWAY}
-PRIVATE_CIDR=${PRIVATE_CIDR}
+INTERNAL_VIP_ADDRESS=${INTERNAL_VIP_ADDRESS}
+
 METADATA_IP=${METADATA_IP}
 EOF
 
@@ -206,10 +210,6 @@ ExecStart=/bin/bash -c '\
     fi; \
     ip addr replace "${METADATA_IP:-169.254.169.254}/32" dev "${PROVIDER_BRIDGE:-br-ex}" 2>/dev/null || \
     ip addr add    "${METADATA_IP:-169.254.169.254}/32" dev "${PROVIDER_BRIDGE:-br-ex}" 2>/dev/null || true; \
-    if [ -n "${PROVIDER_GATEWAY:-}" ]; then \
-        ip route replace "${PRIVATE_CIDR:-192.168.12.0/24}" via "${PROVIDER_GATEWAY}" dev "${PROVIDER_BRIDGE:-br-ex}" 2>/dev/null || \
-        ip route add    "${PRIVATE_CIDR:-192.168.12.0/24}" via "${PROVIDER_GATEWAY}" dev "${PROVIDER_BRIDGE:-br-ex}" 2>/dev/null || true; \
-    fi; \
     ovs-vsctl \
         -- --may-exist add-port br-int patch-br-int-to-br-ex \
         -- set interface patch-br-int-to-br-ex type=patch options:peer=patch-br-ex-to-br-int \
@@ -246,5 +246,5 @@ echo ""
 echo "  Next steps:"
 echo "    1. newgrp libvirt        (activate group membership)"
 echo "    2. make up               (start Docker services)"
-echo "    3. make lab-setup        (create networks, router, download image)"
+echo "    3. Konfigurasi resource cloud secara manual (lihat README.md Langkah 4)"
 echo ""

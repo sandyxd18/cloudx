@@ -111,6 +111,26 @@ def _headers(profile: str = "default") -> dict:
     return {"X-Auth-Token": token, "Content-Type": "application/json"}
 
 
+def _fmt_value(v) -> str:
+    """Format a value for table display (handle dicts/lists cleanly)."""
+    if v is None:
+        return "None"
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, list):
+        if not v:
+            return ""
+        # If list of strings/numbers → comma-separated
+        if all(isinstance(i, (str, int, float)) for i in v):
+            return ", ".join(str(i) for i in v)
+        # Otherwise JSON each item on its own line
+        return "\n".join(json.dumps(i, default=str) for i in v)
+    if isinstance(v, dict):
+        # Format as multiline key=value
+        return "\n".join(f"{k}='{val}'" for k, val in v.items())
+    return str(v)
+
+
 def _output(data, fmt: str, headers: list | None = None):
     """Print data as json or table (OpenStack-style grid)."""
     if fmt == "json":
@@ -122,10 +142,10 @@ def _output(data, fmt: str, headers: list | None = None):
                 return
             if headers is None:
                 headers = list(data[0].keys()) if data else []
-            rows = [[item.get(h, "") for h in headers] for item in data]
+            rows = [[_fmt_value(item.get(h, "")) for h in headers] for item in data]
             click.echo(tabulate(rows, headers=headers, tablefmt="grid"))
         elif isinstance(data, dict):
-            rows = [[k, v] for k, v in data.items()]
+            rows = [[k, _fmt_value(v)] for k, v in data.items()]
             click.echo(tabulate(rows, headers=["Field", "Value"], tablefmt="grid"))
         else:
             click.echo(str(data))
@@ -815,7 +835,7 @@ def network_create(ctx, name, external, shared):
 @click.pass_context
 def network_list(ctx):
     data = _api("get", f"{DEFAULT_URLS['network']}/networks", ctx.obj["profile"])
-    _output(data.get("items", []), ctx.obj["fmt"], ["id", "name", "external", "shared"])
+    _output(data.get("items", []), ctx.obj["fmt"], ["id", "name", "status", "router:external", "admin_state_up", "mtu"])
 
 @network.command("show")
 @click.argument("ref")
@@ -865,7 +885,7 @@ def subnet_create(ctx, name, network, cidr, gateway, ip_version, dhcp, dns, allo
 @click.pass_context
 def subnet_list(ctx):
     data = _api("get", f"{DEFAULT_URLS['network']}/subnets", ctx.obj["profile"])
-    _output(data.get("items", []), ctx.obj["fmt"], ["id", "name", "cidr", "gateway_ip", "network_id"])
+    _output(data.get("items", []), ctx.obj["fmt"], ["id", "name", "cidr", "gateway_ip", "network_id", "ip_version"])
 
 @subnet.command("show")
 @click.argument("ref")
@@ -902,7 +922,7 @@ def router_create(ctx, name):
 @click.pass_context
 def router_list(ctx):
     data = _api("get", f"{DEFAULT_URLS['network']}/routers", ctx.obj["profile"])
-    _output(data.get("items", []), ctx.obj["fmt"], ["id", "name"])
+    _output(data.get("items", []), ctx.obj["fmt"], ["id", "name", "status", "admin_state_up"])
 
 @router.command("show")
 @click.argument("ref")
@@ -1005,7 +1025,7 @@ def fip_create(ctx, network):
 @click.pass_context
 def fip_list(ctx):
     data = _api("get", f"{DEFAULT_URLS['network']}/floating-ips", ctx.obj["profile"])
-    _output(data.get("items", []), ctx.obj["fmt"], ["id", "floating_ip", "fixed_ip", "status"])
+    _output(data.get("items", []), ctx.obj["fmt"], ["id", "floating_ip_address", "fixed_ip_address", "status", "router_id"])
 
 @floating_ip.command("associate")
 @click.argument("ip")
@@ -1024,6 +1044,13 @@ def fip_disassociate(ctx, ip):
     _api("post", f"{DEFAULT_URLS['network']}/floating-ips/{ip}/disassociate",
          ctx.obj["profile"])
     click.echo(f"✓ Floating IP {ip} disassociated")
+
+@floating_ip.command("show")
+@click.argument("ip")
+@click.pass_context
+def fip_show(ctx, ip):
+    data = _api("get", f"{DEFAULT_URLS['network']}/floating-ips/{ip}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
 
 @floating_ip.command("delete")
 @click.argument("ip")
@@ -1248,7 +1275,7 @@ def volume_create(ctx, name, size, volume_type, image, snapshot, source_volume):
 def volume_list(ctx):
     data = _api("get", f"{DEFAULT_URLS['volume']}/volumes", ctx.obj["profile"])
     _output(data.get("items", []), ctx.obj["fmt"],
-            ["id", "name", "size_gb", "status", "volume_type", "backend", "attached_to_server_id"])
+            ["id", "name", "size", "status", "type", "bootable", "availability_zone"])
 
 @volume.command("show")
 @click.argument("ref")

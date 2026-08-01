@@ -7,7 +7,7 @@ export default function LoginPage() {
   const [form, setForm] = useState({ username: '', password: '', project: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const { login } = useAuth()
+  const { checkSession } = useAuth()
   const toast = useToast()
   const navigate = useNavigate()
 
@@ -16,18 +16,11 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      const data = await api.login({
+      await api.login({
         username: form.username,
         password: form.password,
       })
-      // auth-api returns: { token, user: {...}, project: {...} }
-      login(data.token, {
-        username:     data.user?.username     || form.username,
-        user_id:      data.user?.id           || '',
-        role:         data.user?.role         || 'member',
-        project_id:   data.project?.id        || data.user?.project_id || '',
-        project_name: data.project?.name      || '',
-      })
+      await checkSession()
       toast('Login berhasil!', 'success')
       navigate('/')
     } catch (err) {
