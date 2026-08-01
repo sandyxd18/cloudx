@@ -9,3 +9,6 @@ error.txt
 *.log
 .env
 .gitignore
+services/dashboard/frontend/node_modules/
+services/dashboard/frontend/dist/
+services/dashboard/app/static/

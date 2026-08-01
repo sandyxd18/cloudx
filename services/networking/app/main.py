@@ -2,6 +2,7 @@ import ipaddress
 import os
 import secrets
 import subprocess
+import sys
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -17,26 +18,29 @@ try:
 except ImportError:
     from auth_middleware import CurrentUser, AdminUser, OptionalAuth
 
+# Load shared request_id_middleware
+try:
+    from shared.request_id_middleware import RequestIDMiddleware
+except ImportError:
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+        from shared.request_id_middleware import RequestIDMiddleware
+    except ImportError:
+        RequestIDMiddleware = None
+
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
 OVN_NB_DB = os.getenv("OVN_NB_DB", "tcp:ovn-nb-db:6641")
 PROVIDER_INTERFACE = os.getenv("PROVIDER_INTERFACE", "enp0s8")
-PROVIDER_BRIDGE = os.getenv("PROVIDER_BRIDGE", "br-ex")
-PROVIDER_NETWORK_NAME = os.getenv("PROVIDER_NETWORK_NAME", "public-net")
-PROVIDER_SUBNET_NAME = os.getenv("PROVIDER_SUBNET_NAME", "public-subnet")
-PROVIDER_CIDR = os.getenv("PROVIDER_CIDR", "192.168.56.0/24")
-PROVIDER_GATEWAY = os.getenv("PROVIDER_GATEWAY", "192.168.56.1")
-PROVIDER_ALLOCATION_START = os.getenv("PROVIDER_ALLOCATION_START", "192.168.56.100")
-PROVIDER_ALLOCATION_END = os.getenv("PROVIDER_ALLOCATION_END", "192.168.56.200")
-PROVIDER_DNS = [item.strip() for item in os.getenv("PROVIDER_DNS", "8.8.8.8").split(",") if item.strip()]
-PROVIDER_ENABLE_DHCP = os.getenv("PROVIDER_ENABLE_DHCP", "false").lower() == "true"
-PROVIDER_PHYSNET = os.getenv("PROVIDER_PHYSNET", "physnet1")
+INTERNAL_VIP_ADDRESS = os.getenv("INTERNAL_VIP_ADDRESS", "")
+
+
+PROVIDER_BRIDGE = "br-ex"
+PROVIDER_PHYSNET = "physnet1"
 # Strip CIDR notation if present (e.g. "192.168.10.102/24" → "192.168.10.102")
-PROVIDER_HOST_IP_RAW = os.getenv("PROVIDER_HOST_IP", "").split("/")[0].strip()
+PROVIDER_HOST_IP_RAW = INTERNAL_VIP_ADDRESS.split("/")[0].strip() if INTERNAL_VIP_ADDRESS else ""
+
 METADATA_LINK_LOCAL = "169.254.169.254"
-# Set to "true" to auto-create provider network on startup (legacy behaviour).
-# Default is "false": user creates public-net manually via the CLI / lab-setup.sh.
-PROVIDER_NETWORK_AUTO_CREATE = os.getenv("PROVIDER_NETWORK_AUTO_CREATE", "false").lower() == "true"
 DEFAULT_SECURITY_GROUP_ALLOW_SSH = os.getenv("DEFAULT_SECURITY_GROUP_ALLOW_SSH", "true").lower() == "true"
 DEFAULT_SECURITY_GROUP_ALLOW_ICMP = os.getenv("DEFAULT_SECURITY_GROUP_ALLOW_ICMP", "true").lower() == "true"
 
@@ -71,6 +75,7 @@ class Network(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String, unique=True, index=True)
     external: Mapped[bool] = mapped_column(Boolean, default=False)
+    shared: Mapped[bool] = mapped_column(Boolean, default=False)
     provider: Mapped[bool] = mapped_column(Boolean, default=False)
     network_type: Mapped[str | None] = mapped_column(String, nullable=True)
     physical_network: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -80,6 +85,7 @@ class Network(Base):
     gateway_ip: Mapped[str | None] = mapped_column(String, nullable=True)
     allocation_start: Mapped[str | None] = mapped_column(String, nullable=True)
     allocation_end: Mapped[str | None] = mapped_column(String, nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -282,20 +288,297 @@ def obj_to_dict(obj):
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
 
 
-def port_to_dict(db: Session, port: Port) -> dict:
-    data = obj_to_dict(port)
+def _fmt_ts(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _ip_version(cidr: str) -> int:
+    try:
+        return ipaddress.ip_network(cidr, strict=False).version
+    except Exception:
+        return 4
+
+
+# ── OpenStack-compatible serializers ───────────────────────────────────────────
+
+def network_to_os_dict(db: Session, network: Network, current: dict | None = None) -> dict:
+    """Serialize a Network to an OpenStack-compatible dict."""
+    # Collect subnet IDs for this network
+    subnet_ids = [s.id for s in db.scalars(
+        select(Subnet).where(Subnet.network_id == network.id).order_by(Subnet.created_at)
+    ).all()]
+
+    router_external_str = "External" if network.external else "Internal"
+
+    return {
+        "admin_state_up": "UP",
+        "availability_zone_hints": [],
+        "availability_zones": [],
+        "created_at": _fmt_ts(network.created_at),
+        "description": "",
+        "dns_domain": None,
+        "id": network.id,
+        "ipv4_address_scope": None,
+        "ipv6_address_scope": None,
+        "is_default": True if network.external else None,
+        "is_vlan_transparent": False,
+        "mtu": 1500 if network.external else 1442,
+        "name": network.name,
+        "port_security_enabled": True,
+        "project_id": current.get("project_id") if current else None,
+        "provider:network_type": network.network_type or ("flat" if network.external else "geneve"),
+        "provider:physical_network": network.physical_network,
+        "provider:segmentation_id": None,
+        "qos_policy_id": None,
+        "revision_number": 3,
+        "router:external": router_external_str,
+        "segments": None,
+        "shared": bool(network.shared),
+        "status": "ACTIVE",
+        "subnets": subnet_ids,
+        "tags": [],
+        "updated_at": _fmt_ts(network.created_at),
+    }
+
+
+def subnet_to_os_dict(db: Session, subnet: Subnet, current: dict | None = None) -> dict:
+    """Serialize a Subnet to an OpenStack-compatible dict."""
+    network = db.get(Network, subnet.network_id)
+    allocation_pool = None
+    if subnet.allocation_start and subnet.allocation_end:
+        allocation_pool = f"{subnet.allocation_start}-{subnet.allocation_end}"
+    elif subnet.allocation_start:
+        allocation_pool = subnet.allocation_start
+    dns = [s.strip() for s in subnet.dns_nameservers.split(",") if s.strip()] if subnet.dns_nameservers else []
+
+    return {
+        "allocation_pools": allocation_pool or "",
+        "cidr": subnet.cidr,
+        "created_at": _fmt_ts(subnet.created_at),
+        "description": "",
+        "dns_nameservers": dns,
+        "dns_publish_fixed_ip": None,
+        "enable_dhcp": subnet.enable_dhcp,
+        "gateway_ip": subnet.gateway_ip or subnet.gateway,
+        "host_routes": [],
+        "id": subnet.id,
+        "ip_version": _ip_version(subnet.cidr),
+        "ipv6_address_mode": None,
+        "ipv6_ra_mode": None,
+        "name": subnet.name,
+        "network_id": subnet.network_id,
+        "project_id": current.get("project_id") if current else None,
+        "revision_number": 0,
+        "router:external": bool(network.external) if network else False,
+        "segment_id": None,
+        "service_types": [],
+        "subnetpool_id": None,
+        "tags": [],
+        "updated_at": _fmt_ts(subnet.created_at),
+    }
+
+
+def router_to_os_dict(db: Session, router: Router, current: dict | None = None) -> dict:
+    """Serialize a Router to an OpenStack-compatible dict."""
+    # Build external_gateway_info
+    ext_gateway_info = None
+    if router.external_network_id:
+        ext_net = db.get(Network, router.external_network_id)
+        ext_subnet = None
+        ext_ip = None
+        if ext_net:
+            ext_subnet = db.scalar(select(Subnet).where(Subnet.network_id == ext_net.id).order_by(Subnet.created_at))
+        if ext_subnet:
+            # Find the gateway port (lrp external port) via RouterInterface or directly from network's gateway_ip
+            ext_ip = ext_net.gateway_ip if ext_net else None
+        ext_gateway_info = {
+            "network_id": router.external_network_id,
+            "external_fixed_ips": (
+                [{"subnet_id": ext_subnet.id, "ip_address": ext_ip}]
+                if ext_subnet and ext_ip else []
+            ),
+            "enable_snat": True,
+        }
+
+    # Build interfaces_info
+    interfaces = db.scalars(
+        select(RouterInterface).where(RouterInterface.router_id == router.id)
+    ).all()
+    interfaces_info = [
+        {
+            "port_id": iface.router_port_name,
+            "ip_address": iface.ip_address.split("/")[0] if iface.ip_address else None,
+            "subnet_id": iface.subnet_id,
+        }
+        for iface in interfaces
+    ]
+
+    return {
+        "admin_state_up": "UP",
+        "availability_zone_hints": [],
+        "availability_zones": [],
+        "created_at": _fmt_ts(router.created_at),
+        "description": "",
+        "enable_default_route_bfd": False,
+        "enable_default_route_ecmp": False,
+        "enable_snat": True,
+        "external_gateway_info": ext_gateway_info,
+        "flavor_id": None,
+        "ha": False,
+        "id": router.id,
+        "interfaces_info": interfaces_info,
+        "name": router.name,
+        "project_id": current.get("project_id") if current else None,
+        "revision_number": 4,
+        "routes": [],
+        "status": "ACTIVE",
+        "tags": [],
+        "updated_at": _fmt_ts(router.created_at),
+    }
+
+
+def port_to_os_dict(db: Session, port: Port, current: dict | None = None) -> dict:
+    """Serialize a Port to an OpenStack-compatible dict."""
     network = db.get(Network, port.network_id)
     subnet = db.get(Subnet, port.subnet_id) if port.subnet_id else None
-    data["fixed_ip"] = port.fixed_ip or port.ip_address
-    data["ip_address"] = port.ip_address or port.fixed_ip
-    data["logical_switch_name"] = port.logical_switch_name or (network.name if network else port.network_id)
-    data["logical_port_name"] = port.logical_port_name or port.name
-    data["security_group_ids"] = parse_id_list(port.security_group_ids)
-    if subnet:
-        data["cidr"] = subnet.cidr
-        data["gateway_ip"] = subnet.gateway_ip or subnet.gateway
-        data["dns_nameservers"] = subnet_dns(subnet)
-    return data
+
+    ip_addr = port.ip_address or port.fixed_ip
+    fixed_ips = []
+    if ip_addr and port.subnet_id:
+        fixed_ips = [{"ip_address": ip_addr, "subnet_id": port.subnet_id}]
+    elif ip_addr:
+        fixed_ips = [{"ip_address": ip_addr}]
+
+    sg_ids = [item for item in (port.security_group_ids or "").split(",") if item]
+
+    return {
+        "admin_state_up": "UP",
+        "allowed_address_pairs": [],
+        "binding_host_id": "",
+        "binding_profile": {},
+        "binding_vif_details": {},
+        "binding_vif_type": "ovs" if port.status == "ACTIVE" else "unbound",
+        "binding_vnic_type": "normal",
+        "created_at": _fmt_ts(port.created_at),
+        "data_plane_status": None,
+        "description": "",
+        "device_id": port.device_id or "",
+        "device_owner": port.device_owner or "",
+        "device_profile": None,
+        "dns_assignment": [],
+        "dns_domain": None,
+        "dns_name": None,
+        "extra_dhcp_opts": [],
+        "fixed_ips": fixed_ips,
+        "hardware_offload_type": None,
+        "hints": {},
+        "id": port.id,
+        "ip_allocation": None,
+        "mac_address": port.mac_address,
+        "name": port.name,
+        "network_id": port.network_id,
+        "numa_affinity_policy": None,
+        "port_security_enabled": port.port_security_enabled,
+        "project_id": current.get("project_id") if current else None,
+        "propagate_uplink_status": None,
+        "resource_request": None,
+        "revision_number": 2,
+        "qos_network_policy_id": None,
+        "qos_policy_id": None,
+        "security_group_ids": sg_ids,
+        "status": port.status,
+        "tags": [],
+        "trunk_details": None,
+        "trusted": None,
+        "updated_at": _fmt_ts(port.created_at),
+        # Internal fields kept for compatibility
+        "ip_address": ip_addr,
+        "fixed_ip": ip_addr,
+        "logical_switch_name": port.logical_switch_name or (network.name if network else port.network_id),
+        "logical_port_name": port.logical_port_name or port.name,
+        "cidr": subnet.cidr if subnet else None,
+        "gateway_ip": (subnet.gateway_ip or subnet.gateway) if subnet else None,
+        "dns_nameservers": ([s.strip() for s in subnet.dns_nameservers.split(",") if s.strip()] if subnet and subnet.dns_nameservers else []),
+        "subnet_id": port.subnet_id,
+    }
+
+
+def fip_to_os_dict(db: Session, fip: FloatingIP, current: dict | None = None) -> dict:
+    """Serialize a FloatingIP to an OpenStack-compatible dict."""
+    return {
+        "created_at": _fmt_ts(fip.created_at),
+        "description": "",
+        "dns_domain": None,
+        "dns_name": None,
+        "fixed_ip_address": fip.fixed_ip_address,
+        "floating_ip_address": fip.floating_ip_address or fip.floating_ip,
+        "floating_network_id": fip.external_network_id,
+        "id": fip.id,
+        "name": fip.name,
+        "port_details": None,
+        "port_id": fip.port_id or fip.fixed_port_id,
+        "project_id": current.get("project_id") if current else None,
+        "qos_policy_id": None,
+        "revision_number": 0,
+        "router_id": fip.router_id,
+        "status": fip.status,
+        "tags": [],
+        "updated_at": _fmt_ts(fip.created_at),
+        # Kept for backward compat
+        "floating_ip": fip.floating_ip,
+        "external_network_id": fip.external_network_id,
+        "server_id": fip.server_id,
+    }
+
+
+def sg_to_os_dict(db: Session, group: SecurityGroup, current: dict | None = None, include_rules: bool = True) -> dict:
+    """Serialize a SecurityGroup to an OpenStack-compatible dict."""
+    rules = []
+    if include_rules:
+        raw_rules = db.scalars(
+            select(SecurityGroupRule).where(SecurityGroupRule.security_group_id == group.id)
+            .order_by(SecurityGroupRule.created_at)
+        ).all()
+        rules = [
+            {
+                "id": r.id,
+                "security_group_id": r.security_group_id,
+                "direction": r.direction,
+                "ethertype": r.ethertype or "IPv4",
+                "protocol": None if r.protocol == "any" else r.protocol,
+                "port_range_min": int(r.port_min) if r.port_min else None,
+                "port_range_max": int(r.port_max) if r.port_max else None,
+                "remote_ip_prefix": r.remote_ip_prefix,
+                "remote_group_id": r.remote_group_id,
+                "remote_address_group_id": None,
+                "description": "",
+                "created_at": _fmt_ts(r.created_at),
+                "updated_at": _fmt_ts(r.created_at),
+                "revision_number": 0,
+            }
+            for r in raw_rules
+        ]
+    return {
+        "created_at": _fmt_ts(group.created_at),
+        "description": group.description or "",
+        "id": group.id,
+        "name": group.name,
+        "project_id": group.project_id or (current.get("project_id") if current else None),
+        "revision_number": 1,
+        "security_group_rules": rules,
+        "shared": False,
+        "stateful": True,
+        "tags": [],
+        "updated_at": _fmt_ts(group.updated_at or group.created_at),
+    }
+
+
+def port_to_dict(db: Session, port: Port, current: dict | None = None) -> dict:
+    """Alias that returns OS-compatible port dict (replaces old port_to_dict)."""
+    return port_to_os_dict(db, port, current)
+
 
 
 def get_by_ref(db: Session, model, ref: str):
@@ -384,37 +667,7 @@ def get_local_chassis_id() -> str | None:
         return None
 
 
-def provider_config() -> dict:
-    return {
-        "interface": PROVIDER_INTERFACE,
-        "bridge": PROVIDER_BRIDGE,
-        "network_name": PROVIDER_NETWORK_NAME,
-        "subnet_name": PROVIDER_SUBNET_NAME,
-        "cidr": PROVIDER_CIDR,
-        "gateway": PROVIDER_GATEWAY,
-        "allocation_start": PROVIDER_ALLOCATION_START,
-        "allocation_end": PROVIDER_ALLOCATION_END,
-        "dns_nameservers": PROVIDER_DNS,
-        "enable_dhcp": PROVIDER_ENABLE_DHCP,
-        "physical_network": PROVIDER_PHYSNET,
-    }
 
-
-def external_network_defaults(name: str) -> dict:
-    config = provider_config()
-    return {
-        "name": name,
-        "external": True,
-        "provider": True,
-        "network_type": "external",
-        "physical_network": config["physical_network"],
-        "bridge_mapping": f'{config["physical_network"]}:{config["bridge"]}',
-        "provider_bridge": config["bridge"],
-        "provider_cidr": config["cidr"],
-        "gateway_ip": config["gateway"],
-        "allocation_start": config["allocation_start"],
-        "allocation_end": config["allocation_end"],
-    }
 
 
 def localnet_port_name(network_name: str) -> str:
@@ -739,6 +992,7 @@ def ensure_columns():
             columns = {column["name"] for column in inspector.get_columns("networking_networks")}
             for column, ddl in (
                 ("external", "BOOLEAN DEFAULT FALSE"),
+                ("shared", "BOOLEAN DEFAULT FALSE"),
                 ("provider", "BOOLEAN DEFAULT FALSE"),
                 ("network_type", "VARCHAR"),
                 ("physical_network", "VARCHAR"),
@@ -748,9 +1002,11 @@ def ensure_columns():
                 ("gateway_ip", "VARCHAR"),
                 ("allocation_start", "VARCHAR"),
                 ("allocation_end", "VARCHAR"),
+                ("project_id", "VARCHAR"),
             ):
                 if column not in columns:
                     conn.execute(text(f"ALTER TABLE networking_networks ADD COLUMN {column} {ddl}"))
+            conn.execute(text("UPDATE networking_networks SET shared = FALSE WHERE shared IS NULL"))
         if "networking_subnets" in table_names:
             columns = {column["name"] for column in inspector.get_columns("networking_subnets")}
             for column in ("gateway_ip", "allocation_start", "allocation_end", "dns_nameservers"):
@@ -856,49 +1112,6 @@ def bootstrap_default_security_group() -> None:
         db.close()
 
 
-def bootstrap_provider_network() -> None:
-    db = SessionLocal()
-    try:
-        existing = get_by_ref(db, Network, PROVIDER_NETWORK_NAME)
-        if not existing:
-            defaults = external_network_defaults(PROVIDER_NETWORK_NAME)
-            start, end = allocation_bounds_for_network(defaults["provider_cidr"], defaults["gateway_ip"], defaults["allocation_start"], defaults["allocation_end"])
-            network = Network(**{**defaults, "allocation_start": start, "allocation_end": end})
-            db.add(network)
-            db.commit()
-            db.refresh(network)
-        else:
-            network = existing
-            changed = False
-            for field, value in external_network_defaults(network.name).items():
-                if getattr(network, field, None) in (None, "", False) and value not in (None, ""):
-                    setattr(network, field, value)
-                    changed = True
-            if changed:
-                db.commit()
-                db.refresh(network)
-        ensure_provider_ovn(network.name, network.physical_network or PROVIDER_PHYSNET, network.provider_bridge or PROVIDER_BRIDGE)
-        subnet = get_by_ref(db, Subnet, PROVIDER_SUBNET_NAME)
-        if not subnet:
-            dhcp_id = ovn(*dhcp_options_args(PROVIDER_CIDR, PROVIDER_GATEWAY, PROVIDER_DNS)) if PROVIDER_ENABLE_DHCP else None
-            subnet = Subnet(
-                name=PROVIDER_SUBNET_NAME,
-                network_id=network.id,
-                cidr=PROVIDER_CIDR,
-                gateway=PROVIDER_GATEWAY,
-                gateway_ip=PROVIDER_GATEWAY,
-                allocation_start=PROVIDER_ALLOCATION_START,
-                allocation_end=PROVIDER_ALLOCATION_END,
-                dns_nameservers=",".join(PROVIDER_DNS) or None,
-                dhcp_options_id=dhcp_id,
-                enable_dhcp=PROVIDER_ENABLE_DHCP,
-                ovn_dhcp_options_uuid=dhcp_id,
-            )
-            db.add(subnet)
-            db.commit()
-    finally:
-        db.close()
-
 
 app = FastAPI(title="cloudx networking-api", version="1.0.0")
 
@@ -908,19 +1121,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if RequestIDMiddleware:
+    app.add_middleware(RequestIDMiddleware)
 
 
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
     ensure_columns()
-    if PROVIDER_NETWORK_AUTO_CREATE:
-        try:
-            bootstrap_provider_network()
-        except Exception as exc:
-            print(f"provider network bootstrap skipped: {exc}", flush=True)
-    else:
-        print("provider network auto-create disabled (PROVIDER_NETWORK_AUTO_CREATE=false); create via CLI", flush=True)
     try:
         bootstrap_default_security_group()
     except Exception as exc:
@@ -929,7 +1137,7 @@ def startup():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "networking-api", "provider": provider_config()}
+    return {"status": "ok", "service": "networking-api"}
 
 
 @app.post("/networks", status_code=201)
@@ -966,13 +1174,27 @@ def create_network(payload: NetworkIn, current: CurrentUser, db: DB):
 
 
 @app.get("/networks")
-def list_networks(_: CurrentUser, db: DB):
-    return {"items": [obj_to_dict(n) for n in db.scalars(select(Network).order_by(Network.created_at)).all()]}
+def list_networks(current: CurrentUser, db: DB):
+    project_id = current.get("project_id")
+    if current.get("role") == "admin":
+        # Admin sees all networks
+        q = select(Network).order_by(Network.created_at)
+    else:
+        # Non-admin sees: own project's networks + shared networks
+        from sqlalchemy import or_
+        q = select(Network).where(
+            or_(
+                Network.project_id == project_id,
+                Network.shared == True,
+                Network.external == True,
+            )
+        ).order_by(Network.created_at)
+    return {"items": [network_to_os_dict(db, n, current) for n in db.scalars(q).all()]}
 
 
 @app.get("/networks/{ref}")
-def show_network(ref: str, _: CurrentUser, db: DB):
-    return obj_to_dict(require_by_ref(db, Network, ref, "network"))
+def show_network(ref: str, current: CurrentUser, db: DB):
+    return network_to_os_dict(db, require_by_ref(db, Network, ref, "network"), current)
 
 
 @app.delete("/networks/{ref}")
@@ -1027,15 +1249,13 @@ def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
 
 
 @app.get("/subnets")
-def list_subnets(_: CurrentUser, db: DB):
-    return {"items": [obj_to_dict(s) for s in db.scalars(select(Subnet).order_by(Subnet.created_at)).all()]}
+def list_subnets(current: CurrentUser, db: DB):
+    return {"items": [subnet_to_os_dict(db, s, current) for s in db.scalars(select(Subnet).order_by(Subnet.created_at)).all()]}
 
 
 @app.get("/subnets/{ref}")
-def show_subnet(ref: str, _: CurrentUser, db: DB):
-    data = obj_to_dict(require_by_ref(db, Subnet, ref, "subnet"))
-    data["ovn_dhcp_options_uuid"] = data.get("ovn_dhcp_options_uuid") or data.get("dhcp_options_id")
-    return data
+def show_subnet(ref: str, current: CurrentUser, db: DB):
+    return subnet_to_os_dict(db, require_by_ref(db, Subnet, ref, "subnet"), current)
 
 
 @app.delete("/subnets/{ref}")
@@ -1062,13 +1282,13 @@ def create_router(payload: RouterIn, current: CurrentUser, db: DB):
 
 
 @app.get("/routers")
-def list_routers(_: CurrentUser, db: DB):
-    return {"items": [obj_to_dict(r) for r in db.scalars(select(Router).order_by(Router.created_at)).all()]}
+def list_routers(current: CurrentUser, db: DB):
+    return {"items": [router_to_os_dict(db, r, current) for r in db.scalars(select(Router).order_by(Router.created_at)).all()]}
 
 
 @app.get("/routers/{ref}")
-def show_router(ref: str, _: CurrentUser, db: DB):
-    return obj_to_dict(require_by_ref(db, Router, ref, "router"))
+def show_router(ref: str, current: CurrentUser, db: DB):
+    return router_to_os_dict(db, require_by_ref(db, Router, ref, "router"), current)
 
 
 @app.delete("/routers/{ref}")
@@ -1316,13 +1536,13 @@ def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
 
 
 @app.get("/floating-ips")
-def list_floating_ips(_: CurrentUser, db: DB):
-    return {"items": [obj_to_dict(f) for f in db.scalars(select(FloatingIP).order_by(FloatingIP.created_at)).all()]}
+def list_floating_ips(current: CurrentUser, db: DB):
+    return {"items": [fip_to_os_dict(db, f, current) for f in db.scalars(select(FloatingIP).order_by(FloatingIP.created_at)).all()]}
 
 
 @app.get("/floating-ips/{ref}")
-def show_floating_ip(ref: str, _: CurrentUser, db: DB):
-    return obj_to_dict(require_floating_ip(db, ref))
+def show_floating_ip(ref: str, current: CurrentUser, db: DB):
+    return fip_to_os_dict(db, require_floating_ip(db, ref), current)
 
 
 @app.post("/floating-ips/{ref}/associate")
@@ -1342,7 +1562,7 @@ def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, _: CurrentUs
     fip.status = "ACTIVE"
     db.commit()
     db.refresh(fip)
-    return obj_to_dict(fip)
+    return fip_to_os_dict(db, fip, current)
 
 
 @app.post("/floating-ips/{ref}/disassociate")
@@ -1359,7 +1579,7 @@ def disassociate_floating_ip(ref: str, _: CurrentUser, db: DB):
     fip.status = "DOWN"
     db.commit()
     db.refresh(fip)
-    return obj_to_dict(fip)
+    return fip_to_os_dict(db, fip)
 
 
 @app.delete("/floating-ips/{ref}")
@@ -1387,16 +1607,14 @@ def create_security_group(payload: SecurityGroupIn, current: CurrentUser, db: DB
 
 
 @app.get("/security-groups")
-def list_security_groups(_: CurrentUser, db: DB):
-    return {"items": [obj_to_dict(group) for group in db.scalars(select(SecurityGroup).order_by(SecurityGroup.created_at)).all()]}
+def list_security_groups(current: CurrentUser, db: DB):
+    return {"items": [sg_to_os_dict(db, group, current, include_rules=False) for group in db.scalars(select(SecurityGroup).order_by(SecurityGroup.created_at)).all()]}
 
 
 @app.get("/security-groups/{ref}")
-def show_security_group(ref: str, _: CurrentUser, db: DB):
+def show_security_group(ref: str, current: CurrentUser, db: DB):
     group = require_by_ref(db, SecurityGroup, ref, "security-group")
-    data = obj_to_dict(group)
-    data["rules"] = [obj_to_dict(rule) for rule in db.scalars(select(SecurityGroupRule).where(SecurityGroupRule.security_group_id == group.id)).all()]
-    return data
+    return sg_to_os_dict(db, group, current, include_rules=True)
 
 
 @app.delete("/security-groups/{ref}")

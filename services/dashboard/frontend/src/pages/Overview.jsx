@@ -41,6 +41,7 @@ export default function OverviewPage() {
   const [volumes, setVolumes] = useState([])
   const [images, setImages]   = useState([])
   const [usages, setUsages]   = useState(null)
+  const [quota, setQuota]     = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -58,6 +59,10 @@ export default function OverviewPage() {
       if (u.status === 'fulfilled') setUsages(u.value)
       setLoading(false)
     })
+    // Load quota for any project (use 'admin' as fallback)
+    api.getQuota('admin', true)
+      .then(q => setQuota(q))
+      .catch(() => {})
   }, [])
 
   const activeServers  = servers.filter(s => s.status === 'ACTIVE').length
@@ -243,6 +248,63 @@ export default function OverviewPage() {
             </div>
           </div>
         </div>
+
+        {/* Volume Quota Widget */}
+        {quota && (
+          <div className="card" style={{ marginTop: 16 }}>
+            <div className="card-header">
+              <span className="card-title"><Database size={15} />Volume Quota</span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Project limits</span>
+            </div>
+            <div className="card-body">
+              {[
+                {
+                  label: 'Volumes',
+                  used: quota.usage?.volumes ?? volumes.length,
+                  total: quota.volumes ?? 10,
+                  unit: '',
+                  color: '#10b981',
+                },
+                {
+                  label: 'Storage (GB)',
+                  used: quota.usage?.gigabytes ?? volumes.reduce((a, v) => a + (v.size_gb || 0), 0),
+                  total: quota.gigabytes ?? 1000,
+                  unit: ' GB',
+                  color: '#6366f1',
+                },
+                {
+                  label: 'Snapshots',
+                  used: quota.usage?.snapshots ?? 0,
+                  total: quota.snapshots ?? 10,
+                  unit: '',
+                  color: '#f59e0b',
+                },
+              ].map(r => {
+                const pct = Math.min(100, (r.used / r.total) * 100)
+                const danger = pct >= 90
+                const warn   = pct >= 75
+                const barColor = danger ? '#ef4444' : warn ? '#f59e0b' : r.color
+                return (
+                  <div key={r.label} className="resource-bar-item">
+                    <div className="resource-bar-header">
+                      <span>{r.label}</span>
+                      <span style={{ color: barColor }}>
+                        {r.used}{r.unit} / {r.total}{r.unit}
+                        {danger && ' ⚠'}
+                      </span>
+                    </div>
+                    <div className="resource-bar-track">
+                      <div
+                        className="resource-bar-fill"
+                        style={{ width: `${pct.toFixed(1)}%`, background: barColor }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

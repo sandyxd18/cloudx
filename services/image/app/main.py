@@ -1,5 +1,6 @@
 import hashlib
 import os
+import sys
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -20,6 +21,16 @@ try:
     from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
 except ImportError:
     from auth_middleware import CurrentUser, AdminUser, OptionalAuth
+
+# Load shared request_id_middleware
+try:
+    from shared.request_id_middleware import RequestIDMiddleware
+except ImportError:
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+        from shared.request_id_middleware import RequestIDMiddleware
+    except ImportError:
+        RequestIDMiddleware = None
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
@@ -58,6 +69,20 @@ class Image(Base):
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
     visibility: Mapped[str] = mapped_column(String, default="private")
     project_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ImageTag(Base):
+    __tablename__ = "image_tags"
+    image_id: Mapped[str] = mapped_column(String, primary_key=True)
+    tag: Mapped[str] = mapped_column(String, primary_key=True)
+
+
+class ImageMember(Base):
+    __tablename__ = "image_members"
+    image_id:   Mapped[str] = mapped_column(String, primary_key=True)
+    member_id:  Mapped[str] = mapped_column(String, primary_key=True)  # project_id
+    status:     Mapped[str] = mapped_column(String, default="pending")  # pending | accepted | rejected
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -198,6 +223,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if RequestIDMiddleware:
+    app.add_middleware(RequestIDMiddleware)
 
 
 class ImageImportIn(BaseModel):
@@ -217,7 +244,8 @@ def startup():
 
 def ensure_columns():
     inspector = inspect(engine)
-    if "image_images" not in inspector.get_table_names():
+    table_names = inspector.get_table_names()
+    if "image_images" not in table_names:
         return
     columns = {column["name"] for column in inspector.get_columns("image_images")}
     with engine.begin() as conn:
@@ -426,3 +454,88 @@ def update_image(ref: str, payload: dict, _: CurrentUser, db: DB):
             setattr(image, key, value)
     db.commit()
     return obj_to_dict(image)
+
+
+# ── Image Tags ─────────────────────────────────────────────────────────────────
+
+@app.get("/images/{ref}/tags")
+def list_image_tags(ref: str, db: DB):
+    image = require_image(db, ref)
+    tags = db.scalars(select(ImageTag).where(ImageTag.image_id == image.id)).all()
+    return {"tags": [t.tag for t in tags]}
+
+
+@app.put("/images/{ref}/tags/{tag}")
+def add_image_tag(ref: str, tag: str, _: CurrentUser, db: DB):
+    image = require_image(db, ref)
+    existing = db.get(ImageTag, (image.id, tag))
+    if not existing:
+        db.add(ImageTag(image_id=image.id, tag=tag))
+        db.commit()
+    return {"image": image.name, "tag": tag}
+
+
+@app.delete("/images/{ref}/tags/{tag}", status_code=204)
+def delete_image_tag(ref: str, tag: str, _: CurrentUser, db: DB):
+    image = require_image(db, ref)
+    row = db.get(ImageTag, (image.id, tag))
+    if row:
+        db.delete(row)
+        db.commit()
+
+
+# ── Image Members (sharing) ────────────────────────────────────────────────────
+
+class ImageMemberIn(BaseModel):
+    member: str
+
+
+class ImageMemberStatusIn(BaseModel):
+    status: str  # pending | accepted | rejected
+
+
+@app.get("/images/{ref}/members")
+def list_image_members(ref: str, _: CurrentUser, db: DB):
+    image = require_image(db, ref)
+    members = db.scalars(select(ImageMember).where(ImageMember.image_id == image.id)).all()
+    return {"members": [
+        {"image_id": m.image_id, "member_id": m.member_id, "status": m.status, "created_at": m.created_at.isoformat()}
+        for m in members
+    ]}
+
+
+@app.post("/images/{ref}/members", status_code=201)
+def share_image(ref: str, payload: ImageMemberIn, _: CurrentUser, db: DB):
+    image = require_image(db, ref)
+    existing = db.get(ImageMember, (image.id, payload.member))
+    if not existing:
+        existing = ImageMember(image_id=image.id, member_id=payload.member, status="pending")
+        db.add(existing)
+        db.commit()
+    return {"image_id": image.id, "member_id": existing.member_id, "status": existing.status}
+
+
+@app.put("/images/{ref}/members/{member_id}")
+def update_image_member_status(ref: str, member_id: str, payload: ImageMemberStatusIn, current: CurrentUser, db: DB):
+    image = require_image(db, ref)
+    member = db.get(ImageMember, (image.id, member_id))
+    if not member:
+        raise HTTPException(status_code=404, detail="member not found")
+    # Only the target member project can accept/reject
+    if current.get("project_id") != member_id and current.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="only the member project can accept or reject")
+    if payload.status not in ("accepted", "rejected", "pending"):
+        raise HTTPException(status_code=400, detail="status must be accepted, rejected, or pending")
+    member.status = payload.status
+    db.commit()
+    return {"image_id": image.id, "member_id": member.member_id, "status": member.status}
+
+
+@app.delete("/images/{ref}/members/{member_id}", status_code=204)
+def remove_image_member(ref: str, member_id: str, _: CurrentUser, db: DB):
+    image = require_image(db, ref)
+    member = db.get(ImageMember, (image.id, member_id))
+    if member:
+        db.delete(member)
+        db.commit()
+

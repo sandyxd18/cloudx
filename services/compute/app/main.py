@@ -11,7 +11,7 @@ from typing import Annotated
 import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -22,6 +22,16 @@ try:
     from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
 except ImportError:
     from auth_middleware import CurrentUser, AdminUser, OptionalAuth
+
+# Import shared request_id_middleware
+try:
+    from shared.request_id_middleware import RequestIDMiddleware
+except ImportError:
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+        from shared.request_id_middleware import RequestIDMiddleware
+    except ImportError:
+        RequestIDMiddleware = None
 
 # Import shared RPC library
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -131,7 +141,15 @@ class Server(Base):
     ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
     error_message: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="BUILD")
+    locked: Mapped[bool] = mapped_column(Boolean, default=False)
+    locked_by: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class ServerTag(Base):
+    __tablename__ = "compute_server_tags"
+    server_id: Mapped[str] = mapped_column(String, primary_key=True)
+    tag: Mapped[str] = mapped_column(String, primary_key=True)
 
 
 class Flavor(Base):
@@ -264,6 +282,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if RequestIDMiddleware:
+    app.add_middleware(RequestIDMiddleware)
 
 
 @app.on_event("startup")
@@ -303,6 +323,7 @@ def ensure_columns():
                 "extra_port_ids",
                 "project_id",
                 "server_group_id",
+                "locked_by",
             )
             for column in string_columns:
                 if column not in columns:
@@ -313,8 +334,11 @@ def ensure_columns():
                     conn.execute(text(f"ALTER TABLE compute_servers ADD COLUMN {column} INTEGER"))
             if "bootable" not in columns:
                 conn.execute(text("ALTER TABLE compute_servers ADD COLUMN bootable BOOLEAN DEFAULT TRUE"))
+            if "locked" not in columns:
+                conn.execute(text("ALTER TABLE compute_servers ADD COLUMN locked BOOLEAN DEFAULT FALSE"))
             conn.execute(text("UPDATE compute_servers SET backend = 'libvirt' WHERE backend IS NULL OR backend = 'simulator'"))
             conn.execute(text("UPDATE compute_servers SET flavor_name = flavor WHERE flavor_name IS NULL"))
+            conn.execute(text("UPDATE compute_servers SET locked = FALSE WHERE locked IS NULL"))
 
     if "compute_flavors" in table_names:
         flavor_columns = {column["name"] for column in inspector.get_columns("compute_flavors")}
@@ -887,11 +911,28 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
 
 
 @app.get("/servers")
-def list_servers(current: CurrentUser, db: DB):
+def list_servers(
+    current: CurrentUser, db: DB,
+    limit: int = Query(default=200, ge=1, le=1000),
+    marker: str | None = None,
+    tags: str | None = None,
+):
     q = select(Server).where(Server.status != "DELETED")
     if current.get("role") != "admin":
         q = q.where(Server.project_id == current["project_id"])
-    return {"items": [server_to_dict(s) for s in db.scalars(q.order_by(Server.created_at)).all()]}
+    if tags:
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        for tag in tag_list:
+            tagged_server_ids = db.scalars(
+                select(ServerTag.server_id).where(ServerTag.tag == tag)
+            ).all()
+            q = q.where(Server.id.in_(tagged_server_ids))
+    if marker:
+        ref = db.get(Server, marker)
+        if ref:
+            q = q.where(Server.created_at > ref.created_at)
+    q = q.order_by(Server.created_at).limit(limit)
+    return {"items": [server_to_dict(s) for s in db.scalars(q).all()]}
 
 
 @app.get("/servers/metadata-lookup")
@@ -1094,8 +1135,11 @@ def set_server_password(ref: str, payload: ServerPasswordIn, _: CurrentUser, db:
 
 
 @app.delete("/servers/{ref}")
-def delete_server(ref: str, _: CurrentUser, db: DB, keep_root_volume: bool = False):
+def delete_server(ref: str, current: CurrentUser, db: DB, keep_root_volume: bool = False):
     server = require_server(db, ref)
+    # Locked guard
+    if server.locked and current.get("role") != "admin":
+        raise HTTPException(status_code=409, detail="server is locked; unlock it before deleting")
     original_name = server.name
     # Remove from server group if member
     if server.server_group_id:
@@ -1292,3 +1336,77 @@ def delete_keypair(name: str, _: CurrentUser, db: DB):
     db.delete(keypair)
     db.commit()
     return {"status": "deleted", "id": keypair.id, "name": keypair.name}
+
+
+# ── Server Lock / Unlock ───────────────────────────────────────────────────────
+
+@app.post("/servers/{ref}/lock")
+def lock_server(ref: str, current: CurrentUser, db: DB):
+    """Lock a server so only admins can perform destructive operations."""
+    server = require_server(db, ref)
+    server.locked = True
+    server.locked_by = current.get("username") or current.get("sub")
+    db.commit()
+    db.refresh(server)
+    return {"server": server.name, "locked": True, "locked_by": server.locked_by}
+
+
+@app.post("/servers/{ref}/unlock")
+def unlock_server(ref: str, current: CurrentUser, db: DB):
+    """Unlock a server."""
+    server = require_server(db, ref)
+    # Only admin or the user who locked it can unlock
+    if server.locked and current.get("role") != "admin" and server.locked_by != (current.get("username") or current.get("sub")):
+        raise HTTPException(status_code=403, detail="only the locking user or an admin can unlock this server")
+    server.locked = False
+    server.locked_by = None
+    db.commit()
+    db.refresh(server)
+    return {"server": server.name, "locked": False}
+
+
+# ── Server Tags ────────────────────────────────────────────────────────────────
+
+@app.get("/servers/{ref}/tags")
+def list_server_tags(ref: str, _: CurrentUser, db: DB):
+    """List all tags for a server."""
+    server = require_server(db, ref)
+    tags = db.scalars(select(ServerTag).where(ServerTag.server_id == server.id)).all()
+    return {"tags": [t.tag for t in tags]}
+
+
+@app.put("/servers/{ref}/tags")
+def replace_server_tags(ref: str, payload: dict, _: CurrentUser, db: DB):
+    """Replace all tags on a server."""
+    server = require_server(db, ref)
+    new_tags = payload.get("tags", [])
+    if not isinstance(new_tags, list):
+        raise HTTPException(status_code=400, detail="'tags' must be a list of strings")
+    # Delete existing and add new
+    db.execute(text("DELETE FROM compute_server_tags WHERE server_id = :sid"), {"sid": server.id})
+    for tag in new_tags:
+        db.add(ServerTag(server_id=server.id, tag=str(tag)))
+    db.commit()
+    return {"tags": new_tags}
+
+
+@app.put("/servers/{ref}/tags/{tag}")
+def add_server_tag(ref: str, tag: str, _: CurrentUser, db: DB):
+    """Add a single tag to a server."""
+    server = require_server(db, ref)
+    existing = db.get(ServerTag, (server.id, tag))
+    if not existing:
+        db.add(ServerTag(server_id=server.id, tag=tag))
+        db.commit()
+    return {"server": server.name, "tag": tag}
+
+
+@app.delete("/servers/{ref}/tags/{tag}", status_code=204)
+def delete_server_tag(ref: str, tag: str, _: CurrentUser, db: DB):
+    """Remove a single tag from a server."""
+    server = require_server(db, ref)
+    row = db.get(ServerTag, (server.id, tag))
+    if row:
+        db.delete(row)
+        db.commit()
+

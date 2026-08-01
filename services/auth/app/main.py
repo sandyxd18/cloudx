@@ -14,23 +14,31 @@ import os
 import re
 import secrets
 import string
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
 import bcrypt
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy import (
     Boolean, DateTime, ForeignKey, String, Text,
-    create_engine, select, UniqueConstraint,
+    create_engine, select, UniqueConstraint, text,
 )
 from sqlalchemy.orm import (
     DeclarativeBase, Mapped, Session,
     mapped_column, sessionmaker,
 )
+
+# Load shared request_id_middleware
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+try:
+    from shared.request_id_middleware import RequestIDMiddleware
+except ImportError:
+    RequestIDMiddleware = None
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 DATABASE_URL   = os.getenv("DATABASE_URL",   "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
@@ -41,6 +49,17 @@ ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("AUTH_ADMIN_PASSWORD", "admin123")
 ADMIN_EMAIL    = os.getenv("AUTH_ADMIN_EMAIL",    "admin@cloudx.local")
 ADMIN_PROJECT  = os.getenv("AUTH_ADMIN_PROJECT",  "admin")
+
+# Service URLs for service catalog bootstrap
+_CLOUDX_SERVICES = [
+    {"name": "identity",     "type": "identity",     "url": os.getenv("AUTH_API_URL",        "http://auth-api:8000")},
+    {"name": "compute",      "type": "compute",      "url": os.getenv("COMPUTE_API_URL",    "http://compute-api:8000")},
+    {"name": "image",        "type": "image",        "url": os.getenv("IMAGE_API_URL",      "http://image-api:8000")},
+    {"name": "network",      "type": "network",      "url": os.getenv("NETWORKING_API_URL", "http://networking-api:8000")},
+    {"name": "volume",       "type": "block-storage","url": os.getenv("BLOCK_STORE_API_URL","http://block-store-api:8000")},
+    {"name": "placement",    "type": "placement",    "url": os.getenv("PLACEMENT_API_URL",  "http://placement-api:8000")},
+    {"name": "metadata",     "type": "metadata",     "url": os.getenv("METADATA_API_URL",   "http://metadata-api:8775")},
+]
 
 engine       = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -104,6 +123,29 @@ class RevokedToken(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)
 
 
+class ServiceCatalogEntry(Base):
+    """Registered service (e.g. compute, image, network)."""
+    __tablename__ = "auth_services"
+    id:           Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:         Mapped[str] = mapped_column(String, unique=True, index=True)
+    type:         Mapped[str] = mapped_column(String)           # compute | image | network | …
+    description:  Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled:      Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at:   Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ServiceEndpoint(Base):
+    """Endpoint URL for a registered service."""
+    __tablename__ = "auth_service_endpoints"
+    id:           Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    service_id:   Mapped[str] = mapped_column(String, ForeignKey("auth_services.id", ondelete="CASCADE"))
+    interface:    Mapped[str] = mapped_column(String, default="public")  # public | internal | admin
+    region:       Mapped[str] = mapped_column(String, default="RegionOne")
+    url:          Mapped[str] = mapped_column(String)
+    enabled:      Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at:   Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class AccessKey(Base):
     __tablename__ = "auth_access_keys"
     id:              Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
@@ -152,6 +194,29 @@ def _create_token(user: User) -> str:
         "iat":        utcnow(),
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def _build_catalog(db: Session) -> list:
+    """Build OpenStack-compatible service catalog from DB."""
+    catalog = []
+    services = db.scalars(select(ServiceCatalogEntry).where(ServiceCatalogEntry.enabled == True)).all()
+    for svc in services:
+        endpoints = db.scalars(
+            select(ServiceEndpoint).where(
+                ServiceEndpoint.service_id == svc.id,
+                ServiceEndpoint.enabled == True,
+            )
+        ).all()
+        catalog.append({
+            "id":        svc.id,
+            "name":      svc.name,
+            "type":      svc.type,
+            "endpoints": [
+                {"id": ep.id, "interface": ep.interface, "region": ep.region, "url": ep.url}
+                for ep in endpoints
+            ],
+        })
+    return catalog
 
 
 def _decode_token(token: str) -> dict:
@@ -332,8 +397,48 @@ def _bootstrap():
             print(f"[auth] bootstrap: admin user '{ADMIN_USERNAME}' created in project '{ADMIN_PROJECT}'", flush=True)
         else:
             print(f"[auth] bootstrap: admin user '{ADMIN_USERNAME}' already exists", flush=True)
+        # Bootstrap service catalog
+        _bootstrap_service_catalog(db)
     finally:
         db.close()
+
+
+def _bootstrap_service_catalog(db: Session) -> None:
+    """Register all CloudX services into the service catalog if not already present."""
+    for svc_def in _CLOUDX_SERVICES:
+        existing = db.scalar(select(ServiceCatalogEntry).where(ServiceCatalogEntry.name == svc_def["name"]))
+        if not existing:
+            svc = ServiceCatalogEntry(
+                name=svc_def["name"],
+                type=svc_def["type"],
+                description=f"CloudX {svc_def['name']} service",
+            )
+            db.add(svc)
+            db.flush()  # get svc.id without full commit
+            # Add public + internal endpoints
+            for iface in ("public", "internal"):
+                db.add(ServiceEndpoint(
+                    service_id=svc.id,
+                    interface=iface,
+                    region="RegionOne",
+                    url=svc_def["url"],
+                ))
+            db.commit()
+            print(f"[auth] bootstrap: service catalog entry '{svc_def['name']}' registered", flush=True)
+        else:
+            # Ensure endpoint URLs are up to date
+            endpoints = db.scalars(
+                select(ServiceEndpoint).where(ServiceEndpoint.service_id == existing.id)
+            ).all()
+            if not endpoints:
+                for iface in ("public", "internal"):
+                    db.add(ServiceEndpoint(
+                        service_id=existing.id,
+                        interface=iface,
+                        region="RegionOne",
+                        url=svc_def["url"],
+                    ))
+                db.commit()
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -345,6 +450,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if RequestIDMiddleware:
+    app.add_middleware(RequestIDMiddleware)
 
 
 @app.on_event("startup")
@@ -375,6 +482,7 @@ def login(payload: LoginIn, db: DB):
         "expires_in": TOKEN_EXPIRE_H * 3600,
         "user":    _user_to_dict(user),
         "project": _project_to_dict(proj),
+        "catalog": _build_catalog(db),
     }
 
 
@@ -417,6 +525,37 @@ def logout(current: CurrentUser, db: DB):
         db.commit()
 
 
+class SwitchProjectIn(BaseModel):
+    project_id: str
+
+
+@app.post("/session/switch-project")
+def switch_project(payload: SwitchProjectIn, current: CurrentUser, db: DB):
+    """Re-issue a token for a different project (user must be a member or admin)."""
+    user = db.get(User, current["sub"])
+    if not user:
+        raise HTTPException(status_code=404, detail="user not found")
+    proj = db.get(Project, payload.project_id) or db.scalar(
+        select(Project).where(Project.name == payload.project_id)
+    )
+    if not proj or not proj.enabled:
+        raise HTTPException(status_code=404, detail="project not found or disabled")
+    # Admin can switch to any project; regular users can only switch to their own project
+    if current.get("role") != "admin" and user.project_id != proj.id:
+        raise HTTPException(status_code=403, detail="you are not a member of that project")
+    # Temporarily set the user's active project for token generation
+    orig_project = user.project_id
+    user.project_id = proj.id
+    token = _create_token(user)
+    user.project_id = orig_project  # don't persist the change
+    return {
+        "token": token,
+        "expires_in": TOKEN_EXPIRE_H * 3600,
+        "user": _user_to_dict(user),
+        "project": _project_to_dict(proj),
+    }
+
+
 # ── Projects ───────────────────────────────────────────────────────────────────
 @app.post("/projects", status_code=201)
 def create_project(payload: ProjectIn, _: AdminUser, db: DB):
@@ -430,8 +569,18 @@ def create_project(payload: ProjectIn, _: AdminUser, db: DB):
 
 
 @app.get("/projects")
-def list_projects(_: CurrentUser, db: DB):
-    return {"items": [_project_to_dict(p) for p in db.scalars(select(Project)).all()]}
+def list_projects(
+    _: CurrentUser, db: DB,
+    limit: int = Query(default=100, ge=1, le=1000),
+    marker: str | None = None,
+):
+    q = select(Project).order_by(Project.created_at)
+    if marker:
+        ref = db.get(Project, marker)
+        if ref:
+            q = q.where(Project.created_at > ref.created_at)
+    q = q.limit(limit)
+    return {"items": [_project_to_dict(p) for p in db.scalars(q).all()]}
 
 
 @app.get("/projects/{ref}")
@@ -480,8 +629,18 @@ def create_user(payload: UserIn, _: AdminUser, db: DB):
 
 
 @app.get("/users")
-def list_users(_: AdminUser, db: DB):
-    return {"items": [_user_to_dict(u) for u in db.scalars(select(User)).all()]}
+def list_users(
+    _: AdminUser, db: DB,
+    limit: int = Query(default=100, ge=1, le=1000),
+    marker: str | None = None,
+):
+    q = select(User).order_by(User.created_at)
+    if marker:
+        ref = db.get(User, marker)
+        if ref:
+            q = q.where(User.created_at > ref.created_at)
+    q = q.limit(limit)
+    return {"items": [_user_to_dict(u) for u in db.scalars(q).all()]}
 
 
 @app.get("/users/{ref}")
@@ -616,3 +775,97 @@ def revoke_access_key(key_id: str, current: CurrentUser, db: DB):
         raise HTTPException(status_code=403, detail="forbidden")
     db.delete(ak)
     db.commit()
+
+
+# ── Service Catalog ────────────────────────────────────────────────────────────
+
+class ServiceIn(BaseModel):
+    name: str
+    type: str
+    description: str | None = None
+    enabled: bool = True
+
+
+class EndpointIn(BaseModel):
+    service_id: str
+    interface: str = "public"
+    region: str = "RegionOne"
+    url: str
+    enabled: bool = True
+
+
+def _svc_to_dict(svc: ServiceCatalogEntry) -> dict:
+    return {
+        "id": svc.id, "name": svc.name, "type": svc.type,
+        "description": svc.description, "enabled": svc.enabled,
+        "created_at": svc.created_at.isoformat(),
+    }
+
+
+def _ep_to_dict(ep: ServiceEndpoint) -> dict:
+    return {
+        "id": ep.id, "service_id": ep.service_id,
+        "interface": ep.interface, "region": ep.region,
+        "url": ep.url, "enabled": ep.enabled,
+    }
+
+
+@app.post("/v3/services", status_code=201)
+def create_service(payload: ServiceIn, _: AdminUser, db: DB):
+    if db.scalar(select(ServiceCatalogEntry).where(ServiceCatalogEntry.name == payload.name)):
+        raise HTTPException(status_code=409, detail="service already exists")
+    svc = ServiceCatalogEntry(**payload.model_dump())
+    db.add(svc)
+    db.commit()
+    db.refresh(svc)
+    return _svc_to_dict(svc)
+
+
+@app.get("/v3/services")
+def list_services(_: CurrentUser, db: DB):
+    svcs = db.scalars(select(ServiceCatalogEntry).order_by(ServiceCatalogEntry.name)).all()
+    return {"items": [_svc_to_dict(s) for s in svcs]}
+
+
+@app.delete("/v3/services/{service_id}", status_code=204)
+def delete_service(service_id: str, _: AdminUser, db: DB):
+    svc = db.get(ServiceCatalogEntry, service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail="service not found")
+    db.delete(svc)
+    db.commit()
+
+
+@app.post("/v3/endpoints", status_code=201)
+def create_endpoint(payload: EndpointIn, _: AdminUser, db: DB):
+    svc = db.get(ServiceCatalogEntry, payload.service_id)
+    if not svc:
+        raise HTTPException(status_code=404, detail="service not found")
+    ep = ServiceEndpoint(**payload.model_dump())
+    db.add(ep)
+    db.commit()
+    db.refresh(ep)
+    return _ep_to_dict(ep)
+
+
+@app.get("/v3/endpoints")
+def list_endpoints(_: CurrentUser, db: DB, service_id: str | None = None):
+    q = select(ServiceEndpoint).order_by(ServiceEndpoint.created_at)
+    if service_id:
+        q = q.where(ServiceEndpoint.service_id == service_id)
+    return {"items": [_ep_to_dict(ep) for ep in db.scalars(q).all()]}
+
+
+@app.delete("/v3/endpoints/{endpoint_id}", status_code=204)
+def delete_endpoint(endpoint_id: str, _: AdminUser, db: DB):
+    ep = db.get(ServiceEndpoint, endpoint_id)
+    if not ep:
+        raise HTTPException(status_code=404, detail="endpoint not found")
+    db.delete(ep)
+    db.commit()
+
+
+@app.get("/v3/auth/catalog")
+def get_catalog(current: CurrentUser, db: DB):
+    """Return the full service catalog for the authenticated user."""
+    return {"catalog": _build_catalog(db)}

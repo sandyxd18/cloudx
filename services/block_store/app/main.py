@@ -43,6 +43,16 @@ try:
 except ImportError:
     from rpc import RPCClient
 
+# Load shared request_id_middleware
+try:
+    from shared.request_id_middleware import RequestIDMiddleware
+except ImportError:
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+        from shared.request_id_middleware import RequestIDMiddleware
+    except ImportError:
+        RequestIDMiddleware = None
+
 log = logging.getLogger("block-store-api")
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -130,6 +140,16 @@ class Snapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class VolumeQuota(Base):
+    """Per-project volume quota limits."""
+    __tablename__ = "block_store_volume_quotas"
+    project_id:  Mapped[str]     = mapped_column(String, primary_key=True)
+    volumes:     Mapped[int]     = mapped_column(Integer, default=10)     # max number of volumes
+    gigabytes:   Mapped[int]     = mapped_column(Integer, default=1000)   # max total GB
+    snapshots:   Mapped[int]     = mapped_column(Integer, default=10)     # max snapshots
+    created_at:  Mapped[datetime]= mapped_column(DateTime, default=datetime.utcnow)
+
+
 # ── Pydantic schemas ───────────────────────────────────────────────────────────
 
 class VolumeIn(BaseModel):
@@ -198,6 +218,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if RequestIDMiddleware:
+    app.add_middleware(RequestIDMiddleware)
 
 
 # ── Startup ────────────────────────────────────────────────────────────────────
@@ -212,9 +234,32 @@ def startup():
         )
     Base.metadata.create_all(bind=engine)
     ensure_columns()
+    _bootstrap_quotas()
     _rpc = RPCClient(RABBITMQ_URL)
     log.info("Block-store-api ready (RabbitMQ RPC mode)")
     log.info("Drivers: lvm=%s ceph=%s", STORAGE_LVM_DRIVER, STORAGE_CEPH_RBD_DRIVER)
+
+
+def _bootstrap_quotas() -> None:
+    """Inject default quotas for admin project if not already present."""
+    db = SessionLocal()
+    try:
+        # Try to find the admin project - use project_id "admin" as fallback
+        ADMIN_PROJECT_ID = os.getenv("AUTH_ADMIN_PROJECT", "admin")
+        existing = db.get(VolumeQuota, ADMIN_PROJECT_ID)
+        if not existing:
+            db.add(VolumeQuota(
+                project_id=ADMIN_PROJECT_ID,
+                volumes=50,
+                gigabytes=10000,
+                snapshots=50,
+            ))
+            db.commit()
+            log.info("[block-store] bootstrap: default quota injected for project '%s'", ADMIN_PROJECT_ID)
+    except Exception as exc:
+        log.warning("[block-store] bootstrap_quotas failed: %s", exc)
+    finally:
+        db.close()
 
 
 @app.on_event("shutdown")
@@ -268,11 +313,93 @@ def ensure_columns() -> None:
                 "WHERE name IN ('lvm', 'ceph') AND disk_type IS NULL"
             ))
 
+    # Ensure quota table exists (create_all handles this via ORM model)
+    # The VolumeQuota model is registered in Base, so create_all above covers it.
+
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
 def obj_to_dict(obj):
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+
+
+def _fmt_ts(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000000")
+
+
+def volume_to_os_dict(volume: Volume) -> dict:
+    """Serialize a Volume to an OpenStack-compatible dict."""
+    attachments = []
+    if volume.attached_to_server_id:
+        attachments = [{
+            "id": volume.id,
+            "volume_id": volume.id,
+            "server_id": volume.attached_to_server_id,
+            "host_name": "single-node",
+            "device": f"/dev/{volume.target_device or 'vda'}",
+            "attached_at": _fmt_ts(volume.created_at),
+            "attachment_id": volume.id,
+        }]
+
+    return {
+        "attachments": attachments,
+        "availability_zone": "nova",
+        "backup_id": None,
+        "bootable": str(volume.bootable).lower() == "true" or volume.bootable is True,
+        "cluster_name": None,
+        "consumes_quota": True,
+        "created_at": _fmt_ts(volume.created_at),
+        "description": "",
+        "encrypted": False,
+        "group_id": None,
+        "id": volume.id,
+        "multiattach": False,
+        "name": volume.name or "",
+        "os-vol-host-attr:host": f"single-node@{volume.backend or 'lvm'}#{volume.backend or 'lvm'}",
+        "os-vol-mig-status-attr:migstat": None,
+        "os-vol-mig-status-attr:name_id": None,
+        "os-vol-tenant-attr:tenant_id": volume.project_id,
+        "properties": {},
+        "provider_id": None,
+        "replication_status": None,
+        "size": volume.size_gb,
+        "snapshot_id": volume.snapshot_id,
+        "source_volid": volume.source_volume_id,
+        "status": volume.status,
+        "type": volume.volume_type or volume.backend or "lvm",
+        "updated_at": _fmt_ts(volume.created_at),
+        "user_id": None,
+        "volume_image_metadata": {},
+        # Internal fields kept for backward compat
+        "size_gb": volume.size_gb,
+        "path": volume.path,
+        "backend": volume.backend,
+        "image_id": volume.image_id,
+        "target_device": volume.target_device,
+        "attached_to_server_id": volume.attached_to_server_id,
+        "project_id": volume.project_id,
+        "error_message": volume.error_message,
+    }
+
+
+def snapshot_to_os_dict(snapshot: Snapshot) -> dict:
+    """Serialize a Snapshot to an OpenStack-compatible dict."""
+    return {
+        "created_at": _fmt_ts(snapshot.created_at),
+        "description": "",
+        "id": snapshot.id,
+        "name": snapshot.name or "",
+        "size": snapshot.size_gb,
+        "status": snapshot.status,
+        "updated_at": _fmt_ts(snapshot.created_at),
+        "volume_id": snapshot.volume_id,
+        # Internal
+        "size_gb": snapshot.size_gb,
+        "path": snapshot.path,
+        "backend": snapshot.backend,
+    }
 
 
 def get_volume(db: Session, ref: str):
@@ -397,6 +524,27 @@ def create_volume(payload: VolumeIn, current: CurrentUser, db: DB):
     size = payload.size_gb or payload.size
     if not size:
         raise HTTPException(status_code=400, detail="size_gb is required")
+    project_id = current["project_id"]
+    # ── Quota validation ───────────────────────────────────────────
+    quota = db.get(VolumeQuota, project_id)
+    if quota:
+        current_vols = db.scalars(
+            select(Volume).where(
+                Volume.project_id == project_id,
+                Volume.status.not_in(["deleting", "error"]),
+            )
+        ).all()
+        if len(current_vols) >= quota.volumes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Volume quota exceeded: {len(current_vols)}/{quota.volumes} volumes used",
+            )
+        used_gb = sum(v.size_gb for v in current_vols)
+        if used_gb + size > quota.gigabytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Volume GB quota exceeded: {used_gb + size}/{quota.gigabytes} GB would be used",
+            )
     internal = VolumeInternalIn(
         name=payload.name,
         size_gb=size,
@@ -406,7 +554,7 @@ def create_volume(payload: VolumeIn, current: CurrentUser, db: DB):
         bootable=payload.bootable,
         volume_type=payload.volume_type,
     )
-    return _create_volume_record(db, internal, project_id=current["project_id"])
+    return _create_volume_record(db, internal, project_id=project_id)
 
 
 @app.post("/internal/volumes", status_code=201)
@@ -530,12 +678,12 @@ def list_volumes(current: CurrentUser, db: DB):
     q = select(Volume)
     if current.get("role") != "admin":
         q = q.where(Volume.project_id == current["project_id"])
-    return {"items": [obj_to_dict(v) for v in db.scalars(q.order_by(Volume.created_at)).all()]}
+    return {"items": [volume_to_os_dict(v) for v in db.scalars(q.order_by(Volume.created_at)).all()]}
 
 
 @app.get("/volumes/{ref}")
 def show_volume(ref: str, _: CurrentUser, db: DB):
-    return obj_to_dict(require_volume(db, ref))
+    return volume_to_os_dict(require_volume(db, ref))
 
 
 @app.delete("/volumes/{ref}")
@@ -749,12 +897,12 @@ def _do_create_snapshot(db: Session, volume_ref: str, snap_name: str) -> dict:
 
 @app.get("/snapshots")
 def list_snapshots(_: CurrentUser, db: DB):
-    return {"items": [obj_to_dict(s) for s in db.scalars(select(Snapshot).order_by(Snapshot.created_at)).all()]}
+    return {"items": [snapshot_to_os_dict(s) for s in db.scalars(select(Snapshot).order_by(Snapshot.created_at)).all()]}
 
 
 @app.get("/snapshots/{ref}")
 def show_snapshot(ref: str, _: CurrentUser, db: DB):
-    return obj_to_dict(require_snapshot(db, ref))
+    return snapshot_to_os_dict(require_snapshot(db, ref))
 
 
 @app.delete("/snapshots/{ref}")
@@ -854,3 +1002,88 @@ def delete_volume_type(ref: str, _: AdminUser, db: DB):
     db.delete(vt)
     db.commit()
     return {"status": "deleted", "name": vt.name}
+
+
+# ── Volume Quotas ─────────────────────────────────────────────────────────────
+
+class QuotaIn(BaseModel):
+    volumes:   int | None = None
+    gigabytes: int | None = None
+    snapshots: int | None = None
+
+
+def _quota_usage(db: Session, project_id: str) -> dict:
+    """Return current usage for a project."""
+    vols = db.scalars(
+        select(Volume).where(
+            Volume.project_id == project_id,
+            Volume.status.not_in(["deleting", "error"]),
+        )
+    ).all()
+    snaps_count = db.scalar(
+        select(Snapshot).where(Snapshot.status.not_in(["deleting", "error"]))
+    )
+    return {
+        "volumes": len(vols),
+        "gigabytes": sum(v.size_gb for v in vols),
+        "snapshots": len(db.scalars(select(Snapshot)).all()),
+    }
+
+
+def _quota_to_dict(q: VolumeQuota, usage: dict | None = None) -> dict:
+    d = {
+        "project_id": q.project_id,
+        "volumes":    q.volumes,
+        "gigabytes":  q.gigabytes,
+        "snapshots":  q.snapshots,
+    }
+    if usage:
+        d["usage"] = usage
+    return d
+
+
+@app.get("/os-quota-sets/{project_id}")
+def get_quota(project_id: str, current: CurrentUser, db: DB, usage: bool = False):
+    """Get quota limits for a project."""
+    if current.get("role") != "admin" and current.get("project_id") != project_id:
+        raise HTTPException(status_code=403, detail="forbidden")
+    quota = db.get(VolumeQuota, project_id)
+    if not quota:
+        # Return defaults
+        quota = VolumeQuota(project_id=project_id, volumes=10, gigabytes=1000, snapshots=10)
+    u = _quota_usage(db, project_id) if usage else None
+    return _quota_to_dict(quota, u)
+
+
+@app.put("/os-quota-sets/{project_id}")
+def update_quota(project_id: str, payload: QuotaIn, _: AdminUser, db: DB):
+    """Set quota limits for a project (admin only)."""
+    quota = db.get(VolumeQuota, project_id)
+    if not quota:
+        quota = VolumeQuota(project_id=project_id)
+        db.add(quota)
+    if payload.volumes is not None:
+        quota.volumes = payload.volumes
+    if payload.gigabytes is not None:
+        quota.gigabytes = payload.gigabytes
+    if payload.snapshots is not None:
+        quota.snapshots = payload.snapshots
+    db.commit()
+    db.refresh(quota)
+    return _quota_to_dict(quota)
+
+
+@app.delete("/os-quota-sets/{project_id}", status_code=204)
+def delete_quota(project_id: str, _: AdminUser, db: DB):
+    """Reset quota to defaults by deleting the override row."""
+    quota = db.get(VolumeQuota, project_id)
+    if quota:
+        db.delete(quota)
+        db.commit()
+
+
+@app.get("/os-quota-sets/{project_id}/defaults")
+def get_quota_defaults(project_id: str, _: CurrentUser, db: DB):
+    """Return the default quota values."""
+    return {"project_id": project_id, "volumes": 10, "gigabytes": 1000, "snapshots": 10}
+

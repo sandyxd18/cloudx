@@ -2,18 +2,16 @@
 
 const BASE = '/api'
 
-function getToken() {
-  return localStorage.getItem('cloudx_token')
-}
-
 async function request(method, path, body = null, opts = {}) {
-  const token = getToken()
   const headers = { 'Content-Type': 'application/json' }
-  if (token) headers['Authorization'] = `Bearer ${token}`
 
   const config = {
     method,
     headers,
+    // ensure cookies are sent with requests to /api
+    // although not strictly needed for same-origin if not explicitly set to 'omit'
+    // but good practice.
+    credentials: 'same-origin',
     ...opts,
   }
   if (body !== null) {
@@ -22,9 +20,6 @@ async function request(method, path, body = null, opts = {}) {
 
   const resp = await fetch(`${BASE}${path}`, config)
   if (resp.status === 401) {
-    // Clear stale token
-    localStorage.removeItem('cloudx_token')
-    localStorage.removeItem('cloudx_user')
     // Dispatch a custom event so the app can handle it gracefully
     // (show a toast + redirect) rather than forcing a hard navigation
     // in the middle of an unrelated component render.
@@ -46,13 +41,16 @@ async function request(method, path, body = null, opts = {}) {
 
 export const api = {
   // Auth
-  login: (body) => request('POST', '/auth/auth/tokens', body),
+  login: (body) => request('POST', '/auth/session/login', body),
+  logout: () => request('POST', '/auth/session/logout'),
+  getSessionMe: () => request('GET', '/auth/session/me'),
   getProjects: () => request('GET', '/auth/projects'),
   createProject: (b) => request('POST', '/auth/projects', b),
   deleteProject: (id) => request('DELETE', `/auth/projects/${id}`),
   getUsers: () => request('GET', '/auth/users'),
   createUser: (b) => request('POST', '/auth/users', b),
   deleteUser: (id) => request('DELETE', `/auth/users/${id}`),
+  switchProject: (projectId) => request('POST', '/auth/session/switch-project', { project_id: projectId }),
 
   // Auth — Access Keys
   getAccessKeys: () => request('GET', '/auth/access-keys'),
@@ -108,6 +106,7 @@ export const api = {
 
   // Networking — Security Groups
   getSecurityGroups: () => request('GET', '/networking/security-groups'),
+  getSecurityGroup: (id) => request('GET', `/networking/security-groups/${id}`),
   createSecurityGroup: (b) => request('POST', '/networking/security-groups', b),
   deleteSecurityGroup: (id) => request('DELETE', `/networking/security-groups/${id}`),
   createSecurityGroupRule: (id, b) => request('POST', `/networking/security-groups/${id}/rules`, b),
@@ -142,4 +141,42 @@ export const api = {
   // Placement
   getUsages: () => request('GET', '/placement/usages'),
   getProviders: () => request('GET', '/placement/resource-providers'),
+
+  // Volume Quotas
+  getQuota: (projectId, withUsage = true) =>
+    request('GET', `/block-store/os-quota-sets/${projectId}${withUsage ? '?usage=true' : ''}`),
+  updateQuota: (projectId, b) => request('PUT', `/block-store/os-quota-sets/${projectId}`, b),
+
+  // Service Catalog
+  getServiceCatalog: () => request('GET', '/auth/v3/auth/catalog'),
+
+  // Image upload with progress (returns a Promise that resolves to the image object)
+  uploadImageWithProgress(formData, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', `${BASE}/image/images`)
+      xhr.withCredentials = true
+      xhr.upload.onprogress = (evt) => {
+        if (evt.lengthComputable && onProgress) {
+          onProgress(Math.round((evt.loaded / evt.total) * 100))
+        }
+      }
+      xhr.onload = () => {
+        if (xhr.status === 401) {
+          window.dispatchEvent(new CustomEvent('cloudx:session-expired'))
+          reject(new Error('Session expired.'))
+          return
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)) } catch { resolve({}) }
+        } else {
+          let detail = `HTTP ${xhr.status}`
+          try { detail = JSON.parse(xhr.responseText).detail || detail } catch { /* noop */ }
+          reject(new Error(detail))
+        }
+      }
+      xhr.onerror = () => reject(new Error('Network error'))
+      xhr.send(formData)
+    })
+  },
 }
