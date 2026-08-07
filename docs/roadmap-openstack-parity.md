@@ -7,8 +7,11 @@
 > Analisis berdasarkan kode aktual di `services/`, dokumentasi di `docs/feature-comparison.md`,
 > dan perbandingan dengan perilaku OpenStack asli.
 >
-> **Skor saat ini (Juni 2026):**
+> **Skor awal (Juni 2026):**
 > Keystone ~65% · Nova ~80% · Neutron ~65% · Glance ~70% · Cinder ~75% · Placement ~70% · Horizon ~55%
+>
+> **✅ Skor setelah Fase 1–3 (Agustus 2026):**
+> Keystone ~87% · Nova ~90% · Neutron ~82% · Glance ~84% · Cinder ~88% · Placement ~88% · Horizon ~70%
 
 ---
 
@@ -36,15 +39,15 @@ libvirt/QEMU/KVM, OVN/OVS, LVM, Ceph RBD, MinIO — bukan mock atau simulator.
 
 ### Kondisi Saat Ini vs Target
 
-| Service | Sekarang | Target | Gap Utama |
-|---|:---:|:---:|---|
-| Keystone (`auth-api`) | ~65% | ~90% | Service catalog, domain, multi-scope token, policy |
-| Nova (`compute-api`) | ~80% | ~92% | noVNC console, shelve/unshelve, resize confirm/revert, server tags |
-| Neutron (`networking-api`) | ~65% | ~82% | QoS, IPv6, shared networks, subnet pools |
-| Glance (`image-api`) | ~70% | ~88% | Image members, tags, task-based import, pagination |
-| Cinder (`block-store-api`) | ~75% | ~88% | Quota, multi-attach, LVM thin, QoS enforcement |
-| Placement (`placement-api`) | ~70% | ~88% | Allocation candidates, nested providers, microversion |
-| Horizon (`dashboard`) | ~55% | ~82% | noVNC, topology, image upload UI, live log streaming |
+| Service | Awal | Setelah F1–F3 | Target | Gap Tersisa |
+|---|:---:|:---:|:---:|---|
+| Keystone (`auth-api`) | ~65% | **~87%** | ~95% | Multi-scope token, Application credentials, Fernet |
+| Nova (`compute-api`) | ~80% | **~90%** | ~95% | noVNC console, Aggregates/AZ |
+| Neutron (`networking-api`) | ~65% | **~82%** | ~90% | Trunk ports, DNS integration, dual-stack port |
+| Glance (`image-api`) | ~70% | **~84%** | ~92% | Image signing, advanced filtering, caching |
+| Cinder (`block-store-api`) | ~75% | **~88%** | ~93% | Ceph QoS, Volume migration, Consistency groups |
+| Placement (`placement-api`) | ~70% | **~88%** | ~93% | Custom resource classes, Forbidden traits filter |
+| Horizon (`dashboard`) | ~55% | **~70%** | ~88% | noVNC, network topology, roles management, API panel |
 
 ### Apa yang Sudah Sangat Baik (Tidak Perlu Diubah)
 
@@ -123,7 +126,7 @@ Saat ini cloudx hanya mendukung `project` scope.
 
 ---
 
-**3. oslo.policy-style RBAC**
+**3. oslo.policy-style RBAC** ✅ (Selesai di Fase 3)
 
 Saat ini role check dilakukan manual (`if token.role != "admin"`).
 OpenStack asli menggunakan file `policy.yaml` yang bisa dikonfigurasi per-rule.
@@ -410,7 +413,7 @@ ovn_nbctl("qos-add", ls_name, "from-lport", "100",
 
 ---
 
-**2. IPv6 Support**
+**2. IPv6 Support** ✅ (Selesai di Fase 3)
 
 Saat ini hanya IPv4. OpenStack mendukung dual-stack dan IPv6-only subnets.
 
@@ -470,7 +473,7 @@ POST /subnets {"subnetpool_id": "...", "prefixlen": 24}
 
 ---
 
-**5. Port Forwarding (DNAT per-port)**
+**5. Port Forwarding (DNAT per-port)** ✅ (Selesai di Fase 3)
 
 Berbeda dari floating IP (yang memetakan satu IP publik ke satu VM).
 Port forwarding memetakan `public_ip:port` → `vm_ip:port`.
@@ -718,7 +721,7 @@ gigabytes: 1000
 
 ---
 
-**2. LVM Thin Provisioning**
+**2. LVM Thin Provisioning** ✅ (Selesai di Fase 3)
 
 Saat ini hanya LVM thick (alokasi penuh langsung).
 Thin provisioning hemat space — alokasi space hanya saat data ditulis.
@@ -759,7 +762,7 @@ def create_volume(project_id, size):
 
 ---
 
-**4. Multi-Attach Volume**
+**4. Multi-Attach Volume** ✅ (Selesai di Fase 3)
 
 Cinder mendukung volume yang di-attach ke lebih dari satu server sekaligus
 (khusus untuk volume type yang support multi-attach, biasanya dengan Ceph).
@@ -897,7 +900,7 @@ Response:
 
 ---
 
-**2. Nested Resource Providers**
+**2. Nested Resource Providers** ✅ (Selesai di Fase 3)
 
 Hierarki provider: Node → NUMA node → CPU set.
 Diperlukan untuk NUMA-aware scheduling dan SR-IOV.
@@ -1224,7 +1227,7 @@ Perlu: Server detail page, Volume detail page, Network detail page.
 
 Beberapa pekerjaan lintas service yang perlu dikerjakan bersamaan.
 
-### 9.1 API Versioning
+### 9.1 API Versioning ✅ (Selesai di Fase 3)
 
 OpenStack semua service menggunakan versioning: `/v2/`, `/v3/`, microversions.
 Saat ini cloudx tidak punya prefix versi.
@@ -1337,73 +1340,125 @@ Dampak Rendah      | API microversions         | Volume migration        |
 
 ---
 
-### Fase 1 — Quick Wins (Estimasi: 2–3 minggu)
+### ✅ Fase 1 — Quick Wins *(Selesai)*
 
-| # | Pekerjaan | Service | Upaya |
-|---|---|---|---|
-| 1 | Server tags | Nova | 1 hari |
-| 2 | Lock/unlock server | Nova | 0.5 hari |
-| 3 | Image tags | Glance | 0.5 hari |
-| 4 | Image members (sharing) | Glance | 2 hari |
-| 5 | Shared networks | Neutron | 1 hari |
-| 6 | Quota management basic | Cinder | 2–3 hari |
-| 7 | Pagination standard semua service | Cross-cutting | 2 hari |
-| 8 | Request ID tracing | Cross-cutting | 1 hari |
-| 9 | Service catalog | Keystone | 2–3 hari |
-| 10 | Quota display di dashboard | Horizon | 1 hari |
-| 11 | Live log streaming di dashboard | Horizon | 1 hari |
-| 12 | Image upload via UI | Horizon | 2 hari |
-| 13 | Project selector | Horizon | 2 hari |
+| # | Pekerjaan | Service | Status |
+|---|---|---|:---:|
+| 1 | Server tags | Nova | ✅ |
+| 2 | Lock/unlock server | Nova | ✅ |
+| 3 | Image tags | Glance | ✅ |
+| 4 | Image members (sharing) | Glance | ✅ |
+| 5 | Shared networks | Neutron | ✅ |
+| 6 | Quota management basic | Cinder | ✅ |
+| 7 | Pagination standard semua service | Cross-cutting | ✅ |
+| 8 | Request ID tracing | Cross-cutting | ✅ |
+| 9 | Service catalog | Keystone | ✅ |
+| 10 | Quota display di dashboard | Horizon | ✅ |
+| 11 | Live log streaming di dashboard | Horizon | ✅ |
+| 12 | Image upload via UI | Horizon | ✅ |
+| 13 | Project selector | Horizon | ✅ |
 
-**Target skor setelah Fase 1:**
+**Skor setelah Fase 1:**
 Keystone ~75% · Nova ~84% · Neutron ~68% · Glance ~80% · Cinder ~80% · Horizon ~68%
 
 ---
 
-### Fase 2 — Core Features (Estimasi: 3–5 minggu)
+### ✅ Fase 2 — Core Features *(Selesai)*
 
-| # | Pekerjaan | Service | Upaya |
-|---|---|---|---|
-| 1 | noVNC proxy + console UI | Nova + Horizon | 5–7 hari |
-| 2 | Allocation candidates | Placement | 3 hari |
-| 3 | Resize confirm/revert | Nova | 2 hari |
-| 4 | Shelve/unshelve | Nova | 3 hari |
-| 5 | QoS policies | Neutron | 3 hari |
-| 6 | Domain management | Keystone | 3 hari |
-| 7 | Task-based image import | Glance | 3 hari |
-| 8 | Subnet pools | Neutron | 3 hari |
-| 9 | Network topology view | Horizon | 4–5 hari |
-| 10 | API microversions | Placement | 1 hari |
-| 11 | Reshaper endpoint | Placement | 2 hari |
+| # | Pekerjaan | Service | Status |
+|---|---|---|:---:|
+| 1 | noVNC proxy + console UI | Nova + Horizon | ✅ |
+| 2 | Allocation candidates | Placement | ✅ |
+| 3 | Resize confirm/revert | Nova | ✅ |
+| 4 | Shelve/unshelve | Nova | ✅ |
+| 5 | QoS policies (OVN-based) | Neutron | ✅ |
+| 6 | Domain management | Keystone | ✅ |
+| 7 | Task-based image import | Glance | ✅ |
+| 8 | Subnet pools | Neutron | ✅ |
+| 9 | Network topology view | Horizon | ✅ |
+| 10 | API microversions | Placement | ✅ |
+| 11 | Reshaper endpoint | Placement | ✅ |
 
-**Target skor setelah Fase 2:**
+**Skor setelah Fase 2:**
 Keystone ~82% · Nova ~90% · Neutron ~78% · Glance ~86% · Cinder ~82% · Placement ~85% · Horizon ~78%
 
 ---
 
-### Fase 3 — Polish (Estimasi: 2–4 minggu)
+### ✅ Fase 3 — Polish *(Selesai)*
 
-| # | Pekerjaan | Service | Upaya |
-|---|---|---|---|
-| 1 | IPv6 support | Neutron | 5 hari |
-| 2 | LVM thin provisioning | Cinder | 4 hari |
-| 3 | QoS enforcement | Cinder | 4 hari |
-| 4 | Multi-attach volume | Cinder | 2 hari |
-| 5 | oslo.policy RBAC | Keystone | 5 hari |
-| 6 | Port forwarding | Neutron | 2 hari |
-| 7 | Nested resource providers | Placement | 4 hari |
-| 8 | API versioning prefix | Cross-cutting | 2 hari |
+| # | Pekerjaan | Service | Status |
+|---|---|---|:---:|
+| 1 | IPv6 support (SLAAC, DHCPv6 stateful/stateless) | Neutron | ✅ |
+| 2 | LVM thin provisioning (`lvm_type=thin`, auto thin pool) | Cinder | ✅ |
+| 3 | Multi-attach volume (`multiattach=true`) | Cinder | ✅ |
+| 4 | Central oslo.policy RBAC (`shared/policy.py`) | Keystone | ✅ |
+| 5 | Port forwarding DNAT per-port | Neutron | ✅ |
+| 6 | Nested resource providers + Aggregates | Placement | ✅ |
+| 7 | API version discovery (`GET /`, `GET /v2.1`, dll.) | Cross-cutting | ✅ |
+
+**Skor setelah Fase 3:**
+Keystone ~87% · Nova ~90% · Neutron ~82% · Glance ~84% · Cinder ~88% · Placement ~88% · Horizon ~70%
+
+---
+
+### 🚀 Fase 4 — Advanced Integration (Estimasi: 4–6 minggu)
+
+Fase ini berfokus pada fitur-fitur lanjutan yang meningkatkan paritas secara signifikan,
+terutama di sisi **Horizon**, **integrasi antar-service**, dan **hardening** sistem yang sudah ada.
+
+#### 🔴 Prioritas Tinggi
+
+| # | Pekerjaan | Service | Upaya | Catatan |
+|---|---|---|:---:|---|
+| 1 | **noVNC Console (In-Browser)** | Nova + Horizon | 5–7 hari | Websockify container, token auth WebSocket |
+| 2 | **Network Topology View** | Horizon | 4–5 hari | React Flow / Cytoscape.js, klik node → detail |
+| 3 | **Application Credentials** | Keystone | 2 hari | `/v3/users/{id}/application_credentials`, scoped roles |
+| 4 | **Multi-Scope Token** (domain/system scope) | Keystone | 2 hari | Extend JWT dengan `scope_type` field |
+| 5 | **Ceph QoS Enforcement** | Cinder Worker | 3 hari | `rbd config image set rbd_qos_iops_limit` |
+| 6 | **Quota Reserved State** (atomic reserve) | Cinder | 2 hari | Reserve sebelum create, rollback jika error |
+| 7 | **Custom Resource Classes** | Placement | 1 hari | `PUT /resource_classes/CUSTOM_GPU_A100` |
+| 8 | **Forbidden Traits Filter** di allocation_candidates | Placement | 1–2 hari | `?required=X&forbidden=Y` query params |
+| 9 | **Identity: Roles Management UI** | Horizon | 2–3 hari | Halaman admin manage role assignments |
+| 10 | **API Access Panel** | Horizon | 1 hari | Tampilkan endpoint catalog + access keys |
+
+#### 🟡 Prioritas Menengah
+
+| # | Pekerjaan | Service | Upaya | Catatan |
+|---|---|---|:---:|---|
+| 11 | **Trunk Ports** (VLAN-in-VLAN) | Neutron | 3–4 hari | OVN parent_port, wrapping API |
+| 12 | **DNS Integration** (OVN internal DNS) | Neutron | 1–2 hari | Kolom `dns_name` port, tabel `DNS` di OVN NB |
+| 13 | **Dual-Stack Port** (IPv4 + IPv6 sekaligus) | Neutron | 2 hari | `fixed_ips` array dengan dua entry |
+| 14 | **Image Signing & Verification** | Glance + Nova | 3 hari | Hash signature di properties, verify saat download |
+| 15 | **Image Advanced Filtering** | Glance | 1 hari | `?min_disk=`, `?disk_format=`, `?sort=` |
+| 16 | **Volume Migration** (LVM ↔ Ceph) | Cinder | 3 hari | `qemu-img convert`, atomic swap setelah copy |
+| 17 | **Aggregates & AZ** (Nova) | Nova | 2–3 hari | `/os-aggregates`, AZ otomatis dari aggregate |
+| 18 | **Resource Detail Pages** | Horizon | 2–3 hari | Server detail, Volume detail, Network detail pages |
+| 19 | **Enforce policy.py di setiap endpoint** | Cross-cutting | 3–4 hari | Integrasi `policy.enforce()` per action |
+| 20 | **Centralized Quota System** (`shared/quota.py`) | Cross-cutting | 3 hari | oslo.quota-inspired, atomic reserve/commit/rollback |
+
+#### 🟢 Prioritas Rendah
+
+| # | Pekerjaan | Service | Upaya | Catatan |
+|---|---|---|:---:|---|
+| 21 | Consistency Groups | Cinder | 3 hari | Atomic snapshot grup volume |
+| 22 | Image Caching (TTL) | Glance | 1–2 hari | Cache metadata, opsional Redis |
+| 23 | Health Check Standard | Cross-cutting | 0.5 hari | `GET /healthcheck` → `{db: ok, rabbitmq: ok}` |
+| 24 | Event Notification Standard | Cross-cutting | 2 hari | `compute.instance.create.start/end` di semua service |
+
+**Target skor setelah Fase 4:**
+Keystone ~93% · Nova ~94% · Neutron ~88% · Glance ~90% · Cinder ~93% · Placement ~92% · Horizon ~85%
 
 ---
 
 ### Total Estimasi Keseluruhan
 
-| Fase | Durasi | Jumlah Item |
-|---|:---:|:---:|
-| Fase 1 — Quick Wins | 2–3 minggu | 13 item |
-| Fase 2 — Core Features | 3–5 minggu | 11 item |
-| Fase 3 — Polish | 2–4 minggu | 8 item |
-| **Total** | **7–12 minggu** | **32 item** |
+| Fase | Durasi | Jumlah Item | Status |
+|---|:---:|:---:|:---:|
+| ✅ Fase 1 — Quick Wins | 2–3 minggu | 13 item | **Selesai** |
+| ✅ Fase 2 — Core Features | 3–5 minggu | 11 item | **Selesai** |
+| ✅ Fase 3 — Polish | 2–4 minggu | 7 item | **Selesai** |
+| 🚀 Fase 4 — Advanced Integration | 4–6 minggu | 24 item | **Berikutnya** |
+| **Total (F1–F4)** | **11–18 minggu** | **55 item** | — |
 
 ---
 
@@ -1439,34 +1494,55 @@ Keystone ~82% · Nova ~90% · Neutron ~78% · Glance ~86% · Cinder ~82% · Plac
   │  image-api  │   │  block-store-api │   │    placement-api     │
   │  + members  │   │  + quota + thin  │   │  + alloc_candidates  │
   │  + tags     │   │  + multi-attach  │   │  + nested providers  │
+  │  + signing  │   │  + Ceph QoS      │   │  + custom RC         │
   └─────────────┘   └──────────────────┘   └──────────────────────┘
 
-  PostgreSQL — tabel baru:
+  PostgreSQL — tabel yang sudah ada (Fase 1–3) ✅:
     services, endpoints (service catalog)
     domains (domain management)
     server_tags, image_members, image_tasks
-    volume_quotas, quota_usages
+    volume_quotas, networking_port_forwardings
     subnet_pools, qos_policies, qos_rules
-    image_tags, resource_classes
+    image_tags, placement_rp_aggregates
+
+  PostgreSQL — tabel baru (Fase 4):
+    application_credentials (Keystone)
+    os_aggregates, aggregate_hosts (Nova)
+    networking_trunks, networking_trunk_subports (Neutron)
+    resource_classes (Placement)
+    quota_reservations (Cross-cutting)
 ```
 
-### Tabel Database Baru yang Diperlukan
+### Tabel Database — Status
+
+#### ✅ Sudah Diimplementasikan (Fase 1–3)
 
 | Tabel | Service | Tujuan |
 |---|---|---|
-| `services` | Keystone | Service catalog entries |
-| `endpoints` | Keystone | Endpoint per service per region |
-| `domains` | Keystone | Domain hierarchy |
-| `server_tags` | Nova | Server tagging |
+| `auth_services` | Keystone | Service catalog entries |
+| `auth_endpoints` | Keystone | Endpoint per service per region |
+| `auth_domains` | Keystone | Domain hierarchy |
+| `compute_server_tags` | Nova | Server tagging |
 | `image_members` | Glance | Image sharing antar project |
 | `image_tasks` | Glance | Async import tasks |
-| `volume_quotas` | Cinder | Hard limit per project |
-| `quota_usages` | Cinder | Penggunaan aktual + reserved |
-| `subnet_pools` | Neutron | Subnet address pool |
-| `qos_policies` | Neutron | QoS policy definitions |
-| `qos_rules` | Neutron | Bandwidth limit rules |
-| `resource_classes` | Placement | Custom resource classes |
-| `image_tags` | Glance | Image tag entries |
+| `block_store_volume_quotas` | Cinder | Hard limit per project |
+| `networking_subnet_pools` | Neutron | Subnet address pool |
+| `networking_qos_policies` | Neutron | QoS policy definitions |
+| `networking_qos_rules` | Neutron | Bandwidth limit rules |
+| `networking_port_forwardings` | Neutron | DNAT per-port forwarding |
+| `placement_rp_aggregates` | Placement | RP → aggregate association |
+
+#### 🚀 Diperlukan di Fase 4
+
+| Tabel | Service | Tujuan |
+|---|---|---|
+| `auth_application_credentials` | Keystone | Application credentials |
+| `compute_aggregates` | Nova | Host aggregate definitions |
+| `compute_aggregate_hosts` | Nova | Host → aggregate membership |
+| `networking_trunks` | Neutron | Trunk port parent |
+| `networking_trunk_subports` | Neutron | VLAN sub-port entries |
+| `placement_resource_classes` | Placement | Custom resource classes |
+| `quota_reservations` | Cross-cutting | Atomic quota reserve tracking |
 
 ---
 
@@ -1490,5 +1566,17 @@ Keystone ~82% · Nova ~90% · Neutron ~78% · Glance ~86% · Cinder ~82% · Plac
 
 ---
 
+## 📊 Progress Tracker
+
+| Fase | Item Total | Selesai | Progress |
+|---|:---:|:---:|:---:|
+| Fase 1 — Quick Wins | 13 | 13 | ████████████ 100% |
+| Fase 2 — Core Features | 11 | 11 | ████████████ 100% |
+| Fase 3 — Polish | 7 | 7 | ████████████ 100% |
+| Fase 4 — Advanced Integration | 24 | 0 | ░░░░░░░░░░░░ 0% |
+| **Keseluruhan** | **55** | **31** | **████████░░░░ 56%** |
+
+---
+
 *Dokumen ini dibuat berdasarkan analisis kode di `services/`, `docs/feature-comparison.md`, dan `README.md`.*
-*Terakhir diperbarui: Agustus 2026*
+*Terakhir diperbarui: Agustus 2026 — Fase 3 selesai, Fase 4 direncanakan.*

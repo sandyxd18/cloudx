@@ -188,6 +188,7 @@ def handle_create_volume(args: dict) -> None:
     source_path    = args.get("source_path")        # device path of source volume
     bootable       = args.get("bootable", False)
     image_api_url  = args.get("_image_api_url", IMAGE_API_URL)
+    lvm_type       = args.get("lvm_type", "default")  # default | thin
 
     log.info("Creating volume %s (%s, %dGB)", volume_id, backend, size_gb)
     lv = _lv_name(volume_id)
@@ -230,7 +231,7 @@ def handle_create_volume(args: dict) -> None:
         else:
             # Blank volume
             if backend == "lvm":
-                path = lvm.create(lv, size_gb)
+                path = lvm.create(lv, size_gb, lvm_type=lvm_type)
             else:
                 path = ceph.create(lv, size_gb)
 

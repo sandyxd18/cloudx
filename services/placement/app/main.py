@@ -90,6 +90,13 @@ class ResourceProviderTrait(Base):
     trait_name:           Mapped[str] = mapped_column(String, ForeignKey("placement_traits.name"), primary_key=True)
 
 
+class ResourceProviderAggregate(Base):
+    """Association between a resource provider and an aggregate UUID."""
+    __tablename__ = "placement_rp_aggregates"
+    resource_provider_id: Mapped[str] = mapped_column(String, ForeignKey("placement_resource_providers.uuid"), primary_key=True)
+    aggregate_uuid:       Mapped[str] = mapped_column(String, primary_key=True)
+
+
 # ── DB dep ─────────────────────────────────────────────────────────────────────
 def _get_db():
     db = SessionLocal()
@@ -211,6 +218,15 @@ def health():
 def create_rp(payload: RPIn, _: CurrentUser, db: DB):
     if db.scalar(select(ResourceProvider).where(ResourceProvider.name == payload.name)):
         raise HTTPException(status_code=409, detail="resource provider already exists")
+    # Validate parent_provider_id if provided
+    if payload.parent_provider_id:
+        parent = db.get(ResourceProvider, payload.parent_provider_id)
+        if not parent:
+            parent = db.scalar(select(ResourceProvider).where(ResourceProvider.name == payload.parent_provider_id))
+        if not parent:
+            raise HTTPException(status_code=400, detail=f"parent_provider_id '{payload.parent_provider_id}' not found")
+        # Normalize to UUID
+        payload = RPIn(name=payload.name, parent_provider_id=parent.uuid)
     rp = ResourceProvider(**payload.model_dump())
     db.add(rp)
     db.commit()
@@ -219,8 +235,39 @@ def create_rp(payload: RPIn, _: CurrentUser, db: DB):
 
 
 @app.get("/resource_providers")
-def list_rps(_: CurrentUser, db: DB):
-    rps = db.scalars(select(ResourceProvider)).all()
+def list_rps(
+    _: CurrentUser,
+    db: DB,
+    in_tree: str | None = None,        # root RP UUID/name — return all RPs in the same tree
+    name: str | None = None,           # exact name filter
+    parent_provider_id: str | None = None,  # direct children only
+):
+    q = select(ResourceProvider)
+    if in_tree:
+        # Find the root UUID
+        root = db.get(ResourceProvider, in_tree) or db.scalar(
+            select(ResourceProvider).where(ResourceProvider.name == in_tree)
+        )
+        if not root:
+            raise HTTPException(status_code=404, detail=f"resource provider tree root '{in_tree}' not found")
+        # Collect all UUIDs in the tree (root + children at any depth)
+        all_rps = db.scalars(select(ResourceProvider)).all()
+        tree_uuids = {root.uuid}
+        # BFS to find all descendants
+        changed = True
+        while changed:
+            changed = False
+            for rp in all_rps:
+                if rp.parent_provider_id in tree_uuids and rp.uuid not in tree_uuids:
+                    tree_uuids.add(rp.uuid)
+                    changed = True
+        from sqlalchemy import or_
+        q = q.where(ResourceProvider.uuid.in_(tree_uuids))
+    if name:
+        q = q.where(ResourceProvider.name == name)
+    if parent_provider_id:
+        q = q.where(ResourceProvider.parent_provider_id == parent_provider_id)
+    rps = db.scalars(q).all()
     return {"resource_providers": [_rp_to_dict(r) for r in rps]}
 
 
@@ -316,6 +363,38 @@ def list_traits(_: CurrentUser, db: DB):
     return {"traits": [t.name for t in traits]}
 
 
+# ── Aggregates ────────────────────────────────────────────────────────────────
+@app.get("/resource_providers/{rp_uuid}/aggregates")
+def get_aggregates(rp_uuid: str, _: CurrentUser, db: DB):
+    """List aggregate UUIDs associated with a resource provider."""
+    rp = _get_rp(db, rp_uuid)
+    aggs = db.scalars(
+        select(ResourceProviderAggregate).where(ResourceProviderAggregate.resource_provider_id == rp.uuid)
+    ).all()
+    return {"aggregates": [a.aggregate_uuid for a in aggs], "resource_provider_generation": rp.generation}
+
+
+@app.put("/resource_providers/{rp_uuid}/aggregates")
+def set_aggregates(rp_uuid: str, payload: dict, _: CurrentUser, db: DB):
+    """Set the aggregate UUIDs for a resource provider (replaces existing)."""
+    rp = _get_rp(db, rp_uuid)
+    aggregate_uuids = payload.get("aggregates", [])
+    if not isinstance(aggregate_uuids, list):
+        raise HTTPException(status_code=400, detail="'aggregates' must be a list of UUIDs")
+    # Delete existing
+    existing = db.scalars(
+        select(ResourceProviderAggregate).where(ResourceProviderAggregate.resource_provider_id == rp.uuid)
+    ).all()
+    for a in existing:
+        db.delete(a)
+    # Add new
+    for agg_uuid in aggregate_uuids:
+        db.add(ResourceProviderAggregate(resource_provider_id=rp.uuid, aggregate_uuid=str(agg_uuid)))
+    rp.generation += 1
+    db.commit()
+    return {"aggregates": aggregate_uuids, "resource_provider_generation": rp.generation}
+
+
 # ── Allocations ───────────────────────────────────────────────────────────────
 @app.post("/allocations", status_code=201)
 def create_allocations(payload: AllocationIn, _: CurrentUser, db: DB):
@@ -398,7 +477,7 @@ def get_usages(current: CurrentUser, db: DB, project_id: str | None = None):
     return {"usages": usages, "project_id": project_id or current["project_id"]}
 
 
-@app.get(\"/resource_providers/{rp_uuid}/usages\")
+@app.get("/resource_providers/{rp_uuid}/usages")
 def get_rp_usages(rp_uuid: str, _: CurrentUser, db: DB):
     rp = _get_rp(db, rp_uuid)
     inventories = db.scalars(select(Inventory).where(Inventory.resource_provider_id == rp.uuid)).all()

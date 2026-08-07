@@ -10,7 +10,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, create_engine, inspect, select, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 try:
@@ -104,6 +104,9 @@ class Subnet(Base):
     dhcp_options_id: Mapped[str | None] = mapped_column(String, nullable=True)
     enable_dhcp: Mapped[bool] = mapped_column(Boolean, default=True)
     ovn_dhcp_options_uuid: Mapped[str | None] = mapped_column(String, nullable=True)
+    ip_version: Mapped[int] = mapped_column(Integer, default=4)
+    ipv6_ra_mode: Mapped[str | None] = mapped_column(String, nullable=True)      # slaac | dhcpv6-stateful | dhcpv6-stateless
+    ipv6_address_mode: Mapped[str | None] = mapped_column(String, nullable=True) # slaac | dhcpv6-stateful | dhcpv6-stateless
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -163,6 +166,20 @@ class FloatingIP(Base):
     external_network_id: Mapped[str | None] = mapped_column(String, nullable=True)
     router_id: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="DOWN")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class PortForwarding(Base):
+    """DNAT per-port forwarding rule attached to a floating IP."""
+    __tablename__ = "networking_port_forwardings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    floatingip_id: Mapped[str] = mapped_column(String, ForeignKey("networking_floating_ips.id", ondelete="CASCADE"))
+    protocol: Mapped[str] = mapped_column(String, default="tcp")           # tcp | udp
+    external_port: Mapped[int] = mapped_column(Integer)
+    internal_port: Mapped[int] = mapped_column(Integer)
+    internal_ip_address: Mapped[str] = mapped_column(String)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -244,6 +261,9 @@ class SubnetIn(BaseModel):
     allocation_end: str | None = None
     dns_nameservers: list[str] = Field(default_factory=list)
     enable_dhcp: bool = True
+    ip_version: int = 4                # 4 | 6
+    ipv6_ra_mode: str | None = None    # slaac | dhcpv6-stateful | dhcpv6-stateless
+    ipv6_address_mode: str | None = None
 
 
 class RouterIn(BaseModel):
@@ -775,13 +795,21 @@ def format_id_list(values: list[str]) -> str | None:
     return ",".join(values) if values else None
 
 
-def allocation_bounds(subnet: Subnet) -> tuple[ipaddress.IPv4Address, ipaddress.IPv4Address]:
+def allocation_bounds(subnet: Subnet) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Return (start, end) IP allocation bounds for an IPv4 or IPv6 subnet."""
     network = ipaddress.ip_network(subnet.cidr, strict=False)
     hosts = list(network.hosts())
     if not hosts:
         raise HTTPException(status_code=400, detail=f"subnet '{subnet.name}' has no usable host addresses")
-    start = ipaddress.ip_address(subnet.allocation_start) if subnet.allocation_start else hosts[1 if len(hosts) > 1 else 0]
-    end = ipaddress.ip_address(subnet.allocation_end) if subnet.allocation_end else hosts[-1]
+
+    if network.version == 6:
+        # IPv6: use network+1 to network.broadcast_address-1
+        start = ipaddress.ip_address(subnet.allocation_start) if subnet.allocation_start else hosts[0]
+        end = ipaddress.ip_address(subnet.allocation_end) if subnet.allocation_end else hosts[-1]
+    else:
+        start = ipaddress.ip_address(subnet.allocation_start) if subnet.allocation_start else hosts[1 if len(hosts) > 1 else 0]
+        end = ipaddress.ip_address(subnet.allocation_end) if subnet.allocation_end else hosts[-1]
+
     if start not in network or end not in network or start > end:
         raise HTTPException(status_code=400, detail="invalid allocation range for subnet")
     return start, end
@@ -816,6 +844,48 @@ def dhcp_options_args(cidr: str, gateway: str, dns_nameservers: list[str], serve
     if dns_nameservers:
         args.append(f"options:dns_server={{{','.join(dns_nameservers)}}}")
     return args
+
+
+def _ensure_dhcpv6_options(
+    cidr: str,
+    gateway: str | None,
+    ipv6_ra_mode: str | None,
+    ipv6_address_mode: str | None,
+) -> str | None:
+    """
+    Set up OVN DHCPv6 options for an IPv6 subnet.
+
+    Mode mapping:
+      dhcpv6-stateful  → OVN DHCPv6 options with dhcpv6_stateful_opt
+      dhcpv6-stateless → OVN DHCPv6 options without address (SLAAC for addr, DHCPv6 for opts)
+      slaac            → Router Advertisement only — no OVN DHCP_Options entry needed
+
+    Returns the OVN DHCP_Options UUID or None.
+    """
+    if ipv6_ra_mode == "slaac" and ipv6_address_mode == "slaac":
+        # Pure SLAAC — no DHCP_Options in OVN, RA handles everything
+        return None
+
+    if not gateway:
+        # No gateway → cannot set up server_id for DHCPv6
+        return None
+
+    try:
+        dhcp_uuid = ovn(
+            "create",
+            "DHCP_Options",
+            f"cidr={cidr}",
+            "external_ids:mini-openstack-lab=true",
+            f"external_ids:ipv6=true",
+            f"options:server_id={gateway}",
+        )
+        return dhcp_uuid
+    except Exception as exc:
+        import logging
+        logging.getLogger("networking-api").warning(
+            "DHCPv6 options setup failed for %s: %s", cidr, exc
+        )
+        return None
 
 
 def allocate_floating_ip(db: Session, network: Network) -> str:
@@ -995,7 +1065,8 @@ def apply_security_groups(db: Session, port: Port) -> None:
 
 def allocate_fixed_ip(db: Session, subnet: Subnet, requested: str | None = None) -> str:
     network = ipaddress.ip_network(subnet.cidr, strict=False)
-    gateway_ip = ipaddress.ip_address(subnet.gateway_ip or subnet.gateway)
+    gateway_str = subnet.gateway_ip or subnet.gateway
+    gateway_ip = ipaddress.ip_address(gateway_str) if gateway_str else None
     used = {
         ipaddress.ip_address(ip)
         for ip in db.scalars(select(Port.fixed_ip).where(Port.subnet_id == subnet.id, Port.fixed_ip.is_not(None))).all()
@@ -1008,13 +1079,13 @@ def allocate_fixed_ip(db: Session, subnet: Subnet, requested: str | None = None)
         candidate = ipaddress.ip_address(requested)
         if candidate not in network:
             raise HTTPException(status_code=400, detail=f"requested IP {requested} is outside subnet {subnet.cidr}")
-        if candidate == gateway_ip or candidate in used:
+        if (gateway_ip and candidate == gateway_ip) or candidate in used:
             raise HTTPException(status_code=409, detail=f"requested IP {requested} is not available")
         return str(candidate)
     start, end = allocation_bounds(subnet)
     current = start
     while current <= end:
-        if current != gateway_ip and current not in used:
+        if (gateway_ip is None or current != gateway_ip) and current not in used:
             return str(current)
         current += 1
     raise HTTPException(status_code=409, detail=f"no available IP addresses in subnet '{subnet.name}'")
@@ -1048,7 +1119,13 @@ def ensure_columns():
             for column in ("gateway_ip", "allocation_start", "allocation_end", "dns_nameservers"):
                 if column not in columns:
                     conn.execute(text(f"ALTER TABLE networking_subnets ADD COLUMN {column} VARCHAR"))
-            for column, ddl in (("enable_dhcp", "BOOLEAN DEFAULT TRUE"), ("ovn_dhcp_options_uuid", "VARCHAR")):
+            for column, ddl in (
+                ("enable_dhcp", "BOOLEAN DEFAULT TRUE"),
+                ("ovn_dhcp_options_uuid", "VARCHAR"),
+                ("ip_version", "INTEGER DEFAULT 4"),
+                ("ipv6_ra_mode", "VARCHAR"),
+                ("ipv6_address_mode", "VARCHAR"),
+            ):
                 if column not in columns:
                     conn.execute(text(f"ALTER TABLE networking_subnets ADD COLUMN {column} {ddl}"))
             conn.execute(text("UPDATE networking_subnets SET gateway_ip = gateway WHERE gateway_ip IS NULL"))
@@ -1252,13 +1329,29 @@ def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
         raise HTTPException(status_code=409, detail="subnet already exists")
     network = require_by_ref(db, Network, payload.network, "network")
     gateway = payload.gateway_ip or payload.gateway
+    ip_version = payload.ip_version
+
+    # Validate CIDR version matches requested ip_version
+    try:
+        cidr_net = ipaddress.ip_network(payload.cidr, strict=False)
+        if cidr_net.version != ip_version:
+            raise ValueError(f"CIDR {payload.cidr} is IPv{cidr_net.version} but ip_version={ip_version}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     if not gateway:
-        raise HTTPException(status_code=400, detail="gateway_ip or gateway is required")
+        # For IPv6 with SLAAC, gateway is optional
+        if ip_version == 6 and payload.ipv6_ra_mode in ("slaac", "dhcpv6-stateless"):
+            gateway = None
+        else:
+            raise HTTPException(status_code=400, detail="gateway_ip or gateway is required")
+
     try:
         cidr = ipaddress.ip_network(payload.cidr, strict=False)
-        gateway_ip = ipaddress.ip_address(gateway)
-        if gateway_ip not in cidr:
-            raise ValueError(f"gateway {gateway} is outside subnet {payload.cidr}")
+        if gateway:
+            gateway_ip = ipaddress.ip_address(gateway)
+            if gateway_ip not in cidr:
+                raise ValueError(f"gateway {gateway} is outside subnet {payload.cidr}")
         allocation_start = ipaddress.ip_address(payload.allocation_start) if payload.allocation_start else None
         allocation_end = ipaddress.ip_address(payload.allocation_end) if payload.allocation_end else None
         if allocation_start and allocation_start not in cidr:
@@ -1267,13 +1360,24 @@ def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
             raise ValueError("allocation_end is outside subnet")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     dns = ",".join(payload.dns_nameservers)
-    dhcp_id = ovn(*dhcp_options_args(payload.cidr, gateway, payload.dns_nameservers)) if payload.enable_dhcp else None
+    dhcp_id = None
+
+    if payload.enable_dhcp:
+        if ip_version == 4:
+            dhcp_id = ovn(*dhcp_options_args(payload.cidr, gateway, payload.dns_nameservers)) if gateway else None
+        elif ip_version == 6:
+            # IPv6: set up DHCPv6 options or RA mode in OVN
+            dhcp_id = _ensure_dhcpv6_options(
+                payload.cidr, gateway, payload.ipv6_ra_mode, payload.ipv6_address_mode
+            )
+
     subnet = Subnet(
         name=payload.name,
         network_id=network.id,
         cidr=payload.cidr,
-        gateway=gateway,
+        gateway=gateway or "",
         gateway_ip=gateway,
         allocation_start=str(allocation_start) if allocation_start else None,
         allocation_end=str(allocation_end) if allocation_end else None,
@@ -1281,6 +1385,9 @@ def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
         dhcp_options_id=dhcp_id,
         enable_dhcp=payload.enable_dhcp,
         ovn_dhcp_options_uuid=dhcp_id,
+        ip_version=ip_version,
+        ipv6_ra_mode=payload.ipv6_ra_mode,
+        ipv6_address_mode=payload.ipv6_address_mode,
     )
     db.add(subnet)
     db.commit()
@@ -1955,3 +2062,149 @@ def delete_subnet_pool(pool_id: str, _: AdminUser, db: DB):
     db.delete(pool)
     db.commit()
 
+
+# ── Port Forwarding (DNAT per-port) ─────────────────────────────────────────────────────────
+
+
+class PortForwardingIn(BaseModel):
+    protocol: str = "tcp"                # tcp | udp
+    external_port: int
+    internal_port: int
+    internal_ip_address: str
+    description: str | None = None
+
+
+def _pf_to_dict(pf: PortForwarding) -> dict:
+    return {
+        "id": pf.id,
+        "floatingip_id": pf.floatingip_id,
+        "protocol": pf.protocol,
+        "external_port": pf.external_port,
+        "internal_port": pf.internal_port,
+        "internal_ip_address": pf.internal_ip_address,
+        "description": pf.description,
+        "created_at": pf.created_at.isoformat(),
+    }
+
+
+def _apply_pf_ovn_rule(fip: FloatingIP, pf: PortForwarding, delete: bool = False) -> None:
+    """Apply or remove an OVN DNAT rule for a port forwarding entry."""
+    if not fip.router_id or not fip.floating_ip:
+        return
+    from sqlalchemy.orm import Session as _Sess
+    # We need a router name — look it up
+    db_temp = SessionLocal()
+    try:
+        router = db_temp.get(Router, fip.router_id)
+        if not router:
+            return
+        external_ip = fip.floating_ip_address or fip.floating_ip
+        if delete:
+            ovn(
+                "--if-exists", "lr-nat-del", router.name, "dnat",
+                f"{external_ip}:{pf.external_port}",
+                check=False,
+            )
+        else:
+            ovn(
+                "--may-exist", "lr-nat-add", router.name, "dnat",
+                f"{external_ip}:{pf.external_port}",
+                f"{pf.internal_ip_address}:{pf.internal_port}",
+                f"--protocol={pf.protocol}",
+                check=False,
+            )
+    finally:
+        db_temp.close()
+
+
+@app.post("/floatingips/{fip_ref}/port_forwardings", status_code=201)
+def create_port_forwarding(fip_ref: str, payload: PortForwardingIn, _: CurrentUser, db: DB):
+    """Create a DNAT port forwarding rule on a floating IP."""
+    fip = require_floating_ip(db, fip_ref)
+    if payload.protocol not in {"tcp", "udp"}:
+        raise HTTPException(status_code=400, detail="protocol must be tcp or udp")
+    if not (1 <= payload.external_port <= 65535) or not (1 <= payload.internal_port <= 65535):
+        raise HTTPException(status_code=400, detail="port numbers must be 1-65535")
+    # Check for conflict on same external_port
+    existing = db.scalar(
+        select(PortForwarding).where(
+            PortForwarding.floatingip_id == fip.id,
+            PortForwarding.external_port == payload.external_port,
+            PortForwarding.protocol == payload.protocol,
+        )
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail=f"port forwarding already exists for {payload.protocol}:{payload.external_port}")
+    pf = PortForwarding(
+        floatingip_id=fip.id,
+        protocol=payload.protocol,
+        external_port=payload.external_port,
+        internal_port=payload.internal_port,
+        internal_ip_address=payload.internal_ip_address,
+        description=payload.description,
+    )
+    db.add(pf)
+    db.commit()
+    db.refresh(pf)
+    # Apply OVN DNAT rule
+    _apply_pf_ovn_rule(fip, pf, delete=False)
+    return _pf_to_dict(pf)
+
+
+@app.get("/floatingips/{fip_ref}/port_forwardings")
+def list_port_forwardings(fip_ref: str, _: CurrentUser, db: DB):
+    """List all port forwarding rules for a floating IP."""
+    fip = require_floating_ip(db, fip_ref)
+    pfs = db.scalars(
+        select(PortForwarding).where(PortForwarding.floatingip_id == fip.id).order_by(PortForwarding.created_at)
+    ).all()
+    return {"port_forwardings": [_pf_to_dict(pf) for pf in pfs]}
+
+
+@app.get("/floatingips/{fip_ref}/port_forwardings/{pf_id}")
+def show_port_forwarding(fip_ref: str, pf_id: str, _: CurrentUser, db: DB):
+    """Get a specific port forwarding rule."""
+    fip = require_floating_ip(db, fip_ref)
+    pf = db.get(PortForwarding, pf_id)
+    if not pf or pf.floatingip_id != fip.id:
+        raise HTTPException(status_code=404, detail="port forwarding not found")
+    return _pf_to_dict(pf)
+
+
+@app.delete("/floatingips/{fip_ref}/port_forwardings/{pf_id}", status_code=204)
+def delete_port_forwarding(fip_ref: str, pf_id: str, _: CurrentUser, db: DB):
+    """Delete a port forwarding rule and remove OVN DNAT entry."""
+    fip = require_floating_ip(db, fip_ref)
+    pf = db.get(PortForwarding, pf_id)
+    if not pf or pf.floatingip_id != fip.id:
+        raise HTTPException(status_code=404, detail="port forwarding not found")
+    _apply_pf_ovn_rule(fip, pf, delete=True)
+    db.delete(pf)
+    db.commit()
+
+
+# ── API Version Discovery ────────────────────────────────────────────────────────
+
+@app.get("/v2.0")
+def neutron_v2_root():
+    """Neutron v2.0 API version discovery."""
+    return {
+        "version": {
+            "id": "v2.0",
+            "status": "CURRENT",
+            "updated": "2013-07-23T11:33:21Z",
+            "links": [{"rel": "self", "href": "/v2.0"}],
+        }
+    }
+
+
+@app.get("/")
+def networking_root():
+    """Networking API root — version discovery."""
+    return {
+        "versions": [{
+            "id": "v2.0",
+            "status": "CURRENT",
+            "links": [{"rel": "self", "href": "/v2.0"}],
+        }]
+    }

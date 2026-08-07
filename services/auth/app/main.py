@@ -40,6 +40,13 @@ try:
 except ImportError:
     RequestIDMiddleware = None
 
+# Load shared policy engine
+try:
+    from shared.policy import enforce as policy_enforce, list_rules as policy_list_rules
+except ImportError:
+    def policy_enforce(*args, **kwargs): return True
+    def policy_list_rules(): return {}
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 DATABASE_URL   = os.getenv("DATABASE_URL",   "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
 SECRET_KEY     = os.getenv("AUTH_SECRET_KEY", "cloudx-secret-key-change-in-production-min32chars!")
@@ -1005,3 +1012,54 @@ def delete_domain(domain_id: str, _: AdminUser, db: DB):
         raise HTTPException(status_code=404, detail="domain not found")
     db.delete(domain)
     db.commit()
+
+
+# ── Central Policy (oslo.policy) ───────────────────────────────────────────────
+
+@app.get("/policy")
+def get_policy(_: CurrentUser):
+    """Return the central RBAC policy map for all CloudX services."""
+    return {"policy": policy_list_rules()}
+
+
+@app.post("/policy/enforce")
+def check_policy(body: dict, current: CurrentUser):
+    """Check if the current user can perform an action (for debugging/UI)."""
+    action = body.get("action", "")
+    if not action:
+        raise HTTPException(status_code=400, detail="'action' is required")
+    target_project = body.get("target_project_id")
+    result = policy_enforce(action, current, target_project, raise_on_deny=False)
+    return {"action": action, "allowed": result, "role": current.get("role")}
+
+
+# ── API Version Discovery ──────────────────────────────────────────────────────
+
+@app.get("/v3")
+def keystone_v3_root():
+    """Keystone v3 API version discovery."""
+    return {
+        "version": {
+            "id": "v3",
+            "status": "stable",
+            "updated": "2024-01-01T00:00:00Z",
+            "links": [{"rel": "self", "href": "/v3"}],
+            "media-types": [
+                {"base": "application/json", "type": "application/vnd.openstack.identity-v3+json"}
+            ],
+        }
+    }
+
+
+@app.get("/")
+def auth_root():
+    """Keystone API root — version discovery."""
+    return {
+        "versions": {
+            "values": [{
+                "id": "v3",
+                "status": "stable",
+                "links": [{"rel": "self", "href": "/v3"}],
+            }]
+        }
+    }

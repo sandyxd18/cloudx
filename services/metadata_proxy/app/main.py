@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 METADATA_API_URL = os.getenv("METADATA_API_URL", "http://metadata-api:8775").rstrip("/")
 NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
 
-app = FastAPI(title="mini OpenStack lab metadata-proxy", version="0.1.0")
+app = FastAPI(title="mini OpenStack lab metadata-proxy", version="1.0.0")
 
 
 @app.get("/health")

@@ -717,3 +717,29 @@ def update_task(task_id: str, payload: TaskPatchIn, db: DB):
     task.updated_at = datetime.utcnow()
     db.commit()
     return _task_to_dict(task)
+
+
+# ── API Version Discovery ────────────────────────────────────────────────────────
+
+@app.get("/v2")
+def glance_v2_root():
+    """Glance v2 API version discovery."""
+    return {
+        "version": {
+            "id": "v2.9",
+            "status": "CURRENT",
+            "links": [{"rel": "self", "href": "/v2"}],
+        }
+    }
+
+
+@app.get("/")
+def image_root():
+    """Image API root — version discovery."""
+    return {
+        "versions": [
+            {"id": "v2.9", "status": "CURRENT", "links": [{"rel": "self", "href": "/v2"}]},
+        ]
+    }
+
+

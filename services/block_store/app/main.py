@@ -102,6 +102,7 @@ class VolumeType(Base):
     max_iops:       Mapped[int|None] = mapped_column(Integer, nullable=True)
     max_throughput: Mapped[int|None] = mapped_column(Integer, nullable=True)
     is_public:      Mapped[bool]     = mapped_column(Boolean, default=True)
+    lvm_type:       Mapped[str]      = mapped_column(String, default="default")  # default | thin
     created_at:     Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -124,6 +125,7 @@ class Volume(Base):
     project_id:            Mapped[str|None] = mapped_column(String, nullable=True, index=True)
     volume_type:           Mapped[str|None] = mapped_column(String, nullable=True)
     error_message:         Mapped[str|None] = mapped_column(String, nullable=True)
+    multiattach:           Mapped[bool]     = mapped_column(Boolean, default=False)
     created_at:            Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -162,6 +164,7 @@ class VolumeIn(BaseModel):
     source_volume: str | None = None
     bootable:      bool = False
     volume_type:   str | None = None
+    multiattach:   bool = False
 
 
 class VolumeInternalIn(BaseModel):
@@ -197,6 +200,7 @@ class VolumeTypeIn(BaseModel):
     max_iops:       int | None = None
     max_throughput: int | None = None
     is_public:      bool = True
+    lvm_type:       str = "default"   # default | thin
 
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
@@ -287,10 +291,12 @@ def ensure_columns() -> None:
                 ("volume_type",      "VARCHAR"),
                 ("backend",          "VARCHAR DEFAULT 'lvm'"),
                 ("error_message",    "VARCHAR"),
+                ("multiattach",      "BOOLEAN DEFAULT FALSE"),
             ):
                 if col not in columns:
                     conn.execute(text(f"ALTER TABLE block_store_volumes ADD COLUMN {col} {ddl}"))
             conn.execute(text("UPDATE block_store_volumes SET bootable = FALSE WHERE bootable IS NULL"))
+            conn.execute(text("UPDATE block_store_volumes SET multiattach = FALSE WHERE multiattach IS NULL"))
 
     if "block_store_snapshots" in tables:
         columns = {col["name"] for col in inspector.get_columns("block_store_snapshots")}
@@ -305,6 +311,7 @@ def ensure_columns() -> None:
                 ("disk_type",      "VARCHAR DEFAULT 'sata_ssd'"),
                 ("max_iops",       "INTEGER"),
                 ("max_throughput", "INTEGER"),
+                ("lvm_type",       "VARCHAR DEFAULT 'default'"),
             ):
                 if col not in columns:
                     conn.execute(text(f"ALTER TABLE block_store_volume_types ADD COLUMN {col} {ddl}"))
@@ -355,7 +362,7 @@ def volume_to_os_dict(volume: Volume) -> dict:
         "encrypted": False,
         "group_id": None,
         "id": volume.id,
-        "multiattach": False,
+        "multiattach": bool(volume.multiattach),
         "name": volume.name or "",
         "os-vol-host-attr:host": f"single-node@{volume.backend or 'lvm'}#{volume.backend or 'lvm'}",
         "os-vol-mig-status-attr:migstat": None,
@@ -554,7 +561,7 @@ def create_volume(payload: VolumeIn, current: CurrentUser, db: DB):
         bootable=payload.bootable,
         volume_type=payload.volume_type,
     )
-    return _create_volume_record(db, internal, project_id=project_id)
+    return _create_volume_record(db, internal, project_id=project_id, multiattach=payload.multiattach)
 
 
 @app.post("/internal/volumes", status_code=201)
@@ -562,7 +569,7 @@ def create_volume_internal(payload: VolumeInternalIn, db: DB):
     return _create_volume_record(db, payload)
 
 
-def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: str | None = None) -> dict:
+def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: str | None = None, multiattach: bool = False) -> dict:
     if get_volume(db, payload.name):
         raise HTTPException(status_code=409, detail="volume already exists")
 
@@ -618,6 +625,7 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
         source_type=source_type,
         volume_type=vt.name,
         project_id=project_id,
+        multiattach=multiattach,
     )
     db.add(volume)
     db.commit()
@@ -633,6 +641,7 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
         "snapshot_id":     snapshot_id,
         "source_volume_id": source_volume_id,
         "bootable":        bootable,
+        "lvm_type":        getattr(vt, "lvm_type", "default"),
         "_image_api_url":  IMAGE_API_URL,
     })
 
@@ -730,8 +739,11 @@ def extend_volume(ref: str, payload: dict, _: CurrentUser, db: DB):
 def internal_attach_server(ref: str, payload: InternalAttachIn, db: DB):
     """Called by compute-worker after spawning a VM to mark root volume as in-use."""
     volume = require_volume(db, ref)
+    # Multi-attach: allow if volume.multiattach is True, otherwise enforce single-attach
     if volume.status == "in-use" and volume.attached_to_server_id != payload.server_id:
-        raise HTTPException(status_code=409, detail="volume is already attached")
+        if not volume.multiattach:
+            raise HTTPException(status_code=409, detail="volume is already attached (set multiattach=true to allow multiple attachments)")
+        # Multi-attach: update the primary attachment record (first attachment wins for tracking)
     volume.attached_to_server_id = payload.server_id
     volume.target_device = payload.target_device or volume.target_device or (
         "sda" if volume.bootable else next_target_device(db, payload.server_id)
@@ -1086,4 +1098,33 @@ def delete_quota(project_id: str, _: AdminUser, db: DB):
 def get_quota_defaults(project_id: str, _: CurrentUser, db: DB):
     """Return the default quota values."""
     return {"project_id": project_id, "volumes": 10, "gigabytes": 1000, "snapshots": 10}
+
+
+# ── API Version Discovery ────────────────────────────────────────────────────────
+
+@app.get("/v3")
+def cinder_v3_root():
+    """Cinder v3 API version discovery."""
+    return {
+        "version": {
+            "id": "v3.0",
+            "status": "CURRENT",
+            "version": "3.70",
+            "min_version": "3.0",
+            "updated": "2024-01-01T00:00:00Z",
+            "links": [{"rel": "self", "href": "/v3"}],
+        }
+    }
+
+
+@app.get("/")
+def block_store_root():
+    """Block storage API root — version discovery."""
+    return {
+        "versions": [{
+            "id": "v3.0",
+            "status": "CURRENT",
+            "links": [{"rel": "self", "href": "/v3"}],
+        }]
+    }
 

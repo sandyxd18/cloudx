@@ -137,11 +137,76 @@ def _cleanup_stale_lv(volume_name: str, vg: str) -> None:
 
 
 
-def create(volume_name: str, size_gb: int) -> str:
-    """Create an LV and return its device path (/dev/VG/LV)."""
+def _thin_pool_exists(vg: str) -> bool:
+    """Return True if a thin pool named '{VG}-pool' already exists in the VG."""
+    out = _run(
+        ["lvs", "--noheadings", "-o", "lv_name,lv_attr", vg],
+        check=False,
+    )
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == f"{vg}-pool" and "t" in parts[1]:
+            return True
+    return False
+
+
+def ensure_thin_pool(vg: str) -> None:
+    """Ensure a LVM thin pool named '{VG}-pool' exists.
+
+    If not present, create it by allocating 80% of the VG's free PE extents.
+    This is idempotent — safe to call on every thin volume create.
+    """
+    if _thin_pool_exists(vg):
+        return
+
+    # Get free extents in the VG
+    out = _run(["vgs", "--noheadings", "-o", "vg_free_count", vg], check=False)
+    out_stripped = out.strip()
+    free_pe = int(out_stripped) if out_stripped.isdigit() else 0
+
+    if free_pe < 4:
+        raise RuntimeError(
+            f"Not enough free space in VG '{vg}' to create a thin pool. "
+            "Add more physical volumes or free up space."
+        )
+
+    # Use 80% of free PEs for the pool
+    pool_pe = max(1, int(free_pe * 0.8))
+    pool_name = f"{vg}-pool"
+
+    log.info("LVM: creating thin pool %s/%s (%d PEs)", vg, pool_name, pool_pe)
+    _run([
+        "lvcreate", "-y",
+        "--type", "thin-pool",
+        "--extents", f"{pool_pe}",
+        "-n", pool_name,
+        vg,
+    ] + LVM_CONTAINER_CFG)
+    log.info("LVM: thin pool %s/%s created successfully", vg, pool_name)
+
+
+def create(volume_name: str, size_gb: int, lvm_type: str = "default") -> str:
+    """Create an LV and return its device path (/dev/VG/LV).
+
+    lvm_type: 'default' (thick) or 'thin' (thin-provisioned from a thin pool).
+    Thin provisioning requires a thin pool named '{VG}-pool' to exist.
+    If the pool does not exist, we automatically create it using 80% of free VG space.
+    """
     vg = vg_name()
-    _cleanup_stale_lv(volume_name, vg)
-    _run(["lvcreate", "-y", "-W", "y", "-Z", "y", "-L", f"{size_gb}G", "-n", volume_name, vg] + LVM_CONTAINER_CFG)
+    if lvm_type == "thin":
+        ensure_thin_pool(vg)
+        pool = f"{vg}-pool"
+        _cleanup_stale_lv(volume_name, vg)
+        _run([
+            "lvcreate", "-y",
+            "--virtualsize", f"{size_gb}G",
+            "--thin",
+            "--name", volume_name,
+            f"{vg}/{pool}",
+        ] + LVM_CONTAINER_CFG)
+    else:
+        _cleanup_stale_lv(volume_name, vg)
+        _run(["lvcreate", "-y", "-W", "y", "-Z", "y", "-L", f"{size_gb}G", "-n", volume_name, vg] + LVM_CONTAINER_CFG)
     return f"/dev/{vg}/{volume_name}"
 
 
