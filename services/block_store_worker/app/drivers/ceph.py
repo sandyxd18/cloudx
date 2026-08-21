@@ -58,7 +58,7 @@ def create(image_name: str, size_gb: int) -> str:
 
 def create_from_source(image_name: str, source_path: str, size_gb: int) -> str:
     """Import a raw image file into a new RBD image.
-    
+
     Used when creating a boot volume from an image.
     Returns the rbd path identifier.
     """
@@ -90,7 +90,7 @@ def extend(image_name: str, new_size_gb: int) -> None:
 
 def snapshot(image_name: str, snapshot_name: str, _size_gb: int = 0) -> str:
     """Create an RBD snapshot. Returns rbd:pool/image@snap path.
-    
+
     _size_gb is ignored for Ceph (snapshots are free in Ceph).
     """
     p = pool()
@@ -145,3 +145,40 @@ def libvirt_disk_xml(image_name: str, dev: str = "sda", bus: str = "scsi") -> st
   <target dev='{dev}' bus='{bus}'/>
 </disk>"""
     return disk
+
+
+# ── QoS Enforcement ───────────────────────────────────────────────────────────
+
+def set_qos(image_name: str, max_iops: int | None = None, max_throughput_mbps: int | None = None) -> None:
+    """
+    Apply QoS limits to a Ceph RBD image using rbd config image set.
+
+    Args:
+        image_name: the RBD image name (without pool prefix).
+        max_iops: maximum IOPS limit (both read + write combined).
+        max_throughput_mbps: maximum throughput in MB/s (converted to BPS for Ceph).
+
+    These map to Ceph's per-image config keys:
+        rbd_qos_iops_limit   — combined read+write IOPS ceiling
+        rbd_qos_bps_limit    — combined read+write bytes-per-second ceiling
+    """
+    image_ref = f"{pool()}/{image_name}"
+    if max_iops is not None and max_iops > 0:
+        _rbd("config", "image", "set", image_ref, "rbd_qos_iops_limit", str(max_iops))
+        log.info("Ceph QoS: set rbd_qos_iops_limit=%d on %s", max_iops, image_ref)
+    if max_throughput_mbps is not None and max_throughput_mbps > 0:
+        # Ceph uses bytes-per-second
+        bps = max_throughput_mbps * 1024 * 1024
+        _rbd("config", "image", "set", image_ref, "rbd_qos_bps_limit", str(bps))
+        log.info("Ceph QoS: set rbd_qos_bps_limit=%d on %s", bps, image_ref)
+
+
+def clear_qos(image_name: str) -> None:
+    """Remove any QoS limits from a Ceph RBD image."""
+    image_ref = f"{pool()}/{image_name}"
+    for key in ("rbd_qos_iops_limit", "rbd_qos_bps_limit"):
+        try:
+            _rbd("config", "image", "remove", image_ref, key)
+        except RuntimeError:
+            pass  # key may not exist; ignore
+    log.info("Ceph QoS: cleared QoS config on %s", image_ref)

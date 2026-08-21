@@ -7,3 +7,4 @@ pydantic==2.10.4
 boto3==1.35.90
 python-jose[cryptography]==3.3.0
 requests==2.32.3
+prometheus-client==0.21.1

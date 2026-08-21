@@ -9,6 +9,10 @@ RUN apt-get update \
         lvm2 \
         qemu-utils \
         ceph-common \
+        curl \
+        ca-certificates \
+    && curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc \
+    && chmod +x /usr/local/bin/mc \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

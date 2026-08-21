@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
+import { Link as RouterLink } from 'react-router-dom'
 import { Plus, Trash2, ChevronDown, Network, Globe } from 'lucide-react'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
@@ -240,8 +241,13 @@ export default function NetworksPage() {
                     <tr key={n.id} className={selected.includes(n.id) ? 'row-selected' : ''}>
                       <td><input type="checkbox" checked={selected.includes(n.id)} onChange={() => toggleSelect(n.id)} /></td>
                       <td>
-                        <div className="name-cell">{n.name}</div>
-                        <div className="mono text-muted" style={{fontSize:10}}>{n.id?.slice(0,16)}…</div>
+                        <RouterLink
+                          to={`/networks/${n.id}`}
+                          style={{ textDecoration: 'none', color: 'inherit' }}
+                        >
+                          <div className="name-cell" style={{ color: '#7eaadb', cursor: 'pointer' }}>{n.name}</div>
+                          <div className="mono text-muted" style={{fontSize:10}}>{n.id?.slice(0,16)}…</div>
+                        </RouterLink>
                       </td>
                       <td>
                         {getSubnets(n.id).map(s => (

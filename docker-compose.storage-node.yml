@@ -1,0 +1,81 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CloudX — Multi-Node Deployment: STORAGE NODE
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Provides all persistent block storage (block-store-worker → LVM / Ceph RBD)
+# and object storage (MinIO) consumed by the rest of the cluster. Compute nodes
+# have no local disk; their VM root disks + volumes are served from here.
+#
+# MinIO here also backs the image blobs (Glance) and the automated backups.
+#
+# Required env:
+#   CONTROLLER_IP — management IP of the Control Plane node (for RabbitMQ + image-api)
+#
+# Usage on a storage host:
+#   docker compose -f docker-compose.storage-node.yml --profile minio up -d
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+  block-store-worker:
+    build:
+      context: ./services
+      dockerfile: block_store_worker/Dockerfile
+      network: host
+    privileged: true               # Required for lvcreate / vgcreate / pvcreate
+    network_mode: host
+    environment:
+      IMAGE_API_URL: ${IMAGE_API_URL:-http://${CONTROLLER_IP:?set CONTROLLER_IP}:8002}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@${CONTROLLER_IP:?set CONTROLLER_IP}:5672/}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      STORAGE_LVM_DRIVER: ${STORAGE_LVM_DRIVER:-true}
+      STORAGE_CEPH_RBD_DRIVER: ${STORAGE_CEPH_RBD_DRIVER:-false}
+      LVM_PV_NAME: ${LVM_PV_NAME:-}
+      LVM_VG_NAME: ${LVM_VG_NAME:-vg-cloudx}
+      CEPH_POOL: ${CEPH_POOL:-}
+      CEPH_CONF: ${CEPH_CONF:-/etc/ceph/ceph.conf}
+      CEPH_KEYRING: ${CEPH_KEYRING:-}
+      # Volume-backup target (Storage Node hosts MinIO too)
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://127.0.0.1:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-cloudx-backups}
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    volumes:
+      - /dev:/dev                  # LVM: access to block devices on host
+      - /run/lvm:/run/lvm          # LVM: lock files
+      - /run/udev:/run/udev        # LVM: udev socket for udevadm settle
+      - /etc/ceph:/etc/ceph:ro     # Ceph: config + keyring (optional)
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    network_mode: host
+    volumes:
+      - minio-data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-mini-openstack-images}
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-cloudx-backups}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://127.0.0.1:9000 "$$MINIO_ACCESS_KEY" "$$MINIO_SECRET_KEY"; do
+          sleep 2
+        done
+        mc mb --ignore-existing local/"$$MINIO_BUCKET"
+        mc mb --ignore-existing local/"$$BACKUP_BUCKET"
+    network_mode: host
+
+volumes:
+  minio-data:

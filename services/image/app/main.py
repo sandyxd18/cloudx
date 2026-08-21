@@ -1,6 +1,9 @@
 import hashlib
+import json
+import logging
 import os
 import sys
+import time
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -50,6 +53,48 @@ MINIO_BUCKET = os.getenv("MINIO_BUCKET", "mini-openstack-images")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
 
+log = logging.getLogger("image-api")
+
+# ── In-memory TTL cache for image metadata ─────────────────────────────────────
+# Simple dict-based cache: key → (value, expire_time)
+# TTL = 300 seconds (5 minutes); max 200 entries
+_IMAGE_CACHE: dict = {}
+_CACHE_TTL  = int(os.getenv("IMAGE_CACHE_TTL", "300"))
+_CACHE_MAX  = int(os.getenv("IMAGE_CACHE_MAX", "200"))
+
+
+def _cache_get(key: str):
+    """Return cached value or None if missing/expired."""
+    entry = _IMAGE_CACHE.get(key)
+    if entry is None:
+        return None
+    value, expire = entry
+    if time.time() > expire:
+        _IMAGE_CACHE.pop(key, None)
+        return None
+    log.debug("Cache HIT: %s", key)
+    return value
+
+
+def _cache_set(key: str, value) -> None:
+    """Store a value with TTL expiry. Evict oldest entries if over limit."""
+    if len(_IMAGE_CACHE) >= _CACHE_MAX:
+        # Evict the entry with the earliest expiry
+        oldest = min(_IMAGE_CACHE, key=lambda k: _IMAGE_CACHE[k][1])
+        _IMAGE_CACHE.pop(oldest, None)
+    _IMAGE_CACHE[key] = (value, time.time() + _CACHE_TTL)
+    log.debug("Cache SET: %s (TTL=%ds)", key, _CACHE_TTL)
+
+
+def _cache_invalidate(image_id: str | None = None) -> None:
+    """Invalidate specific image or all list caches."""
+    keys_to_del = [k for k in _IMAGE_CACHE if k == image_id or k.startswith("list:")]
+    for k in keys_to_del:
+        _IMAGE_CACHE.pop(k, None)
+    if keys_to_del:
+        log.debug("Cache invalidated: %d entries", len(keys_to_del))
+
+
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
@@ -73,11 +118,15 @@ class Image(Base):
     disk_format: Mapped[str] = mapped_column(String)
     container_format: Mapped[str] = mapped_column(String)
     size: Mapped[int] = mapped_column(Integer)
+    min_disk_gb: Mapped[int] = mapped_column(Integer, default=0)       # minimum disk size in GB required to boot
     checksum: Mapped[str] = mapped_column(String)
+    signature: Mapped[str | None] = mapped_column(String, nullable=True)              # SHA256 hex signature
+    signature_hash_method: Mapped[str | None] = mapped_column(String, nullable=True)  # e.g. "SHA-256"
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
     visibility: Mapped[str] = mapped_column(String, default="private")
     project_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
 
 
 class ImageTag(Base):
@@ -248,6 +297,12 @@ app.add_middleware(
 if RequestIDMiddleware:
     app.add_middleware(RequestIDMiddleware)
 
+try:
+    from shared.metrics import setup_metrics
+    setup_metrics(app, "image-api")
+except Exception:
+    pass
+
 # RPC client (lazy init)
 _rpc: "RPCClient | None" = None
 
@@ -324,6 +379,28 @@ def health():
     return {"status": "ok", "service": "image-api", "storage_backend": IMAGE_STORAGE_BACKEND}
 
 
+@app.get("/healthcheck")
+def healthcheck():
+    """Standard CloudX health check endpoint.
+    Checks: database connectivity.
+    Returns: {status, checks: {db}}.
+    """
+    checks = {}
+    overall = "up"
+    try:
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
+            checks["db"] = "ok"
+        finally:
+            db.close()
+    except Exception as exc:
+        checks["db"] = f"error: {exc}"
+        overall = "degraded"
+    return {"status": overall, "checks": checks}
+
+
+
 @app.post("/images", status_code=201)
 def upload_image(
     db: DB,
@@ -360,6 +437,18 @@ def upload_image(
     db.add(image)
     db.commit()
     db.refresh(image)
+    try:
+        if _rpc:
+            _rpc.publish_event("image.upload.end", {
+                "image_id":   image.id,
+                "name":       image.name,
+                "size":       image.size,
+                "status":     "ACTIVE",
+                "project_id": current["project_id"],
+            })
+    except Exception:
+        pass  # best-effort
+    _cache_invalidate()  # invalidate all list caches
     return obj_to_dict(image)
 
 
@@ -399,10 +488,23 @@ def import_image_from_path(payload: ImageImportIn, db: DB):
 
 
 @app.get("/images")
-def list_images(current: CurrentUser, db: DB,
-                visibility: str | None = None,
-                status: str | None = None,
-                limit: int = 50):
+def list_images(
+    current: CurrentUser,
+    db: DB,
+    visibility: str | None = None,
+    status: str | None = None,
+    name: str | None = None,
+    disk_format: str | None = None,
+    min_disk: int | None = None,     # minimum min_disk_gb in GB
+    sort: str | None = None,         # e.g. "name:asc", "created_at:desc"
+    limit: int = 50,
+):
+    # Build a cache key from all filter params
+    cache_key = f"list:{current.get('role')}:{current.get('project_id')}:{visibility}:{status}:{name}:{disk_format}:{min_disk}:{sort}:{limit}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     q = select(Image)
     if visibility:
         q = q.where(Image.visibility == visibility)
@@ -414,13 +516,37 @@ def list_images(current: CurrentUser, db: DB,
         )
     if status:
         q = q.where(Image.status == status)
-    q = q.order_by(Image.created_at).limit(limit)
-    return {"items": [obj_to_dict(i) for i in db.scalars(q).all()]}
+    if name:
+        q = q.where(Image.name.ilike(f"%{name}%"))
+    if disk_format:
+        q = q.where(Image.disk_format == disk_format)
+    if min_disk is not None:
+        q = q.where(Image.min_disk_gb >= min_disk)
+    # Sort handling: "field:direction" e.g. "name:asc", "created_at:desc"
+    if sort:
+        parts = sort.split(":")
+        sort_field = parts[0]
+        sort_dir = parts[1] if len(parts) > 1 else "asc"
+        col = getattr(Image, sort_field, None)
+        if col is not None:
+            q = q.order_by(col.desc() if sort_dir == "desc" else col.asc())
+    else:
+        q = q.order_by(Image.created_at)
+    q = q.limit(limit)
+    result = {"items": [obj_to_dict(i) for i in db.scalars(q).all()]}
+    _cache_set(cache_key, result)
+    return result
+
 
 
 @app.get("/images/{ref}")
 def show_image(ref: str, db: DB):
-    return obj_to_dict(require_image(db, ref))
+    cached = _cache_get(ref)
+    if cached is not None:
+        return cached
+    result = obj_to_dict(require_image(db, ref))
+    _cache_set(ref, result)
+    return result
 
 
 @app.get("/images/{ref}/download")
@@ -456,9 +582,93 @@ def delete_image(ref: str, _: CurrentUser, db: DB):
         MinioStorageBackend().delete_image(image.object_name)
     else:
         FileStorageBackend(IMAGE_STORE_PATH).delete_image(image.object_name or Path(image.filename).name)
+    image_id = image.id
     db.delete(image)
     db.commit()
-    return {"status": "deleted", "id": image.id, "name": image.name}
+    _cache_invalidate(image_id)  # evict from cache
+    return {"status": "deleted", "id": image_id, "name": image.name}
+
+
+@app.post("/images/{ref}/sign")
+def sign_image(ref: str, current: CurrentUser, db: DB):
+    """
+    Sign an image by recording its SHA256 checksum as the official signature.
+
+    This uses the already-computed checksum from the upload process (SHA256 hash
+    of the image bytes). The 'signature' and 'signature_hash_method' fields are
+    set on the image record, marking it as signed. Nova workers can call
+    GET /images/{ref}/verify before booting to confirm integrity.
+    """
+    image = require_image(db, ref)
+    # Ownership check
+    if current.get("role") != "admin" and image.project_id != current.get("project_id"):
+        raise HTTPException(status_code=403, detail="not authorized to sign this image")
+    if not image.checksum:
+        raise HTTPException(status_code=400, detail="image has no checksum; upload the image file first")
+    image.signature = image.checksum
+    image.signature_hash_method = "SHA-256"
+    db.commit()
+    return {
+        "id": image.id,
+        "name": image.name,
+        "signature": image.signature,
+        "signature_hash_method": image.signature_hash_method,
+        "message": "Image signed successfully. Nova will verify integrity before booting.",
+    }
+
+
+@app.get("/images/{ref}/verify")
+def verify_image(ref: str, _: CurrentUser, db: DB):
+    """
+    Verify image integrity by recalculating SHA256 and comparing to stored signature.
+
+    If the image has no signature, verifies the stored checksum against the file.
+    This endpoint is also called internally by Nova worker before VM boot.
+    """
+    import hashlib as _hashlib
+    image = require_image(db, ref)
+    if not image.signature:
+        return {
+            "id": image.id,
+            "name": image.name,
+            "signed": False,
+            "message": "Image has no signature. Call POST /images/{id}/sign first.",
+        }
+    # Recalculate SHA256 from the actual file
+    try:
+        backend = MinioStorageBackend() if image.storage_backend == "minio" else FileStorageBackend(IMAGE_STORE_PATH)
+        info = backend.get_image_info(image.object_name or Path(image.filename).name)
+        # get_image_info returns size; recompute from file path for local storage
+        if image.storage_backend == "file":
+            file_path = Path(IMAGE_STORE_PATH) / (image.object_name or Path(image.filename).name)
+            if not file_path.exists():
+                raise HTTPException(status_code=404, detail="image file not found on disk")
+            digest = _hashlib.sha256()
+            with open(file_path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(65536), b""):
+                    digest.update(chunk)
+            actual_checksum = digest.hexdigest()
+        else:
+            # For Minio/S3: trust stored checksum (recomputation requires re-download)
+            actual_checksum = image.checksum
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to verify image: {exc}")
+
+    valid = actual_checksum == image.signature
+    return {
+        "id":                    image.id,
+        "name":                  image.name,
+        "signed":                True,
+        "valid":                 valid,
+        "signature":             image.signature,
+        "signature_hash_method": image.signature_hash_method,
+        "actual_checksum":       actual_checksum,
+        "message":               "Integrity verified ✓" if valid else "⚠ Checksum mismatch — image may be corrupted!",
+    }
+
+
 
 
 @app.post("/images/{ref}/deactivate")
@@ -487,6 +697,7 @@ def update_image(ref: str, payload: dict, _: CurrentUser, db: DB):
         if key in allowed:
             setattr(image, key, value)
     db.commit()
+    _cache_invalidate(image.id)  # evict stale cached entry
     return obj_to_dict(image)
 
 

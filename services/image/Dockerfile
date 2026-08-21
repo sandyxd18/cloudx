@@ -7,6 +7,8 @@ WORKDIR /app
 COPY image/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY shared/auth_middleware.py ./app/auth_middleware.py
+COPY shared/request_id_middleware.py ./shared/request_id_middleware.py
+COPY shared/metrics.py ./shared/metrics.py
 COPY image/app ./app
 
 CMD ["sh", "-c", "uvicorn app.main:app --host ${HOST:-127.0.0.1} --port ${PORT:-8000}"]

@@ -289,6 +289,12 @@ app.add_middleware(
 if RequestIDMiddleware:
     app.add_middleware(RequestIDMiddleware)
 
+try:
+    from shared.metrics import setup_metrics
+    setup_metrics(app, "compute-api")
+except Exception:
+    pass
+
 
 @app.on_event("startup")
 def startup():
@@ -698,6 +704,25 @@ def health():
     return {"status": "ok", "service": "compute-api", "default_backend": ONLY_BACKEND}
 
 
+@app.get("/healthcheck")
+def healthcheck(db: DB):
+    """Standard CloudX health check endpoint.
+    Checks: database connectivity.
+    Returns: {status, checks: {db}} compatible with OpenStack-style health format.
+    """
+    checks = {}
+    overall = "up"
+    # DB check
+    try:
+        db.execute(text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as exc:
+        checks["db"] = f"error: {exc}"
+        overall = "degraded"
+    return {"status": overall, "checks": checks}
+
+
+
 @app.get("/host/check")
 def host_check(_: CurrentUser):
     try:
@@ -903,7 +928,19 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
         worker_payload["_root_volume_id"] = root_volume["id"]
         worker_payload["_block_store_url"] = BLOCK_STORE_API_URL
         cast_to_worker("build_instance", worker_payload)
+        # Emit OpenStack-style event so subscribers (dashboard, monitoring) know a build started
+        try:
+            _rpc.publish_event("compute.instance.create.start", {
+                "server_id": server.id,
+                "name":      server.name,
+                "project_id": server.project_id,
+                "flavor":    server.flavor,
+                "status":    "BUILD",
+            })
+        except Exception:
+            pass  # events are best-effort — never block the API
         # API returns immediately with status=BUILD
+
     except Exception as exc:
         for created in created_ports:
             api_delete(f"{NETWORKING_API_URL}/ports/{created['id']}")
@@ -1221,6 +1258,15 @@ def delete_server(ref: str, current: CurrentUser, db: DB, keep_root_volume: bool
         "_block_store_url": BLOCK_STORE_API_URL,
         "_networking_url": NETWORKING_API_URL,
     })
+    try:
+        _rpc.publish_event("compute.instance.delete.start", {
+            "server_id":  server.id,
+            "name":       original_name,
+            "project_id": server.project_id,
+            "status":     "DELETING",
+        })
+    except Exception:
+        pass  # best-effort
     return {"status": "deleting", "id": server.id, "name": original_name}
 
 
@@ -1579,5 +1625,173 @@ def compute_root():
             "links": [{"rel": "self", "href": "/v2.1"}],
         }]
     }
+
+
+# ── Nova Host Aggregates ──────────────────────────────────────────────────────
+# Host aggregates let operators group compute hosts and assign AZ metadata.
+# Reference: https://docs.openstack.org/nova/latest/admin/aggregates.html
+
+class Aggregate(Base):
+    """Host aggregate definition."""
+    __tablename__ = "compute_aggregates"
+    id:           Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:         Mapped[str] = mapped_column(String, unique=True, index=True)
+    availability_zone: Mapped[str | None] = mapped_column(String, nullable=True)
+    metadata:     Mapped[str | None] = mapped_column(String, nullable=True)  # JSON string
+    created_at:   Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at:   Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class AggregateHost(Base):
+    """Host membership in an aggregate."""
+    __tablename__ = "compute_aggregate_hosts"
+    id:           Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    aggregate_id: Mapped[str] = mapped_column(String, ForeignKey("compute_aggregates.id", ondelete="CASCADE"))
+    host:         Mapped[str] = mapped_column(String)   # hostname / compute node name
+    created_at:   Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class AggregateIn(BaseModel):
+    name: str
+    availability_zone: str | None = None
+
+
+class AggregateUpdateIn(BaseModel):
+    name: str | None = None
+    availability_zone: str | None = None
+
+
+class AggregateActionIn(BaseModel):
+    """Payload for add_host / remove_host actions."""
+    host: str
+
+
+def _aggregate_to_dict(db: Session, agg: Aggregate) -> dict:
+    hosts = [
+        row.host for row in db.scalars(
+            select(AggregateHost).where(AggregateHost.aggregate_id == agg.id)
+        ).all()
+    ]
+    meta = {}
+    try:
+        import json as _json
+        meta = _json.loads(agg.metadata or "{}")
+    except Exception:
+        pass
+    return {
+        "id":                agg.id,
+        "name":              agg.name,
+        "availability_zone": agg.availability_zone,
+        "hosts":             hosts,
+        "metadata":          meta,
+        "created_at":        agg.created_at.isoformat() if agg.created_at else None,
+        "updated_at":        agg.updated_at.isoformat() if agg.updated_at else None,
+    }
+
+
+@app.post("/os-aggregates", status_code=201)
+def create_aggregate(payload: AggregateIn, _: AdminUser, db: DB):
+    """Create a host aggregate (admin only)."""
+    if db.scalar(select(Aggregate).where(Aggregate.name == payload.name)):
+        raise HTTPException(status_code=409, detail="aggregate already exists")
+    agg = Aggregate(name=payload.name, availability_zone=payload.availability_zone)
+    db.add(agg)
+    db.commit()
+    db.refresh(agg)
+    return {"aggregate": _aggregate_to_dict(db, agg)}
+
+
+@app.get("/os-aggregates")
+def list_aggregates(_: CurrentUser, db: DB):
+    """List all host aggregates."""
+    aggs = db.scalars(select(Aggregate).order_by(Aggregate.created_at)).all()
+    return {"aggregates": [_aggregate_to_dict(db, a) for a in aggs]}
+
+
+@app.get("/os-aggregates/{agg_ref}")
+def show_aggregate(agg_ref: str, _: CurrentUser, db: DB):
+    """Get details of a specific host aggregate."""
+    agg = db.get(Aggregate, agg_ref) or db.scalar(select(Aggregate).where(Aggregate.name == agg_ref))
+    if not agg:
+        raise HTTPException(status_code=404, detail="aggregate not found")
+    return {"aggregate": _aggregate_to_dict(db, agg)}
+
+
+@app.put("/os-aggregates/{agg_ref}")
+def update_aggregate(agg_ref: str, payload: AggregateUpdateIn, _: AdminUser, db: DB):
+    """Update aggregate name or availability zone (admin only)."""
+    agg = db.get(Aggregate, agg_ref) or db.scalar(select(Aggregate).where(Aggregate.name == agg_ref))
+    if not agg:
+        raise HTTPException(status_code=404, detail="aggregate not found")
+    if payload.name is not None:
+        agg.name = payload.name
+    if payload.availability_zone is not None:
+        agg.availability_zone = payload.availability_zone
+    agg.updated_at = now()
+    db.commit()
+    return {"aggregate": _aggregate_to_dict(db, agg)}
+
+
+@app.delete("/os-aggregates/{agg_ref}", status_code=204)
+def delete_aggregate(agg_ref: str, _: AdminUser, db: DB):
+    """Delete a host aggregate (admin only)."""
+    agg = db.get(Aggregate, agg_ref) or db.scalar(select(Aggregate).where(Aggregate.name == agg_ref))
+    if not agg:
+        raise HTTPException(status_code=404, detail="aggregate not found")
+    # Cascade delete removes AggregateHost rows automatically
+    db.delete(agg)
+    db.commit()
+
+
+@app.post("/os-aggregates/{agg_ref}/action")
+def aggregate_action(agg_ref: str, payload: dict, _: AdminUser, db: DB):
+    """
+    Perform an action on an aggregate.
+    Supported actions:
+      - add_host:    {"add_host": {"host": "hostname"}}
+      - remove_host: {"remove_host": {"host": "hostname"}}
+    """
+    agg = db.get(Aggregate, agg_ref) or db.scalar(select(Aggregate).where(Aggregate.name == agg_ref))
+    if not agg:
+        raise HTTPException(status_code=404, detail="aggregate not found")
+
+    if "add_host" in payload:
+        host = payload["add_host"].get("host")
+        if not host:
+            raise HTTPException(status_code=400, detail="host is required")
+        # Check not already a member
+        existing = db.scalar(
+            select(AggregateHost).where(
+                AggregateHost.aggregate_id == agg.id,
+                AggregateHost.host == host,
+            )
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail=f"host '{host}' is already in this aggregate")
+        db.add(AggregateHost(aggregate_id=agg.id, host=host))
+        agg.updated_at = now()
+        db.commit()
+        return {"aggregate": _aggregate_to_dict(db, agg)}
+
+    elif "remove_host" in payload:
+        host = payload["remove_host"].get("host")
+        if not host:
+            raise HTTPException(status_code=400, detail="host is required")
+        record = db.scalar(
+            select(AggregateHost).where(
+                AggregateHost.aggregate_id == agg.id,
+                AggregateHost.host == host,
+            )
+        )
+        if not record:
+            raise HTTPException(status_code=404, detail=f"host '{host}' not found in aggregate")
+        db.delete(record)
+        agg.updated_at = now()
+        db.commit()
+        return {"aggregate": _aggregate_to_dict(db, agg)}
+
+    else:
+        raise HTTPException(status_code=400, detail=f"unknown action: {list(payload.keys())}")
+
 
 

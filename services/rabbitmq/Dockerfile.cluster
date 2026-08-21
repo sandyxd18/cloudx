@@ -1,0 +1,8 @@
+FROM rabbitmq:3-management
+
+# rabbitmq_prometheus ships with the image; enable it + management up front.
+COPY enabled_plugins /etc/rabbitmq/enabled_plugins
+COPY cluster-entrypoint.sh /usr/local/bin/cluster-entrypoint.sh
+RUN chmod +x /usr/local/bin/cluster-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/cluster-entrypoint.sh"]

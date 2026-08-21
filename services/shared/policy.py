@@ -51,6 +51,9 @@ POLICY_RULES: dict[str, str] = {
     "identity:revoke_role":          "admin_required",
     "identity:list_services":        "",
     "identity:manage_services":      "admin_required",
+    "identity:create_app_credential":  "",
+    "identity:list_app_credentials":   "admin_or_owner",
+    "identity:delete_app_credential":  "admin_or_owner",
 
     # ── Nova / Compute ─────────────────────────────────────────────────────────
     "compute:server:create":         "",
@@ -70,6 +73,11 @@ POLICY_RULES: dict[str, str] = {
     "compute:keypair:list":          "",
     "compute:aggregate:create":      "admin_required",
     "compute:aggregate:list":        "",
+    "compute:aggregate:get":         "",
+    "compute:aggregate:update":      "admin_required",
+    "compute:aggregate:delete":      "admin_required",
+    "compute:aggregate:add_host":    "admin_required",
+    "compute:aggregate:remove_host": "admin_required",
 
     # ── Neutron / Networking ────────────────────────────────────────────────────
     "network:create":                "",
@@ -97,6 +105,12 @@ POLICY_RULES: dict[str, str] = {
     "port_forwarding:create":        "",
     "port_forwarding:delete":        "admin_or_owner",
     "port_forwarding:list":          "",
+    "trunk:create":                  "",
+    "trunk:delete":                  "admin_or_owner",
+    "trunk:list":                    "",
+    "trunk:get":                     "admin_or_owner",
+    "trunk:add_subports":            "admin_or_owner",
+    "trunk:remove_subports":         "admin_or_owner",
 
     # ── Glance / Image ─────────────────────────────────────────────────────────
     "image:create":                  "",
@@ -107,6 +121,8 @@ POLICY_RULES: dict[str, str] = {
     "image:deactivate":              "admin_required",
     "image:reactivate":              "admin_required",
     "image:share":                   "admin_or_owner",
+    "image:sign":                    "admin_or_owner",
+    "image:verify":                  "",
 
     # ── Cinder / Block Storage ─────────────────────────────────────────────────
     "volume:create":                 "",
@@ -117,6 +133,7 @@ POLICY_RULES: dict[str, str] = {
     "volume:attach":                 "admin_or_owner",
     "volume:detach":                 "admin_or_owner",
     "volume:snapshot":               "admin_or_owner",
+    "volume:migrate":                "admin_or_owner",
     "volume:type:create":            "admin_required",
     "volume:type:delete":            "admin_required",
     "volume:type:list":              "",
@@ -130,6 +147,14 @@ POLICY_RULES: dict[str, str] = {
     "placement:allocation:create":        "",
     "placement:allocation:delete":        "",
     "placement:usage:get":                "",
+    "placement:resource_class:create":    "admin_required",
+    "placement:resource_class:delete":    "admin_required",
+    "placement:resource_class:list":      "",
+
+    # ── Quota (Cross-cutting) ──────────────────────────────────────────────────
+    "quota:get":                     "admin_or_owner",
+    "quota:set":                     "admin_required",
+    "quota:reserve":                 "",
 }
 
 
@@ -195,3 +220,36 @@ def is_admin(token_payload: dict) -> bool:
 def list_rules() -> dict[str, str]:
     """Return the full policy map (for GET /policy endpoint)."""
     return dict(POLICY_RULES)
+
+
+# ── FastAPI Dependency Factory ────────────────────────────────────────────────
+
+from fastapi import Depends  # noqa: E402 (import kept local to avoid circular)
+
+
+def require_policy(action: str, target_project_id: str | None = None):
+    """
+    FastAPI Dependency factory for policy enforcement.
+
+    Usage:
+        @app.delete("/servers/{id}")
+        def delete_server(id: str, _: Annotated[dict, Depends(require_policy("compute:server:delete"))]):
+            ...
+
+    For owner-based rules, wrap with a function that passes target_project_id:
+        def check_policy(current=Depends(require_auth)):
+            enforce("compute:server:delete", current, target_project_id=server.project_id)
+    """
+    def _dependency(current: dict = Depends(require_auth)) -> dict:
+        enforce(action, current, target_project_id=target_project_id, raise_on_deny=True)
+        return current
+    return _dependency
+
+
+# Import here to avoid circular dependency (auth_middleware imports jose, not policy)
+try:
+    from app.auth_middleware import require_auth  # type: ignore[import]
+except ImportError:
+    # Fallback for tests or direct imports from shared module
+    def require_auth(request):  # type: ignore[misc]
+        raise NotImplementedError("auth_middleware not available")

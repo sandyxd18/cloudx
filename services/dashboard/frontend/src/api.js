@@ -42,6 +42,7 @@ export const api = {
   deleteProject: (id) => request('DELETE', `/auth/projects/${id}`),
   getUsers: () => request('GET', '/auth/users'),
   createUser: (b) => request('POST', '/auth/users', b),
+  updateUser: (id, b) => request('PUT', `/auth/users/${id}`, b),
   deleteUser: (id) => request('DELETE', `/auth/users/${id}`),
   switchProject: (projectId) => request('POST', '/auth/session/switch-project', { project_id: projectId }),
 
@@ -54,6 +55,12 @@ export const api = {
   getDomains: () => request('GET', '/auth/v3/domains'),
   createDomain: (b) => request('POST', '/auth/v3/domains', b),
   deleteDomain: (id) => request('DELETE', `/auth/v3/domains/${id}`),
+
+  // Auth — Application Credentials (Keystone v3)
+  getAppCredentials: (userId) => request('GET', `/auth/v3/users/${userId}/application_credentials`),
+  createAppCredential: (userId, b) => request('POST', `/auth/v3/users/${userId}/application_credentials`, b),
+  deleteAppCredential: (userId, credId) => request('DELETE', `/auth/v3/users/${userId}/application_credentials/${credId}`),
+  loginWithAppCredential: (b) => request('POST', '/auth/tokens/application-credential', b),
 
   // Compute — Servers
   getServers: () => request('GET', '/compute/servers'),
@@ -188,7 +195,16 @@ export const api = {
   // Placement
   getUsages: () => request('GET', '/placement/usages'),
   getProviders: () => request('GET', '/placement/resource-providers'),
-  getAllocationCandidates: (resources) => request('GET', `/placement/allocation_candidates?resources=${encodeURIComponent(resources)}`),
+  getAllocationCandidates: (resources, opts = {}) => {
+    const params = new URLSearchParams({ resources })
+    if (opts.required) params.set('required', opts.required)
+    if (opts.forbidden) params.set('forbidden', opts.forbidden)
+    return request('GET', `/placement/allocation_candidates?${params.toString()}`)
+  },
+  // Placement — Custom Resource Classes
+  getResourceClasses: () => request('GET', '/placement/resource_classes'),
+  createResourceClass: (name) => request('PUT', `/placement/resource_classes/${name}`, {}),
+  deleteResourceClass: (name) => request('DELETE', `/placement/resource_classes/${name}`),
 
   // Volume Quotas
   getQuota: (projectId, withUsage = true) =>

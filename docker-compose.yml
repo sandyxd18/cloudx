@@ -211,6 +211,7 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-mini-openstack-images}
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-cloudx-backups}
     entrypoint:
       - /bin/sh
       - -c
@@ -219,6 +220,7 @@ services:
           sleep 2
         done
         mc mb --ignore-existing local/"$$MINIO_BUCKET"
+        mc mb --ignore-existing local/"$$BACKUP_BUCKET"
     network_mode: host
 
   compute-api:
@@ -356,6 +358,11 @@ services:
       CEPH_POOL: ${CEPH_POOL:-}
       CEPH_CONF: ${CEPH_CONF:-/etc/ceph/ceph.conf}
       CEPH_KEYRING: ${CEPH_KEYRING:-}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://127.0.0.1:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-cloudx-backups}
+      TZ: ${TIMEZONE:-Asia/Jakarta}
     volumes:
       - /dev:/dev                  # LVM: access to block devices on host
       - /run/lvm:/run/lvm          # LVM: lock files

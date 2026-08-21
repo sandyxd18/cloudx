@@ -1,7 +1,9 @@
 import { useEffect, useState, useRef } from 'react'
+import { Link as RouterLink } from 'react-router-dom'
 import { Plus, Trash2, ChevronDown, Database } from 'lucide-react'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
+
 
 function statusClass(s) {
   const m = { available: 'available', 'in-use': 'in-use', error: 'error', creating: 'building', extending: 'building', deleting: 'building' }
@@ -218,8 +220,13 @@ export default function VolumesPage() {
                     <tr key={v.id} className={selected.includes(v.id) ? 'row-selected' : ''}>
                       <td><input type="checkbox" checked={selected.includes(v.id)} onChange={() => toggleSelect(v.id)} /></td>
                       <td>
-                        <div className="name-cell">{v.name || '—'}</div>
-                        <div className="mono text-muted" style={{fontSize:10}}>{v.id?.slice(0,16)}…</div>
+                        <RouterLink
+                          to={`/volumes/${v.id}`}
+                          style={{ textDecoration: 'none', color: 'inherit' }}
+                        >
+                          <div className="name-cell" style={{ color: '#7eaadb', cursor: 'pointer' }}>{v.name || '—'}</div>
+                          <div className="mono text-muted" style={{fontSize:10}}>{v.id?.slice(0,16)}…</div>
+                        </RouterLink>
                       </td>
                       <td className="text-muted">{v.description || '—'}</td>
                       <td>{v.size_gb || v.size || 0} GiB</td>

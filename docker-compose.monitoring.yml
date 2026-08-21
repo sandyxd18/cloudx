@@ -1,0 +1,68 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CloudX — Monitoring overlay (Fase 5): Prometheus + Grafana + exporters
+# ═══════════════════════════════════════════════════════════════════════════════
+#   docker compose \
+#       -f docker-compose.control-plane.yml \
+#       -f docker-compose.monitoring.yml \
+#       up -d
+#
+# Metrics retention: 15 days (PROMETHEUS_RETENTION).
+# Grafana:    http://<node>:3000  (admin / GRAFANA_ADMIN_PASSWORD)
+# Prometheus: http://<node>:9090
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    network_mode: host
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}"
+      - "--web.listen-address=0.0.0.0:${PROMETHEUS_PORT:-9090}"
+    volumes:
+      - ./services/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./services/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    environment:
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    network_mode: host
+    environment:
+      GF_SERVER_HTTP_PORT: ${GRAFANA_PORT:-3000}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    volumes:
+      - ./services/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # ── Exporters ────────────────────────────────────────────────────────────────
+  node-exporter:
+    image: prom/node-exporter:latest
+    network_mode: host
+    pid: host
+    command:
+      - "--path.rootfs=/host"
+    volumes:
+      - /:/host:ro,rslave
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:latest
+    network_mode: host
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-mini}:${POSTGRES_PASSWORD:-mini}@127.0.0.1:5432/${POSTGRES_DB:-mini_openstack}?sslmode=disable"
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

@@ -46,6 +46,12 @@ LVM_PV_NAME  = os.getenv("LVM_PV_NAME", "")
 CEPH_POOL    = os.getenv("CEPH_POOL", "")
 CEPH_CONF    = os.getenv("CEPH_CONF", "/etc/ceph/ceph.conf")
 
+# ── Volume backup → object storage (MinIO/S3) ──────────────────────────────────
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000").rstrip("/")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+BACKUP_BUCKET    = os.getenv("BACKUP_BUCKET", "cloudx-backups")
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s [%(name)s] %(levelname)s  %(message)s",
@@ -82,6 +88,18 @@ def conductor_mark_volume_error(volume_id: str, error: str) -> None:
 
 def conductor_mark_snapshot_error(snapshot_id: str, error: str) -> None:
     _rpc.cast("conductor", "mark_snapshot_error", {"snapshot_id": snapshot_id, "error_message": error})
+
+
+def conductor_update_backup(backup_id: str, fields: dict) -> None:
+    _rpc.cast("conductor", "update_backup", {"backup_id": backup_id, "fields": fields})
+
+
+def conductor_delete_backup(backup_id: str) -> None:
+    _rpc.cast("conductor", "delete_backup_record", {"backup_id": backup_id})
+
+
+def conductor_mark_backup_error(backup_id: str, error: str) -> None:
+    _rpc.cast("conductor", "mark_backup_error", {"backup_id": backup_id, "error_message": error})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -189,6 +207,8 @@ def handle_create_volume(args: dict) -> None:
     bootable       = args.get("bootable", False)
     image_api_url  = args.get("_image_api_url", IMAGE_API_URL)
     lvm_type       = args.get("lvm_type", "default")  # default | thin
+    max_iops       = args.get("max_iops")           # QoS: from volume type
+    max_throughput = args.get("max_throughput")     # QoS: from volume type (MB/s)
 
     log.info("Creating volume %s (%s, %dGB)", volume_id, backend, size_gb)
     lv = _lv_name(volume_id)
@@ -235,6 +255,13 @@ def handle_create_volume(args: dict) -> None:
             else:
                 path = ceph.create(lv, size_gb)
 
+        # ── Apply Ceph QoS if volume type specifies limits ─────────────────
+        if backend == "ceph" and (max_iops or max_throughput):
+            try:
+                ceph.set_qos(lv, max_iops=max_iops, max_throughput_mbps=max_throughput)
+            except Exception as qos_exc:
+                log.warning("Ceph QoS apply failed for volume %s: %s (volume is still usable)", volume_id, qos_exc)
+
         conductor_update_volume(volume_id, {
             "status": "available",
             "path": path,
@@ -248,6 +275,7 @@ def handle_create_volume(args: dict) -> None:
 
 
 def handle_delete_volume(args: dict) -> None:
+
     volume_id = args["volume_id"]
     path      = args.get("path", "")
     backend   = args.get("backend", "lvm")
@@ -336,17 +364,357 @@ def handle_delete_snapshot(args: dict) -> None:
     log.info("Snapshot %s deleted", snapshot_id)
 
 
+def handle_create_cgsnapshot(args: dict) -> None:
+    """
+    Create snapshots for all volumes in a consistency group.
+
+    Strategy:
+    - LVM: loop over each volume and create an LVM snapshot sequentially.
+    - Ceph: loop similarly (rbd group snapshot would be ideal but requires
+      the group feature enabled; sequential is safe for lab use).
+
+    On failure, the CGSnapshot record is marked as 'error' via conductor.
+    Individual volume snapshots that already completed are preserved.
+    """
+    cgsnapshot_id = args["cgsnapshot_id"]
+    volumes       = args.get("volumes", [])
+
+    log.info("Creating CGSnapshot %s for %d volumes", cgsnapshot_id, len(volumes))
+
+    failed = []
+    created_snap_ids = []
+
+    for vol in volumes:
+        volume_id  = vol["volume_id"]
+        vol_name   = vol.get("name", volume_id)
+        backend    = vol.get("backend", "lvm")
+        size_gb    = int(vol.get("size_gb", 1))
+        path       = vol.get("path", "")
+
+        # Derive a unique snap name embedding both the CG snap ID and the volume ID
+        snap_suffix = f"{cgsnapshot_id[:8]}-{volume_id[:8]}"
+        snap_name   = f"cgsnap-{snap_suffix}"
+        snap_lv     = f"snap-{snap_suffix.replace('-', '')[:20]}"
+
+        # LV name from the volume path or standard naming
+        source_lv = path.split("/")[-1] if path else _lv_name(volume_id)
+
+        log.info("  snapshotting vol %s (%s) as %s", vol_name, backend, snap_name)
+        try:
+            if backend == "lvm":
+                snap_path = lvm.snapshot(source_lv, snap_lv, max(1, size_gb // 10))
+            elif backend == "ceph":
+                snap_path = ceph.snapshot(source_lv, snap_lv, 1)
+            else:
+                raise ValueError(f"Unknown backend: {backend}")
+
+            # Record this individual snapshot in DB via conductor
+            _rpc.cast("conductor", "create_snapshot_record", {
+                "snapshot_id": f"{cgsnapshot_id}-{volume_id}",
+                "name":        snap_name,
+                "volume_id":   volume_id,
+                "size_gb":     size_gb,
+                "status":      "available",
+                "path":        snap_path,
+                "backend":     backend,
+            })
+            created_snap_ids.append(snap_name)
+        except Exception as exc:
+            log.error("  Failed to snapshot vol %s: %s", vol_name, exc)
+            failed.append(volume_id)
+
+    # Update CGSnapshot status
+    final_status = "error" if failed else "available"
+    _rpc.cast("conductor", "update_cgsnapshot", {
+        "cgsnapshot_id": cgsnapshot_id,
+        "status":        final_status,
+    })
+    if failed:
+        log.warning("CGSnapshot %s completed with errors for volumes: %s", cgsnapshot_id, failed)
+    else:
+        log.info("CGSnapshot %s completed successfully (%d snapshots)", cgsnapshot_id, len(created_snap_ids))
+
+
+
+def handle_migrate_volume(args: dict) -> None:
+    """
+    Migrate a volume to a different backend/host.
+
+    Strategy (cold migration only — volume must be 'available'):
+      1. Create a new volume on the target backend.
+      2. Copy data from source to destination using qemu-img (LVM→LVM),
+         rbd export/import (Ceph→Ceph), or qemu-img convert (cross-backend).
+      3. Update DB via conductor to point to new path/backend.
+      4. Delete the old volume from the source backend.
+
+    On any failure, the volume is reset to 'available' with an error note,
+    so the original data remains intact.
+    """
+    volume_id   = args["volume_id"]
+    volume_name = args.get("name", volume_id)
+    source_path = args.get("path", "")
+    backend     = args.get("backend", "lvm")
+    size_gb     = int(args.get("size_gb", 1))
+    target_host = args.get("target_host", "")
+    force_copy  = args.get("force_host_copy", False)
+
+    # Parse target backend from the host string (e.g. "cinder@ceph#ceph" → "ceph")
+    # Format is "service@driver#pool" (OpenStack convention)
+    target_backend = backend  # default: same backend
+    if "#" in target_host:
+        target_backend = target_host.split("#")[-1].lower()
+    elif "@" in target_host:
+        target_backend = target_host.split("@")[-1].lower()
+
+    log.info(
+        "Migrating volume %s (%s, %d GB): %s → host=%s (backend=%s)",
+        volume_id, volume_name, size_gb, backend, target_host, target_backend
+    )
+
+    source_lv = _lv_name(volume_id)
+    # Destination LV uses same naming (same volume_id, different VG/pool conceptually)
+    dest_lv   = _lv_name(volume_id)
+
+    try:
+        new_path = ""
+
+        # ── LVM → LVM (same node, different VG): use qemu-img dd ──────────
+        if backend == "lvm" and target_backend == "lvm":
+            # Create new LV on the same VG (represents migration to a fresh thin pool)
+            dest_lv_name = f"vol-mig-{volume_id.replace('-', '')[:20]}"
+            lvm.create(dest_lv_name, size_gb)
+            new_path = f"/dev/{LVM_VG_NAME}/{dest_lv_name}"
+            # Copy using dd via subprocess
+            source_dev = f"/dev/{LVM_VG_NAME}/{source_lv}"
+            dest_dev   = new_path
+            log.info("Copying %s → %s via dd", source_dev, dest_dev)
+            result = subprocess.run(
+                ["dd", f"if={source_dev}", f"of={dest_dev}", "bs=4M", "status=none"],
+                capture_output=True, text=True, timeout=3600,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"dd failed: {result.stderr.strip()}")
+            # Delete old LV
+            try:
+                lvm.delete(source_lv)
+            except Exception as del_exc:
+                log.warning("Could not delete source LV %s: %s", source_lv, del_exc)
+
+        # ── Ceph → Ceph: use rbd export/import with new name ──────────────
+        elif backend == "ceph" and target_backend == "ceph":
+            dest_rbd_name = f"vol-mig-{volume_id.replace('-', '')[:20]}"
+            log.info("Ceph rbd copy: %s → %s", source_lv, dest_rbd_name)
+            result = subprocess.run(
+                ["rbd", "copy", "--pool", CEPH_POOL, source_lv, dest_rbd_name],
+                capture_output=True, text=True, timeout=3600,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"rbd copy failed: {result.stderr.strip()}")
+            new_path = f"rbd:{CEPH_POOL}/{dest_rbd_name}"
+            # Delete old image (non-fatal)
+            try:
+                ceph.delete(source_lv)
+            except Exception as del_exc:
+                log.warning("Could not delete source Ceph image %s: %s", source_lv, del_exc)
+
+        # ── Cross-backend: export to temp file, import on destination ─────
+        else:
+            log.info("Cross-backend migration %s → %s via temp file", backend, target_backend)
+            with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                # Export from source
+                if backend == "lvm":
+                    source_dev = f"/dev/{LVM_VG_NAME}/{source_lv}"
+                    subprocess.run(
+                        ["qemu-img", "convert", "-f", "raw", "-O", "raw", source_dev, tmp_path],
+                        check=True, capture_output=True, timeout=3600,
+                    )
+                elif backend == "ceph":
+                    subprocess.run(
+                        ["rbd", "export", "--pool", CEPH_POOL, source_lv, tmp_path],
+                        check=True, capture_output=True, timeout=3600,
+                    )
+
+                # Import to destination
+                if target_backend == "lvm":
+                    dest_lv_name = f"vol-mig-{volume_id.replace('-', '')[:20]}"
+                    lvm.create(dest_lv_name, size_gb)
+                    dest_dev = f"/dev/{LVM_VG_NAME}/{dest_lv_name}"
+                    subprocess.run(
+                        ["qemu-img", "convert", "-f", "raw", "-O", "raw", tmp_path, dest_dev],
+                        check=True, capture_output=True, timeout=3600,
+                    )
+                    new_path = dest_dev
+                elif target_backend == "ceph":
+                    dest_rbd_name = f"vol-mig-{volume_id.replace('-', '')[:20]}"
+                    subprocess.run(
+                        ["rbd", "import", "--pool", CEPH_POOL, tmp_path, dest_rbd_name],
+                        check=True, capture_output=True, timeout=3600,
+                    )
+                    new_path = f"rbd:{CEPH_POOL}/{dest_rbd_name}"
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
+
+        # Update DB: new path, new backend, status = available
+        conductor_update_volume(volume_id, {
+            "status":  "available",
+            "path":    new_path,
+            "backend": target_backend,
+            "error_message": None,
+        })
+        log.info("Volume %s migrated successfully to %s (path=%s)", volume_id, target_host, new_path)
+
+    except Exception as exc:
+        log.error("Migration failed for volume %s: %s", volume_id, exc, exc_info=True)
+        # Reset to available so user can retry — data is still on original backend
+        conductor_update_volume(volume_id, {
+            "status":        "available",
+            "error_message": f"Migration to {target_host} failed: {exc}",
+        })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Volume backup → MinIO/S3 (Cinder swift/s3 backup driver equivalent)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _mc_alias() -> None:
+    """Configure the mc alias 'cloudx' pointing at the backup MinIO endpoint."""
+    subprocess.run(
+        ["mc", "alias", "set", "cloudx", MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY],
+        check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["mc", "mb", "--ignore-existing", f"cloudx/{BACKUP_BUCKET}"],
+        check=False, capture_output=True, text=True,
+    )
+
+
+def _export_volume_to_file(volume_path: str, backend: str, dest_file: str) -> None:
+    """Export a volume's raw data to a local file using the right backend tool."""
+    if backend == "ceph":
+        # volume_path like rbd:pool/image → strip prefix to pool/image
+        rbd_name = volume_path.replace("rbd:", "").split("/", 1)[-1]
+        subprocess.run(
+            ["rbd", "export", "--pool", CEPH_POOL, rbd_name, dest_file],
+            check=True, capture_output=True, text=True, timeout=7200,
+        )
+    else:  # lvm (volume_path is a device like /dev/vg/vol-xxx)
+        subprocess.run(
+            ["qemu-img", "convert", "-f", "raw", "-O", "raw", volume_path, dest_file],
+            check=True, capture_output=True, text=True, timeout=7200,
+        )
+
+
+def _import_file_to_volume(src_file: str, backend: str, volume_id: str, size_gb: int) -> str:
+    """Import a local raw file into a freshly created volume; return its path."""
+    if backend == "ceph":
+        rbd_name = _lv_name(volume_id)
+        ceph.create_from_source(rbd_name, src_file, size_gb)
+        return f"rbd:{CEPH_POOL}/{rbd_name}"
+    else:
+        lv = _lv_name(volume_id)
+        lvm.create(lv, size_gb)
+        dev = f"/dev/{LVM_VG_NAME}/{lv}"
+        subprocess.run(
+            ["qemu-img", "convert", "-f", "raw", "-O", "raw", src_file, dev],
+            check=True, capture_output=True, text=True, timeout=7200,
+        )
+        return dev
+
+
+def handle_backup_volume(args: dict) -> None:
+    """Export a volume and upload it to the backup bucket in MinIO."""
+    backup_id   = args["backup_id"]
+    volume_path = args.get("volume_path", "")
+    backend     = args.get("backend", "lvm")
+    size_gb     = int(args.get("size_gb", 1))
+    object_key  = args["object_key"]
+
+    log.info("Backing up volume %s (%s) → %s/%s", args.get("volume_id"), backend, BACKUP_BUCKET, object_key)
+    tmp = None
+    try:
+        _mc_alias()
+        with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as f:
+            tmp = f.name
+        _export_volume_to_file(volume_path, backend, tmp)
+        subprocess.run(
+            ["mc", "cp", tmp, f"cloudx/{BACKUP_BUCKET}/{object_key}"],
+            check=True, capture_output=True, text=True, timeout=7200,
+        )
+        conductor_update_backup(backup_id, {"status": "available", "object_key": object_key})
+        log.info("Backup %s uploaded to %s/%s", backup_id, BACKUP_BUCKET, object_key)
+    except Exception as exc:
+        log.error("Backup %s failed: %s", backup_id, exc, exc_info=True)
+        conductor_mark_backup_error(backup_id, str(exc))
+    finally:
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
+
+
+def handle_restore_backup(args: dict) -> None:
+    """Download a backup object from MinIO and import it into a new volume."""
+    backup_id  = args["backup_id"]
+    object_key = args["object_key"]
+    backend    = args.get("backend", "lvm")
+    volume_id  = args["volume_id"]
+    size_gb    = int(args.get("size_gb", 1))
+
+    log.info("Restoring backup %s → volume %s (%s)", backup_id, volume_id, backend)
+    tmp = None
+    try:
+        _mc_alias()
+        with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as f:
+            tmp = f.name
+        subprocess.run(
+            ["mc", "cp", f"cloudx/{BACKUP_BUCKET}/{object_key}", tmp],
+            check=True, capture_output=True, text=True, timeout=7200,
+        )
+        new_path = _import_file_to_volume(tmp, backend, volume_id, size_gb)
+        conductor_update_volume(volume_id, {"status": "available", "path": new_path})
+        log.info("Backup %s restored into volume %s at %s", backup_id, volume_id, new_path)
+    except Exception as exc:
+        log.error("Restore of backup %s failed: %s", backup_id, exc, exc_info=True)
+        conductor_mark_volume_error(volume_id, f"restore failed: {exc}")
+    finally:
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
+
+
+def handle_delete_backup(args: dict) -> None:
+    """Remove a backup object from MinIO and delete its DB record."""
+    backup_id  = args["backup_id"]
+    object_key = args.get("object_key")
+    log.info("Deleting backup %s (%s)", backup_id, object_key)
+    try:
+        if object_key:
+            _mc_alias()
+            subprocess.run(
+                ["mc", "rm", f"cloudx/{BACKUP_BUCKET}/{object_key}"],
+                check=False, capture_output=True, text=True,
+            )
+    except Exception as exc:
+        log.warning("Backup object delete for %s: %s", backup_id, exc)
+    conductor_delete_backup(backup_id)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Handler dispatch table
 # ═══════════════════════════════════════════════════════════════════════════════
 
 HANDLERS = {
-    "create_volume":   handle_create_volume,
-    "delete_volume":   handle_delete_volume,
-    "extend_volume":   handle_extend_volume,
-    "create_snapshot": handle_create_snapshot,
-    "delete_snapshot": handle_delete_snapshot,
+    "create_volume":    handle_create_volume,
+    "delete_volume":    handle_delete_volume,
+    "extend_volume":    handle_extend_volume,
+    "migrate_volume":   handle_migrate_volume,
+    "create_snapshot":  handle_create_snapshot,
+    "delete_snapshot":  handle_delete_snapshot,
+    "create_cgsnapshot": handle_create_cgsnapshot,
+    "backup_volume":    handle_backup_volume,
+    "restore_backup":   handle_restore_backup,
+    "delete_backup":    handle_delete_backup,
 }
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

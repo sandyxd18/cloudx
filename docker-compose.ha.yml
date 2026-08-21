@@ -1,0 +1,129 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CloudX — High Availability overlay (Fase 5)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Adds a 3-node RabbitMQ cluster and a PostgreSQL primary + hot-standby with
+# streaming replication. Layer this ON TOP of the control-plane compose file so
+# the API services keep their existing config:
+#
+#   docker compose \
+#       -f docker-compose.control-plane.yml \
+#       -f docker-compose.ha.yml \
+#       up -d
+#
+# NOTE: This overlay REPLACES the single 'postgres' and 'rabbitmq' services from
+# the control-plane file with clustered variants. In a real multi-node setup you
+# would run one RabbitMQ node + one Postgres role per physical host and set
+# RABBITMQ_NODENAME / POSTGRES_ROLE accordingly. On a single host they coexist on
+# distinct ports/hostnames for testing the topology.
+#
+# For a true single-node lab WITHOUT clustering, just omit this file.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+  # ── RabbitMQ 3-node cluster ────────────────────────────────────────────────
+  rabbitmq:
+    build:
+      context: ./services/rabbitmq
+      dockerfile: Dockerfile.cluster
+      network: host
+    hostname: rabbitmq-1
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-cloudx}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-cloudx}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-cloudx-cluster-cookie-change-me}
+      RABBITMQ_NODENAME: rabbit@rabbitmq-1
+      RABBITMQ_SEED_NODE: ${RABBITMQ_SEED_NODE:-rabbit@rabbitmq-1}
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    network_mode: host
+    volumes:
+      - rabbitmq-data-1:/var/lib/rabbitmq
+
+  rabbitmq-2:
+    build:
+      context: ./services/rabbitmq
+      dockerfile: Dockerfile.cluster
+      network: host
+    hostname: rabbitmq-2
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-cloudx}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-cloudx}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-cloudx-cluster-cookie-change-me}
+      RABBITMQ_NODENAME: rabbit@rabbitmq-2
+      RABBITMQ_SEED_NODE: ${RABBITMQ_SEED_NODE:-rabbit@rabbitmq-1}
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    # In a real deployment this runs on a separate host with network_mode: host.
+    # Colocated testing requires a distinct netns; use a bridge network here.
+    depends_on:
+      - rabbitmq
+    volumes:
+      - rabbitmq-data-2:/var/lib/rabbitmq
+
+  rabbitmq-3:
+    build:
+      context: ./services/rabbitmq
+      dockerfile: Dockerfile.cluster
+      network: host
+    hostname: rabbitmq-3
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-cloudx}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-cloudx}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-cloudx-cluster-cookie-change-me}
+      RABBITMQ_NODENAME: rabbit@rabbitmq-3
+      RABBITMQ_SEED_NODE: ${RABBITMQ_SEED_NODE:-rabbit@rabbitmq-1}
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    depends_on:
+      - rabbitmq
+    volumes:
+      - rabbitmq-data-3:/var/lib/rabbitmq
+
+  # ── PostgreSQL primary ──────────────────────────────────────────────────────
+  postgres:
+    build:
+      context: ./services/postgres
+      network: host
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mini_openstack}
+      POSTGRES_USER: ${POSTGRES_USER:-mini}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mini}
+      POSTGRES_ROLE: primary
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER:-replicator}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-replicator-change-me}
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    network_mode: host
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mini} -d ${POSTGRES_DB:-mini_openstack}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ── PostgreSQL hot standby ──────────────────────────────────────────────────
+  # On a dedicated storage/controller-standby host, set POSTGRES_PRIMARY_HOST to
+  # the primary's management IP and run with network_mode: host on port 5432.
+  postgres-standby:
+    build:
+      context: ./services/postgres
+      network: host
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mini_openstack}
+      POSTGRES_USER: ${POSTGRES_USER:-mini}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mini}
+      POSTGRES_ROLE: standby
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER:-replicator}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-replicator-change-me}
+      POSTGRES_PRIMARY_HOST: ${POSTGRES_PRIMARY_HOST:-127.0.0.1}
+      POSTGRES_PRIMARY_PORT: ${POSTGRES_PRIMARY_PORT:-5432}
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - postgres-standby-data:/var/lib/postgresql/data
+
+volumes:
+  rabbitmq-data-1:
+  rabbitmq-data-2:
+  rabbitmq-data-3:
+  postgres-data:
+  postgres-standby-data:

@@ -175,6 +175,23 @@ class Domain(Base):
     created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class ApplicationCredential(Base):
+    """Keystone Application Credentials — pre-scoped tokens for automation/CI."""
+    __tablename__ = "auth_application_credentials"
+    id:          Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:        Mapped[str] = mapped_column(String, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_id:     Mapped[str] = mapped_column(String, ForeignKey("auth_users.id"))
+    project_id:  Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id"))
+    # Roles that this credential can exercise (comma-separated list, e.g. "member,reader")
+    roles:       Mapped[str] = mapped_column(String, default="member")
+    secret_hash: Mapped[str] = mapped_column(String)     # bcrypt of the plaintext secret
+    expires_at:  Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    enabled:     Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("name", "user_id"),)
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def _gen_access_key_id() -> str:
     """Generate CLDX-prefixed 20-char access key ID."""
@@ -199,14 +216,23 @@ def _verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def _create_token(user: User) -> str:
+def _create_token(user: User, scope_type: str = "project", extra_roles: list[str] | None = None) -> str:
+    """Create a JWT token.
+
+    Args:
+        user: the authenticated user.
+        scope_type: 'project' (default) | 'domain' | 'system'.
+        extra_roles: additional roles from an Application Credential (overrides user.role).
+    """
     jti = str(uuid.uuid4())
     payload = {
         "jti":        jti,
         "sub":        user.id,
         "username":   user.username,
         "project_id": user.project_id,
-        "role":       user.role,
+        "role":       (extra_roles[0] if extra_roles else user.role),
+        "roles":      (extra_roles if extra_roles else [user.role]),
+        "scope_type": scope_type,   # Fase 4: multi-scope token support
         "exp":        utcnow() + timedelta(hours=TOKEN_EXPIRE_H),
         "iat":        utcnow(),
     }
@@ -387,6 +413,21 @@ class AccessKeyIn(BaseModel):
     name: str = "default"
 
 
+# ── Application Credential Schemas ────────────────────────────────────────────
+class AppCredIn(BaseModel):
+    name: str
+    description: str | None = None
+    roles: list[str] = ["member"]
+    expires_at: str | None = None  # ISO 8601 datetime string, optional
+
+
+class AppCredTokenIn(BaseModel):
+    """Auth request using an application credential (name+secret pair)."""
+    application_credential_id: str | None = None
+    application_credential_name: str | None = None
+    application_credential_secret: str
+
+
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 def _ensure_domain_columns():
     """Add domain_id column to auth_projects and auth_users if missing, then migrate."""
@@ -515,6 +556,14 @@ app.add_middleware(
 if RequestIDMiddleware:
     app.add_middleware(RequestIDMiddleware)
 
+# Prometheus metrics (/metrics) — optional, no-op if prometheus_client missing
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from shared.metrics import setup_metrics
+    setup_metrics(app, "auth-api")
+except Exception:
+    pass
+
 
 @app.on_event("startup")
 def startup():
@@ -524,6 +573,21 @@ def startup():
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "auth-api"}
+
+
+@app.get("/healthcheck")
+def healthcheck(db: DB):
+    """Standard CloudX health check endpoint."""
+    checks = {}
+    overall = "up"
+    try:
+        db.execute(text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as exc:
+        checks["db"] = f"error: {exc}"
+        overall = "degraded"
+    return {"status": overall, "checks": checks}
+
 
 
 # ── Auth / Tokens ──────────────────────────────────────────────────────────────
@@ -837,6 +901,137 @@ def revoke_access_key(key_id: str, current: CurrentUser, db: DB):
         raise HTTPException(status_code=403, detail="forbidden")
     db.delete(ak)
     db.commit()
+
+
+# ── Application Credentials ──────────────────────────────────────────────────
+
+def _appcred_to_dict(ac: "ApplicationCredential", secret: str | None = None) -> dict:
+    d = {
+        "id":          ac.id,
+        "name":        ac.name,
+        "description": ac.description,
+        "user_id":     ac.user_id,
+        "project_id":  ac.project_id,
+        "roles":       ac.roles.split(",") if ac.roles else ["member"],
+        "expires_at":  ac.expires_at.isoformat() if ac.expires_at else None,
+        "enabled":     ac.enabled,
+        "created_at":  ac.created_at.isoformat(),
+    }
+    if secret:
+        d["secret"] = secret
+    return d
+
+
+@app.post("/v3/users/{user_ref}/application_credentials", status_code=201)
+def create_app_credential(user_ref: str, payload: AppCredIn, current: CurrentUser, db: DB):
+    """Create an application credential for a user."""
+    u = _get_user_by_ref(db, user_ref)
+    # Users can only create creds for themselves; admins can do it for anyone
+    if current.get("role") != "admin" and u.id != current["sub"]:
+        raise HTTPException(status_code=403, detail="forbidden")
+    if db.scalar(select(ApplicationCredential).where(
+        ApplicationCredential.name == payload.name,
+        ApplicationCredential.user_id == u.id,
+    )):
+        raise HTTPException(status_code=409, detail="application credential name already exists for this user")
+    # Generate a random secret
+    secret_plain = secrets.token_urlsafe(32)
+    expires_dt: datetime | None = None
+    if payload.expires_at:
+        try:
+            expires_dt = datetime.fromisoformat(payload.expires_at.replace("Z", "+00:00")).replace(tzinfo=None)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="expires_at must be a valid ISO 8601 datetime")
+    ac = ApplicationCredential(
+        name=payload.name,
+        description=payload.description,
+        user_id=u.id,
+        project_id=u.project_id,
+        roles=",".join(payload.roles) if payload.roles else "member",
+        secret_hash=_hash_password(secret_plain),
+        expires_at=expires_dt,
+    )
+    db.add(ac)
+    db.commit()
+    db.refresh(ac)
+    return _appcred_to_dict(ac, secret=secret_plain)
+
+
+@app.get("/v3/users/{user_ref}/application_credentials")
+def list_app_credentials(user_ref: str, current: CurrentUser, db: DB):
+    """List application credentials for a user."""
+    u = _get_user_by_ref(db, user_ref)
+    if current.get("role") != "admin" and u.id != current["sub"]:
+        raise HTTPException(status_code=403, detail="forbidden")
+    creds = db.scalars(
+        select(ApplicationCredential).where(ApplicationCredential.user_id == u.id)
+    ).all()
+    return {"application_credentials": [_appcred_to_dict(c) for c in creds]}
+
+
+@app.get("/v3/users/{user_ref}/application_credentials/{cred_ref}")
+def show_app_credential(user_ref: str, cred_ref: str, current: CurrentUser, db: DB):
+    """Show a specific application credential."""
+    u = _get_user_by_ref(db, user_ref)
+    if current.get("role") != "admin" and u.id != current["sub"]:
+        raise HTTPException(status_code=403, detail="forbidden")
+    ac = db.get(ApplicationCredential, cred_ref) or db.scalar(
+        select(ApplicationCredential).where(
+            ApplicationCredential.name == cred_ref,
+            ApplicationCredential.user_id == u.id,
+        )
+    )
+    if not ac:
+        raise HTTPException(status_code=404, detail="application credential not found")
+    return _appcred_to_dict(ac)
+
+
+@app.delete("/v3/users/{user_ref}/application_credentials/{cred_ref}", status_code=204)
+def delete_app_credential(user_ref: str, cred_ref: str, current: CurrentUser, db: DB):
+    """Delete an application credential."""
+    u = _get_user_by_ref(db, user_ref)
+    if current.get("role") != "admin" and u.id != current["sub"]:
+        raise HTTPException(status_code=403, detail="forbidden")
+    ac = db.get(ApplicationCredential, cred_ref) or db.scalar(
+        select(ApplicationCredential).where(
+            ApplicationCredential.name == cred_ref,
+            ApplicationCredential.user_id == u.id,
+        )
+    )
+    if not ac:
+        raise HTTPException(status_code=404, detail="application credential not found")
+    db.delete(ac)
+    db.commit()
+
+
+@app.post("/auth/tokens/application-credential", status_code=201)
+def login_with_app_credential(payload: AppCredTokenIn, db: DB):
+    """
+    Authenticate using an Application Credential (name or ID + secret).
+    Returns a scoped JWT token limited to the credential's roles.
+    """
+    # Find the credential by id or name
+    ac: ApplicationCredential | None = None
+    if payload.application_credential_id:
+        ac = db.get(ApplicationCredential, payload.application_credential_id)
+    elif payload.application_credential_name:
+        ac = db.scalar(
+            select(ApplicationCredential).where(
+                ApplicationCredential.name == payload.application_credential_name
+            )
+        )
+    if not ac or not ac.enabled:
+        raise HTTPException(status_code=401, detail="invalid application credential")
+    if not _verify_password(payload.application_credential_secret, ac.secret_hash):
+        raise HTTPException(status_code=401, detail="invalid application credential secret")
+    if ac.expires_at and ac.expires_at < utcnow():
+        raise HTTPException(status_code=401, detail="application credential has expired")
+    user = db.get(User, ac.user_id)
+    if not user or not user.enabled:
+        raise HTTPException(status_code=403, detail="user disabled")
+    roles = ac.roles.split(",") if ac.roles else ["member"]
+    token = _create_token(user, scope_type="project", extra_roles=roles)
+    return {"token": token, "expires_in": TOKEN_EXPIRE_H * 3600, "method": "application_credential"}
 
 
 # ── Service Catalog ────────────────────────────────────────────────────────────

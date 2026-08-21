@@ -305,7 +305,66 @@ export default function OverviewPage() {
             </div>
           </div>
         )}
+
+        {/* API Access Panel */}
+        <APIAccessPanel />
       </div>
     </div>
   )
 }
+
+// ── API Access Panel ───────────────────────────────────────────────────────────
+function APIAccessPanel() {
+  const base = window.location.hostname === 'localhost' ? 'http://localhost' : window.location.origin
+  const endpoints = [
+    { name: 'Identity (Keystone)',   url: `${base}:5000`,  color: '#6366f1', description: 'Auth, tokens, projects, users' },
+    { name: 'Compute (Nova)',        url: `${base}:8774`,  color: '#10b981', description: 'Instances, flavors, keypairs' },
+    { name: 'Image (Glance)',        url: `${base}:9292`,  color: '#f59e0b', description: 'Disk images and metadata' },
+    { name: 'Block Storage (Cinder)',url: `${base}:8776`,  color: '#ec4899', description: 'Volumes, snapshots, quotas' },
+    { name: 'Networking (Neutron)',  url: `${base}:9696`,  color: '#22d3ee', description: 'Networks, routers, subnets' },
+    { name: 'Placement',             url: `${base}:8778`,  color: '#8b5cf6', description: 'Resource providers and quotas' },
+  ]
+  const [copied, setCopied] = useState(null)
+  const copy = (text, key) => {
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(key)
+      setTimeout(() => setCopied(null), 1800)
+    })
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="card-header">
+        <span className="card-title">
+          <Activity size={15} />
+          API Access
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Service endpoints</span>
+      </div>
+      <div className="card-body" style={{ padding: '0' }}>
+        {endpoints.map((ep, i) => (
+          <div key={ep.name} style={{
+            display: 'flex', alignItems: 'center', gap: 12,
+            padding: '10px 16px',
+            borderBottom: i < endpoints.length - 1 ? '1px solid var(--border)' : 'none',
+          }}>
+            <div style={{ width: 8, height: 8, borderRadius: '50%', background: ep.color, flexShrink: 0 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>{ep.name}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{ep.description}</div>
+            </div>
+            <code style={{
+              fontSize: 11, padding: '2px 8px',
+              background: 'var(--bg-elevated)', borderRadius: 4,
+              color: ep.color, border: `1px solid ${ep.color}33`,
+              cursor: 'pointer', flexShrink: 0,
+            }} onClick={() => copy(ep.url, ep.name)} title="Click to copy">
+              {copied === ep.name ? '✓ copied' : ep.url}
+            </code>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+

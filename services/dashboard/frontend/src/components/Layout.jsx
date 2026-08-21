@@ -4,7 +4,7 @@ import {
   Network, Globe, ArrowLeftRight, Shield,
   HardDrive, Database, Camera, LogOut,
   ChevronRight, Settings, Layers, Layers2,
-  ChevronDown, ChevronUp, FolderOpen, GitBranch
+  ChevronDown, ChevronUp, FolderOpen, GitBranch, Monitor
 } from 'lucide-react'
 import { useAuth } from '../context.jsx'
 import { useState, useRef, useEffect } from 'react'
@@ -37,6 +37,7 @@ const NAV = [
   },
   { section: 'Admin' },
   { to: '/admin',       icon: Settings, label: 'Admin Panel'  },
+  { to: '/roles',       icon: Shield,   label: 'Role Mgmt'   },
   { to: '/flavors',     icon: Cpu,      label: 'Flavors'      },
   { to: '/volume-types',icon: Layers2,  label: 'Volume Types' },
 ]

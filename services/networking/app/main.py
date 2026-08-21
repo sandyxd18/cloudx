@@ -1,4 +1,5 @@
 import ipaddress
+import logging
 import os
 import secrets
 import subprocess
@@ -27,6 +28,33 @@ except ImportError:
         from shared.request_id_middleware import RequestIDMiddleware
     except ImportError:
         RequestIDMiddleware = None
+
+# Optional RPC client for event publishing
+try:
+    from shared.rpc import RPCClient as _RPCClientClass
+except ImportError:
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from shared.rpc import RPCClient as _RPCClientClass
+    except ImportError:
+        _RPCClientClass = None
+
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@rabbitmq:5672/")
+log = logging.getLogger("networking-api")
+_rpc = None  # lazily initialised on first event publish
+
+
+def _publish_net_event(event_type: str, payload: dict) -> None:
+    """Best-effort event publishing — never raises, never blocks."""
+    global _rpc
+    if _RPCClientClass is None:
+        return
+    try:
+        if _rpc is None:
+            _rpc = _RPCClientClass(RABBITMQ_URL)
+        _rpc.publish_event(event_type, payload)
+    except Exception as exc:
+        log.debug("Event publish failed (non-critical): %s", exc)
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
@@ -140,8 +168,10 @@ class Port(Base):
     network_id: Mapped[str] = mapped_column(String, ForeignKey("networking_networks.id"))
     subnet_id: Mapped[str | None] = mapped_column(String, ForeignKey("networking_subnets.id"), nullable=True)
     mac_address: Mapped[str] = mapped_column(String)
-    ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
-    fixed_ip: Mapped[str | None] = mapped_column(String, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String, nullable=True)    # primary (IPv4) IP
+    fixed_ip: Mapped[str | None] = mapped_column(String, nullable=True)      # same as ip_address (legacy)
+    ipv6_address: Mapped[str | None] = mapped_column(String, nullable=True)  # IPv6 address (dual-stack)
+    dns_name: Mapped[str | None] = mapped_column(String, nullable=True)      # DNS hostname for OVN DNS
     logical_switch_name: Mapped[str | None] = mapped_column(String, nullable=True)
     logical_port_name: Mapped[str | None] = mapped_column(String, nullable=True)
     device_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -150,6 +180,7 @@ class Port(Base):
     port_security_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
 
 
 class FloatingIP(Base):
@@ -246,6 +277,30 @@ class SubnetPool(Base):
     created_at:      Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class Trunk(Base):
+    """Trunk port — a parent port that carries multiple VLANs via sub-ports."""
+    __tablename__ = "networking_trunks"
+    id:          Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:        Mapped[str] = mapped_column(String, unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
+    port_id:     Mapped[str] = mapped_column(String, ForeignKey("networking_ports.id", ondelete="CASCADE"))
+    status:      Mapped[str] = mapped_column(String, default="ACTIVE")
+    project_id:  Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class TrunkSubPort(Base):
+    """Sub-port entry that associates a VLAN-tagged port with a trunk."""
+    __tablename__ = "networking_trunk_subports"
+    id:              Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    trunk_id:        Mapped[str] = mapped_column(String, ForeignKey("networking_trunks.id", ondelete="CASCADE"))
+    port_id:         Mapped[str] = mapped_column(String, ForeignKey("networking_ports.id", ondelete="CASCADE"))
+    segmentation_type: Mapped[str] = mapped_column(String, default="vlan")  # vlan | vxlan
+    segmentation_id:   Mapped[int] = mapped_column(Integer)                 # VLAN ID 1-4094
+    created_at:       Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+
 class NetworkIn(BaseModel):
     name: str
     external: bool = False
@@ -279,10 +334,29 @@ class PortIn(BaseModel):
     network: str
     ip_address: str | None = None
     fixed_ip: str | None = None
+    fixed_ips: list[dict] = Field(default_factory=list)  # [{"subnet_id":..., "ip_address":...}] dual-stack
     device_id: str | None = None
     device_owner: str | None = None
     security_group_ids: list[str] = Field(default_factory=list)
     port_security_enabled: bool = True
+    dns_name: str | None = None    # optional DNS hostname registered in OVN
+
+
+class TrunkIn(BaseModel):
+    name: str
+    description: str | None = None
+    port_id: str                               # parent port UUID
+    project_id: str | None = None
+
+
+class TrunkSubPortIn(BaseModel):
+    port_id: str
+    segmentation_type: str = "vlan"            # vlan | vxlan
+    segmentation_id: int                       # VLAN tag 1-4094
+
+
+class TrunkSubPortsPayload(BaseModel):
+    sub_ports: list[TrunkSubPortIn]
 
 
 class FloatingIPIn(BaseModel):
@@ -503,11 +577,19 @@ def port_to_os_dict(db: Session, port: Port, current: dict | None = None) -> dic
     ip_addr = port.ip_address or port.fixed_ip
     fixed_ips = []
     if ip_addr and port.subnet_id:
-        fixed_ips = [{"ip_address": ip_addr, "subnet_id": port.subnet_id}]
+        fixed_ips.append({"ip_address": ip_addr, "subnet_id": port.subnet_id})
     elif ip_addr:
-        fixed_ips = [{"ip_address": ip_addr}]
+        fixed_ips.append({"ip_address": ip_addr})
+    # Dual-stack: include IPv6 if present
+    if port.ipv6_address:
+        fixed_ips.append({"ip_address": port.ipv6_address, "ip_version": 6})
 
     sg_ids = [item for item in (port.security_group_ids or "").split(",") if item]
+
+    # Build dns_assignment if dns_name is set
+    dns_assignment = []
+    if port.dns_name:
+        dns_assignment = [{"hostname": port.dns_name, "ip_address": ip_addr, "fqdn": f"{port.dns_name}."}]
 
     return {
         "admin_state_up": "UP",
@@ -523,9 +605,9 @@ def port_to_os_dict(db: Session, port: Port, current: dict | None = None) -> dic
         "device_id": port.device_id or "",
         "device_owner": port.device_owner or "",
         "device_profile": None,
-        "dns_assignment": [],
+        "dns_assignment": dns_assignment,
         "dns_domain": None,
-        "dns_name": None,
+        "dns_name": port.dns_name,
         "extra_dhcp_opts": [],
         "fixed_ips": fixed_ips,
         "hardware_offload_type": None,
@@ -552,6 +634,7 @@ def port_to_os_dict(db: Session, port: Port, current: dict | None = None) -> dic
         # Internal fields kept for compatibility
         "ip_address": ip_addr,
         "fixed_ip": ip_addr,
+        "ipv6_address": port.ipv6_address,
         "logical_switch_name": port.logical_switch_name or (network.name if network else port.network_id),
         "logical_port_name": port.logical_port_name or port.name,
         "cidr": subnet.cidr if subnet else None,
@@ -673,6 +756,52 @@ def ovn(*args: str, check: bool = True) -> str:
     if check and proc.returncode != 0:
         raise HTTPException(status_code=502, detail={"message": "ovn-nbctl failed", "stderr": proc.stderr.strip()})
     return proc.stdout.strip()
+
+
+def _ovn_register_dns(logical_switch_name: str, hostname: str, ip_address: str) -> None:
+    """
+    Register a DNS record in the OVN Northbound DB for a port.
+
+    This creates (or updates) a DNS entry in the OVN NB `DNS` table and
+    associates it with the logical switch, enabling internal VM hostname
+    resolution. VMs on the same network can resolve each other by hostname.
+
+    Foundation for future Designate integration: when a Designate-like service
+    is built, it can call GET /ports?has_dns=true and sync records to an external
+    DNS backend (Bind9/PowerDNS) without touching this OVN internal DNS layer.
+    """
+    try:
+        # Check if a DNS entry already exists for this switch
+        existing = ovn("find", "DNS", f"external_ids:ls={logical_switch_name}", check=False)
+        if existing:
+            # Update existing DNS entry — add this hostname to the records
+            dns_uuid = existing.split()[0]
+            ovn("set", "DNS", dns_uuid,
+                f'records:{hostname}="{ip_address}"',
+                check=False)
+        else:
+            # Create a new DNS entry for this logical switch
+            dns_uuid = ovn("create", "DNS",
+                           f'records:"{hostname}"="{ip_address}"',
+                           f"external_ids:ls={logical_switch_name}",
+                           check=False)
+            if dns_uuid:
+                # Associate the DNS entry with the logical switch
+                ovn("add", "Logical_Switch", logical_switch_name, "dns_records", dns_uuid, check=False)
+    except Exception as exc:
+        # DNS registration failure is non-fatal; log and continue
+        print(f"[networking] WARNING: OVN DNS registration failed for {hostname}: {exc}", flush=True)
+
+
+def _ovn_unregister_dns(logical_switch_name: str, hostname: str) -> None:
+    """Remove a DNS hostname record from the OVN NB DNS table."""
+    try:
+        existing = ovn("find", "DNS", f"external_ids:ls={logical_switch_name}", check=False)
+        if existing:
+            dns_uuid = existing.split()[0]
+            ovn("remove", "DNS", dns_uuid, "records", hostname, check=False)
+    except Exception as exc:
+        print(f"[networking] WARNING: OVN DNS removal failed for {hostname}: {exc}", flush=True)
 
 
 def _find_ovs_vsctl() -> str | None:
@@ -1241,6 +1370,12 @@ app.add_middleware(
 if RequestIDMiddleware:
     app.add_middleware(RequestIDMiddleware)
 
+try:
+    from shared.metrics import setup_metrics
+    setup_metrics(app, "networking-api")
+except Exception:
+    pass
+
 
 @app.on_event("startup")
 def startup():
@@ -1255,6 +1390,25 @@ def startup():
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "networking-api"}
+
+
+@app.get("/healthcheck")
+def healthcheck(db: DB):
+    """Standard CloudX health check endpoint.
+    Checks: database connectivity.
+    Returns: {status, checks: {db}} compatible with OpenStack-style health format.
+    """
+    checks = {}
+    overall = "up"
+    # DB check
+    try:
+        db.execute(text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as exc:
+        checks["db"] = f"error: {exc}"
+        overall = "degraded"
+    return {"status": overall, "checks": checks}
+
 
 
 @app.post("/networks", status_code=201)
@@ -1287,6 +1441,11 @@ def create_network(payload: NetworkIn, current: CurrentUser, db: DB):
     db.add(network)
     db.commit()
     db.refresh(network)
+    _publish_net_event("network.create.end", {
+        "network_id": network.id,
+        "name":       network.name,
+        "external":   network.external,
+    })
     return obj_to_dict(network)
 
 
@@ -1527,18 +1686,42 @@ def remove_router_interface(ref: str, subnet_ref: str, _: CurrentUser, db: DB):
 
 
 @app.post("/ports", status_code=201)
-def create_port(payload: PortIn, db: DB):
+def create_port(payload: PortIn, current: CurrentUser, db: DB):
     if get_by_ref(db, Port, payload.name):
         raise HTTPException(status_code=409, detail="port already exists")
     network = require_by_ref(db, Network, payload.network, "network")
-    subnet = db.scalar(select(Subnet).where(Subnet.network_id == network.id).order_by(Subnet.created_at))
+    subnet = db.scalar(select(Subnet).where(Subnet.network_id == network.id).where(Subnet.ip_version == 4).order_by(Subnet.created_at))
     requested_ip = payload.fixed_ip or payload.ip_address
+
+    # Honor fixed_ips list (dual-stack) if provided
+    if payload.fixed_ips:
+        for fip_entry in payload.fixed_ips:
+            entry_subnet_id = fip_entry.get("subnet_id")
+            entry_ip = fip_entry.get("ip_address")
+            if entry_subnet_id:
+                entry_subnet = db.get(Subnet, entry_subnet_id)
+                if entry_subnet and entry_subnet.ip_version == 4:
+                    requested_ip = requested_ip or entry_ip
+                    subnet = entry_subnet
+
     fixed_ip = allocate_fixed_ip(db, subnet, requested_ip) if subnet else requested_ip
     port_mac = mac()
     logical_switch_name = network.name
     logical_port_name = payload.name
     security_group_ids = payload.security_group_ids or ["default"]
     groups = [require_by_ref(db, SecurityGroup, group_id, "security-group") for group_id in security_group_ids]
+
+    # Dual-stack: look for an IPv6 subnet on the same network if fixed_ips requests it
+    ipv6_address: str | None = None
+    if payload.fixed_ips:
+        for fip_entry in payload.fixed_ips:
+            entry_subnet_id = fip_entry.get("subnet_id")
+            entry_ip = fip_entry.get("ip_address")
+            if entry_subnet_id:
+                entry_subnet = db.get(Subnet, entry_subnet_id)
+                if entry_subnet and entry_subnet.ip_version == 6:
+                    ipv6_address = allocate_fixed_ip(db, entry_subnet, entry_ip) if not entry_ip else entry_ip
+
     port = Port(
         name=payload.name,
         network_id=network.id,
@@ -1546,6 +1729,8 @@ def create_port(payload: PortIn, db: DB):
         mac_address=port_mac,
         ip_address=fixed_ip,
         fixed_ip=fixed_ip,
+        ipv6_address=ipv6_address,
+        dns_name=payload.dns_name,
         logical_switch_name=logical_switch_name,
         logical_port_name=logical_port_name,
         device_id=payload.device_id,
@@ -1559,13 +1744,35 @@ def create_port(payload: PortIn, db: DB):
         ovn("set", "logical_switch_port", port.name, f"external_ids:device_id={payload.device_id}")
     if payload.device_owner:
         ovn("set", "logical_switch_port", port.name, f"external_ids:device_owner={payload.device_owner}")
-    ovn("lsp-set-addresses", port.name, f"{port.mac_address} {fixed_ip}" if fixed_ip else port.mac_address)
+
+    # Build OVN address string — include both IPv4 and IPv6 if dual-stack
+    addr_parts = [port_mac]
+    if fixed_ip:
+        addr_parts.append(fixed_ip)
+    if ipv6_address:
+        addr_parts.append(ipv6_address)
+    ovn("lsp-set-addresses", port.name, " ".join(addr_parts))
+
     if subnet and subnet.dhcp_options_id:
         ovn("lsp-set-dhcpv4-options", port.name, subnet.ovn_dhcp_options_uuid or subnet.dhcp_options_id)
+
+    # Register DNS entry in OVN NB DB if dns_name provided
+    # This enables VM-to-VM hostname resolution within the network.
+    # Future: a Designate-like service can read these records via the API.
+    if payload.dns_name and fixed_ip:
+        _ovn_register_dns(network.name, payload.dns_name, fixed_ip)
+
     db.add(port)
     db.commit()
     db.refresh(port)
     apply_security_groups(db, port)
+    _publish_net_event("port.create.end", {
+        "port_id":    port.id,
+        "name":       port.name,
+        "network_id": port.network_id,
+        "fixed_ip":   port.fixed_ip,
+        "device_id":  port.device_id,
+    })
     return port_to_dict(db, port)
 
 
@@ -2208,3 +2415,163 @@ def networking_root():
             "links": [{"rel": "self", "href": "/v2.0"}],
         }]
     }
+
+
+# ── Trunk Ports ──────────────────────────────────────────────────────────────
+# Trunk ports allow a parent port to carry multiple VLANs via sub-ports.
+# Each sub-port is a regular port with a VLAN tag set in OVN.
+# Reference: https://docs.openstack.org/neutron/latest/admin/config-trunking.html
+
+def _trunk_to_dict(db: Session, trunk: Trunk) -> dict:
+    sub_ports = db.scalars(
+        select(TrunkSubPort).where(TrunkSubPort.trunk_id == trunk.id)
+    ).all()
+    return {
+        "id":          trunk.id,
+        "name":        trunk.name,
+        "description": trunk.description,
+        "port_id":     trunk.port_id,
+        "status":      trunk.status,
+        "project_id":  trunk.project_id,
+        "created_at":  _fmt_ts(trunk.created_at),
+        "sub_ports": [
+            {
+                "port_id":          sp.port_id,
+                "segmentation_type": sp.segmentation_type,
+                "segmentation_id":   sp.segmentation_id,
+            }
+            for sp in sub_ports
+        ],
+    }
+
+
+@app.post("/trunks", status_code=201)
+def create_trunk(payload: TrunkIn, current: CurrentUser, db: DB):
+    """Create a trunk port. The parent port must already exist."""
+    parent_port = require_by_ref(db, Port, payload.port_id, "port")
+    if db.scalar(select(Trunk).where(Trunk.name == payload.name)):
+        raise HTTPException(status_code=409, detail="trunk already exists")
+    if db.scalar(select(Trunk).where(Trunk.port_id == parent_port.id)):
+        raise HTTPException(status_code=409, detail="port is already a trunk parent")
+    trunk = Trunk(
+        name=payload.name,
+        description=payload.description,
+        port_id=parent_port.id,
+        project_id=payload.project_id or current.get("project_id"),
+    )
+    db.add(trunk)
+    db.commit()
+    db.refresh(trunk)
+    return _trunk_to_dict(db, trunk)
+
+
+@app.get("/trunks")
+def list_trunks(current: CurrentUser, db: DB):
+    """List all trunk ports."""
+    trunks = db.scalars(select(Trunk).order_by(Trunk.created_at)).all()
+    return {"trunks": [_trunk_to_dict(db, t) for t in trunks]}
+
+
+@app.get("/trunks/{trunk_ref}")
+def show_trunk(trunk_ref: str, _: CurrentUser, db: DB):
+    """Get details of a specific trunk."""
+    trunk = db.get(Trunk, trunk_ref) or db.scalar(select(Trunk).where(Trunk.name == trunk_ref))
+    if not trunk:
+        raise HTTPException(status_code=404, detail="trunk not found")
+    return _trunk_to_dict(db, trunk)
+
+
+@app.delete("/trunks/{trunk_ref}", status_code=204)
+def delete_trunk(trunk_ref: str, _: CurrentUser, db: DB):
+    """Delete a trunk and all its sub-port associations."""
+    trunk = db.get(Trunk, trunk_ref) or db.scalar(select(Trunk).where(Trunk.name == trunk_ref))
+    if not trunk:
+        raise HTTPException(status_code=404, detail="trunk not found")
+    # Ensure no active sub-ports remain
+    sub_count = db.scalar(select(TrunkSubPort).where(TrunkSubPort.trunk_id == trunk.id))
+    if sub_count:
+        raise HTTPException(status_code=409, detail="remove all sub_ports before deleting the trunk")
+    db.delete(trunk)
+    db.commit()
+
+
+@app.put("/trunks/{trunk_ref}/add_subports")
+def add_subports(trunk_ref: str, payload: TrunkSubPortsPayload, _: CurrentUser, db: DB):
+    """
+    Add sub-ports to a trunk.
+    Each sub-port is an existing port that will be VLAN-tagged in OVN.
+    """
+    trunk = db.get(Trunk, trunk_ref) or db.scalar(select(Trunk).where(Trunk.name == trunk_ref))
+    if not trunk:
+        raise HTTPException(status_code=404, detail="trunk not found")
+
+    added = []
+    for sp_in in payload.sub_ports:
+        # Validate sub-port exists
+        sub_port = require_by_ref(db, Port, sp_in.port_id, "port")
+        # Check for duplicate segmentation_id in this trunk
+        existing_seg = db.scalar(
+            select(TrunkSubPort).where(
+                TrunkSubPort.trunk_id == trunk.id,
+                TrunkSubPort.segmentation_id == sp_in.segmentation_id,
+            )
+        )
+        if existing_seg:
+            raise HTTPException(
+                status_code=409,
+                detail=f"segmentation_id {sp_in.segmentation_id} already in use on this trunk"
+            )
+        # Validate VLAN ID range
+        if not (1 <= sp_in.segmentation_id <= 4094):
+            raise HTTPException(status_code=400, detail="segmentation_id must be between 1 and 4094")
+
+        sp = TrunkSubPort(
+            trunk_id=trunk.id,
+            port_id=sub_port.id,
+            segmentation_type=sp_in.segmentation_type,
+            segmentation_id=sp_in.segmentation_id,
+        )
+        db.add(sp)
+
+        # Apply VLAN tag in OVN: set tag on the logical switch port
+        # OVN uses 'tag' column on the Logical_Switch_Port for VLAN tagging
+        ovn("set", "Logical_Switch_Port", sub_port.name,
+            f"tag={sp_in.segmentation_id}", check=False)
+
+        added.append({
+            "port_id": sub_port.id,
+            "segmentation_type": sp_in.segmentation_type,
+            "segmentation_id": sp_in.segmentation_id,
+        })
+
+    db.commit()
+    return {"sub_ports": added}
+
+
+@app.put("/trunks/{trunk_ref}/remove_subports")
+def remove_subports(trunk_ref: str, payload: TrunkSubPortsPayload, _: CurrentUser, db: DB):
+    """Remove sub-ports from a trunk and clear their VLAN tags in OVN."""
+    trunk = db.get(Trunk, trunk_ref) or db.scalar(select(Trunk).where(Trunk.name == trunk_ref))
+    if not trunk:
+        raise HTTPException(status_code=404, detail="trunk not found")
+
+    removed = []
+    for sp_in in payload.sub_ports:
+        sub_port = db.get(Port, sp_in.port_id)
+        if not sub_port:
+            continue
+        sp_record = db.scalar(
+            select(TrunkSubPort).where(
+                TrunkSubPort.trunk_id == trunk.id,
+                TrunkSubPort.port_id == sub_port.id,
+            )
+        )
+        if sp_record:
+            db.delete(sp_record)
+            # Clear OVN VLAN tag
+            ovn("clear", "Logical_Switch_Port", sub_port.name, "tag", check=False)
+            removed.append({"port_id": sub_port.id})
+
+    db.commit()
+    return {"sub_ports": removed}
+

@@ -1,0 +1,76 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CloudX — Multi-Node Deployment: COMPUTE NODE
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Runs the hypervisor stack (compute-worker via libvirt/QEMU/KVM) plus a local
+# ovn-controller that binds VM tap ports and connects back to the centralized
+# OVN Southbound DB on the Control Plane.
+#
+# Compute nodes have NO local VM disk storage — every root disk / volume is a
+# remote block device served by the Storage Node (Ceph RBD) and attached over
+# the management network. Only the ephemeral libvirt XML + config-drive ISO
+# live locally.
+#
+# Required env (see .env.example → "Multi-Node Roles"):
+#   CONTROLLER_IP   — management IP of the Control Plane node
+#   NETWORK_INTERFACE — management NIC used for OVN Geneve tunnels
+#   PROVIDER_INTERFACE / PROVIDER_BRIDGE — provider/gateway bridge (usually only
+#                     configured on the Gateway Node, left blank on pure compute)
+#
+# Usage on a compute host:
+#   docker compose -f docker-compose.compute-node.yml up -d
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+  # Local ovn-controller — connects host OVS to the remote OVN SB DB on the
+  # controller. This is the standard OpenStack topology (ovn-controller per
+  # compute/gateway node talking to the central SB DB).
+  ovs-ovn-controller:
+    build:
+      context: ./services/ovn
+      network: host
+    command: ["/usr/local/bin/start-controller.sh"]
+    privileged: true
+    network_mode: host
+    environment:
+      OVN_SB_DB: tcp:${CONTROLLER_IP:?set CONTROLLER_IP to the control-plane management IP}:6642
+      PROVIDER_BRIDGE: ${PROVIDER_BRIDGE:-br-ex}
+      PROVIDER_PHYSNET: ${PROVIDER_PHYSNET:-physnet1}
+      PROVIDER_INTERFACE: ${PROVIDER_INTERFACE:-}
+      NETWORK_INTERFACE: ${NETWORK_INTERFACE:-}
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    volumes:
+      - /var/run/openvswitch:/var/run/openvswitch
+
+  compute-worker:
+    build:
+      context: ./services
+      dockerfile: compute_worker/Dockerfile
+      network: host
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    network_mode: host       # REQUIRED: tap devices must be in host netns for libvirt
+    environment:
+      # API endpoints live on the Control Plane node
+      IMAGE_API_URL: ${IMAGE_API_URL:-http://${CONTROLLER_IP:?set CONTROLLER_IP}:8002}
+      BLOCK_STORE_API_URL: ${BLOCK_STORE_API_URL:-http://${CONTROLLER_IP:?set CONTROLLER_IP}:8004}
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@${CONTROLLER_IP:?set CONTROLLER_IP}:5672/}
+      LIBVIRT_URI: ${LIBVIRT_URI:-qemu:///system}
+      COMPUTE_INSTANCE_DIR: ${COMPUTE_INSTANCE_DIR:-/var/lib/mini-openstack/compute/instances}
+      COMPUTE_IMAGE_CACHE_DIR: ${COMPUTE_IMAGE_CACHE_DIR:-/var/lib/mini-openstack/compute/cache/images}
+      OVS_BRIDGE: ${OVS_BRIDGE:-br-int}
+      VM_NAME_PREFIX: ${VM_NAME_PREFIX:-mini-os}
+      TZ: ${TIMEZONE:-Asia/Jakarta}
+    volumes:
+      - ${COMPUTE_INSTANCE_DIR:-/var/lib/mini-openstack/compute/instances}:/var/lib/mini-openstack/compute/instances
+      - ${COMPUTE_CACHE_DIR:-/var/lib/mini-openstack/compute/cache}:/var/lib/mini-openstack/compute/cache
+      - /dev:/dev                  # remote block devices (Ceph RBD / iSCSI) attach
+      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      - /dev/kvm:/dev/kvm
+      - /dev/net/tun:/dev/net/tun
+      - /var/run/openvswitch:/var/run/openvswitch
+      - /etc/ceph:/etc/ceph:ro     # Ceph client config to reach remote storage node
+    depends_on:
+      - ovs-ovn-controller

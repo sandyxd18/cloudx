@@ -23,81 +23,89 @@ defaults
 
 # ── Stats & Monitoring ────────────────────────────────────────────────────────
 frontend stats
-    bind *:${HAPROXY_STATS_PORT:-8404}
+    bind *:${HAPROXY_STATS_PORT}
     stats enable
     stats uri /stats
     stats refresh 10s
     stats admin if TRUE
     stats show-legends
     stats show-node
+    # Prometheus metrics exporter (HAProxy 2.x built-in)
+    http-request use-service prometheus-exporter if { path /metrics }
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
 frontend dashboard_front
-    bind *:${DASHBOARD_PORT:-8080}
-    option httpchk
+    bind *:${DASHBOARD_PORT}
     default_backend dashboard_back
 
 backend dashboard_back
     option httpchk GET /health
     http-check expect status 200
-    server node1 127.0.0.1:${DASHBOARD_PORT:-8080} check inter 5s fall 3 rise 2
+    balance roundrobin
+%%DASHBOARD_SERVERS%%
 
 # ── Auth API ─────────────────────────────────────────────────────────────────
 frontend auth_front
-    bind *:${AUTH_PORT:-8005}
+    bind *:${AUTH_PORT}
     default_backend auth_back
 
 backend auth_back
     option httpchk GET /health
     http-check expect status 200
-    server node1 127.0.0.1:${AUTH_PORT:-8005} check inter 5s fall 3 rise 2
+    balance roundrobin
+%%AUTH_SERVERS%%
 
 # ── Networking API ────────────────────────────────────────────────────────────
 frontend networking_front
-    bind *:${NETWORKING_PORT:-8001}
+    bind *:${NETWORKING_PORT}
     default_backend networking_back
 
 backend networking_back
     option httpchk GET /health
     http-check expect status 200
-    server node1 127.0.0.1:${NETWORKING_PORT:-8001} check inter 5s fall 3 rise 2
+    balance roundrobin
+%%NETWORKING_SERVERS%%
 
 # ── Image API ─────────────────────────────────────────────────────────────────
 frontend image_front
-    bind *:${IMAGE_PORT:-8002}
+    bind *:${IMAGE_PORT}
     default_backend image_back
 
 backend image_back
     option httpchk GET /health
     http-check expect status 200
-    server node1 127.0.0.1:${IMAGE_PORT:-8002} check inter 5s fall 3 rise 2
+    balance roundrobin
+%%IMAGE_SERVERS%%
 
 # ── Compute API ───────────────────────────────────────────────────────────────
 frontend compute_front
-    bind *:${COMPUTE_PORT:-8003}
+    bind *:${COMPUTE_PORT}
     default_backend compute_back
 
 backend compute_back
     option httpchk GET /health
     http-check expect status 200
-    server node1 127.0.0.1:${COMPUTE_PORT:-8003} check inter 5s fall 3 rise 2
+    balance roundrobin
+%%COMPUTE_SERVERS%%
 
 # ── Block Store API ───────────────────────────────────────────────────────────
 frontend block_store_front
-    bind *:${BLOCK_STORE_PORT:-8004}
+    bind *:${BLOCK_STORE_PORT}
     default_backend block_store_back
 
 backend block_store_back
     option httpchk GET /health
     http-check expect status 200
-    server node1 127.0.0.1:${BLOCK_STORE_PORT:-8004} check inter 5s fall 3 rise 2
+    balance roundrobin
+%%BLOCK_STORE_SERVERS%%
 
 # ── Placement API ─────────────────────────────────────────────────────────────
 frontend placement_front
-    bind *:${PLACEMENT_PORT:-8006}
+    bind *:${PLACEMENT_PORT}
     default_backend placement_back
 
 backend placement_back
     option httpchk GET /health
     http-check expect status 200
-    server node1 127.0.0.1:${PLACEMENT_PORT:-8006} check inter 5s fall 3 rise 2
+    balance roundrobin
+%%PLACEMENT_SERVERS%%

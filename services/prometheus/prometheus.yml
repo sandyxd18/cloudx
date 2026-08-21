@@ -1,0 +1,52 @@
+# CloudX Prometheus scrape configuration (Fase 5)
+# Retention is set on the CLI in docker-compose.monitoring.yml (15d default).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: cloudx
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # ── Prometheus self-monitoring ──────────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+
+  # ── CloudX API services (custom /metrics via shared.metrics) ─────────────────
+  # In multi-node, replace 127.0.0.1 with the CONTROLLER_IP(s) or use file_sd.
+  - job_name: cloudx-apis
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "127.0.0.1:8005"   # auth-api
+          - "127.0.0.1:8001"   # networking-api
+          - "127.0.0.1:8002"   # image-api
+          - "127.0.0.1:8003"   # compute-api
+          - "127.0.0.1:8004"   # block-store-api
+          - "127.0.0.1:8006"   # placement-api
+        labels:
+          group: control-plane
+
+  # ── Node exporter (host CPU/mem/disk/net) ────────────────────────────────────
+  - job_name: node
+    static_configs:
+      - targets: ["127.0.0.1:9100"]
+
+  # ── PostgreSQL exporter ──────────────────────────────────────────────────────
+  - job_name: postgres
+    static_configs:
+      - targets: ["127.0.0.1:9187"]
+
+  # ── RabbitMQ (built-in rabbitmq_prometheus plugin, port 15692) ───────────────
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ["127.0.0.1:15692"]
+
+  # ── HAProxy (built-in prometheus-exporter on the stats port /metrics) ────────
+  - job_name: haproxy
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:8404"]

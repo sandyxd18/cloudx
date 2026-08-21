@@ -202,6 +202,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+try:
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+    from shared.metrics import setup_metrics
+    setup_metrics(app, "placement-api")
+except Exception:
+    pass
+
 
 @app.on_event("startup")
 def startup():
@@ -211,6 +219,25 @@ def startup():
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "placement-api"}
+
+
+@app.get("/healthcheck")
+def healthcheck(db: DB):
+    """Standard CloudX health check endpoint.
+    Checks: database connectivity.
+    Returns: {status, checks: {db}} compatible with OpenStack-style health format.
+    """
+    checks = {}
+    overall = "up"
+    # DB check
+    try:
+        db.execute(text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as exc:
+        checks["db"] = f"error: {exc}"
+        overall = "degraded"
+    return {"status": overall, "checks": checks}
+
 
 
 # ── Resource Providers ─────────────────────────────────────────────────────────
@@ -361,6 +388,94 @@ def set_traits(rp_uuid: str, payload: TraitIn, _: CurrentUser, db: DB):
 def list_traits(_: CurrentUser, db: DB):
     traits = db.scalars(select(Trait)).all()
     return {"traits": [t.name for t in traits]}
+
+
+# ── Custom Resource Classes ────────────────────────────────────────────────────
+# OpenStack supports custom resource classes prefixed with CUSTOM_
+# See: https://docs.openstack.org/placement/latest/user/resource-classes.html
+
+_STANDARD_RESOURCE_CLASSES = {
+    "VCPU", "MEMORY_MB", "DISK_GB", "NETWORK_BANDWIDTH_EGRESS_KIBIBYTES_PER_SECOND",
+    "NETWORK_BANDWIDTH_INGRESS_KIBIBYTES_PER_SECOND", "PCI_DEVICE", "SRIOV_NET_VF",
+    "NUMA_CORE", "NUMA_MEMORY_MB", "NUMA_SOCKET", "NUMA_THREAD",
+    "NET_BW_EGR_KILOBIT_PER_SEC", "NET_BW_IGR_KILOBIT_PER_SEC",
+    "FPGA", "GPU", "IPV4_ADDRESS", "VGPU", "VGPU_DISPLAY_HEAD",
+}
+
+
+class CustomResourceClass(Base):
+    """User-defined resource classes (must be prefixed with CUSTOM_)."""
+    __tablename__ = "placement_custom_resource_classes"
+    name:       Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+def _bootstrap_custom_rc_table() -> None:
+    """Ensure the custom resource class table exists."""
+    Base.metadata.create_all(bind=engine)
+
+
+@app.get("/resource_classes")
+def list_resource_classes(_: CurrentUser, db: DB):
+    """List all resource classes (standard + custom)."""
+    custom = db.scalars(select(CustomResourceClass)).all()
+    custom_names = [rc.name for rc in custom]
+    all_classes = sorted(_STANDARD_RESOURCE_CLASSES | set(custom_names))
+    return {
+        "resource_classes": [
+            {"name": name, "standard": name in _STANDARD_RESOURCE_CLASSES}
+            for name in all_classes
+        ]
+    }
+
+
+@app.put("/resource_classes/{name}", status_code=201)
+def create_or_update_resource_class(name: str, _: CurrentUser, db: DB):
+    """
+    Create a custom resource class. Name must start with 'CUSTOM_'.
+    Standard classes cannot be created via this endpoint.
+    """
+    if not name.startswith("CUSTOM_"):
+        raise HTTPException(
+            status_code=400,
+            detail="Custom resource class names must start with 'CUSTOM_'",
+        )
+    if not name.replace("CUSTOM_", "").replace("_", "").isalnum():
+        raise HTTPException(
+            status_code=400,
+            detail="Resource class name may only contain letters, digits, and underscores after 'CUSTOM_'",
+        )
+    existing = db.get(CustomResourceClass, name)
+    if existing:
+        return {"name": name, "created": False, "message": "resource class already exists"}
+    db.add(CustomResourceClass(name=name))
+    db.commit()
+    return {"name": name, "created": True}
+
+
+@app.get("/resource_classes/{name}")
+def show_resource_class(name: str, _: CurrentUser, db: DB):
+    """Show a specific resource class (standard or custom)."""
+    if name in _STANDARD_RESOURCE_CLASSES:
+        return {"name": name, "standard": True}
+    rc = db.get(CustomResourceClass, name)
+    if not rc:
+        raise HTTPException(status_code=404, detail=f"resource class '{name}' not found")
+    return {"name": rc.name, "standard": False, "created_at": rc.created_at.isoformat()}
+
+
+@app.delete("/resource_classes/{name}", status_code=204)
+def delete_resource_class(name: str, _: CurrentUser, db: DB):
+    """Delete a custom resource class. Standard classes cannot be deleted."""
+    if name in _STANDARD_RESOURCE_CLASSES:
+        raise HTTPException(status_code=400, detail="Cannot delete a standard resource class")
+    rc = db.get(CustomResourceClass, name)
+    if not rc:
+        raise HTTPException(status_code=404, detail=f"resource class '{name}' not found")
+    db.delete(rc)
+    db.commit()
+
+
 
 
 # ── Aggregates ────────────────────────────────────────────────────────────────
@@ -534,12 +649,19 @@ def get_allocation_candidates(
     _: CurrentUser,
     db: DB,
     limit: int = 1000,
+    required: str | None = None,   # comma-sep trait names that RP MUST have
+    forbidden: str | None = None,  # comma-sep trait names that RP MUST NOT have
 ):
     """
     Find resource providers that can satisfy the given resource request.
 
-    resources query parameter format: RESOURCE_CLASS:amount[,RESOURCE_CLASS:amount]
-    Example: VCPU:2,MEMORY_MB:4096,DISK_GB:50
+    Query parameters:
+      resources — RESOURCE_CLASS:amount[,RESOURCE_CLASS:amount]
+                  Example: VCPU:2,MEMORY_MB:4096,DISK_GB:50
+      required  — comma-separated trait names the RP must have (AND logic)
+                  Example: HW_CPU_X86_AVX2
+      forbidden — comma-separated trait names the RP must NOT have (AND logic)
+                  Example: COMPUTE_TRUSTED_CERTS
 
     Returns a list of candidate provider summaries and allocation requests.
     """
@@ -550,13 +672,35 @@ def get_allocation_candidates(
             rc, amount = part.strip().split(":")
             requested[rc.strip()] = int(amount.strip())
     except Exception:
-        from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Invalid resources format. Use RESOURCE_CLASS:amount[,...]")
+
+    required_traits: set[str] = set()
+    forbidden_traits: set[str] = set()
+    if required:
+        required_traits = {t.strip() for t in required.split(",") if t.strip()}
+    if forbidden:
+        forbidden_traits = {t.strip() for t in forbidden.split(",") if t.strip()}
 
     rps = db.scalars(select(ResourceProvider)).all()
     candidates = []
 
     for rp in rps:
+        # ── Trait filtering (required / forbidden) ─────────────────────────
+        if required_traits or forbidden_traits:
+            rp_traits = {
+                t.trait_name for t in db.scalars(
+                    select(ResourceProviderTrait).where(
+                        ResourceProviderTrait.resource_provider_id == rp.uuid
+                    )
+                ).all()
+            }
+            # All required traits must be present
+            if not required_traits.issubset(rp_traits):
+                continue
+            # None of the forbidden traits may be present
+            if rp_traits & forbidden_traits:
+                continue
+
         inventories = db.scalars(
             select(Inventory).where(Inventory.resource_provider_id == rp.uuid)
         ).all()
@@ -612,8 +756,8 @@ def get_allocation_candidates(
         },
     }
 
-
 # ── Reshaper ──────────────────────────────────────────────────────────────────
+
 
 class ReshaperIn(BaseModel):
     inventories:  dict[str, dict]   # rp_uuid → {inventories: {...}}

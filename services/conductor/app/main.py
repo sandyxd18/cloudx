@@ -353,6 +353,69 @@ def handle_mark_snapshot_error(args: dict) -> dict:
     return {"ok": True}
 
 
+# ─── Volume Backup Handlers ──────────────────────────────────────────────────
+
+ALLOWED_BACKUP_FIELDS = {"status", "object_key", "error_message"}
+
+
+def handle_update_backup(args: dict) -> dict:
+    """Update fields on a block_store_backups record."""
+    backup_id = args.get("backup_id")
+    fields    = args.get("fields", {})
+    if not backup_id:
+        return {"error": "backup_id required"}
+
+    safe = {k: v for k, v in fields.items() if k in ALLOWED_BACKUP_FIELDS}
+    if not safe:
+        return {"ok": True, "updated": []}
+
+    set_parts = []
+    params = {"_bid": backup_id}
+    for key, value in safe.items():
+        set_parts.append(f"{key} = :_{key}")
+        params[f"_{key}"] = value
+
+    sql = f"UPDATE block_store_backups SET {', '.join(set_parts)} WHERE id = :_bid"
+    with SessionLocal() as db:
+        result = db.execute(text(sql), params)
+        db.commit()
+
+    log.info("Updated backup %s: %s (rows=%d)", backup_id, list(safe.keys()), result.rowcount)
+    _publish_volume_event("backup.update", backup_id, safe)
+    return {"ok": True, "updated": list(safe.keys())}
+
+
+def handle_delete_backup_record(args: dict) -> dict:
+    """Hard-delete a backup record."""
+    backup_id = args.get("backup_id")
+    if not backup_id:
+        return {"error": "backup_id required"}
+    with SessionLocal() as db:
+        result = db.execute(
+            text("DELETE FROM block_store_backups WHERE id = :bid"),
+            {"bid": backup_id},
+        )
+        db.commit()
+    log.info("Deleted backup record %s (rows=%d)", backup_id, result.rowcount)
+    return {"ok": True, "deleted": result.rowcount}
+
+
+def handle_mark_backup_error(args: dict) -> dict:
+    """Set status=error on a backup."""
+    backup_id = args.get("backup_id")
+    error_msg = args.get("error_message", "unknown error")
+    if not backup_id:
+        return {"error": "backup_id required"}
+    with SessionLocal() as db:
+        db.execute(
+            text("UPDATE block_store_backups SET status = 'error', error_message = :msg WHERE id = :bid"),
+            {"bid": backup_id, "msg": error_msg},
+        )
+        db.commit()
+    log.info("Marked backup %s as error: %s", backup_id, error_msg)
+    return {"ok": True}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Handler dispatch table
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -369,6 +432,10 @@ HANDLERS = {
     "update_snapshot":       handle_update_snapshot,
     "delete_snapshot_record": handle_delete_snapshot_record,
     "mark_snapshot_error":   handle_mark_snapshot_error,
+    # Volume backups
+    "update_backup":         handle_update_backup,
+    "delete_backup_record":  handle_delete_backup_record,
+    "mark_backup_error":     handle_mark_backup_error,
 }
 
 

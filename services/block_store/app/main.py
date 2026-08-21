@@ -17,6 +17,7 @@ Status transitions:
   snapshot       → status='creating'  → worker → 'available'
 """
 
+import json
 import logging
 import os
 import sys
@@ -152,6 +153,45 @@ class VolumeQuota(Base):
     created_at:  Mapped[datetime]= mapped_column(DateTime, default=datetime.utcnow)
 
 
+class ConsistencyGroup(Base):
+    """Group of volumes whose snapshots are taken atomically."""
+    __tablename__ = "block_store_consistency_groups"
+    id:          Mapped[str]      = mapped_column(String, primary_key=True, default=new_id)
+    name:        Mapped[str]      = mapped_column(String, unique=True, index=True)
+    description: Mapped[str|None] = mapped_column(String, nullable=True)
+    status:      Mapped[str]      = mapped_column(String, default="available")
+    project_id:  Mapped[str|None] = mapped_column(String, nullable=True, index=True)
+    volume_ids:  Mapped[str|None] = mapped_column(String, nullable=True)  # JSON list
+    created_at:  Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class VolumeBackup(Base):
+    """Full-data volume backup stored as an object in MinIO/S3 (Swift-like)."""
+    __tablename__ = "block_store_backups"
+    id:            Mapped[str]      = mapped_column(String, primary_key=True, default=new_id)
+    name:          Mapped[str]      = mapped_column(String, index=True)
+    volume_id:     Mapped[str]      = mapped_column(String, index=True)
+    size_gb:       Mapped[int]      = mapped_column(Integer)
+    status:        Mapped[str]      = mapped_column(String, default="creating")  # creating|available|restoring|error
+    backend:       Mapped[str|None] = mapped_column(String, nullable=True)
+    object_key:    Mapped[str|None] = mapped_column(String, nullable=True)   # MinIO object path
+    project_id:    Mapped[str|None] = mapped_column(String, nullable=True, index=True)
+    error_message: Mapped[str|None] = mapped_column(String, nullable=True)
+    created_at:    Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CGSnapshot(Base):
+    """Atomic snapshot of all volumes in a consistency group."""
+    __tablename__ = "block_store_cgsnapshots"
+    id:                    Mapped[str]      = mapped_column(String, primary_key=True, default=new_id)
+    name:                  Mapped[str]      = mapped_column(String, unique=True, index=True)
+    description:           Mapped[str|None] = mapped_column(String, nullable=True)
+    consistency_group_id:  Mapped[str]      = mapped_column(String, index=True)
+    status:                Mapped[str]      = mapped_column(String, default="creating")
+    project_id:            Mapped[str|None] = mapped_column(String, nullable=True)
+    created_at:            Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 # ── Pydantic schemas ───────────────────────────────────────────────────────────
 
 class VolumeIn(BaseModel):
@@ -203,6 +243,18 @@ class VolumeTypeIn(BaseModel):
     lvm_type:       str = "default"   # default | thin
 
 
+class ConsistencyGroupIn(BaseModel):
+    name:        str
+    description: str | None = None
+    volume_ids:  list[str] = []
+
+
+class CGSnapshotIn(BaseModel):
+    name:                 str
+    description:          str | None = None
+    consistency_group_id: str
+
+
 # ── FastAPI app ────────────────────────────────────────────────────────────────
 
 def get_db():
@@ -224,6 +276,12 @@ app.add_middleware(
 )
 if RequestIDMiddleware:
     app.add_middleware(RequestIDMiddleware)
+
+try:
+    from shared.metrics import setup_metrics
+    setup_metrics(app, "block-store-api")
+except Exception:
+    pass
 
 
 # ── Startup ────────────────────────────────────────────────────────────────────
@@ -524,6 +582,25 @@ def health():
     }
 
 
+@app.get("/healthcheck")
+def healthcheck(db: DB):
+    """Standard CloudX health check endpoint.
+    Checks: database connectivity.
+    Returns: {status, checks: {db}} compatible with OpenStack-style health format.
+    """
+    checks = {}
+    overall = "up"
+    # DB check
+    try:
+        db.execute(text("SELECT 1"))
+        checks["db"] = "ok"
+    except Exception as exc:
+        checks["db"] = f"error: {exc}"
+        overall = "degraded"
+    return {"status": overall, "checks": checks}
+
+
+
 # ── Volume CRUD ────────────────────────────────────────────────────────────────
 
 @app.post("/volumes", status_code=201)
@@ -642,8 +719,20 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
         "source_volume_id": source_volume_id,
         "bootable":        bootable,
         "lvm_type":        getattr(vt, "lvm_type", "default"),
+        "max_iops":        getattr(vt, "max_iops", None),       # Ceph QoS: IOPS limit
+        "max_throughput":  getattr(vt, "max_throughput", None), # Ceph QoS: MB/s limit
         "_image_api_url":  IMAGE_API_URL,
     })
+    try:
+        _rpc.publish_event("volume.create.start", {
+            "volume_id":  volume_id,
+            "name":       payload.name,
+            "size_gb":    payload.size_gb,
+            "project_id": current.get("project_id"),
+            "status":     "creating",
+        })
+    except Exception:
+        pass  # best-effort
 
     return obj_to_dict(volume)
 
@@ -933,37 +1022,118 @@ def delete_snapshot(ref: str, _: CurrentUser, db: DB):
 
 # ── Backup ─────────────────────────────────────────────────────────────────────
 
-@app.post("/volumes/{ref}/backup")
-def backup_volume(ref: str, payload: SnapshotIn, _: CurrentUser, db: DB):
-    """Create a snapshot as backup (async)."""
+class BackupIn(BaseModel):
+    name: str | None = None
+
+
+class RestoreIn(BaseModel):
+    name: str | None = None            # name for the restored volume
+    volume_type: str | None = None
+
+
+@app.post("/volumes/{ref}/backup", status_code=202)
+def backup_volume(ref: str, payload: BackupIn, current: CurrentUser, db: DB):
+    """Create a full-data backup of a volume to object storage (MinIO/S3).
+
+    Unlike a snapshot (which stays on the same backend), a backup exports the
+    entire volume image and uploads it to the backup bucket, so it survives
+    loss of the storage node — mirroring Cinder's Swift/S3 backup driver.
+    """
     volume = require_volume(db, ref)
     backup_id = new_id()
-    import math
-    cow_gb = max(1, math.ceil(volume.size_gb * 0.2))
+    name = payload.name or f"backup-{volume.name}"
+    object_key = f"volumes/{volume.project_id or 'default'}/{backup_id}.raw"
 
-    snap = Snapshot(
+    backup = VolumeBackup(
         id=backup_id,
-        name=f"bkp-{payload.name}",
+        name=name,
         volume_id=volume.id,
         size_gb=volume.size_gb,
         status="creating",
-        path="",
         backend=volume.backend,
+        object_key=object_key,
+        project_id=volume.project_id or current.get("project_id"),
     )
-    db.add(snap)
+    db.add(backup)
     db.commit()
-    db.refresh(snap)
+    db.refresh(backup)
 
-    cast_to_worker("create_snapshot", {
-        "snapshot_id": backup_id,
-        "name":        f"bkp-{backup_id.replace('-', '')[:22]}",
+    cast_to_worker("backup_volume", {
+        "backup_id":   backup_id,
         "volume_id":   volume.id,
         "volume_path": volume.path,
         "backend":     volume.backend,
-        "cow_gb":      cow_gb,
+        "size_gb":     volume.size_gb,
+        "object_key":  object_key,
     })
+    return _backup_to_dict(backup)
 
-    return obj_to_dict(snap)
+
+def _backup_to_dict(b: VolumeBackup) -> dict:
+    return {c.name: getattr(b, c.name) for c in b.__table__.columns}
+
+
+@app.get("/backups")
+def list_backups(current: CurrentUser, db: DB):
+    q = select(VolumeBackup)
+    if current.get("role") != "admin":
+        q = q.where(VolumeBackup.project_id == current.get("project_id"))
+    return {"items": [_backup_to_dict(b) for b in db.scalars(q.order_by(VolumeBackup.created_at.desc())).all()]}
+
+
+@app.get("/backups/{backup_id}")
+def show_backup(backup_id: str, _: CurrentUser, db: DB):
+    b = db.get(VolumeBackup, backup_id)
+    if not b:
+        raise HTTPException(status_code=404, detail=f"backup '{backup_id}' not found")
+    return _backup_to_dict(b)
+
+
+@app.delete("/backups/{backup_id}", status_code=202)
+def delete_backup(backup_id: str, _: CurrentUser, db: DB):
+    b = db.get(VolumeBackup, backup_id)
+    if not b:
+        raise HTTPException(status_code=404, detail=f"backup '{backup_id}' not found")
+    b.status = "deleting"
+    db.commit()
+    cast_to_worker("delete_backup", {
+        "backup_id":  backup_id,
+        "object_key": b.object_key,
+    })
+    return {"status": "deleting", "id": backup_id}
+
+
+@app.post("/backups/{backup_id}/restore", status_code=202)
+def restore_backup(backup_id: str, payload: RestoreIn, current: CurrentUser, db: DB):
+    """Restore a backup into a new volume."""
+    b = db.get(VolumeBackup, backup_id)
+    if not b:
+        raise HTTPException(status_code=404, detail=f"backup '{backup_id}' not found")
+    if b.status != "available":
+        raise HTTPException(status_code=409, detail=f"backup not available (status={b.status})")
+
+    new_vol_id = new_id()
+    vol = Volume(
+        id=new_vol_id,
+        name=payload.name or f"restore-{b.name}",
+        size_gb=b.size_gb,
+        status="creating",
+        backend=b.backend,
+        volume_type=payload.volume_type,
+        project_id=current.get("project_id"),
+    )
+    db.add(vol)
+    db.commit()
+    db.refresh(vol)
+
+    cast_to_worker("restore_backup", {
+        "backup_id":  backup_id,
+        "object_key": b.object_key,
+        "volume_id":  new_vol_id,
+        "backend":    b.backend,
+        "size_gb":    b.size_gb,
+    })
+    return obj_to_dict(vol)
 
 
 # ── Volume Types ───────────────────────────────────────────────────────────────
@@ -1098,6 +1268,323 @@ def delete_quota(project_id: str, _: AdminUser, db: DB):
 def get_quota_defaults(project_id: str, _: CurrentUser, db: DB):
     """Return the default quota values."""
     return {"project_id": project_id, "volumes": 10, "gigabytes": 1000, "snapshots": 10}
+
+
+# ── Consistency Groups ────────────────────────────────────────────────────────
+# A consistency group is a set of volumes whose snapshots are captured
+# atomically (or as close to atomically as the backend allows).
+# Reference: https://docs.openstack.org/cinder/latest/admin/consistency-groups.html
+
+def _cg_to_dict(cg: ConsistencyGroup) -> dict:
+    return {
+        "id":          cg.id,
+        "name":        cg.name,
+        "description": cg.description,
+        "status":      cg.status,
+        "project_id":  cg.project_id,
+        "volume_ids":  json.loads(cg.volume_ids or "[]"),
+        "created_at":  _fmt_ts(cg.created_at),
+    }
+
+
+def _cgs_to_dict(cgs: CGSnapshot) -> dict:
+    return {
+        "id":                   cgs.id,
+        "name":                 cgs.name,
+        "description":          cgs.description,
+        "consistency_group_id": cgs.consistency_group_id,
+        "status":               cgs.status,
+        "project_id":           cgs.project_id,
+        "created_at":           _fmt_ts(cgs.created_at),
+    }
+
+
+def require_cg(db: Session, ref: str) -> ConsistencyGroup:
+    cg = db.scalar(select(ConsistencyGroup).where(
+        (ConsistencyGroup.id == ref) | (ConsistencyGroup.name == ref)
+    ))
+    if not cg:
+        raise HTTPException(status_code=404, detail=f"Consistency group '{ref}' not found")
+    return cg
+
+
+@app.post("/consistencygroups", status_code=201)
+def create_consistency_group(payload: ConsistencyGroupIn, current: CurrentUser, db: DB):
+    """Create a new consistency group optionally pre-populated with volumes."""
+    # Validate that all provided volume_ids exist
+    for vid in payload.volume_ids:
+        vol = db.scalar(select(Volume).where((Volume.id == vid) | (Volume.name == vid)))
+        if not vol:
+            raise HTTPException(status_code=404, detail=f"Volume '{vid}' not found")
+
+    cg = ConsistencyGroup(
+        name=payload.name,
+        description=payload.description,
+        status="available",
+        project_id=current.get("project_id"),
+        volume_ids=json.dumps(payload.volume_ids),
+    )
+    db.add(cg)
+    db.commit()
+    db.refresh(cg)
+    log.info("ConsistencyGroup %s created with %d volumes", cg.id, len(payload.volume_ids))
+    return _cg_to_dict(cg)
+
+
+@app.get("/consistencygroups")
+def list_consistency_groups(current: CurrentUser, db: DB):
+    """List all consistency groups for the current project."""
+    project_id = current.get("project_id")
+    q = select(ConsistencyGroup)
+    if current.get("role") != "admin":
+        q = q.where(ConsistencyGroup.project_id == project_id)
+    cgs = db.scalars(q.order_by(ConsistencyGroup.created_at.desc())).all()
+    return {"consistencygroups": [_cg_to_dict(cg) for cg in cgs]}
+
+
+@app.get("/consistencygroups/{ref}")
+def get_consistency_group(ref: str, _: CurrentUser, db: DB):
+    return _cg_to_dict(require_cg(db, ref))
+
+
+@app.post("/consistencygroups/{ref}/action")
+def consistency_group_action(ref: str, payload: dict, _: CurrentUser, db: DB):
+    """
+    Perform an action on a consistency group.
+
+    Supported actions:
+    - add_volumes: {"add_volumes": {"volumes": ["vol_id_1", "vol_id_2"]}}
+    - remove_volumes: {"remove_volumes": {"volumes": ["vol_id_1"]}}
+    - delete: {"delete": {}}
+    """
+    cg = require_cg(db, ref)
+
+    if "add_volumes" in payload:
+        current_ids = set(json.loads(cg.volume_ids or "[]"))
+        new_ids = payload["add_volumes"].get("volumes", [])
+        for vid in new_ids:
+            vol = db.scalar(select(Volume).where((Volume.id == vid) | (Volume.name == vid)))
+            if not vol:
+                raise HTTPException(status_code=404, detail=f"Volume '{vid}' not found")
+            current_ids.add(vol.id)
+        cg.volume_ids = json.dumps(list(current_ids))
+        db.commit()
+        db.refresh(cg)
+        return _cg_to_dict(cg)
+
+    elif "remove_volumes" in payload:
+        current_ids = set(json.loads(cg.volume_ids or "[]"))
+        remove_ids = set(payload["remove_volumes"].get("volumes", []))
+        cg.volume_ids = json.dumps(list(current_ids - remove_ids))
+        db.commit()
+        db.refresh(cg)
+        return _cg_to_dict(cg)
+
+    elif "delete" in payload:
+        db.delete(cg)
+        db.commit()
+        return {"status": "deleted", "id": cg.id}
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown action: {list(payload.keys())}")
+
+
+@app.delete("/consistencygroups/{ref}", status_code=202)
+def delete_consistency_group(ref: str, _: CurrentUser, db: DB):
+    """Delete a consistency group (does NOT delete the volumes inside it)."""
+    cg = require_cg(db, ref)
+    db.delete(cg)
+    db.commit()
+    return {"status": "deleted", "id": cg.id}
+
+
+# ── CG Snapshots ──────────────────────────────────────────────────────────────
+
+@app.post("/cgsnapshots", status_code=201)
+def create_cgsnapshot(payload: CGSnapshotIn, current: CurrentUser, db: DB):
+    """
+    Create an atomic snapshot of all volumes in a consistency group.
+
+    For Ceph backends: uses rbd group snapshot (atomic).
+    For LVM backends: snapshots volumes sequentially (best-effort).
+    """
+    cg = require_cg(db, payload.consistency_group_id)
+    volume_ids = json.loads(cg.volume_ids or "[]")
+    if not volume_ids:
+        raise HTTPException(status_code=400, detail="Consistency group has no volumes")
+
+    cgs = CGSnapshot(
+        name=payload.name,
+        description=payload.description,
+        consistency_group_id=cg.id,
+        status="creating",
+        project_id=current.get("project_id"),
+    )
+    db.add(cgs)
+    db.commit()
+    db.refresh(cgs)
+
+    # Gather volume info for each member volume
+    volumes_info = []
+    for vid in volume_ids:
+        vol = db.scalar(select(Volume).where(Volume.id == vid))
+        if vol:
+            volumes_info.append({
+                "volume_id": vol.id,
+                "name":      vol.name,
+                "path":      vol.path,
+                "backend":   vol.backend,
+                "size_gb":   vol.size_gb,
+            })
+
+    # Dispatch async to worker — sequential loop snapshot
+    cast_to_worker("create_cgsnapshot", {
+        "cgsnapshot_id":      cgs.id,
+        "consistency_group_id": cg.id,
+        "volumes":            volumes_info,
+    })
+    log.info("CGSnapshot %s dispatched for group %s (%d volumes)", cgs.id, cg.id, len(volumes_info))
+    return _cgs_to_dict(cgs)
+
+
+@app.get("/cgsnapshots")
+def list_cgsnapshots(current: CurrentUser, db: DB):
+    """List all CG snapshots for the current project."""
+    project_id = current.get("project_id")
+    q = select(CGSnapshot)
+    if current.get("role") != "admin":
+        q = q.where(CGSnapshot.project_id == project_id)
+    snaps = db.scalars(q.order_by(CGSnapshot.created_at.desc())).all()
+    return {"cgsnapshots": [_cgs_to_dict(s) for s in snaps]}
+
+
+@app.get("/cgsnapshots/{ref}")
+def get_cgsnapshot(ref: str, _: CurrentUser, db: DB):
+    snap = db.scalar(select(CGSnapshot).where(
+        (CGSnapshot.id == ref) | (CGSnapshot.name == ref)
+    ))
+    if not snap:
+        raise HTTPException(status_code=404, detail=f"CG snapshot '{ref}' not found")
+    return _cgs_to_dict(snap)
+
+
+@app.delete("/cgsnapshots/{ref}", status_code=202)
+def delete_cgsnapshot(ref: str, _: CurrentUser, db: DB):
+    snap = db.scalar(select(CGSnapshot).where(
+        (CGSnapshot.id == ref) | (CGSnapshot.name == ref)
+    ))
+    if not snap:
+        raise HTTPException(status_code=404, detail=f"CG snapshot '{ref}' not found")
+    db.delete(snap)
+    db.commit()
+    return {"status": "deleted", "id": snap.id}
+
+
+# ── Volume Migration ─────────────────────────────────────────────────────────
+# Allows an operator to migrate a volume to a different backend/host.
+# The volume must be in 'available' state (not attached) for a cold migration,
+# or in 'in-use' state with live_migration=True for live migration.
+# Reference: https://docs.openstack.org/cinder/latest/admin/blockstorage-volume-migration.html
+
+class VolumeMigrateIn(BaseModel):
+    host: str                        # target host (e.g. "cinder@lvm#lvm")
+    force_host_copy: bool = False    # force copy even if driver-assisted migration is possible
+    lock_volume: bool = False        # lock during migration (prevents use while migrating)
+
+
+@app.post("/volumes/{ref}/action")
+def volume_action(ref: str, payload: dict, current: CurrentUser, db: DB):
+    """
+    Perform an action on a volume. Supported actions:
+
+    - os-migrate_volume: Migrate a volume to a different backend/host.
+      Payload: {"os-migrate_volume": {"host": "...", "force_host_copy": false}}
+
+    - os-force_delete: Admin force-delete a volume regardless of state.
+      Payload: {"os-force_delete": {}}
+
+    - os-reset_status: Reset volume status (admin only).
+      Payload: {"os-reset_status": {"status": "available"}}
+
+    - os-extend_volume: Extend volume size.
+      Payload: {"os-extend_volume": {"new_size": 20}}
+    """
+    volume = require_volume(db, ref)
+
+    # ── os-migrate_volume ──────────────────────────────────────────────────
+    if "os-migrate_volume" in payload:
+        data = payload["os-migrate_volume"]
+        target_host = data.get("host")
+        if not target_host:
+            raise HTTPException(status_code=400, detail="'host' is required in os-migrate_volume")
+        # Validate state — only available volumes can be migrated without live_migration flag
+        if volume.status not in ("available",):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Volume must be in 'available' state to migrate (current: {volume.status})"
+            )
+        volume.status = "migrating"
+        db.commit()
+        cast_to_worker("migrate_volume", {
+            "volume_id":        volume.id,
+            "name":             volume.name,
+            "path":             volume.path,
+            "backend":          volume.backend,
+            "size_gb":          volume.size_gb,
+            "target_host":      target_host,
+            "force_host_copy":  data.get("force_host_copy", False),
+            "lock_volume":      data.get("lock_volume", False),
+        })
+        log.info("Volume migration dispatched: %s → %s", volume.id, target_host)
+        return {"migration_status": "migrating", "volume_id": volume.id, "target_host": target_host}
+
+    # ── os-force_delete ────────────────────────────────────────────────────
+    elif "os-force_delete" in payload:
+        if current.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="admin role required for force_delete")
+        volume.status = "deleting"
+        db.commit()
+        cast_to_worker("delete_volume", {
+            "volume_id": volume.id,
+            "name":      volume.name,
+            "path":      volume.path,
+            "backend":   volume.backend,
+        })
+        return {"status": "deleting", "id": volume.id}
+
+    # ── os-reset_status ────────────────────────────────────────────────────
+    elif "os-reset_status" in payload:
+        if current.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="admin role required for reset_status")
+        new_status = payload["os-reset_status"].get("status", "available")
+        valid_statuses = {"available", "in-use", "error", "creating", "deleting", "extending"}
+        if new_status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+        volume.status = new_status
+        db.commit()
+        return obj_to_dict(volume)
+
+    # ── os-extend_volume ───────────────────────────────────────────────────
+    elif "os-extend_volume" in payload:
+        new_size = payload["os-extend_volume"].get("new_size")
+        if not new_size or new_size <= volume.size_gb:
+            raise HTTPException(status_code=400, detail=f"new_size must be > current size ({volume.size_gb} GB)")
+        if volume.status == "in-use":
+            raise HTTPException(status_code=409, detail="cannot extend an attached volume")
+        volume.status = "extending"
+        db.commit()
+        cast_to_worker("extend_volume", {
+            "volume_id":   volume.id,
+            "name":        volume.name,
+            "path":        volume.path,
+            "backend":     volume.backend,
+            "new_size_gb": new_size,
+        })
+        db.refresh(volume)
+        return obj_to_dict(volume)
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown action: {list(payload.keys())}")
 
 
 # ── API Version Discovery ────────────────────────────────────────────────────────

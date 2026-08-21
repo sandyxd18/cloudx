@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
+import { Link as RouterLink } from 'react-router-dom'
 import {
   Play, Square, RotateCcw, Trash2, Plus, MoreVertical, Terminal,
   PauseCircle, PowerOff, Wrench, Camera, RefreshCw, ChevronDown,
@@ -8,6 +9,7 @@ import {
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import useEventStream from '../hooks/useEventStream.js'
+
 
 function statusBadge(s) {
   const m = {
@@ -466,8 +468,13 @@ export default function ServersPage() {
                   <tr key={s.id} className={selected.includes(s.id) ? 'row-selected' : ''}>
                     <td><input type="checkbox" checked={selected.includes(s.id)} onChange={() => toggleSelect(s.id)} /></td>
                     <td>
-                      <div className="name-cell">{s.name}</div>
-                      <div className="mono text-muted" style={{fontSize:10}}>{s.id?.slice(0,16)}…</div>
+                      <RouterLink
+                        to={`/servers/${s.id}`}
+                        style={{ textDecoration: 'none', color: 'inherit' }}
+                      >
+                        <div className="name-cell" style={{ color: '#7eaadb', cursor: 'pointer' }}>{s.name}</div>
+                        <div className="mono text-muted" style={{fontSize:10}}>{s.id?.slice(0,16)}…</div>
+                      </RouterLink>
                     </td>
                     <td className="text-muted">{s.image_name || s.image || '—'}</td>
                     <td className="mono">{s.ip_address || s.fixed_ip || '—'}</td>
