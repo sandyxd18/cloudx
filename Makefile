@@ -1,4 +1,4 @@
-.PHONY: up up-minio down logs ps reset install-cli test test-real-vm test-floating-ip test-metadata test-security-group test-volume-boot test-multi-network \
+.PHONY: up up-minio up-ha up-monitoring up-backup generate-certs down logs ps reset install-cli test test-real-vm test-floating-ip test-metadata test-security-group test-volume-boot test-multi-network \
         cleanup-network cleanup-compute cleanup-storage cleanup-all \
         node-bootstrap dashboard-dev
 
@@ -15,6 +15,26 @@ up:
 # Step 2b: Start all Docker services + MinIO (IMAGE_STORAGE_BACKEND=minio)
 up-minio:
 	docker compose --profile minio up -d --build
+
+# ── Fase 5 overlays: production readiness stacks ─────────────────────────────
+# High Availability: RabbitMQ 3-node cluster + PostgreSQL streaming replication.
+# Requires RABBITMQ_ERLANG_COOKIE / POSTGRES_REPLICATION_* in .env.
+up-ha:
+	docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
+
+# Monitoring: Prometheus (15-day retention) + Grafana + node/postgres exporters.
+up-monitoring:
+	docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d --build
+
+# Backup runner: nightly pg_dump to MinIO at 23:00 Asia/Jakarta (BACKUP_CRON).
+# Requires MinIO reachable (run `make up-minio` first, or point MINIO_ENDPOINT elsewhere).
+up-backup:
+	docker compose -f docker-compose.yml -f docker-compose.backup.yml up -d --build
+
+# Internal TLS PKI: generates CA + per-service certs under services/certs/out/.
+# Optional SERVICE_HOSTS="10.0.0.11 10.0.0.12" for multi-node SANs.
+generate-certs:
+	./services/certs/generate-certs.sh
 
 # ── Shortcut: restart lab after reboot (no node-bootstrap needed) ─────────────
 start: up

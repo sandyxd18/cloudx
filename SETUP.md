@@ -27,6 +27,26 @@ Variabel penting:
 | `LVM_VG_NAME` | `vg-cloudx` | Nama Volume Group yang akan dibuat otomatis |
 | `CEPH_POOL` | `volumes` | Nama pool Ceph (wajib jika Ceph aktif) |
 
+#### Variabel Fase 5 — Production Readiness (opsional)
+
+| Variabel | Default | Keterangan |
+|---|---|---|
+| `TIMEZONE` | `Asia/Jakarta` | Timezone semua container (log, cron, backup) |
+| `CONTROLLER_IP` | — | IP management Control Plane; di-set di compute/storage node multi-node |
+| `AUTH_BACKENDS` … `DASHBOARD_BACKENDS` | `127.0.0.1` | Daftar backend HAProxy per service, dipisah koma (multi-node HA) |
+| `RABBITMQ_ERLANG_COOKIE` | *(ubah!)* | Shared secret cluster RabbitMQ 3-node (`docker-compose.ha.yml`) |
+| `RABBITMQ_SEED_NODE` | `rabbit@rabbitmq-1` | Node seed yang dijoin node lain |
+| `POSTGRES_ROLE` | `primary` | `primary` atau `standby` (streaming replication) |
+| `POSTGRES_REPLICATION_USER` / `_PASSWORD` | `replicator` | Kredensial replikasi PostgreSQL |
+| `POSTGRES_PRIMARY_HOST` | `127.0.0.1` | Alamat primary (di-set di standby) |
+| `BACKUP_CRON` | `0 23 * * *` | Jadwal backup DB harian (dievaluasi dalam `$TIMEZONE`) |
+| `BACKUP_BUCKET` | `cloudx-backups` | Bucket MinIO/S3 tujuan backup |
+| `BACKUP_RETENTION_DAILY/WEEKLY/MONTHLY` | `7` / `4` / `12` | Retensi backup per tier |
+| `PROMETHEUS_RETENTION` | `15d` | Retensi data metrics Prometheus |
+| `PROMETHEUS_PORT` / `GRAFANA_PORT` | `9090` / `3000` | Port UI monitoring |
+| `TLS_ENABLED` | `false` | Aktifkan internal TLS antar-service |
+| `TLS_CERT_DIR` | `/etc/cloudx/certs` | Path mount sertifikat internal |
+
 ### Langkah 1 — Siapkan Node
 
 ```bash
@@ -50,13 +70,48 @@ Script `scripts/node-bootstrap.sh` melakukan:
 
 ### Langkah 2 — Jalankan Services
 
+#### Opsi A — Single-node all-in-one (default lab)
+
 ```bash
-# Opsi A — Backend file/lokal (default)
+# Backend file/lokal
 make up
 
-# Opsi B — Backend MinIO
+# Backend MinIO (image + volume backup + DB backup)
 make up-minio
 ```
+
+#### Opsi B — Single-node + overlay Fase 5
+
+```bash
+make up-minio                 # stack dasar dulu
+make up-monitoring            # + Prometheus :9090, Grafana :3000, exporters
+make up-backup                # + backup runner otomatis 23:00 Asia/Jakarta
+```
+
+#### Opsi C — Single-node + High Availability
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
+```
+
+#### Opsi D — Multi-node (role terpisah)
+
+```bash
+# ── Di Control Plane ──────────────────────────────────────────────────────────
+cp .env.example .env          # set CONTROLLER_IP=<ip node ini>, secrets, dst.
+docker compose -f docker-compose.control-plane.yml up -d --build
+
+# ── Di Storage Node ───────────────────────────────────────────────────────────
+cp .env.example .env          # set CONTROLLER_IP=<ip control plane>, LVM_PV_NAME / CEPH_POOL
+docker compose -f docker-compose.storage-node.yml up -d --build
+
+# ── Di Compute Node ───────────────────────────────────────────────────────────
+cp .env.example .env          # set CONTROLLER_IP=<ip control plane>, NETWORK_INTERFACE
+docker compose -f docker-compose.compute-node.yml up -d --build
+```
+
+> Detail lengkap topologi multi-node, HA, backup, monitoring, dan internal TLS:
+> [docs/fase5-production-readiness.md](docs/fase5-production-readiness.md).
 
 Install CLI:
 ```bash

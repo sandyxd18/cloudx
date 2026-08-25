@@ -70,10 +70,14 @@
 - Subcommands: `auth`, `server`, `flavor`, `keypair`, `network`, `subnet`, `router`, `floating-ip`, `security-group`, `image`, `volume`, `snapshot`, `placement`
 
 ### Dashboard (Web UI)
-- React + Vite frontend dengan dark theme premium
-- Real-time stats: CPU/RAM usage charts, resource utilization bars
-- Full CRUD untuk semua resource via web UI
-- **WebSocket live events** — server status updates tanpa manual refresh
+- **AWS Management Console-style UI** berbasis **Cloudscape Design System** (`@cloudscape-design/components`)
+- TopNavigation bar: global search (jump-to-service), project switcher, dark/light mode toggle, user menu
+- AppLayout: side navigation per service group, breadcrumbs otomatis, notification Flashbar
+- Tabel interaktif ala AWS Console: multi-select, filtering, pagination, bulk actions dropdown
+- Instance detail dengan tabs: Details / Networking / Storage / embedded noVNC console
+- Real-time stats: vCPU/memory allocation charts, quota & utilization progress bars
+- Network topology view: force-directed SVG graph + node inspector panel
+- **WebSocket live events** — server/volume status updates tanpa manual refresh
 - Served via FastAPI proxy di port 8080
 
 ---
@@ -102,6 +106,14 @@
 | RabbitMQ Management | http://localhost:15672 | RabbitMQ web UI (cloudx/cloudx) |
 | MinIO API | http://localhost:9000 | S3-compatible object storage |
 | MinIO Console | http://localhost:9001 | MinIO web UI |
+| **HAProxy** | http://localhost:8404 | Stats dashboard (`/stats`) + Prometheus exporter (`/metrics`) |
+| Prometheus* | http://localhost:9090 | Metrics & alerts (retention 15 hari) |
+| Grafana* | http://localhost:3000 | Dashboards (admin/admin) |
+| Node Exporter* | http://localhost:9100 | Host CPU/memory/disk/network metrics |
+| Postgres Exporter* | http://localhost:9187 | Database metrics |
+
+> \* Service bertanda bintang hanya aktif jika monitoring overlay dijalankan
+> (`make up-monitoring`). HAProxy selalu aktif sebagai API gateway.
 
 Swagger API tersedia di `/docs` pada masing-masing port service.
 
@@ -298,10 +310,18 @@ cloudx placement provider list           # resource providers
 | `placement-api` | Resource tracking: provider, inventory, allocation, usage |
 | `metadata-api` | Nova metadata HTTP (169.254.169.254-like), EC2 + OpenStack format |
 | `metadata-proxy` | DNAT proxy: redirect 169.254.169.254:80 → metadata-api |
-| `dashboard` | React web UI + FastAPI reverse proxy untuk semua API |
+| `dashboard` | React web UI (Cloudscape) + FastAPI reverse proxy untuk semua API |
 | `ovs-ovn-controller` | OVN controller (`network_mode: host`) — kelola OVS bridge di host |
 | `ovn-nb-db` / `ovn-sb-db` | OVN Northbound & Southbound database |
 | `postgres` | Single database `mini_openstack` untuk semua services |
+| `conductor` | DB proxy untuk workers (nova-conductor equivalent) |
+| `haproxy` | API gateway + load balancer round-robin (multi-backend ready) |
+| `keepalived` | VIP management via VRRP (failover antar node) |
+
+> **Deployment adaptif:** Selain single-node all-in-one (`docker-compose.yml`),
+> CloudX mendukung pemecahan role ke beberapa node — Control Plane, Compute Node,
+> Storage Node — plus overlay High Availability, Backup otomatis, dan Monitoring.
+> Lihat [docs/fase5-production-readiness.md](docs/fase5-production-readiness.md).
 
 ---
 
@@ -314,6 +334,12 @@ make up-minio            # Langkah 2B: jalankan services + MinIO
 make start               # Shortcut: make up
 make start-minio         # Shortcut: make up-minio
 make install-cli         # Install cloudx CLI
+
+# ── Fase 5: Production readiness overlays ─────────────────────────────────────
+make up-ha               # + RabbitMQ cluster & PostgreSQL replication
+make up-monitoring       # + Prometheus, Grafana, exporters
+make up-backup           # + backup runner otomatis (23:00 Asia/Jakarta → MinIO)
+make generate-certs      # Generate internal TLS CA + certificates
 
 make down                # Stop semua containers
 make logs                # Tail logs semua services
@@ -472,3 +498,6 @@ Cleanup hanya menarget resource dengan marker project (`cloudx-`, `test-`, `tap-
 - [docs/troubleshooting.md](docs/troubleshooting.md)
 - [docs/troubleshooting-metadata.md](docs/troubleshooting-metadata.md)
 - [docs/troubleshooting-security-group.md](docs/troubleshooting-security-group.md)
+- [docs/fase5-production-readiness.md](docs/fase5-production-readiness.md) — multi-node, HA, backup, monitoring, TLS
+- [docs/feature-comparison.md](docs/feature-comparison.md) — paritas fitur vs OpenStack asli
+- [docs/roadmap-openstack-parity.md](docs/roadmap-openstack-parity.md) — roadmap pengembangan

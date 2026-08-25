@@ -3,29 +3,45 @@
 > Dokumen ini memetakan fitur yang sudah diimplementasikan di **cloudx private cloud lab**
 > dibandingkan dengan OpenStack service yang asli, beserta estimasi persentase kemiripan.
 >
-> **Diperbarui:** Juni 2026 — mencakup Auth, Nova power actions, Placement API penuh,
-> Block Storage LVM/Ceph, Metadata identity, dan Dashboard.
+> **Diperbarui:** Agustus 2026 — mencakup Fase 1–4 (paritas API base services) dan
+> Fase 5 (production readiness: multi-node, HA, backup, monitoring, internal TLS,
+> Dashboard AWS Cloudscape).
 
 ---
 
 ## 🔢 Ringkasan Keseluruhan
 
-| Service cloudx | Setara OpenStack | Sebelumnya | Sekarang |
-|---|---|:---:|:---:|
-| `auth-api` | **Keystone** | 0% | ~65% |
-| `compute-api` + `compute-worker` | **Nova** | ~45% | ~80% |
-| `networking-api` | **Neutron** | ~55% | ~65% |
-| `image-api` | **Glance** | ~40% | ~70% |
-| `block-store-api` | **Cinder** | ~35% | ~75% |
-| `metadata-api` | **Nova Metadata API** | ~75% | ~92% |
-| `placement-api` | **Placement** | ~15% | ~70% |
-| `dashboard` | **Horizon** | 0% | ~55% |
-| *(tidak ada)* | **Heat** | 0% | 0% |
-| *(tidak ada)* | **Swift** | 0% | 0% |
-| *(tidak ada)* | **Ironic** | 0% | 0% |
+| Service cloudx | Setara OpenStack | Awal | Setelah F1–F4 | Setelah F5 |
+|---|---|:---:|:---:|:---:|
+| `auth-api` | **Keystone** | 0% | ~93% | **~95%** |
+| `compute-api` + `compute-worker` | **Nova** | ~45% | ~94% | **~95%** |
+| `networking-api` | **Neutron** | ~55% | ~88% | **~90%** |
+| `image-api` | **Glance** | ~40% | ~90% | **~92%** |
+| `block-store-api` | **Cinder** | ~35% | ~93% | **~95%** |
+| `metadata-api` | **Nova Metadata API** | ~75% | ~92% | **~92%** |
+| `placement-api` | **Placement** | ~15% | ~92% | **~93%** |
+| `dashboard` | **Horizon** | 0% | ~85% | **~90%** |
+| *(tidak ada)* | **Heat** | 0% | 0% | 0% |
+| *(tidak ada)* | **Swift** | 0% | 0% | 0% (MinIO sebagai pengganti) |
+| *(tidak ada)* | **Ironic** | 0% | 0% | 0% |
 
-**Rata-rata keseluruhan (service yang diimplementasikan): ~72%**
-*(vs ~45% pada versi sebelumnya)*
+**Rata-rata keseluruhan (service yang diimplementasikan): ~92%**
+*(vs ~72% sebelum Fase 1–4 dimulai)*
+
+### Tambahan Fase 5 — Production Readiness (lintas service)
+
+| Area | Fitur | Status |
+|---|---|:---:|
+| Infrastruktur | Deployment multi-node adaptif (Control Plane / Compute / Storage) | ✅ |
+| Infrastruktur | High Availability: RabbitMQ cluster + PostgreSQL streaming replication | ✅ |
+| Infrastruktur | HAProxy multi-backend round-robin + Keepalived VIP | ✅ |
+| Backup | Automated DB backup ke MinIO (cron 23:00 Asia/Jakarta, retention tiered) | ✅ |
+| Backup | Volume backup penuh ke object storage + restore (`POST /volumes/{id}/backup`) | ✅ |
+| Observability | Prometheus (retention 15 hari) + Grafana dashboards ter-provision | ✅ |
+| Observability | Endpoint `/metrics` di semua API services + alert rules | ✅ |
+| Security | Internal TLS PKI (`services/certs/generate-certs.sh`, antar-service saja) | ✅ |
+| Database | Alembic migration scaffold (baseline stamp, additive-first) | ✅ |
+| Horizon | UI dirancang ulang ala AWS Console dengan Cloudscape Design System | ✅ |
 
 ---
 
@@ -549,65 +565,60 @@
 
 ### ✅ Fitur yang Sudah Ada
 
-#### Overview & Auth
+#### Shell & Navigasi ala AWS Console (Cloudscape Design System)
 | Fitur | Status |
 |---|:---:|
-| Login (username + password + project scope) | ✅ |
-| Auto-logout saat token expired (401) | ✅ |
-| Overview: stat cards (server, volume, image, network) | ✅ |
-| CPU & RAM usage charts (Recharts area chart) | ✅ |
-| Resource utilization bars | ✅ |
-| Recent instances table | ✅ |
+| **TopNavigation bar** — identity, global search jump-to-service | ✅ |
+| **Dark / Light mode toggle** di header (persisten via localStorage) | ✅ |
+| Project switcher (multi-project scope) di utilities menu | ✅ |
+| User menu (API access, access keys, roles, sign out) | ✅ |
+| AppLayout + SideNavigation per service group + breadcrumbs otomatis | ✅ |
+| Notification Flashbar (toast lama dimigrasi penuh) | ✅ |
 
 #### Compute Pages
 | Fitur | Status |
 |---|:---:|
-| **Instances** — list + status badge | ✅ |
-| Instance actions: start/stop/reboot/pause/resume/suspend | ✅ |
-| Instance actions: delete, console logs viewer | ✅ |
-| Create instance modal (image, flavor, network, keypair, SG) | ✅ |
-| **Flavors** — list + create modal | ✅ |
-| **Key Pairs** — list + import modal + copy fingerprint | ✅ |
-| **Server Groups** — list + create dengan policy selection | ✅ |
-
-#### Networking Pages
-| Fitur | Status |
-|---|:---:|
-| **Networks** — list dengan side-by-side subnet view | ✅ |
-| Create network + subnet (tabbed modal) | ✅ |
-| **Routers** — list + create + add interface modal | ✅ |
-| **Floating IPs** — allocate + associate/disassociate | ✅ |
-| **Security Groups** — accordion view + rule management | ✅ |
+| Instances — Cloudscape Table multi-select, filter, pagination | ✅ |
+| Bulk instance state actions (start/stop/reboot/delete) | ✅ |
+| Actions dropdown: pause/resume/suspend/rescue/shelve/lock/resize confirm-revert | ✅ |
+| Launch instance modal (flavor/image/network/keypair select) | ✅ |
+| Instance detail tabs: Details / Networking / Storage / Console | ✅ |
+| **noVNC console** embedded (modal + tab detail + halaman penuh) | ✅ |
+| Live console log dengan auto-refresh 2 detik | ✅ |
+| Flavors, Key Pairs, Server Groups CRUD | ✅ |
 
 #### Storage Pages
 | Fitur | Status |
 |---|:---:|
-| **Images** — list + visibility filter + deactivate/reactivate | ✅ |
-| **Volumes** — list + create + extend modal + detach action | ✅ |
-| **Snapshots** — create from volume + delete | ✅ |
+| Volumes — table + create/extend/snapshot/detach modals | ✅ |
+| Volume backup ke object storage + restore dari detail page | ✅ |
+| Snapshots, Volume Types (dengan preset AWS EBS) | ✅ |
 
-#### Admin Pages
+#### Networking Pages
 | Fitur | Status |
 |---|:---:|
-| **Admin: Projects** — list + create + delete | ✅ |
-| **Admin: Users** — list + create + delete | ✅ |
+| Networks (network + subnet modal), Routers, Floating IPs | ✅ |
+| Security Groups dengan rules manager (inbound/outbound ala AWS) | ✅ |
+| Network detail tabs (Details/Subnets/Ports) | ✅ |
+| Network topology graph (force-directed SVG) + node inspector panel | ✅ |
+
+#### Admin & Overview
+| Fitur | Status |
+|---|:---:|
+| Overview dashboard: stat cards, allocation charts, quota progress bars | ✅ |
+| API Access panel (endpoint catalog dari Keystone service catalog) | ✅ |
+| Admin: Projects / Users / Access Keys (tabs) | ✅ |
+| Role management dengan inline role selector | ✅ |
+| WebSocket live events → auto-refresh tabel instances & volumes | ✅ |
 
 ### ❌ Fitur yang Belum Ada (Horizon Asli)
 | Fitur | Keterangan |
 |---|---|
-| **VNC Console** (noVNC embedded) | Tidak ada in-browser console |
-| **Log streaming** (live) | Log adalah snapshot, bukan streaming |
-| **Topology view** (network graph) | Tidak ada visual network map |
-| **Volume types management** | Tidak ada halaman volume types |
-| **Resource usage quotas** | Tidak ada quota management UI |
-| **Object storage (Swift) UI** | Tidak ada |
-| **Heat / Orchestration UI** | Tidak ada |
-| **Image upload via UI** | Tidak ada drag-drop upload |
-| **Identity: Roles management** | Admin UI hanya user/project |
-| **API Access panel** | Tidak ada |
-| **Project selector** (sidebar) | Login per session, tidak ada live switch |
+| **Heat / Orchestration UI** | Service Heat belum diimplementasikan |
+| **Object Storage (Swift) UI** | MinIO hanya backend image/backup, bukan UI file manager |
 
-**Estimasi kemiripan Horizon: ~55%**
+**Estimasi kemiripan Horizon: ~90%**
+*(UI dirancang ulang dengan AWS Cloudscape Design System pada Fase 5)*
 
 ---
 
@@ -633,18 +644,18 @@
 ## 📈 Grafik Perbandingan Persentase
 
 ```
-Service         Sebelumnya   Sekarang
-──────────────────────────────────────────────────
-Keystone           0%  ████████████████████  65%
-Nova              45%  ████████████████████████████████  80%
-Neutron           55%  ████████████████████████████  65% (*)
-Glance            40%  ████████████████████████████  70%
-Cinder            35%  ██████████████████████████████  75%
-Metadata          75%  ████████████████████████████████████  92%
-Placement         15%  ████████████████████████████  70%
-Horizon            0%  ██████████████████████  55%
+Service         Awal   Setelah F1–F4   Setelah F5
+──────────────────────────────────────────────────────
+Keystone           0%  ██████████████  ~93%  ██████████████▌  ~95%
+Nova              45%  ██████████████  ~94%  ██████████████▌  ~95%
+Neutron           55%  █████████████   ~88%  █████████████▌   ~90%
+Glance            40%  █████████████   ~90%  █████████████▌   ~92%
+Cinder            35%  █████████████   ~93%  █████████████▌   ~95%
+Metadata          75%  █████████████   ~92%  █████████████    ~92%
+Placement         15%  █████████████   ~92%  █████████████▌   ~93%
+Horizon            0%  ████████████    ~85%  █████████████    ~90% (*)
 
-(*) Neutron sengaja tidak diimplementasikan LBaaS/VPNaaS/FWaaS
+(*) Horizon dirancang ulang dengan AWS Cloudscape Design System pada Fase 5.
 ```
 
 ---
