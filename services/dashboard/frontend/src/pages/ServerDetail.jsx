@@ -1,250 +1,293 @@
-import { useEffect, useState } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import {
-  ArrowLeft, Server, HardDrive, Network, Tag, Play, Square,
-  RotateCcw, Trash2, Terminal, RefreshCw, Clock, Cpu, MemoryStick,
-  Globe, Shield, Key, CheckCircle, XCircle, Activity
-} from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import Box from '@cloudscape-design/components/box'
+import Button from '@cloudscape-design/components/button'
+import ButtonDropdown from '@cloudscape-design/components/button-dropdown'
+import Container from '@cloudscape-design/components/container'
+import ContentLayout from '@cloudscape-design/components/content-layout'
+import Header from '@cloudscape-design/components/header'
+import KeyValuePairs from '@cloudscape-design/components/key-value-pairs'
+import Modal from '@cloudscape-design/components/modal'
+import SpaceBetween from '@cloudscape-design/components/space-between'
+import Tabs from '@cloudscape-design/components/tabs'
+import Table from '@cloudscape-design/components/table'
+import Badge from '@cloudscape-design/components/badge'
+import Alert from '@cloudscape-design/components/alert'
+import Spinner from '@cloudscape-design/components/spinner'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
-
-function statusBadge(s) {
-  const m = { ACTIVE: 'active', SHUTOFF: 'shutoff', ERROR: 'error', BUILD: 'building', PAUSED: 'paused' }
-  return 'status-badge status-' + (m[s] || 'inactive').toLowerCase()
-}
-
-function timeAgo(dt) {
-  if (!dt) return '—'
-  const d = new Date(dt), now = new Date()
-  const diff = Math.floor((now - d) / 1000)
-  if (diff < 60) return `${diff}s ago`
-  if (diff < 3600) return `${Math.floor(diff/60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`
-  return `${Math.floor(diff/86400)}d ago`
-}
-
-function DetailCard({ title, icon: Icon, children }) {
-  return (
-    <div style={{
-      background: 'var(--card-bg, #1e2736)',
-      border: '1px solid var(--border-color, rgba(255,255,255,0.08))',
-      borderRadius: 12,
-      padding: '20px 24px',
-      marginBottom: 20
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, color: 'var(--text-primary, #fff)' }}>
-        <Icon size={18} style={{ color: '#6c8ebf' }} />
-        <span style={{ fontWeight: 600, fontSize: 15 }}>{title}</span>
-      </div>
-      {children}
-    </div>
-  )
-}
-
-function InfoRow({ label, value }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-      <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13 }}>{label}</span>
-      <span style={{ color: 'rgba(255,255,255,0.9)', fontSize: 13, fontFamily: typeof value === 'string' && value.includes('-') ? 'monospace' : 'inherit', maxWidth: '60%', textAlign: 'right', wordBreak: 'break-all' }}>
-        {value ?? '—'}
-      </span>
-    </div>
-  )
-}
+import { ComputeStatus, PageLoading, TableEmpty, fmtDate, timeAgo } from '../components/common.jsx'
 
 export default function ServerDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { addToast } = useToast()
-  const [server, setServer] = useState(null)
+  const toast = useToast()
+  const [server, setServer]   = useState(null)
+  const [volumes, setVolumes] = useState([])
   const [loading, setLoading] = useState(true)
-  const [actionLoading, setActionLoading] = useState(false)
-  const [logs, setLogs] = useState('')
+  const [logs, setLogs]       = useState('')
   const [showLogs, setShowLogs] = useState(false)
+  const [consoleUrl, setConsoleUrl] = useState(null)
+  const [consoleError, setConsoleError] = useState('')
+  const [activeTab, setActiveTab] = useState('details')
 
-  const load = async () => {
-    try {
-      setLoading(true)
-      const data = await api.getServer(id)
-      setServer(data)
-    } catch(e) {
-      addToast('Failed to load server: ' + (e.message || 'Unknown error'), 'error')
-    } finally {
-      setLoading(false)
+  const load = useCallback(async () => {
+    setLoading(true)
+    const [srv, vols] = await Promise.allSettled([api.getServer(id), api.getVolumes()])
+    if (srv.status === 'fulfilled') setServer(srv.value)
+    else toast('Failed to load instance: ' + (srv.reason?.message || 'unknown error'), 'error')
+    if (vols.status === 'fulfilled') {
+      setVolumes((vols.value?.items || []).filter(v => v.attached_to_server_id === id))
     }
-  }
+    setLoading(false)
+  }, [id, toast])
 
-  useEffect(() => { load() }, [id])
+  useEffect(() => { load() }, [load])
 
-  const doAction = async (fn, label) => {
-    setActionLoading(true)
+  // Lazily fetch the console URL when the Console tab is opened.
+  useEffect(() => {
+    if (activeTab !== 'console' || consoleUrl || consoleError) return
+    api.getRemoteConsole(id)
+      .then(data => {
+        const url = data?.remote_console?.url
+        if (url) setConsoleUrl(url)
+        else setConsoleError('No console URL was returned.')
+      })
+      .catch(e => setConsoleError(e.message))
+  }, [activeTab, id, consoleUrl, consoleError])
+
+  const doAction = async (action) => {
     try {
-      await fn()
-      addToast(`${label} initiated`, 'success')
+      if (action === 'delete') {
+        if (!confirm(`Delete instance "${server.name}"?`)) return
+        await api.deleteServer(id)
+        toast('Instance deletion started', 'success')
+        navigate('/servers')
+        return
+      }
+      if (action === 'shelve')        { await api.shelveServer(id) }
+      else if (action === 'unshelve') { await api.unshelveServer(id) }
+      else if (action === 'confirmResize') { await api.confirmResize(id) }
+      else if (action === 'revertResize')  { await api.revertResize(id) }
+      else { await api.serverAction(id, action) }
+      toast(`Action "${action}" sent`, 'success')
       setTimeout(load, 1500)
-    } catch(e) {
-      addToast(`Failed: ${e.message}`, 'error')
-    } finally {
-      setActionLoading(false)
+    } catch (e) {
+      toast(e.message, 'error')
     }
   }
 
   const loadLogs = async () => {
     try {
       const res = await api.getServerLogs(id)
-      setLogs(res.output || 'No logs available')
+      setLogs(res?.output || 'No logs available')
       setShowLogs(true)
-    } catch(e) {
-      addToast('Could not load logs: ' + e.message, 'error')
+    } catch (e) {
+      toast('Could not load logs: ' + e.message, 'error')
     }
   }
 
-  if (loading) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
-      <RefreshCw size={24} style={{ animation: 'spin 1s linear infinite', color: '#6c8ebf' }} />
-    </div>
-  )
-  if (!server) return <div style={{ color: 'rgba(255,255,255,0.5)', textAlign: 'center', marginTop: 80 }}>Server not found</div>
+  if (loading) return <PageLoading text="Loading instance" />
+  if (!server) return <Alert type="error" header="Instance not found">The requested instance does not exist or is not visible in this project.</Alert>
+
+  const isActive  = server.status === 'ACTIVE'
+  const isShutoff = server.status === 'SHUTOFF'
+  const isPaused  = server.status === 'PAUSED'
+  const isShelved = server.status === 'SHELVED_OFFLOADED'
+  const isVerify  = server.status === 'VERIFY_RESIZE' || server.status === 'RESIZE'
 
   const addresses = server.addresses || {}
   const allIPs = Object.values(addresses).flat()
 
   return (
-    <div style={{ padding: '0 4px' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
-        <button
-          onClick={() => navigate('/servers')}
-          style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '6px 12px', color: 'rgba(255,255,255,0.7)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
+    <ContentLayout
+      header={
+        <Header
+          variant="h1"
+          description={server.id}
+          actions={
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button iconName="refresh" onClick={load} ariaLabel="Refresh" />
+              <Button onClick={loadLogs}>Console log</Button>
+              <ButtonDropdown
+                items={[
+                  { id: 'start',   text: 'Start',   disabled: !isShutoff },
+                  { id: 'stop',    text: 'Stop',    disabled: !isActive },
+                  { id: 'reboot',  text: 'Reboot',  disabled: !isActive },
+                  { id: 'pause',   text: 'Pause',   disabled: !isActive },
+                  { id: 'resume',  text: 'Resume',  disabled: !isPaused },
+                  { id: 'suspend', text: 'Suspend', disabled: !isActive },
+                  { id: 'rescue',  text: 'Rescue',  disabled: !isActive },
+                  { id: 'shelve',   text: 'Shelve',   disabled: !(isActive || isShutoff) },
+                  { id: 'unshelve', text: 'Unshelve', disabled: !isShelved },
+                  { id: 'confirmResize', text: 'Confirm resize', disabled: !isVerify },
+                  { id: 'revertResize',  text: 'Revert resize',  disabled: !isVerify },
+                  { id: 'lock',   text: 'Lock' },
+                  { id: 'unlock', text: 'Unlock' },
+                  { id: 'delete', text: 'Delete' },
+                ]}
+                onItemClick={({ detail }) => doAction(detail.id)}
+              >
+                Actions
+              </ButtonDropdown>
+              <Button variant="primary" disabled={!isActive} onClick={() => navigate(`/console/${id}?name=${encodeURIComponent(server.name)}`)}>
+                Connect
+              </Button>
+            </SpaceBetween>
+          }
         >
-          <ArrowLeft size={14} /> Back
-        </button>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <Server size={22} style={{ color: '#6c8ebf' }} />
-            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#fff' }}>{server.name}</h1>
-            <span className={statusBadge(server.status)}>{server.status}</span>
-          </div>
-          <p style={{ margin: '4px 0 0 34px', color: 'rgba(255,255,255,0.4)', fontSize: 13, fontFamily: 'monospace' }}>{server.id}</p>
-        </div>
+          {server.name}
+        </Header>
+      }
+    >
+      <SpaceBetween size="l">
+        <Container header={<Header variant="h2">Instance summary</Header>}>
+          <KeyValuePairs
+            columns={4}
+            items={[
+              { label: 'Instance state', value: <ComputeStatus status={server.status} /> },
+              { label: 'Private IP', value: server.ip_address || allIPs[0]?.addr || '—' },
+              { label: 'Flavor', value: server.flavor_name || server.flavor || '—' },
+              { label: 'Launch time', value: timeAgo(server.created_at) },
+            ]}
+          />
+        </Container>
 
-        {/* Action buttons */}
-        <div style={{ display: 'flex', gap: 8 }}>
-          {server.status === 'SHUTOFF' && (
-            <button className="btn-primary" style={{ padding: '7px 14px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}
-              disabled={actionLoading} onClick={() => doAction(() => api.startServer(id), 'Start')}>
-              <Play size={14} /> Start
-            </button>
-          )}
-          {server.status === 'ACTIVE' && (
-            <>
-              <button className="btn-danger" style={{ padding: '7px 14px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}
-                disabled={actionLoading} onClick={() => doAction(() => api.stopServer(id), 'Stop')}>
-                <Square size={14} /> Stop
-              </button>
-              <button className="btn-secondary" style={{ padding: '7px 14px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}
-                disabled={actionLoading} onClick={() => doAction(() => api.rebootServer(id), 'Reboot')}>
-                <RotateCcw size={14} /> Reboot
-              </button>
-              <Link to={`/console/${id}`} style={{ textDecoration: 'none' }}>
-                <button className="btn-secondary" style={{ padding: '7px 14px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Terminal size={14} /> Console
-                </button>
-              </Link>
-            </>
-          )}
-          <button className="btn-secondary" style={{ padding: '7px 14px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}
-            onClick={loadLogs}>
-            <Activity size={14} /> Logs
-          </button>
-        </div>
-      </div>
+        <Tabs
+          activeTabId={activeTab}
+          onChange={({ detail }) => setActiveTab(detail.activeTabId)}
+          tabs={[
+            {
+              id: 'details',
+              label: 'Details',
+              content: (
+                <SpaceBetween size="l">
+                  <Container header={<Header variant="h2">Instance details</Header>}>
+                    <KeyValuePairs
+                      columns={3}
+                      items={[
+                        { label: 'Instance ID', value: server.id },
+                        { label: 'Name', value: server.name },
+                        { label: 'State', value: <ComputeStatus status={server.status} /> },
+                        { label: 'Image', value: server.image_name || server.image_id || server.image || '—' },
+                        { label: 'Flavor', value: server.flavor_name || server.flavor || '—' },
+                        { label: 'Locked', value: server.locked ? <Badge color="red">Locked</Badge> : 'No' },
+                        { label: 'Created', value: fmtDate(server.created_at) },
+                        { label: 'Project', value: server.project_id || '—' },
+                        { label: 'Availability zone', value: server.availability_zone || 'nova' },
+                        { label: 'Host', value: server.host || '—' },
+                        { label: 'Hypervisor', value: server.libvirt_domain_name || '—' },
+                        { label: 'Error', value: server.error_message || '—' },
+                      ]}
+                    />
+                  </Container>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        {/* Overview */}
-        <DetailCard title="Overview" icon={Server}>
-          <InfoRow label="Status" value={server.status} />
-          <InfoRow label="Task State" value={server.task_state || 'None'} />
-          <InfoRow label="Image" value={server.image_name || server.image_id || '—'} />
-          <InfoRow label="Flavor" value={`${server.flavor_name || server.flavor_id} (${server.vcpus || '?'} vCPU, ${server.ram_mb ? Math.round(server.ram_mb/1024) + ' GB RAM' : '?'})`} />
-          <InfoRow label="Created" value={server.created_at ? new Date(server.created_at).toLocaleString() : '—'} />
-          <InfoRow label="Age" value={timeAgo(server.created_at)} />
-          <InfoRow label="Project" value={server.project_id} />
-          <InfoRow label="User" value={server.user_id} />
-        </DetailCard>
+                  <Container header={<Header variant="h2">Resources</Header>}>
+                    <KeyValuePairs
+                      columns={4}
+                      items={[
+                        { label: 'vCPUs', value: server.vcpus ?? '—' },
+                        { label: 'Memory', value: server.ram_mb ? `${server.ram_mb} MB` : '—' },
+                        { label: 'Root disk', value: server.disk_gb ? `${server.disk_gb} GB` : '—' },
+                        { label: 'Boot source', value: server.boot_source || 'volume' },
+                      ]}
+                    />
+                  </Container>
 
-        {/* Network */}
-        <DetailCard title="Network" icon={Network}>
-          {allIPs.length === 0 ? (
-            <p style={{ color: 'rgba(255,255,255,0.35)', fontSize: 13 }}>No network addresses</p>
-          ) : allIPs.map((addr, i) => (
-            <InfoRow key={i} label={`${addr.version === 6 ? 'IPv6' : 'IPv4'} (${Object.keys(addresses)[0] || 'net'})`} value={addr.addr} />
-          ))}
-          {server.floating_ip && <InfoRow label="Floating IP" value={server.floating_ip} />}
-          {server.port_id && <InfoRow label="Port ID" value={server.port_id} />}
-        </DetailCard>
+                  <Container header={<Header variant="h2">Security and access</Header>}>
+                    <KeyValuePairs
+                      columns={3}
+                      items={[
+                        { label: 'Key pair', value: server.keypair_name || server.keypair || '—' },
+                        {
+                          label: 'Security groups',
+                          value: server.security_groups?.length
+                            ? <SpaceBetween size="xxs" direction="horizontal">{server.security_groups.map(sg => <Badge key={sg}>{sg}</Badge>)}</SpaceBetween>
+                            : '—',
+                        },
+                        {
+                          label: 'Tags',
+                          value: server.tags?.length
+                            ? <SpaceBetween size="xxs" direction="horizontal">{server.tags.map(t => <Badge key={t} color="green">{t}</Badge>)}</SpaceBetween>
+                            : '—',
+                        },
+                      ]}
+                    />
+                  </Container>
+                </SpaceBetween>
+              ),
+            },
+            {
+              id: 'networking',
+              label: 'Networking',
+              content: (
+                <Container header={<Header variant="h2">Network interfaces</Header>}>
+                  <KeyValuePairs
+                    columns={3}
+                    items={[
+                      { label: 'Private IP', value: server.ip_address || '—' },
+                      { label: 'Floating IP', value: server.floating_ip || '—' },
+                      { label: 'MAC address', value: server.mac_address || '—' },
+                      { label: 'Port ID', value: server.port_id || '—' },
+                      { label: 'Network ID', value: server.network_id || '—' },
+                      { label: 'Extra ports', value: server.extra_port_ids || '—' },
+                    ]}
+                  />
+                </Container>
+              ),
+            },
+            {
+              id: 'storage',
+              label: 'Storage',
+              content: (
+                <Table
+                  variant="container"
+                  header={<Header variant="h2" counter={`(${volumes.length})`}>Attached volumes</Header>}
+                  items={volumes}
+                  trackBy="id"
+                  columnDefinitions={[
+                    { id: 'name', header: 'Volume', cell: v => v.name, isRowHeader: true },
+                    { id: 'size', header: 'Size', cell: v => `${v.size_gb || v.size || 0} GiB` },
+                    { id: 'device', header: 'Device', cell: v => v.target_device ? `/dev/${v.target_device}` : '—' },
+                    { id: 'bootable', header: 'Bootable', cell: v => (v.bootable ? 'Yes' : 'No') },
+                    { id: 'backend', header: 'Backend', cell: v => v.backend || '—' },
+                  ]}
+                  empty={<TableEmpty title="No attached volumes" description="This instance has no additional block devices." />}
+                />
+              ),
+            },
+            {
+              id: 'console',
+              label: 'Console',
+              content: (
+                <Container header={<Header variant="h2" description="Browser-based VNC session via the noVNC proxy">Instance console</Header>}>
+                  {consoleError ? (
+                    <Alert type="error" header="Console unavailable">
+                      {consoleError} The instance must be ACTIVE and the noVNC proxy running.
+                    </Alert>
+                  ) : !consoleUrl ? (
+                    <Box textAlign="center" padding="xxl"><Spinner size="large" /> Connecting…</Box>
+                  ) : (
+                    <iframe src={consoleUrl} title={`Console — ${server.name}`} className="console-frame" allow="clipboard-read; clipboard-write" />
+                  )}
+                </Container>
+              ),
+            },
+          ]}
+        />
+      </SpaceBetween>
 
-        {/* Resources */}
-        <DetailCard title="Resources" icon={Cpu}>
-          <InfoRow label="vCPUs" value={server.vcpus} />
-          <InfoRow label="RAM" value={server.ram_mb ? `${server.ram_mb} MB (${Math.round(server.ram_mb/1024)} GB)` : '—'} />
-          <InfoRow label="Disk" value={server.disk_gb ? `${server.disk_gb} GB` : '—'} />
-          <InfoRow label="Hypervisor" value={server.hypervisor_hostname || 'localhost'} />
-          <InfoRow label="Availability Zone" value={server.availability_zone || 'nova'} />
-          <InfoRow label="Host" value={server.host || '—'} />
-        </DetailCard>
-
-        {/* Security & Access */}
-        <DetailCard title="Security & Access" icon={Shield}>
-          {server.key_name && <InfoRow label="Key Pair" value={server.key_name} />}
-          {server.security_groups?.length > 0 && (
-            <div style={{ padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-              <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13 }}>Security Groups</span>
-              <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {server.security_groups.map(sg => (
-                  <span key={sg} style={{ background: 'rgba(108,142,191,0.15)', border: '1px solid rgba(108,142,191,0.3)', borderRadius: 6, padding: '2px 8px', fontSize: 12, color: '#6c8ebf' }}>{sg}</span>
-                ))}
-              </div>
-            </div>
-          )}
-          <InfoRow label="Instance UUID" value={server.instance_uuid || server.id} />
-        </DetailCard>
-
-        {/* Metadata / Tags */}
-        {(server.tags?.length > 0 || server.metadata) && (
-          <DetailCard title="Tags & Metadata" icon={Tag}>
-            {server.tags?.length > 0 && (
-              <div style={{ padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13 }}>Tags</span>
-                <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {server.tags.map(t => (
-                    <span key={t} style={{ background: 'rgba(80,200,120,0.12)', border: '1px solid rgba(80,200,120,0.25)', borderRadius: 6, padding: '2px 8px', fontSize: 12, color: '#50c878' }}>{t}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-          </DetailCard>
-        )}
-      </div>
-
-      {/* Console Logs Modal */}
       {showLogs && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onClick={() => setShowLogs(false)}>
-          <div style={{ background: '#0d1117', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 12, width: '80%', maxHeight: '70vh', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
-            onClick={e => e.stopPropagation()}>
-            <div style={{ padding: '14px 20px', borderBottom: '1px solid rgba(255,255,255,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ color: '#fff', fontWeight: 600 }}>Console Output — {server.name}</span>
-              <button onClick={() => setShowLogs(false)} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: 18 }}>✕</button>
-            </div>
-            <pre style={{ margin: 0, padding: '16px 20px', overflowY: 'auto', color: '#c8d3f0', fontSize: 12, lineHeight: 1.6, fontFamily: 'monospace', flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-              {logs}
-            </pre>
-          </div>
-        </div>
+        <Modal
+          visible
+          onDismiss={() => setShowLogs(false)}
+          size="large"
+          header={`Console log — ${server.name}`}
+          footer={<Box float="right"><Button variant="primary" onClick={() => setShowLogs(false)}>Close</Button></Box>}
+        >
+          <pre className="log-output">{logs}</pre>
+        </Modal>
       )}
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
+    </ContentLayout>
   )
 }

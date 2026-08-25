@@ -1,388 +1,482 @@
-import { useEffect, useState } from 'react'
-import { Plus, Trash2, Key, Copy, Eye, EyeOff, RefreshCw } from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import Alert from '@cloudscape-design/components/alert'
+import Box from '@cloudscape-design/components/box'
+import Button from '@cloudscape-design/components/button'
+import ContentLayout from '@cloudscape-design/components/content-layout'
+import Header from '@cloudscape-design/components/header'
+import Modal from '@cloudscape-design/components/modal'
+import SpaceBetween from '@cloudscape-design/components/space-between'
+import Table from '@cloudscape-design/components/table'
+import Tabs from '@cloudscape-design/components/tabs'
+import TextFilter from '@cloudscape-design/components/text-filter'
+import Form from '@cloudscape-design/components/form'
+import FormField from '@cloudscape-design/components/form-field'
+import Input from '@cloudscape-design/components/input'
+import Select from '@cloudscape-design/components/select'
+import Badge from '@cloudscape-design/components/badge'
+import CopyToClipboard from '@cloudscape-design/components/copy-to-clipboard'
+import KeyValuePairs from '@cloudscape-design/components/key-value-pairs'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
+import { BoolStatus, TableEmpty, TableNoMatch, fmtDate, shortId, counterText } from '../components/common.jsx'
 
-// ─── Create Project Modal ────────────────────────────────────────────────────
-function CreateProjectModal({ onClose, onCreate }) {
+const ROLES = [
+  { value: 'member', label: 'member' },
+  { value: 'admin',  label: 'admin' },
+]
+
+// ── Create project ───────────────────────────────────────────────────────────
+function ProjectModal({ onDismiss, onCreate }) {
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const toast = useToast()
 
-  const handleSubmit = async (e) => {
-    e.preventDefault(); setLoading(true); setError('')
-    try { await onCreate({ name, description: desc }); toast('Project created', 'success'); onClose() }
-    catch (err) { setError(err.message) } finally { setLoading(false) }
+  const submit = async () => {
+    if (!name) { setError('Project name is required.'); return }
+    setLoading(true); setError('')
+    try { await onCreate({ name, description: desc }); onDismiss() }
+    catch (e) { setError(e.message) } finally { setLoading(false) }
   }
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
-        <div className="modal-header"><span className="modal-title">Create Project</span><button className="modal-close btn" onClick={onClose}>✕</button></div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            {error && <div className="alert alert-error">{error}</div>}
-            <div className="form-group"><label className="form-label">Project Name *</label><input id="project-name" className="form-input" placeholder="my-project" value={name} onChange={e => setName(e.target.value)} required /></div>
-            <div className="form-group"><label className="form-label">Description</label><input id="project-desc" className="form-input" placeholder="Optional description" value={desc} onChange={e => setDesc(e.target.value)} /></div>
-          </div>
-          <div className="modal-footer">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-            <button id="project-create-submit" type="submit" className="btn btn-primary" disabled={loading}><Plus size={14} /> Create</button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Modal
+      visible
+      onDismiss={onDismiss}
+      header="Create project"
+      footer={
+        <Box float="right">
+          <SpaceBetween direction="horizontal" size="xs">
+            <Button onClick={onDismiss}>Cancel</Button>
+            <Button variant="primary" loading={loading} onClick={submit} data-testid="project-create-submit">Create project</Button>
+          </SpaceBetween>
+        </Box>
+      }
+    >
+      <Form>
+        <SpaceBetween size="m">
+          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
+          <FormField label="Project name">
+            <Input value={name} onChange={({ detail }) => setName(detail.value)} placeholder="my-project" controlId="project-name" />
+          </FormField>
+          <FormField label="Description">
+            <Input value={desc} onChange={({ detail }) => setDesc(detail.value)} placeholder="Optional description" controlId="project-desc" />
+          </FormField>
+        </SpaceBetween>
+      </Form>
+    </Modal>
   )
 }
 
-// ─── Create User Modal ───────────────────────────────────────────────────────
-function CreateUserModal({ onClose, onCreate, projects }) {
-  const [form, setForm] = useState({ username: '', password: '', email: '', role: 'member', project_id: '' })
+// ── Create user ──────────────────────────────────────────────────────────────
+function UserModal({ onDismiss, onCreate, projects }) {
+  const [form, setForm] = useState({ username: '', email: '', password: '', role: ROLES[0], project: null })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const toast = useToast()
-  const f = field => e => setForm(v => ({ ...v, [field]: e.target.value }))
 
-  // Auto-select first project if available
   useEffect(() => {
-    if (projects.length > 0 && !form.project_id) {
-      setForm(v => ({ ...v, project_id: projects[0].id }))
+    if (projects.length && !form.project) {
+      setForm(f => ({ ...f, project: { value: projects[0].id, label: projects[0].name } }))
     }
-  }, [projects])
+  }, [projects, form.project])
 
-  const handleSubmit = async (e) => {
-    e.preventDefault(); setLoading(true); setError('')
-    if (!form.project_id) { setError('Please select a project'); setLoading(false); return }
-    try { await onCreate(form); toast('User created', 'success'); onClose() }
-    catch (err) { setError(err.message) } finally { setLoading(false) }
+  const submit = async () => {
+    if (!form.username || !form.email || !form.password) { setError('Username, email, and password are required.'); return }
+    if (!form.project) { setError('Select a project.'); return }
+    setLoading(true); setError('')
+    try {
+      await onCreate({
+        username: form.username,
+        email: form.email,
+        password: form.password,
+        role: form.role.value,
+        project_id: form.project.value,
+      })
+      onDismiss()
+    } catch (e) { setError(e.message) } finally { setLoading(false) }
   }
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
-        <div className="modal-header"><span className="modal-title">Create User</span><button className="modal-close btn" onClick={onClose}>✕</button></div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            {error && <div className="alert alert-error">{error}</div>}
-            <div className="form-row">
-              <div className="form-group"><label className="form-label">Username *</label><input id="user-username" className="form-input" placeholder="john.doe" value={form.username} onChange={f('username')} required /></div>
-              <div className="form-group"><label className="form-label">Email *</label><input id="user-email" className="form-input" type="email" placeholder="john@example.com" value={form.email} onChange={f('email')} required /></div>
-            </div>
-            <div className="form-row">
-              <div className="form-group"><label className="form-label">Password *</label><input id="user-password" type="password" className="form-input" placeholder="••••••••" value={form.password} onChange={f('password')} required /></div>
-              <div className="form-group">
-                <label className="form-label">Role</label>
-                <select id="user-role" className="form-select" value={form.role} onChange={f('role')}>
-                  <option value="member">member</option>
-                  <option value="admin">admin</option>
-                </select>
-              </div>
-            </div>
-            <div className="form-group">
-              <label className="form-label">Project *</label>
-              <select id="user-project" className="form-select" value={form.project_id} onChange={f('project_id')} required>
-                <option value="">— select project —</option>
-                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </div>
-          </div>
-          <div className="modal-footer">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-            <button id="user-create-submit" type="submit" className="btn btn-primary" disabled={loading}><Plus size={14} /> Create User</button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Modal
+      visible
+      onDismiss={onDismiss}
+      header="Create user"
+      footer={
+        <Box float="right">
+          <SpaceBetween direction="horizontal" size="xs">
+            <Button onClick={onDismiss}>Cancel</Button>
+            <Button variant="primary" loading={loading} onClick={submit} data-testid="user-create-submit">Create user</Button>
+          </SpaceBetween>
+        </Box>
+      }
+    >
+      <Form>
+        <SpaceBetween size="m">
+          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
+          <FormField label="Username">
+            <Input value={form.username} onChange={({ detail }) => setForm(f => ({ ...f, username: detail.value }))} placeholder="jane.doe" controlId="user-username" />
+          </FormField>
+          <FormField label="Email">
+            <Input value={form.email} onChange={({ detail }) => setForm(f => ({ ...f, email: detail.value }))} type="email" placeholder="jane@example.com" controlId="user-email" />
+          </FormField>
+          <FormField label="Password">
+            <Input value={form.password} onChange={({ detail }) => setForm(f => ({ ...f, password: detail.value }))} type="password" controlId="user-password" />
+          </FormField>
+          <FormField label="Role">
+            <Select selectedOption={form.role} onChange={({ detail }) => setForm(f => ({ ...f, role: detail.selectedOption }))} options={ROLES} controlId="user-role" />
+          </FormField>
+          <FormField label="Project">
+            <Select
+              selectedOption={form.project}
+              onChange={({ detail }) => setForm(f => ({ ...f, project: detail.selectedOption }))}
+              options={projects.map(p => ({ value: p.id, label: p.name }))}
+              placeholder="Choose a project"
+              empty="No projects"
+              controlId="user-project"
+            />
+          </FormField>
+        </SpaceBetween>
+      </Form>
+    </Modal>
   )
 }
 
-// ─── Generate Access Key Modal ───────────────────────────────────────────────
-function GenerateKeyModal({ onClose, onGenerate }) {
+// ── Generate access key ──────────────────────────────────────────────────────
+function AccessKeyModal({ onDismiss, onGenerate }) {
   const [name, setName] = useState('default')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
-  const [showSecret, setShowSecret] = useState(false)
-  const [copied, setCopied] = useState('')
-  const toast = useToast()
 
-  const handleSubmit = async (e) => {
-    e.preventDefault(); setLoading(true); setError('')
-    try {
-      const data = await onGenerate({ name })
-      setResult(data)
-    } catch (err) { setError(err.message) } finally { setLoading(false) }
-  }
-
-  const copyToClipboard = async (text, field) => {
-    // navigator.clipboard is only available on HTTPS or localhost.
-    // Fall back to execCommand for plain HTTP access (e.g. internal IP).
-    let success = false
-    if (navigator.clipboard && window.isSecureContext) {
-      try {
-        await navigator.clipboard.writeText(text)
-        success = true
-      } catch (_) { /* fall through to execCommand */ }
-    }
-    if (!success) {
-      // execCommand fallback: create hidden textarea, select, copy
-      const el = document.createElement('textarea')
-      el.value = text
-      el.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0'
-      document.body.appendChild(el)
-      el.focus()
-      el.select()
-      try {
-        success = document.execCommand('copy')
-      } catch (_) { /* ignored */ }
-      document.body.removeChild(el)
-    }
-    if (success) {
-      setCopied(field)
-      setTimeout(() => setCopied(''), 2000)
-      toast(`${field} copied to clipboard`, 'success')
-    } else {
-      toast('Copy failed — please select and copy manually', 'error')
-    }
+  const submit = async () => {
+    setLoading(true); setError('')
+    try { setResult(await onGenerate({ name })) }
+    catch (e) { setError(e.message) } finally { setLoading(false) }
   }
 
   if (result) {
     return (
-      <div className="modal-overlay">
-        <div className="modal" style={{ maxWidth: 520 }}>
-          <div className="modal-header">
-            <span className="modal-title">🔑 Access Key Generated</span>
-          </div>
-          <div className="modal-body">
-            <div className="alert alert-error" style={{ marginBottom: 16 }}>
-              ⚠️ Save your <strong>Secret Access Key</strong> now — it will not be shown again.
-            </div>
-            <div className="form-group">
-              <label className="form-label">Access Key ID</label>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input className="form-input" readOnly value={result.access_key_id} style={{ fontFamily: 'monospace', fontSize: 13 }} />
-                <button className="btn btn-secondary" onClick={() => copyToClipboard(result.access_key_id, 'Access Key ID')} title="Copy">
-                  {copied === 'Access Key ID' ? '✓' : <Copy size={14} />}
-                </button>
-              </div>
-            </div>
-            <div className="form-group">
-              <label className="form-label">Secret Access Key</label>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input
-                  className="form-input"
-                  readOnly
-                  type={showSecret ? 'text' : 'password'}
-                  value={result.secret_access_key}
-                  style={{ fontFamily: 'monospace', fontSize: 13 }}
-                />
-                <button className="btn btn-secondary" onClick={() => setShowSecret(s => !s)} title="Toggle visibility">
-                  {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-                <button className="btn btn-secondary" onClick={() => copyToClipboard(result.secret_access_key, 'Secret Access Key')} title="Copy">
-                  {copied === 'Secret Access Key' ? '✓' : <Copy size={14} />}
-                </button>
-              </div>
-            </div>
-          </div>
-          <div className="modal-footer">
-            <button className="btn btn-primary" onClick={onClose}>Done</button>
-          </div>
-        </div>
-      </div>
+      <Modal
+        visible
+        onDismiss={onDismiss}
+        header="Access key generated"
+        footer={<Box float="right"><Button variant="primary" onClick={onDismiss}>Done</Button></Box>}
+      >
+        <SpaceBetween size="m">
+          <Alert type="warning" header="Save the secret access key now">
+            The secret access key is shown only once and cannot be retrieved later.
+          </Alert>
+          <KeyValuePairs
+            columns={1}
+            items={[
+              {
+                label: 'Access key ID',
+                value: (
+                  <CopyToClipboard
+                    variant="inline"
+                    textToCopy={result.access_key_id}
+                    copyButtonAriaLabel="Copy access key ID"
+                    copySuccessText="Access key ID copied"
+                    copyErrorText="Could not copy access key ID"
+                  />
+                ),
+              },
+              {
+                label: 'Secret access key',
+                value: (
+                  <CopyToClipboard
+                    variant="inline"
+                    textToCopy={result.secret_access_key}
+                    copyButtonAriaLabel="Copy secret access key"
+                    copySuccessText="Secret access key copied"
+                    copyErrorText="Could not copy secret access key"
+                  />
+                ),
+              },
+            ]}
+          />
+        </SpaceBetween>
+      </Modal>
     )
   }
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
-        <div className="modal-header"><span className="modal-title">Generate Access Key</span><button className="modal-close btn" onClick={onClose}>✕</button></div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            {error && <div className="alert alert-error">{error}</div>}
-            <div className="form-group">
-              <label className="form-label">Key Name</label>
-              <input id="key-name" className="form-input" placeholder="default" value={name} onChange={e => setName(e.target.value)} />
-              <span className="form-hint">A friendly label for this key (e.g. "cli", "ci-pipeline")</span>
-            </div>
-          </div>
-          <div className="modal-footer">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-            <button id="key-generate-submit" type="submit" className="btn btn-primary" disabled={loading}><Key size={14} /> Generate Key</button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Modal
+      visible
+      onDismiss={onDismiss}
+      header="Generate access key"
+      footer={
+        <Box float="right">
+          <SpaceBetween direction="horizontal" size="xs">
+            <Button onClick={onDismiss}>Cancel</Button>
+            <Button variant="primary" loading={loading} onClick={submit} data-testid="key-generate-submit">Generate key</Button>
+          </SpaceBetween>
+        </Box>
+      }
+    >
+      <Form>
+        <SpaceBetween size="m">
+          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
+          <FormField label="Key name" description='A friendly label, for example "cli" or "ci-pipeline".'>
+            <Input value={name} onChange={({ detail }) => setName(detail.value)} controlId="key-name" />
+          </FormField>
+        </SpaceBetween>
+      </Form>
+    </Modal>
   )
 }
 
-// ─── Main Admin Page ─────────────────────────────────────────────────────────
+// ── Page ─────────────────────────────────────────────────────────────────────
 export default function AdminPage() {
+  const toast = useToast()
   const [projects, setProjects] = useState([])
   const [users, setUsers]       = useState([])
-  const [accessKeys, setAccessKeys] = useState([])
+  const [keys, setKeys]         = useState([])
   const [loading, setLoading]   = useState(true)
   const [tab, setTab]           = useState('projects')
-  const [showCreateProject, setShowCreateProject] = useState(false)
-  const [showCreateUser, setShowCreateUser]       = useState(false)
-  const [showGenerateKey, setShowGenerateKey]     = useState(false)
-  const toast = useToast()
+  const [filter, setFilter]     = useState('')
+  const [selProjects, setSelProjects] = useState([])
+  const [selUsers, setSelUsers] = useState([])
+  const [selKeys, setSelKeys]   = useState([])
+  const [showProject, setShowProject] = useState(false)
+  const [showUser, setShowUser] = useState(false)
+  const [showKey, setShowKey]   = useState(false)
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true)
     Promise.allSettled([api.getProjects(), api.getUsers(), api.getAccessKeys()])
       .then(([p, u, k]) => {
         if (p.status === 'fulfilled') setProjects(p.value?.items || [])
         if (u.status === 'fulfilled') setUsers(u.value?.items || [])
-        if (k.status === 'fulfilled') setAccessKeys(k.value?.items || [])
+        if (k.status === 'fulfilled') setKeys(k.value?.items || [])
       })
       .finally(() => setLoading(false))
-  }
-  useEffect(() => { load() }, [])
+  }, [])
 
-  const deleteProject = async (id, name) => {
-    if (!confirm(`Delete project "${name}"?`)) return
-    try { await api.deleteProject(id); toast('Project deleted', 'success'); load() }
-    catch (e) { toast(e.message, 'error') }
+  useEffect(() => { load() }, [load])
+
+  const q = filter.trim().toLowerCase()
+
+  const deleteProjects = async () => {
+    if (!confirm(`Delete ${selProjects.length} project(s)?`)) return
+    for (const p of selProjects) {
+      try { await api.deleteProject(p.id) } catch (e) { toast(`${p.name}: ${e.message}`, 'error') }
+    }
+    setSelProjects([]); load()
   }
-  const deleteUser = async (id, name) => {
-    if (!confirm(`Delete user "${name}"?`)) return
-    try { await api.deleteUser(id); toast('User deleted', 'success'); load() }
-    catch (e) { toast(e.message, 'error') }
+
+  const deleteUsers = async () => {
+    if (!confirm(`Delete ${selUsers.length} user(s)?`)) return
+    for (const u of selUsers) {
+      try { await api.deleteUser(u.id) } catch (e) { toast(`${u.username}: ${e.message}`, 'error') }
+    }
+    setSelUsers([]); load()
   }
-  const revokeKey = async (keyId, keyName) => {
-    if (!confirm(`Revoke access key "${keyName}"?`)) return
-    try { await api.deleteAccessKey(keyId); toast('Access key revoked', 'success'); load() }
-    catch (e) { toast(e.message, 'error') }
+
+  const revokeKeys = async () => {
+    if (!confirm(`Revoke ${selKeys.length} access key(s)?`)) return
+    for (const k of selKeys) {
+      try { await api.deleteAccessKey(k.id) } catch (e) { toast(e.message, 'error') }
+    }
+    setSelKeys([]); load()
   }
+
+  const filteredProjects = q ? projects.filter(p => p.name?.toLowerCase().includes(q)) : projects
+  const filteredUsers = q ? users.filter(u => u.username?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q)) : users
+  const filteredKeys = q ? keys.filter(k => k.name?.toLowerCase().includes(q) || k.access_key_id?.toLowerCase().includes(q)) : keys
+
+  const searchFilter = (label) => (
+    <TextFilter
+      filteringText={filter}
+      filteringPlaceholder={`Find ${label}`}
+      filteringAriaLabel={`Filter ${label}`}
+      onChange={({ detail }) => setFilter(detail.filteringText)}
+    />
+  )
 
   return (
-    <div>
-      <div className="page-header">
-        <div><h1 className="page-title">Administration</h1><p className="page-subtitle">Manage projects, users and access keys</p></div>
-      </div>
+    <ContentLayout
+      header={
+        <Header
+          variant="h1"
+          description="Identity administration — projects, users, and programmatic credentials"
+          actions={<Button iconName="refresh" onClick={load} ariaLabel="Refresh" />}
+        >
+          Administration
+        </Header>
+      }
+    >
+      <Tabs
+        activeTabId={tab}
+        onChange={({ detail }) => { setTab(detail.activeTabId); setFilter('') }}
+        tabs={[
+          {
+            id: 'projects',
+            label: `Projects (${projects.length})`,
+            content: (
+              <Table
+                variant="container"
+                loading={loading}
+                loadingText="Loading projects"
+                selectionType="multi"
+                selectedItems={selProjects}
+                onSelectionChange={({ detail }) => setSelProjects(detail.selectedItems)}
+                items={filteredProjects}
+                trackBy="id"
+                header={
+                  <Header
+                    variant="h2"
+                    counter={counterText(projects.length, selProjects.length)}
+                    actions={
+                      <SpaceBetween direction="horizontal" size="xs">
+                        <Button disabled={!selProjects.length} onClick={deleteProjects}>Delete</Button>
+                        <Button variant="primary" onClick={() => setShowProject(true)} data-testid="create-project-btn">Create project</Button>
+                      </SpaceBetween>
+                    }
+                  >
+                    Projects
+                  </Header>
+                }
+                columnDefinitions={[
+                  {
+                    id: 'name',
+                    header: 'Project name',
+                    cell: p => (
+                      <SpaceBetween size="xxxs">
+                        <Box fontWeight="bold">{p.name}</Box>
+                        <Box variant="small" color="text-body-secondary">{shortId(p.id, 16)}</Box>
+                      </SpaceBetween>
+                    ),
+                    isRowHeader: true,
+                  },
+                  { id: 'description', header: 'Description', cell: p => p.description || '—' },
+                  { id: 'enabled', header: 'Status', cell: p => <BoolStatus value={p.enabled !== false} trueText="Enabled" falseText="Disabled" /> },
+                  { id: 'users', header: 'Users', cell: p => users.filter(u => u.project_id === p.id).length },
+                ]}
+                filter={searchFilter('projects')}
+                empty={q ? <TableNoMatch onClear={() => setFilter('')} /> : <TableEmpty title="No projects" description="Create a project to scope resources and users." action={<Button variant="primary" onClick={() => setShowProject(true)}>Create project</Button>} />}
+              />
+            ),
+          },
+          {
+            id: 'users',
+            label: `Users (${users.length})`,
+            content: (
+              <Table
+                variant="container"
+                loading={loading}
+                loadingText="Loading users"
+                selectionType="multi"
+                selectedItems={selUsers}
+                onSelectionChange={({ detail }) => setSelUsers(detail.selectedItems)}
+                items={filteredUsers}
+                trackBy="id"
+                header={
+                  <Header
+                    variant="h2"
+                    counter={counterText(users.length, selUsers.length)}
+                    actions={
+                      <SpaceBetween direction="horizontal" size="xs">
+                        <Button disabled={!selUsers.length} onClick={deleteUsers}>Delete</Button>
+                        <Button variant="primary" onClick={() => setShowUser(true)} data-testid="create-user-btn">Create user</Button>
+                      </SpaceBetween>
+                    }
+                  >
+                    Users
+                  </Header>
+                }
+                columnDefinitions={[
+                  { id: 'username', header: 'Username', cell: u => <Box fontWeight="bold">{u.username}</Box>, isRowHeader: true },
+                  { id: 'email', header: 'Email', cell: u => u.email || '—' },
+                  { id: 'project', header: 'Project', cell: u => projects.find(p => p.id === u.project_id)?.name || shortId(u.project_id, 12) },
+                  { id: 'role', header: 'Role', cell: u => <Badge color={u.role === 'admin' ? 'red' : 'blue'}>{u.role}</Badge> },
+                  { id: 'enabled', header: 'Status', cell: u => <BoolStatus value={u.enabled !== false} trueText="Active" falseText="Disabled" /> },
+                  { id: 'created', header: 'Created', cell: u => fmtDate(u.created_at) },
+                ]}
+                filter={searchFilter('users')}
+                empty={q ? <TableNoMatch onClear={() => setFilter('')} /> : <TableEmpty title="No users" description="Create a user to grant access to a project." action={<Button variant="primary" onClick={() => setShowUser(true)}>Create user</Button>} />}
+              />
+            ),
+          },
+          {
+            id: 'keys',
+            label: `Access keys (${keys.length})`,
+            content: (
+              <SpaceBetween size="l">
+                <Alert type="info">
+                  Access keys authenticate the CLI and API without a password. Generate a separate key per user or
+                  automation pipeline so it can be revoked independently.
+                </Alert>
+                <Table
+                  variant="container"
+                  loading={loading}
+                  loadingText="Loading access keys"
+                  selectionType="multi"
+                  selectedItems={selKeys}
+                  onSelectionChange={({ detail }) => setSelKeys(detail.selectedItems)}
+                  items={filteredKeys}
+                  trackBy="id"
+                  header={
+                    <Header
+                      variant="h2"
+                      counter={counterText(keys.length, selKeys.length)}
+                      actions={
+                        <SpaceBetween direction="horizontal" size="xs">
+                          <Button disabled={!selKeys.length} onClick={revokeKeys}>Revoke</Button>
+                          <Button variant="primary" onClick={() => setShowKey(true)} data-testid="generate-key-btn">Generate access key</Button>
+                        </SpaceBetween>
+                      }
+                    >
+                      Access keys
+                    </Header>
+                  }
+                  columnDefinitions={[
+                    { id: 'name', header: 'Name', cell: k => <Box fontWeight="bold">{k.name || 'default'}</Box>, isRowHeader: true },
+                    {
+                      id: 'access_key_id',
+                      header: 'Access key ID',
+                      cell: k => (
+                        <CopyToClipboard
+                          variant="inline"
+                          textToCopy={k.access_key_id}
+                          copyButtonAriaLabel="Copy access key ID"
+                          copySuccessText="Access key ID copied"
+                          copyErrorText="Could not copy access key ID"
+                        />
+                      ),
+                    },
+                    { id: 'owner', header: 'Owner', cell: k => users.find(u => u.id === k.user_id)?.username || shortId(k.user_id, 12) },
+                    { id: 'enabled', header: 'Status', cell: k => <BoolStatus value={k.enabled} trueText="Active" falseText="Disabled" /> },
+                    { id: 'created', header: 'Created', cell: k => fmtDate(k.created_at) },
+                  ]}
+                  filter={searchFilter('access keys')}
+                  empty={q ? <TableNoMatch onClear={() => setFilter('')} /> : <TableEmpty title="No access keys" description="Generate an access key to authenticate the CLI without a password." action={<Button variant="primary" onClick={() => setShowKey(true)}>Generate access key</Button>} />}
+                />
+              </SpaceBetween>
+            ),
+          },
+        ]}
+      />
 
-      <div className="tabs">
-        <button className={`tab-btn ${tab === 'projects' ? 'active' : ''}`} onClick={() => setTab('projects')}>Projects ({projects.length})</button>
-        <button className={`tab-btn ${tab === 'users' ? 'active' : ''}`} onClick={() => setTab('users')}>Users ({users.length})</button>
-        <button className={`tab-btn ${tab === 'keys' ? 'active' : ''}`} onClick={() => setTab('keys')}>Access Keys ({accessKeys.length})</button>
-      </div>
-
-      {/* ── Projects ── */}
-      {tab === 'projects' && (
-        <>
-          <div className="page-header" style={{ marginBottom: 16 }}>
-            <div />
-            <button id="create-project-btn" className="btn btn-primary" onClick={() => setShowCreateProject(true)}><Plus size={14} /> Create Project</button>
-          </div>
-          <div className="card">
-            {loading ? <div className="loading-overlay"><span className="spinner" /></div> :
-              projects.length === 0 ? <div className="empty-state"><div className="empty-state-icon">📁</div><h3>No projects</h3></div> :
-              <div className="table-wrap">
-                <table className="table">
-                  <thead><tr><th>Name</th><th>Description</th><th>Status</th><th></th></tr></thead>
-                  <tbody>
-                    {projects.map(p => (
-                      <tr key={p.id}>
-                        <td><div className="name-cell">{p.name}</div><div className="mono text-muted" style={{fontSize:10}}>{p.id?.slice(0,16)}…</div></td>
-                        <td className="text-muted">{p.description || '—'}</td>
-                        <td><span className={`status-badge ${p.enabled !== false ? 'status-active' : 'status-inactive'}`}>{p.enabled !== false ? 'enabled' : 'disabled'}</span></td>
-                        <td><button className="btn btn-icon btn-sm" id={`delete-project-${p.id}`} onClick={() => deleteProject(p.id, p.name)}><Trash2 size={13} /></button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>}
-          </div>
-        </>
+      {showProject && (
+        <ProjectModal
+          onDismiss={() => setShowProject(false)}
+          onCreate={async (b) => { await api.createProject(b); toast('Project created', 'success'); load() }}
+        />
       )}
-
-      {/* ── Users ── */}
-      {tab === 'users' && (
-        <>
-          <div className="page-header" style={{ marginBottom: 16 }}>
-            <div />
-            <button id="create-user-btn" className="btn btn-primary" onClick={() => setShowCreateUser(true)}><Plus size={14} /> Create User</button>
-          </div>
-          <div className="card">
-            {loading ? <div className="loading-overlay"><span className="spinner" /></div> :
-              users.length === 0 ? <div className="empty-state"><div className="empty-state-icon">👤</div><h3>No users</h3></div> :
-              <div className="table-wrap">
-                <table className="table">
-                  <thead><tr><th>Username</th><th>Email</th><th>Project</th><th>Role</th><th>Status</th><th></th></tr></thead>
-                  <tbody>
-                    {users.map(u => {
-                      const proj = projects.find(p => p.id === u.project_id)
-                      return (
-                        <tr key={u.id}>
-                          <td><div className="name-cell">{u.username}</div></td>
-                          <td className="text-muted">{u.email || '—'}</td>
-                          <td className="text-muted mono" style={{fontSize:12}}>{proj?.name || u.project_id?.slice(0,8) + '…'}</td>
-                          <td><span className={`status-badge ${u.role === 'admin' ? 'status-paused' : 'status-active'}`}>{u.role}</span></td>
-                          <td><span className={`status-badge ${u.enabled !== false ? 'status-active' : 'status-inactive'}`}>{u.enabled !== false ? 'active' : 'disabled'}</span></td>
-                          <td><button className="btn btn-icon btn-sm" id={`delete-user-${u.id}`} onClick={() => deleteUser(u.id, u.username)}><Trash2 size={13} /></button></td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>}
-          </div>
-        </>
+      {showUser && (
+        <UserModal
+          projects={projects}
+          onDismiss={() => setShowUser(false)}
+          onCreate={async (b) => { await api.createUser(b); toast('User created', 'success'); load() }}
+        />
       )}
-
-      {/* ── Access Keys ── */}
-      {tab === 'keys' && (
-        <>
-          <div className="page-header" style={{ marginBottom: 16 }}>
-            <div>
-              <p className="page-subtitle" style={{marginTop:0}}>
-                Access keys authenticate CLI and API requests without a password. Generate one for each user or CI/CD pipeline.
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn btn-secondary" onClick={load}><RefreshCw size={14} /></button>
-              <button id="generate-key-btn" className="btn btn-primary" onClick={() => setShowGenerateKey(true)}><Key size={14} /> Generate Access Key</button>
-            </div>
-          </div>
-          <div className="card">
-            {loading ? <div className="loading-overlay"><span className="spinner" /></div> :
-              accessKeys.length === 0 ? (
-                <div className="empty-state">
-                  <div className="empty-state-icon">🔑</div>
-                  <h3>No access keys</h3>
-                  <p className="text-muted">Generate an access key to authenticate the CLI without a password.</p>
-                </div>
-              ) :
-              <div className="table-wrap">
-                <table className="table">
-                  <thead><tr><th>Name</th><th>Access Key ID</th><th>Owner</th><th>Status</th><th>Created</th><th></th></tr></thead>
-                  <tbody>
-                    {accessKeys.map(k => {
-                      const user = users.find(u => u.id === k.user_id)
-                      return (
-                        <tr key={k.id}>
-                          <td><div className="name-cell">{k.name || 'default'}</div></td>
-                          <td><span className="mono" style={{ fontSize: 12 }}>{k.access_key_id}</span></td>
-                          <td className="text-muted">{user?.username || k.user_id?.slice(0,8) + '…'}</td>
-                          <td><span className={`status-badge ${k.enabled ? 'status-active' : 'status-inactive'}`}>{k.enabled ? 'active' : 'disabled'}</span></td>
-                          <td className="text-muted" style={{fontSize:12}}>{new Date(k.created_at).toLocaleDateString()}</td>
-                          <td><button className="btn btn-icon btn-sm btn-danger" id={`revoke-key-${k.id}`} onClick={() => revokeKey(k.id, k.name)} title="Revoke"><Trash2 size={13} /></button></td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>}
-          </div>
-        </>
+      {showKey && (
+        <AccessKeyModal
+          onDismiss={() => { setShowKey(false); load() }}
+          onGenerate={(b) => api.createAccessKey(b)}
+        />
       )}
-
-      {showCreateProject && <CreateProjectModal onClose={() => setShowCreateProject(false)} onCreate={async (b) => { await api.createProject(b); load() }} />}
-      {showCreateUser    && <CreateUserModal    onClose={() => setShowCreateUser(false)}    onCreate={async (b) => { await api.createUser(b);    load() }} projects={projects} />}
-      {showGenerateKey   && <GenerateKeyModal   onClose={() => { setShowGenerateKey(false); load() }} onGenerate={(b) => api.createAccessKey(b)} />}
-    </div>
+    </ContentLayout>
   )
 }

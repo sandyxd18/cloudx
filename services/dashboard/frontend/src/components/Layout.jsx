@@ -1,222 +1,262 @@
-import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
-import {
-  LayoutDashboard, Server, Cpu, Key,
-  Network, Globe, ArrowLeftRight, Shield,
-  HardDrive, Database, Camera, LogOut,
-  ChevronRight, Settings, Layers, Layers2,
-  ChevronDown, ChevronUp, FolderOpen, GitBranch, Monitor
-} from 'lucide-react'
-import { useAuth } from '../context.jsx'
-import { useState, useRef, useEffect } from 'react'
+/**
+ * Layout.jsx — CloudX console shell built on the Cloudscape Design System.
+ *
+ * Mirrors the AWS Management Console structure:
+ *   TopNavigation  → identity, global search, project switcher, theme toggle, user menu
+ *   AppLayout      → side navigation, breadcrumbs, notifications (Flashbar), content
+ */
+import { Outlet, useNavigate, useLocation } from 'react-router-dom'
+import { useMemo, useState } from 'react'
+import AppLayout from '@cloudscape-design/components/app-layout'
+import TopNavigation from '@cloudscape-design/components/top-navigation'
+import SideNavigation from '@cloudscape-design/components/side-navigation'
+import BreadcrumbGroup from '@cloudscape-design/components/breadcrumb-group'
+import Flashbar from '@cloudscape-design/components/flashbar'
+import Autosuggest from '@cloudscape-design/components/autosuggest'
+import { Moon, Sun } from 'lucide-react'
+import { useAuth, useFlashItems } from '../context.jsx'
+import { useTheme } from '../theme.jsx'
 
-const NAV = [
-  { section: 'Project' },
-  { to: '/', icon: LayoutDashboard, label: 'Overview' },
+// ── Navigation model ─────────────────────────────────────────────────────────
+const NAV_ITEMS = [
+  { type: 'link', text: 'Dashboard', href: '/' },
+  { type: 'divider' },
   {
-    group: 'Compute', icon: Server, children: [
-      { to: '/servers',       icon: Server,   label: 'Instances'     },
-      { to: '/images',        icon: HardDrive,label: 'Images'        },
-      { to: '/keypairs',      icon: Key,      label: 'Key Pairs'     },
-      { to: '/server-groups', icon: Layers,   label: 'Server Groups' },
-    ]
+    type: 'section',
+    text: 'Compute',
+    defaultExpanded: true,
+    items: [
+      { type: 'link', text: 'Instances',     href: '/servers' },
+      { type: 'link', text: 'Images',        href: '/images' },
+      { type: 'link', text: 'Key pairs',     href: '/keypairs' },
+      { type: 'link', text: 'Server groups', href: '/server-groups' },
+    ],
   },
   {
-    group: 'Volumes', icon: Database, children: [
-      { to: '/volumes',   icon: Database, label: 'Volumes'   },
-      { to: '/snapshots', icon: Camera,   label: 'Snapshots' },
-    ]
+    type: 'section',
+    text: 'Storage',
+    defaultExpanded: true,
+    items: [
+      { type: 'link', text: 'Volumes',   href: '/volumes' },
+      { type: 'link', text: 'Snapshots', href: '/snapshots' },
+    ],
   },
   {
-    group: 'Network', icon: Network, children: [
-      { to: '/networks',       icon: Network,        label: 'Networks'       },
-      { to: '/routers',        icon: Globe,          label: 'Routers'        },
-      { to: '/security-groups',icon: Shield,         label: 'Security Groups'},
-      { to: '/floating-ips',   icon: ArrowLeftRight, label: 'Floating IPs'  },
-      { to: '/topology',       icon: GitBranch,      label: 'Topology'       },
-    ]
+    type: 'section',
+    text: 'Networking',
+    defaultExpanded: true,
+    items: [
+      { type: 'link', text: 'Networks',        href: '/networks' },
+      { type: 'link', text: 'Routers',         href: '/routers' },
+      { type: 'link', text: 'Security groups', href: '/security-groups' },
+      { type: 'link', text: 'Floating IPs',    href: '/floating-ips' },
+      { type: 'link', text: 'Topology',        href: '/topology' },
+    ],
   },
-  { section: 'Admin' },
-  { to: '/admin',       icon: Settings, label: 'Admin Panel'  },
-  { to: '/roles',       icon: Shield,   label: 'Role Mgmt'   },
-  { to: '/flavors',     icon: Cpu,      label: 'Flavors'      },
-  { to: '/volume-types',icon: Layers2,  label: 'Volume Types' },
+  { type: 'divider' },
+  {
+    type: 'section',
+    text: 'Administration',
+    defaultExpanded: false,
+    items: [
+      { type: 'link', text: 'Projects & users', href: '/admin' },
+      { type: 'link', text: 'Roles',            href: '/roles' },
+      { type: 'link', text: 'Flavors',          href: '/flavors' },
+      { type: 'link', text: 'Volume types',     href: '/volume-types' },
+    ],
+  },
 ]
 
-function NavGroup({ group, icon: Icon, children, location }) {
-  const isActive = children.some(c => c.to && (
-    c.to === '/' ? location.pathname === '/' : location.pathname.startsWith(c.to)
-  ))
-  const [open, setOpen] = useState(isActive)
-
-  return (
-    <div className="sidebar-group">
-      <button
-        className={`sidebar-group-btn${isActive ? ' active' : ''}`}
-        onClick={() => setOpen(o => !o)}
-      >
-        <Icon size={14} />
-        <span>{group}</span>
-        {open
-          ? <ChevronUp size={11} style={{ marginLeft: 'auto' }} />
-          : <ChevronDown size={11} style={{ marginLeft: 'auto' }} />
-        }
-      </button>
-      {open && (
-        <div className="sidebar-group-children">
-          {children.map(item => {
-            const CIcon = item.icon
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={({ isActive }) => `sidebar-item sidebar-child${isActive ? ' active' : ''}`}
-              >
-                <CIcon size={13} />
-                {item.label}
-              </NavLink>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
+// Route → breadcrumb trail. Detail routes append the resource id.
+const CRUMBS = {
+  '/':                 [{ text: 'Dashboard', href: '/' }],
+  '/servers':          [{ text: 'Compute', href: '/servers' }, { text: 'Instances', href: '/servers' }],
+  '/images':           [{ text: 'Compute', href: '/servers' }, { text: 'Images', href: '/images' }],
+  '/keypairs':         [{ text: 'Compute', href: '/servers' }, { text: 'Key pairs', href: '/keypairs' }],
+  '/server-groups':    [{ text: 'Compute', href: '/servers' }, { text: 'Server groups', href: '/server-groups' }],
+  '/volumes':          [{ text: 'Storage', href: '/volumes' }, { text: 'Volumes', href: '/volumes' }],
+  '/snapshots':        [{ text: 'Storage', href: '/volumes' }, { text: 'Snapshots', href: '/snapshots' }],
+  '/volume-types':     [{ text: 'Storage', href: '/volumes' }, { text: 'Volume types', href: '/volume-types' }],
+  '/networks':         [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }],
+  '/routers':          [{ text: 'Networking', href: '/networks' }, { text: 'Routers', href: '/routers' }],
+  '/security-groups':  [{ text: 'Networking', href: '/networks' }, { text: 'Security groups', href: '/security-groups' }],
+  '/floating-ips':     [{ text: 'Networking', href: '/networks' }, { text: 'Floating IPs', href: '/floating-ips' }],
+  '/topology':         [{ text: 'Networking', href: '/networks' }, { text: 'Topology', href: '/topology' }],
+  '/admin':            [{ text: 'Administration', href: '/admin' }, { text: 'Projects & users', href: '/admin' }],
+  '/roles':            [{ text: 'Administration', href: '/admin' }, { text: 'Roles', href: '/roles' }],
+  '/flavors':          [{ text: 'Administration', href: '/admin' }, { text: 'Flavors', href: '/flavors' }],
 }
 
-// ── Project Selector Dropdown ────────────────────────────────────────────────
-function ProjectSelector({ user, projects, switchProject }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef(null)
+// Global search targets — jump straight to a service page.
+const SEARCH_TARGETS = [
+  { value: 'Instances', href: '/servers' },
+  { value: 'Images', href: '/images' },
+  { value: 'Key pairs', href: '/keypairs' },
+  { value: 'Server groups', href: '/server-groups' },
+  { value: 'Volumes', href: '/volumes' },
+  { value: 'Snapshots', href: '/snapshots' },
+  { value: 'Volume types', href: '/volume-types' },
+  { value: 'Networks', href: '/networks' },
+  { value: 'Routers', href: '/routers' },
+  { value: 'Security groups', href: '/security-groups' },
+  { value: 'Floating IPs', href: '/floating-ips' },
+  { value: 'Topology', href: '/topology' },
+  { value: 'Projects & users', href: '/admin' },
+  { value: 'Roles', href: '/roles' },
+  { value: 'Flavors', href: '/flavors' },
+]
 
-  useEffect(() => {
-    const handler = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [])
+function buildCrumbs(pathname) {
+  const base = { text: 'CloudX', href: '/' }
+  if (CRUMBS[pathname]) return [base, ...CRUMBS[pathname]]
 
-  if (!projects || projects.length <= 1) {
-    // Just show the badge, no dropdown
-    return (
-      <div className="header-project-badge">
-        <FolderOpen size={13} />
-        <span>{user?.project_name || user?.project_id || 'Project'}</span>
-      </div>
-    )
+  // Detail routes: /servers/:id, /volumes/:id, /networks/:id, /console/:id
+  const [, section, id] = pathname.split('/')
+  const parentKey = `/${section}`
+  const short = id ? `${id.slice(0, 8)}…` : ''
+  if (section === 'console') {
+    return [base, { text: 'Compute', href: '/servers' }, { text: 'Instances', href: '/servers' }, { text: `Console ${short}`, href: pathname }]
   }
-
-  return (
-    <div className="project-selector" ref={ref}>
-      <button
-        className="header-project-badge header-project-btn"
-        onClick={() => setOpen(o => !o)}
-        title="Switch project"
-      >
-        <FolderOpen size={13} />
-        <span>{user?.project_name || user?.project_id || 'Project'}</span>
-        <ChevronDown size={11} />
-      </button>
-      {open && (
-        <div className="project-dropdown">
-          <div className="project-dropdown-label">Switch Project</div>
-          {projects.map(p => (
-            <button
-              key={p.id}
-              className={`project-dropdown-item${p.id === user?.project_id ? ' active' : ''}`}
-              onClick={() => {
-                setOpen(false)
-                if (p.id !== user?.project_id) switchProject(p.id)
-              }}
-            >
-              <FolderOpen size={12} />
-              <span>{p.name}</span>
-              {p.id === user?.project_id && <span className="project-check">✓</span>}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
+  if (CRUMBS[parentKey]) {
+    return [base, ...CRUMBS[parentKey], { text: short, href: pathname }]
+  }
+  return [base]
 }
 
 export default function Layout() {
   const { user, logout, projects, switchProject } = useAuth()
+  const { isDark, toggleMode } = useTheme()
+  const flashItems = useFlashItems()
   const navigate = useNavigate()
   const location = useLocation()
+  const [navOpen, setNavOpen] = useState(true)
+  const [search, setSearch] = useState('')
 
-  const handleLogout = () => {
-    logout()
-    navigate('/login')
+  const crumbs = useMemo(() => buildCrumbs(location.pathname), [location.pathname])
+
+  // Highlight the deepest matching nav link.
+  const activeHref = useMemo(() => {
+    if (location.pathname === '/') return '/'
+    const flat = NAV_ITEMS.flatMap(i => (i.items ? i.items : i.type === 'link' ? [i] : []))
+    const match = flat
+      .filter(i => location.pathname.startsWith(i.href) && i.href !== '/')
+      .sort((a, b) => b.href.length - a.href.length)[0]
+    return match?.href || location.pathname
+  }, [location.pathname])
+
+  const handleFollow = (event) => {
+    if (event.detail.external) return
+    event.preventDefault()
+    navigate(event.detail.href)
   }
 
-  const allItems = NAV.flatMap(n => n.children || (n.to ? [n] : []))
-  const currentLabel = allItems.find(n => n.to && (
-    n.to === '/' ? location.pathname === '/' : location.pathname.startsWith(n.to)
-  ))?.label || 'Overview'
+  const projectItems = (projects || []).map(p => ({
+    id: p.id,
+    text: p.name,
+    iconName: p.id === user?.project_id ? 'check' : undefined,
+  }))
 
-  const initials = (user?.username || 'U').slice(0, 2).toUpperCase()
+  const utilities = [
+    // Project (account) switcher — mirrors the AWS account/region menus.
+    {
+      type: 'menu-dropdown',
+      iconName: 'folder',
+      text: user?.project_name || user?.project_id || 'Project',
+      description: 'Active project scope',
+      ariaLabel: 'Project switcher',
+      items: projectItems.length
+        ? [{ id: 'projects', text: 'Switch project', items: projectItems }]
+        : [{ id: 'none', text: 'No other projects', disabled: true }],
+      onItemClick: ({ detail }) => {
+        if (detail.id && detail.id !== user?.project_id && detail.id !== 'none') {
+          switchProject(detail.id)
+        }
+      },
+    },
+    // Dark / light visual mode toggle.
+    {
+      type: 'button',
+      iconSvg: isDark ? <Sun size={16} /> : <Moon size={16} />,
+      text: isDark ? 'Light' : 'Dark',
+      ariaLabel: isDark ? 'Switch to light mode' : 'Switch to dark mode',
+      title: isDark ? 'Switch to light mode' : 'Switch to dark mode',
+      onClick: toggleMode,
+    },
+    {
+      type: 'menu-dropdown',
+      text: user?.username || 'User',
+      description: user?.role ? `Role: ${user.role}` : undefined,
+      iconName: 'user-profile',
+      items: [
+        { id: 'api-access', text: 'API access & endpoints' },
+        { id: 'keys', text: 'Access keys' },
+        { id: 'roles', text: 'Role management' },
+        { id: 'signout', text: 'Sign out' },
+      ],
+      onItemClick: ({ detail }) => {
+        if (detail.id === 'signout') {
+          logout()
+          navigate('/login')
+        } else if (detail.id === 'api-access') {
+          navigate('/')
+        } else if (detail.id === 'keys') {
+          navigate('/admin')
+        } else if (detail.id === 'roles') {
+          navigate('/roles')
+        }
+      },
+    },
+  ]
 
   return (
-    <div className="layout">
-      <aside className="sidebar">
-        <div className="sidebar-logo">
-          <div className="sidebar-logo-icon">☁</div>
-          <div>
-            <div className="sidebar-logo-text">cloudx</div>
-            <div className="sidebar-logo-sub">Private Cloud</div>
-          </div>
-        </div>
-
-        <nav className="sidebar-nav">
-          {NAV.map((item, i) => {
-            if (item.section) return <div key={i} className="sidebar-section">{item.section}</div>
-            if (item.group) return <NavGroup key={item.group} group={item.group} icon={item.icon} children={item.children} location={location} />
-            const Icon = item.icon
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.to === '/'}
-                className={({ isActive }) => `sidebar-item${isActive ? ' active' : ''}`}
-              >
-                <Icon size={15} />
-                {item.label}
-              </NavLink>
-            )
-          })}
-        </nav>
-
-        <div className="sidebar-footer">
-          <div className="sidebar-user" onClick={handleLogout} title="Logout">
-            <div className="sidebar-avatar">{initials}</div>
-            <div className="sidebar-user-info">
-              <div className="sidebar-user-name">{user?.username || 'User'}</div>
-              <div className="sidebar-user-role">{user?.role || 'member'} · logout</div>
-            </div>
-            <LogOut size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-          </div>
-        </div>
-      </aside>
-
-      <div className="main-content">
-        <header className="header">
-          <div className="header-breadcrumb">
-            <span>cloudx</span>
-            <ChevronRight size={13} />
-            <span className="header-breadcrumb-current">{currentLabel}</span>
-          </div>
-          <div className="header-actions">
-            <ProjectSelector
-              user={user}
-              projects={projects}
-              switchProject={switchProject}
+    <>
+      <div id="cloudx-top-nav">
+        <TopNavigation
+          identity={{
+            href: '/',
+            title: 'CloudX Console',
+            onFollow: (e) => { e.preventDefault(); navigate('/') },
+          }}
+          search={
+            <Autosuggest
+              value={search}
+              onChange={({ detail }) => setSearch(detail.value)}
+              onSelect={({ detail }) => {
+                const target = SEARCH_TARGETS.find(t => t.value === detail.value)
+                if (target) {
+                  setSearch('')
+                  navigate(target.href)
+                }
+              }}
+              options={SEARCH_TARGETS.map(t => ({ value: t.value }))}
+              enteredTextLabel={v => `Search for "${v}"`}
+              ariaLabel="Search CloudX services"
+              placeholder="Search services"
+              empty="No matching service"
             />
-          </div>
-        </header>
-        <div className="page-content">
-          <Outlet />
-        </div>
+          }
+          utilities={utilities}
+        />
       </div>
-    </div>
+      <AppLayout
+        headerSelector="#cloudx-top-nav"
+        navigationOpen={navOpen}
+        onNavigationChange={({ detail }) => setNavOpen(detail.open)}
+        navigation={
+          <SideNavigation
+            header={{ href: '/', text: 'Private cloud' }}
+            activeHref={activeHref}
+            items={NAV_ITEMS}
+            onFollow={handleFollow}
+          />
+        }
+        breadcrumbs={
+          <BreadcrumbGroup items={crumbs} onFollow={handleFollow} ariaLabel="Breadcrumbs" />
+        }
+        notifications={<Flashbar items={flashItems} stackItems />}
+        toolsHide
+        content={<Outlet />}
+      />
+    </>
   )
 }

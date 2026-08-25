@@ -1,112 +1,178 @@
-import { useEffect, useState } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import Box from '@cloudscape-design/components/box'
+import Button from '@cloudscape-design/components/button'
+import ContentLayout from '@cloudscape-design/components/content-layout'
+import Header from '@cloudscape-design/components/header'
+import Modal from '@cloudscape-design/components/modal'
+import SpaceBetween from '@cloudscape-design/components/space-between'
+import Table from '@cloudscape-design/components/table'
+import TextFilter from '@cloudscape-design/components/text-filter'
+import Form from '@cloudscape-design/components/form'
+import FormField from '@cloudscape-design/components/form-field'
+import Input from '@cloudscape-design/components/input'
+import Alert from '@cloudscape-design/components/alert'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
+import { BoolStatus, TableEmpty, TableNoMatch, counterText } from '../components/common.jsx'
 
-function CreateModal({ onClose, onCreate }) {
-  const [form, setForm] = useState({ name: '', vcpus: 1, ram_mb: 512, disk_gb: 10 })
+function CreateModal({ onDismiss, onCreate }) {
+  const [form, setForm] = useState({ name: '', vcpus: '1', ram_mb: '512', disk_gb: '10' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const toast = useToast()
 
-  const handleSubmit = async (e) => {
-    e.preventDefault(); setLoading(true); setError('')
+  const submit = async () => {
+    if (!form.name) { setError('Name is required.'); return }
+    setLoading(true); setError('')
     try {
-      await onCreate(form)
-      toast('Flavor created', 'success')
-      onClose()
-    } catch (err) { setError(err.message) } finally { setLoading(false) }
+      await onCreate({
+        name: form.name,
+        vcpus: Number(form.vcpus),
+        ram_mb: Number(form.ram_mb),
+        disk_gb: Number(form.disk_gb),
+      })
+      onDismiss()
+    } catch (e) { setError(e.message) } finally { setLoading(false) }
   }
 
-  const f = field => e => setForm(v => ({ ...v, [field]: e.target.type === 'number' ? Number(e.target.value) : e.target.value }))
+  const field = (key) => ({
+    value: form[key],
+    onChange: ({ detail }) => setForm(f => ({ ...f, [key]: detail.value })),
+  })
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
-        <div className="modal-header">
-          <span className="modal-title">Create Flavor</span>
-          <button className="modal-close btn" onClick={onClose}>✕</button>
-        </div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            {error && <div className="alert alert-error">{error}</div>}
-            <div className="form-group">
-              <label className="form-label">Name *</label>
-              <input id="flavor-name" className="form-input" placeholder="m1.small" value={form.name} onChange={f('name')} required />
-            </div>
-            <div className="form-row">
-              <div className="form-group">
-                <label className="form-label">vCPUs *</label>
-                <input id="flavor-vcpus" type="number" min="1" className="form-input" value={form.vcpus} onChange={f('vcpus')} required />
-              </div>
-              <div className="form-group">
-                <label className="form-label">RAM (MB) *</label>
-                <input id="flavor-ram" type="number" min="128" className="form-input" value={form.ram_mb} onChange={f('ram_mb')} required />
-              </div>
-            </div>
-            <div className="form-group">
-              <label className="form-label">Root Disk (GB) *</label>
-              <input id="flavor-disk" type="number" min="1" className="form-input" value={form.disk_gb} onChange={f('disk_gb')} required />
-            </div>
-          </div>
-          <div className="modal-footer">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-            <button id="flavor-create-submit" type="submit" className="btn btn-primary" disabled={loading}>
-              {loading ? <span className="spinner" style={{width:14,height:14}} /> : <Plus size={14} />}
-              Create Flavor
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Modal
+      visible
+      onDismiss={onDismiss}
+      header="Create flavor"
+      footer={
+        <Box float="right">
+          <SpaceBetween direction="horizontal" size="xs">
+            <Button onClick={onDismiss}>Cancel</Button>
+            <Button variant="primary" loading={loading} onClick={submit} data-testid="flavor-create-submit">Create flavor</Button>
+          </SpaceBetween>
+        </Box>
+      }
+    >
+      <Form>
+        <SpaceBetween size="m">
+          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
+          <FormField label="Name">
+            <Input {...field('name')} placeholder="m1.small" controlId="flavor-name" />
+          </FormField>
+          <FormField label="vCPUs">
+            <Input {...field('vcpus')} type="number" inputMode="numeric" controlId="flavor-vcpus" />
+          </FormField>
+          <FormField label="Memory (MB)">
+            <Input {...field('ram_mb')} type="number" inputMode="numeric" controlId="flavor-ram" />
+          </FormField>
+          <FormField label="Root disk (GB)">
+            <Input {...field('disk_gb')} type="number" inputMode="numeric" controlId="flavor-disk" />
+          </FormField>
+        </SpaceBetween>
+      </Form>
+    </Modal>
   )
 }
 
 export default function FlavorsPage() {
+  const toast = useToast()
   const [flavors, setFlavors] = useState([])
   const [loading, setLoading] = useState(true)
+  const [filter, setFilter]   = useState('')
+  const [selected, setSelected] = useState([])
   const [showCreate, setShowCreate] = useState(false)
-  const toast = useToast()
 
-  const load = () => { setLoading(true); api.getFlavors().then(r => setFlavors(r?.items || [])).finally(() => setLoading(false)) }
-  useEffect(() => { load() }, [])
+  const load = useCallback(() => {
+    setLoading(true)
+    api.getFlavors()
+      .then(r => setFlavors(r?.items || []))
+      .catch(e => toast(e.message, 'error'))
+      .finally(() => setLoading(false))
+  }, [toast])
 
-  const handleDelete = async (id, name) => {
-    if (!confirm(`Delete flavor "${name}"?`)) return
-    try { await api.deleteFlavor(id); toast('Flavor deleted', 'success'); load() }
-    catch (e) { toast(e.message, 'error') }
+  useEffect(() => { load() }, [load])
+
+  const deleteSelected = async () => {
+    if (!selected.length) return
+    if (!confirm(`Delete ${selected.length} flavor(s)?`)) return
+    for (const f of selected) {
+      try { await api.deleteFlavor(f.id) } catch { /* continue */ }
+    }
+    setSelected([])
+    toast(`${selected.length} flavor(s) deleted`, 'success')
+    load()
   }
 
+  const q = filter.trim().toLowerCase()
+  const filtered = q ? flavors.filter(f => f.name?.toLowerCase().includes(q)) : flavors
+
   return (
-    <div>
-      <div className="page-header">
-        <div><h1 className="page-title">Flavors</h1><p className="page-subtitle">{flavors.length} flavors defined</p></div>
-        <div className="page-actions">
-          <button id="create-flavor-btn" className="btn btn-primary" onClick={() => setShowCreate(true)}><Plus size={14} /> Create Flavor</button>
-        </div>
-      </div>
-      <div className="card">
-        {loading ? <div className="loading-overlay"><span className="spinner" /></div> :
-          flavors.length === 0 ? <div className="empty-state"><div className="empty-state-icon">⚙️</div><h3>No flavors</h3><p>Create a flavor to define VM resources</p></div> :
-          <div className="table-wrap">
-            <table className="table">
-              <thead><tr><th>Name</th><th>vCPUs</th><th>RAM</th><th>Disk</th><th>Public</th><th></th></tr></thead>
-              <tbody>
-                {flavors.map(f => (
-                  <tr key={f.id}>
-                    <td><div className="name-cell">{f.name}</div></td>
-                    <td>{f.vcpus}</td>
-                    <td>{f.ram_mb >= 1024 ? `${(f.ram_mb/1024).toFixed(1)} GB` : `${f.ram_mb} MB`}</td>
-                    <td>{f.disk_gb} GB</td>
-                    <td><span className={`status-badge ${f.is_public ? 'status-active' : 'status-inactive'}`}>{f.is_public ? 'public' : 'private'}</span></td>
-                    <td><button className="btn btn-icon btn-sm" id={`delete-flavor-${f.id}`} onClick={() => handleDelete(f.id, f.name)} title="Delete"><Trash2 size={13} /></button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>}
-      </div>
-      {showCreate && <CreateModal onClose={() => setShowCreate(false)} onCreate={async (form) => { await api.createFlavor(form); load() }} />}
-    </div>
+    <ContentLayout
+      header={
+        <Header
+          variant="h1"
+          counter={counterText(flavors.length, selected.length)}
+          description="Instance types defining vCPU, memory, and root disk size"
+          actions={
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button iconName="refresh" onClick={load} ariaLabel="Refresh flavors" />
+              <Button disabled={!selected.length} onClick={deleteSelected}>Delete</Button>
+              <Button variant="primary" onClick={() => setShowCreate(true)} data-testid="create-flavor-btn">Create flavor</Button>
+            </SpaceBetween>
+          }
+        >
+          Flavors
+        </Header>
+      }
+    >
+      <Table
+        variant="full-page"
+        stickyHeader
+        loading={loading}
+        loadingText="Loading flavors"
+        selectionType="multi"
+        selectedItems={selected}
+        onSelectionChange={({ detail }) => setSelected(detail.selectedItems)}
+        items={filtered}
+        trackBy="id"
+        columnDefinitions={[
+          { id: 'name', header: 'Flavor name', cell: item => <Box fontWeight="bold">{item.name}</Box>, isRowHeader: true, sortingField: 'name' },
+          { id: 'vcpus', header: 'vCPUs', cell: item => item.vcpus, sortingField: 'vcpus' },
+          {
+            id: 'ram',
+            header: 'Memory',
+            cell: item => (item.ram_mb >= 1024 ? `${(item.ram_mb / 1024).toFixed(1)} GB` : `${item.ram_mb} MB`),
+            sortingField: 'ram_mb',
+          },
+          { id: 'disk', header: 'Root disk', cell: item => `${item.disk_gb} GB`, sortingField: 'disk_gb' },
+          { id: 'public', header: 'Visibility', cell: item => <BoolStatus value={item.is_public} trueText="Public" falseText="Private" /> },
+        ]}
+        filter={
+          <TextFilter
+            filteringText={filter}
+            filteringPlaceholder="Find flavors"
+            filteringAriaLabel="Filter flavors"
+            countText={`${filtered.length} matches`}
+            onChange={({ detail }) => setFilter(detail.filteringText)}
+          />
+        }
+        empty={
+          filter
+            ? <TableNoMatch onClear={() => setFilter('')} />
+            : <TableEmpty
+                title="No flavors"
+                description="Create a flavor to define the compute profile available to instances."
+                action={<Button variant="primary" onClick={() => setShowCreate(true)}>Create flavor</Button>}
+              />
+        }
+      />
+
+      {showCreate && (
+        <CreateModal
+          onDismiss={() => setShowCreate(false)}
+          onCreate={async (payload) => { await api.createFlavor(payload); toast('Flavor created', 'success'); load() }}
+        />
+      )}
+    </ContentLayout>
   )
 }

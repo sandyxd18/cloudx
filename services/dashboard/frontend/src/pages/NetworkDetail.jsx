@@ -1,196 +1,162 @@
-import { useEffect, useState } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import {
-  ArrowLeft, Network, Globe, Router, Layers, Server, RefreshCw,
-  Trash2, Shield, Activity, ChevronDown, ChevronRight
-} from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import Alert from '@cloudscape-design/components/alert'
+import Box from '@cloudscape-design/components/box'
+import Button from '@cloudscape-design/components/button'
+import Container from '@cloudscape-design/components/container'
+import ContentLayout from '@cloudscape-design/components/content-layout'
+import Header from '@cloudscape-design/components/header'
+import KeyValuePairs from '@cloudscape-design/components/key-value-pairs'
+import Link from '@cloudscape-design/components/link'
+import SpaceBetween from '@cloudscape-design/components/space-between'
+import Table from '@cloudscape-design/components/table'
+import Tabs from '@cloudscape-design/components/tabs'
+import Badge from '@cloudscape-design/components/badge'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
-
-function InfoRow({ label, value }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-      <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13 }}>{label}</span>
-      <span style={{ color: 'rgba(255,255,255,0.9)', fontSize: 13, maxWidth: '65%', textAlign: 'right', wordBreak: 'break-all', fontFamily: 'monospace' }}>
-        {value ?? '—'}
-      </span>
-    </div>
-  )
-}
-
-function DetailCard({ title, icon: Icon, children, accent, badge }) {
-  return (
-    <div style={{ background: 'var(--card-bg, #1e2736)', border: `1px solid ${accent ? accent + '30' : 'rgba(255,255,255,0.08)'}`, borderRadius: 12, padding: '20px 24px', marginBottom: 20, borderLeft: accent ? `3px solid ${accent}` : undefined }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-        <Icon size={18} style={{ color: accent || '#6c8ebf' }} />
-        <span style={{ fontWeight: 600, fontSize: 15, color: '#fff' }}>{title}</span>
-        {badge !== undefined && <span style={{ marginLeft: 'auto', background: 'rgba(108,142,191,0.15)', color: '#6c8ebf', borderRadius: 10, padding: '1px 8px', fontSize: 12 }}>{badge}</span>}
-      </div>
-      {children}
-    </div>
-  )
-}
+import { ResourceStatus, BoolStatus, PageLoading, TableEmpty, fmtDate, shortId } from '../components/common.jsx'
 
 export default function NetworkDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { addToast } = useToast()
+  const toast = useToast()
   const [network, setNetwork] = useState(null)
   const [subnets, setSubnets] = useState([])
-  const [ports, setPorts] = useState([])
-  const [routers, setRouters] = useState([])
+  const [ports, setPorts]     = useState([])
   const [loading, setLoading] = useState(true)
-  const [expandedSubnet, setExpandedSubnet] = useState(null)
 
-  const load = async () => {
-    try {
-      setLoading(true)
-      const [net, subs, ps, rts] = await Promise.allSettled([
-        api.getNetwork(id),
-        api.listSubnets(),
-        api.listPorts(),
-        api.listRouters(),
-      ])
-      if (net.status === 'fulfilled') setNetwork(net.value)
-      if (subs.status === 'fulfilled') {
-        const all = subs.value?.items || subs.value || []
-        setSubnets(all.filter(s => s.network_id === id))
-      }
-      if (ps.status === 'fulfilled') {
-        const all = ps.value?.items || ps.value || []
-        setPorts(all.filter(p => p.network_id === id))
-      }
-      if (rts.status === 'fulfilled') {
-        setRouters(rts.value?.items || rts.value || [])
-      }
-    } catch(e) {
-      addToast('Failed to load network', 'error')
-    } finally {
-      setLoading(false)
-    }
-  }
+  const load = useCallback(async () => {
+    setLoading(true)
+    const [net, subs, prts] = await Promise.allSettled([
+      api.getNetwork(id),
+      api.getSubnets(),
+      api.getPorts(),
+    ])
+    if (net.status === 'fulfilled') setNetwork(net.value)
+    else toast('Failed to load network', 'error')
+    if (subs.status === 'fulfilled') setSubnets((subs.value?.items || []).filter(s => s.network_id === id))
+    if (prts.status === 'fulfilled') setPorts((prts.value?.items || []).filter(p => p.network_id === id))
+    setLoading(false)
+  }, [id, toast])
 
-  useEffect(() => { load() }, [id])
+  useEffect(() => { load() }, [load])
 
-  if (loading) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
-      <RefreshCw size={24} style={{ animation: 'spin 1s linear infinite', color: '#6c8ebf' }} />
-    </div>
-  )
-  if (!network) return <div style={{ color: 'rgba(255,255,255,0.5)', textAlign: 'center', marginTop: 80 }}>Network not found</div>
+  if (loading) return <PageLoading text="Loading network" />
+  if (!network) return <Alert type="error" header="Network not found">The requested network does not exist or is not visible in this project.</Alert>
 
-  const attachedPorts = ports.filter(p => p.device_owner === 'compute:nova' || p.device_id)
+  const isExternal = !!(network.external || network['router:external'] === 'External')
+  const attachedPorts = ports.filter(p => p.device_id)
 
   return (
-    <div style={{ padding: '0 4px' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
-        <button onClick={() => navigate('/networks')}
-          style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '6px 12px', color: 'rgba(255,255,255,0.7)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-          <ArrowLeft size={14} /> Back
-        </button>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <Network size={22} style={{ color: '#6c8ebf' }} />
-            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: '#fff' }}>{network.name}</h1>
-            {network.external && (
-              <span style={{ background: 'rgba(245,158,11,0.15)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 6, padding: '2px 8px', fontSize: 12 }}>External</span>
-            )}
-            {network.shared && (
-              <span style={{ background: 'rgba(108,142,191,0.15)', color: '#6c8ebf', border: '1px solid rgba(108,142,191,0.3)', borderRadius: 6, padding: '2px 8px', fontSize: 12 }}>Shared</span>
-            )}
-          </div>
-          <p style={{ margin: '4px 0 0 34px', color: 'rgba(255,255,255,0.4)', fontSize: 13, fontFamily: 'monospace' }}>{network.id}</p>
-        </div>
-        <button onClick={load} style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '7px 14px', color: 'rgba(255,255,255,0.7)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
-          <RefreshCw size={14} /> Refresh
-        </button>
-      </div>
+    <ContentLayout
+      header={
+        <Header
+          variant="h1"
+          description={network.id}
+          actions={
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button iconName="refresh" onClick={load} ariaLabel="Refresh" />
+              <Button onClick={() => navigate('/networks')}>Back to networks</Button>
+            </SpaceBetween>
+          }
+        >
+          {network.name}
+        </Header>
+      }
+    >
+      <SpaceBetween size="l">
+        <Container header={<Header variant="h2">Network summary</Header>}>
+          <KeyValuePairs
+            columns={4}
+            items={[
+              { label: 'Status', value: <ResourceStatus status={network.status || 'active'} /> },
+              { label: 'External', value: isExternal ? <Badge color="severity-medium">External</Badge> : 'No' },
+              { label: 'Shared', value: <BoolStatus value={!!network.shared} /> },
+              { label: 'Subnets', value: subnets.length },
+            ]}
+          />
+        </Container>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        {/* Network Info */}
-        <DetailCard title="Network Details" icon={Network}>
-          <InfoRow label="Status" value="ACTIVE" />
-          <InfoRow label="Admin State" value="UP" />
-          <InfoRow label="Type" value={network.network_type || (network.external ? 'flat' : 'geneve')} />
-          <InfoRow label="Physical Network" value={network.physical_network || (network.external ? 'physnet1' : '—')} />
-          <InfoRow label="External" value={network.external ? 'Yes' : 'No'} />
-          <InfoRow label="Shared" value={network.shared ? 'Yes' : 'No'} />
-          <InfoRow label="Provider" value={network.provider ? 'Yes' : 'No'} />
-          <InfoRow label="Created" value={network.created_at ? new Date(network.created_at).toLocaleString() : '—'} />
-        </DetailCard>
-
-        {/* Subnets */}
-        <DetailCard title="Subnets" icon={Layers} badge={subnets.length} accent="#8b5cf6">
-          {subnets.length === 0 ? (
-            <p style={{ color: 'rgba(255,255,255,0.35)', fontSize: 13 }}>No subnets configured</p>
-          ) : subnets.map(sub => (
-            <div key={sub.id} style={{ marginBottom: 10 }}>
-              <div
-                style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', background: 'rgba(139,92,246,0.08)', borderRadius: 8, cursor: 'pointer' }}
-                onClick={() => setExpandedSubnet(expandedSubnet === sub.id ? null : sub.id)}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  {expandedSubnet === sub.id ? <ChevronDown size={14} style={{ color: '#8b5cf6' }} /> : <ChevronRight size={14} style={{ color: '#8b5cf6' }} />}
-                  <span style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>{sub.name}</span>
-                </div>
-                <span style={{ color: '#8b5cf6', fontSize: 12, fontFamily: 'monospace' }}>{sub.cidr}</span>
-              </div>
-              {expandedSubnet === sub.id && (
-                <div style={{ padding: '4px 12px 0', background: 'rgba(139,92,246,0.04)', borderRadius: '0 0 8px 8px', border: '1px solid rgba(139,92,246,0.15)', borderTop: 'none' }}>
-                  <InfoRow label="Gateway" value={sub.gateway_ip || sub.gateway} />
-                  <InfoRow label="DHCP" value={sub.enable_dhcp ? 'Enabled' : 'Disabled'} />
-                  <InfoRow label="IP Version" value={`IPv${sub.ip_version || 4}`} />
-                  <InfoRow label="DNS" value={(sub.dns_nameservers || []).join(', ') || '—'} />
-                  {sub.allocation_start && <InfoRow label="Allocation Pool" value={`${sub.allocation_start} – ${sub.allocation_end}`} />}
-                </div>
-              )}
-            </div>
-          ))}
-        </DetailCard>
-
-        {/* Ports */}
-        <DetailCard title={`Ports (${ports.length})`} icon={Activity} badge={`${attachedPorts.length} used`}>
-          {ports.length === 0 ? (
-            <p style={{ color: 'rgba(255,255,255,0.35)', fontSize: 13 }}>No ports on this network</p>
-          ) : (
-            <div style={{ maxHeight: 240, overflowY: 'auto' }}>
-              {ports.map(port => (
-                <div key={port.id} style={{ padding: '8px 10px', background: 'rgba(255,255,255,0.04)', borderRadius: 8, marginBottom: 6 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ color: '#fff', fontSize: 12, fontFamily: 'monospace' }}>{port.mac_address}</span>
-                    <span style={{ fontSize: 11, color: port.status === 'ACTIVE' ? '#50c878' : '#94a3b8' }}>{port.status}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-                    <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11 }}>{port.ip_address || '—'}</span>
-                    <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 11 }}>{port.device_owner || 'unbound'}</span>
-                  </div>
-                  {port.dns_name && (
-                    <div style={{ color: '#6c8ebf', fontSize: 11, marginTop: 2 }}>DNS: {port.dns_name}</div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </DetailCard>
-
-        {/* Attached Servers */}
-        <DetailCard title="Attached Servers" icon={Server} badge={attachedPorts.length} accent="#50c878">
-          {attachedPorts.length === 0 ? (
-            <p style={{ color: 'rgba(255,255,255,0.35)', fontSize: 13 }}>No servers attached to this network</p>
-          ) : attachedPorts.map(port => (
-            <div key={port.id} style={{ padding: '8px 10px', background: 'rgba(80,200,120,0.06)', borderRadius: 8, marginBottom: 8, border: '1px solid rgba(80,200,120,0.15)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                <Server size={12} style={{ color: '#50c878' }} />
-                <span style={{ color: '#50c878', fontSize: 12, fontFamily: 'monospace' }}>{port.device_id || '—'}</span>
-              </div>
-              <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11 }}>IP: {port.ip_address}</span>
-            </div>
-          ))}
-        </DetailCard>
-      </div>
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
+        <Tabs
+          tabs={[
+            {
+              id: 'details',
+              label: 'Details',
+              content: (
+                <Container header={<Header variant="h2">Network details</Header>}>
+                  <KeyValuePairs
+                    columns={3}
+                    items={[
+                      { label: 'Network ID', value: network.id },
+                      { label: 'Name', value: network.name },
+                      { label: 'Admin state', value: <BoolStatus value={network.admin_state_up !== false} trueText="UP" falseText="DOWN" /> },
+                      { label: 'Network type', value: network.network_type || (isExternal ? 'flat' : 'geneve') },
+                      { label: 'Physical network', value: network.physical_network || (isExternal ? 'physnet1' : '—') },
+                      { label: 'Segmentation ID', value: network.segmentation_id ?? '—' },
+                      { label: 'MTU', value: network.mtu ?? '—' },
+                      { label: 'Project', value: network.project_id || '—' },
+                      { label: 'Created', value: fmtDate(network.created_at) },
+                      { label: 'DNS domain', value: network.dns_domain || '—' },
+                      { label: 'OVN logical switch', value: network.ovn_switch_name || '—' },
+                      { label: 'Availability zone', value: network.availability_zone || 'nova' },
+                    ]}
+                  />
+                </Container>
+              ),
+            },
+            {
+              id: 'subnets',
+              label: `Subnets (${subnets.length})`,
+              content: (
+                <Table
+                  variant="container"
+                  header={<Header variant="h2" counter={`(${subnets.length})`}>Subnets</Header>}
+                  items={subnets}
+                  trackBy="id"
+                  columnDefinitions={[
+                    { id: 'name', header: 'Name', cell: s => s.name, isRowHeader: true },
+                    { id: 'cidr', header: 'CIDR', cell: s => s.cidr },
+                    { id: 'version', header: 'IP version', cell: s => `IPv${s.ip_version || 4}` },
+                    { id: 'gateway', header: 'Gateway', cell: s => s.gateway_ip || s.gateway || '—' },
+                    { id: 'dhcp', header: 'DHCP', cell: s => <BoolStatus value={s.enable_dhcp !== false} trueText="Enabled" falseText="Disabled" /> },
+                    { id: 'pool', header: 'Allocation pool', cell: s => (s.allocation_start ? `${s.allocation_start} – ${s.allocation_end}` : '—') },
+                    { id: 'dns', header: 'DNS servers', cell: s => (s.dns_nameservers || []).join(', ') || '—' },
+                  ]}
+                  empty={<TableEmpty title="No subnets" description="Add a subnet to allocate IP addresses on this network." />}
+                />
+              ),
+            },
+            {
+              id: 'ports',
+              label: `Ports (${ports.length})`,
+              content: (
+                <Table
+                  variant="container"
+                  header={<Header variant="h2" counter={`(${ports.length})`} description={`${attachedPorts.length} port(s) bound to a device`}>Ports</Header>}
+                  items={ports}
+                  trackBy="id"
+                  columnDefinitions={[
+                    { id: 'id', header: 'Port ID', cell: p => shortId(p.id, 16), isRowHeader: true },
+                    { id: 'mac', header: 'MAC address', cell: p => p.mac_address || '—' },
+                    { id: 'ip', header: 'Fixed IP', cell: p => p.ip_address || '—' },
+                    { id: 'status', header: 'Status', cell: p => <ResourceStatus status={p.status || 'down'} /> },
+                    {
+                      id: 'device',
+                      header: 'Attached device',
+                      cell: p => p.device_id
+                        ? <Link href={`/servers/${p.device_id}`} onFollow={(e) => { e.preventDefault(); navigate(`/servers/${p.device_id}`) }}>{shortId(p.device_id, 12)}</Link>
+                        : 'Unbound',
+                    },
+                    { id: 'owner', header: 'Device owner', cell: p => p.device_owner || '—' },
+                    { id: 'dns', header: 'DNS name', cell: p => p.dns_name || '—' },
+                  ]}
+                  empty={<TableEmpty title="No ports" description="No ports have been created on this network yet." />}
+                />
+              ),
+            },
+          ]}
+        />
+      </SpaceBetween>
+    </ContentLayout>
   )
 }

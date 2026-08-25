@@ -1,133 +1,178 @@
-import { useEffect, useState } from 'react'
-import { Plus, Trash2, Layers } from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import Box from '@cloudscape-design/components/box'
+import Button from '@cloudscape-design/components/button'
+import ContentLayout from '@cloudscape-design/components/content-layout'
+import Header from '@cloudscape-design/components/header'
+import Modal from '@cloudscape-design/components/modal'
+import SpaceBetween from '@cloudscape-design/components/space-between'
+import Table from '@cloudscape-design/components/table'
+import TextFilter from '@cloudscape-design/components/text-filter'
+import Form from '@cloudscape-design/components/form'
+import FormField from '@cloudscape-design/components/form-field'
+import Input from '@cloudscape-design/components/input'
+import Select from '@cloudscape-design/components/select'
+import Alert from '@cloudscape-design/components/alert'
+import Badge from '@cloudscape-design/components/badge'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
+import { TableEmpty, TableNoMatch, shortId, counterText } from '../components/common.jsx'
 
-function CreateSGModal({ onClose, onCreate }) {
-  const [form, setForm] = useState({ name: '', policy: 'anti-affinity' })
+const POLICIES = [
+  { value: 'anti-affinity',      label: 'Anti-affinity',      description: 'Place instances on different hosts' },
+  { value: 'affinity',           label: 'Affinity',           description: 'Place instances on the same host' },
+  { value: 'soft-anti-affinity', label: 'Soft anti-affinity', description: 'Prefer different hosts (best effort)' },
+  { value: 'soft-affinity',      label: 'Soft affinity',      description: 'Prefer the same host (best effort)' },
+]
+
+function CreateModal({ onDismiss, onCreate }) {
+  const [name, setName] = useState('')
+  const [policy, setPolicy] = useState(POLICIES[0])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const toast = useToast()
 
-  const handleSubmit = async (e) => {
-    e.preventDefault(); setLoading(true); setError('')
-    try { await onCreate(form); toast('Server group created', 'success'); onClose() }
-    catch (err) { setError(err.message) } finally { setLoading(false) }
+  const submit = async () => {
+    if (!name) { setError('Name is required.'); return }
+    setLoading(true); setError('')
+    try {
+      await onCreate({ name, policy: policy.value })
+      onDismiss()
+    } catch (e) { setError(e.message) } finally { setLoading(false) }
   }
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
-        <div className="modal-header"><span className="modal-title">Create Server Group</span><button className="modal-close btn" onClick={onClose}>✕</button></div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            {error && <div className="alert alert-error">{error}</div>}
-            <div className="form-group"><label className="form-label">Name *</label><input id="sg-name" className="form-input" placeholder="my-server-group" value={form.name} onChange={e => setForm(v=>({...v,name:e.target.value}))} required /></div>
-            <div className="form-group">
-              <label className="form-label">Policy</label>
-              <select id="sg-policy" className="form-select" value={form.policy} onChange={e => setForm(v=>({...v,policy:e.target.value}))}>
-                <option value="anti-affinity">Anti-Affinity</option>
-                <option value="affinity">Affinity</option>
-                <option value="soft-anti-affinity">Soft Anti-Affinity</option>
-                <option value="soft-affinity">Soft Affinity</option>
-              </select>
-              <p className="form-hint">Anti-affinity: place instances on different hosts</p>
-            </div>
-          </div>
-          <div className="modal-footer">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-            <button id="servergroup-create-submit" type="submit" className="btn btn-primary" disabled={loading}><Plus size={14}/> Create Server Group</button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Modal
+      visible
+      onDismiss={onDismiss}
+      header="Create server group"
+      footer={
+        <Box float="right">
+          <SpaceBetween direction="horizontal" size="xs">
+            <Button onClick={onDismiss}>Cancel</Button>
+            <Button variant="primary" loading={loading} onClick={submit} data-testid="servergroup-create-submit">Create server group</Button>
+          </SpaceBetween>
+        </Box>
+      }
+    >
+      <Form>
+        <SpaceBetween size="m">
+          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
+          <FormField label="Name">
+            <Input value={name} onChange={({ detail }) => setName(detail.value)} placeholder="my-server-group" controlId="sg-name" />
+          </FormField>
+          <FormField label="Placement policy" description="Controls how the scheduler distributes group members across hosts.">
+            <Select selectedOption={policy} onChange={({ detail }) => setPolicy(detail.selectedOption)} options={POLICIES} controlId="sg-policy" />
+          </FormField>
+        </SpaceBetween>
+      </Form>
+    </Modal>
   )
 }
 
 export default function ServerGroupsPage() {
+  const toast = useToast()
   const [groups, setGroups]   = useState([])
   const [loading, setLoading] = useState(true)
-  const [showCreate, setShowCreate] = useState(false)
+  const [filter, setFilter]   = useState('')
   const [selected, setSelected] = useState([])
-  const toast = useToast()
+  const [showCreate, setShowCreate] = useState(false)
 
-  const load = () => { setLoading(true); api.getServerGroups().then(r => setGroups(r?.items || [])).finally(() => setLoading(false)) }
-  useEffect(() => { load() }, [])
+  const load = useCallback(() => {
+    setLoading(true)
+    api.getServerGroups()
+      .then(r => setGroups(r?.items || []))
+      .catch(e => toast(e.message, 'error'))
+      .finally(() => setLoading(false))
+  }, [toast])
 
-  const deleteGroup = async (id, name) => {
-    if (!confirm(`Delete server group "${name}"?`)) return
-    try { await api.deleteServerGroup(id); toast('Server group deleted', 'success'); load() }
-    catch (e) { toast(e.message, 'error') }
-  }
+  useEffect(() => { load() }, [load])
 
   const deleteSelected = async () => {
     if (!selected.length) return
     if (!confirm(`Delete ${selected.length} server group(s)?`)) return
-    for (const id of selected) { try { await api.deleteServerGroup(id) } catch(e) {} }
-    setSelected([]); toast(`${selected.length} group(s) deleted`, 'success'); load()
+    for (const g of selected) {
+      try { await api.deleteServerGroup(g.id) } catch { /* continue */ }
+    }
+    setSelected([])
+    toast(`${selected.length} server group(s) deleted`, 'success')
+    load()
   }
 
-  const toggleSelect = id => setSelected(s => s.includes(id) ? s.filter(x=>x!==id) : [...s, id])
-  const toggleAll = () => setSelected(s => s.length === groups.length ? [] : groups.map(x=>x.id))
+  const q = filter.trim().toLowerCase()
+  const filtered = q ? groups.filter(g => g.name?.toLowerCase().includes(q) || g.policy?.toLowerCase().includes(q)) : groups
 
   return (
-    <div>
-      <div className="page-header">
-        <div><h1 className="page-title">Server Groups</h1><p className="page-subtitle">{groups.length} server groups</p></div>
-        <div className="page-actions">
-          <button id="create-sg-btn" className="btn btn-primary" onClick={() => setShowCreate(true)}><Plus size={14}/> Create Server Group</button>
-          {selected.length > 0 && (
-            <button className="btn btn-danger" onClick={deleteSelected}><Trash2 size={14}/> Delete Server Groups ({selected.length})</button>
-          )}
-        </div>
-      </div>
+    <ContentLayout
+      header={
+        <Header
+          variant="h1"
+          counter={counterText(groups.length, selected.length)}
+          description="Affinity and anti-affinity placement policies for instances"
+          actions={
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button iconName="refresh" onClick={load} ariaLabel="Refresh server groups" />
+              <Button disabled={!selected.length} onClick={deleteSelected}>Delete</Button>
+              <Button variant="primary" onClick={() => setShowCreate(true)} data-testid="create-sg-btn">Create server group</Button>
+            </SpaceBetween>
+          }
+        >
+          Server groups
+        </Header>
+      }
+    >
+      <Table
+        variant="full-page"
+        stickyHeader
+        loading={loading}
+        loadingText="Loading server groups"
+        selectionType="multi"
+        selectedItems={selected}
+        onSelectionChange={({ detail }) => setSelected(detail.selectedItems)}
+        items={filtered}
+        trackBy="id"
+        columnDefinitions={[
+          { id: 'name', header: 'Name', cell: item => <Box fontWeight="bold">{item.name}</Box>, isRowHeader: true, sortingField: 'name' },
+          { id: 'id', header: 'Group ID', cell: item => shortId(item.id, 16) },
+          {
+            id: 'policy',
+            header: 'Policy',
+            cell: item => <Badge color={item.policy?.includes('anti') ? 'blue' : 'green'}>{item.policy}</Badge>,
+            sortingField: 'policy',
+          },
+          {
+            id: 'members',
+            header: 'Members',
+            cell: item => {
+              const members = (item.members || '').split(',').filter(Boolean)
+              return members.length ? `${members.length} instance(s)` : '—'
+            },
+          },
+        ]}
+        filter={
+          <TextFilter
+            filteringText={filter}
+            filteringPlaceholder="Find server groups"
+            filteringAriaLabel="Filter server groups"
+            countText={`${filtered.length} matches`}
+            onChange={({ detail }) => setFilter(detail.filteringText)}
+          />
+        }
+        empty={
+          filter
+            ? <TableNoMatch onClear={() => setFilter('')} />
+            : <TableEmpty
+                title="No server groups"
+                description="Create a server group to control how instances are placed across hosts."
+                action={<Button variant="primary" onClick={() => setShowCreate(true)}>Create server group</Button>}
+              />
+        }
+      />
 
-      <div className="toolbar">
-        <div className="search-box">
-          <span style={{color:'var(--text-muted)'}}>🔍</span>
-          <input placeholder="Filter server groups…" />
-        </div>
-      </div>
-
-      <div className="card">
-        {loading ? <div className="loading-overlay"><span className="spinner"/></div> :
-          groups.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-state-icon"><Layers size={40}/></div>
-              <h3>No server groups</h3>
-              <p>Create server groups to control instance placement policies</p>
-              <button className="btn btn-primary" onClick={() => setShowCreate(true)}><Plus size={14}/> Create Server Group</button>
-            </div>
-          ) : (
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th style={{width:32}}><input type="checkbox" onChange={toggleAll} checked={selected.length===groups.length && groups.length>0}/></th>
-                    <th>Name</th>
-                    <th>ID</th>
-                    <th>Policy</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {groups.map(g => (
-                    <tr key={g.id} className={selected.includes(g.id) ? 'row-selected' : ''}>
-                      <td><input type="checkbox" checked={selected.includes(g.id)} onChange={() => toggleSelect(g.id)}/></td>
-                      <td><div className="name-cell">{g.name}</div></td>
-                      <td><span className="mono" style={{fontSize:11}}>{g.id?.slice(0,16)}…</span></td>
-                      <td><span className={`status-badge ${g.policy==='anti-affinity'||g.policy==='soft-anti-affinity'?'status-building':'status-active'}`}>{g.policy}</span></td>
-                      <td>
-                        <button className="btn btn-icon btn-sm" id={`delete-group-${g.id}`} onClick={() => deleteGroup(g.id, g.name)} title="Delete Server Group"><Trash2 size={13}/></button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-      </div>
-      {showCreate && <CreateSGModal onClose={() => setShowCreate(false)} onCreate={async (form) => { await api.createServerGroup(form); load() }} />}
-    </div>
+      {showCreate && (
+        <CreateModal
+          onDismiss={() => setShowCreate(false)}
+          onCreate={async (payload) => { await api.createServerGroup(payload); toast('Server group created', 'success'); load() }}
+        />
+      )}
+    </ContentLayout>
   )
 }

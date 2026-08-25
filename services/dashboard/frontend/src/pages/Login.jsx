@@ -1,5 +1,14 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import Box from '@cloudscape-design/components/box'
+import Button from '@cloudscape-design/components/button'
+import Container from '@cloudscape-design/components/container'
+import Form from '@cloudscape-design/components/form'
+import FormField from '@cloudscape-design/components/form-field'
+import Header from '@cloudscape-design/components/header'
+import Input from '@cloudscape-design/components/input'
+import Alert from '@cloudscape-design/components/alert'
+import SpaceBetween from '@cloudscape-design/components/space-between'
 import { api } from '../api.js'
 import { useAuth, useToast } from '../context.jsx'
 
@@ -12,83 +21,82 @@ export default function LoginPage() {
   const navigate = useNavigate()
 
   const handleSubmit = async (e) => {
-    e.preventDefault()
+    e?.preventDefault?.()
     setError('')
     setLoading(true)
     try {
-      await api.login({
-        username: form.username,
-        password: form.password,
-      })
+      await api.login({ username: form.username, password: form.password })
       await checkSession()
-      toast('Login berhasil!', 'success')
+      toast('Signed in successfully', 'success')
       navigate('/')
     } catch (err) {
-      setError(err.message || 'Login gagal')
+      setError(err.message || 'Sign-in failed')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="login-page">
-      <div className="login-bg" />
-      <div className="login-card">
-        <div className="login-logo">
-          <div className="login-logo-icon">☁</div>
-          <h1>cloudx</h1>
-          <p>Private Cloud Management</p>
+    <Box padding={{ top: 'xxxl' }}>
+      <Box margin={{ top: 'xxl' }} padding="l">
+        <div style={{ maxWidth: 420, margin: '0 auto' }}>
+          <SpaceBetween size="l">
+            <Box textAlign="center">
+              <Box variant="h1">CloudX Console</Box>
+              <Box variant="p" color="text-body-secondary">Private cloud management</Box>
+            </Box>
+
+            <Container header={<Header variant="h2">Sign in</Header>}>
+              <form onSubmit={handleSubmit}>
+                <Form
+                  actions={
+                    <Button variant="primary" loading={loading} formAction="submit" data-testid="login-submit">
+                      {loading ? 'Signing in' : 'Sign in'}
+                    </Button>
+                  }
+                >
+                  <SpaceBetween size="m">
+                    {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
+
+                    <FormField label="Username">
+                      <Input
+                        value={form.username}
+                        onChange={({ detail }) => setForm(f => ({ ...f, username: detail.value }))}
+                        placeholder="admin"
+                        autoFocus
+                        controlId="login-username"
+                      />
+                    </FormField>
+
+                    <FormField label="Password">
+                      <Input
+                        type="password"
+                        value={form.password}
+                        onChange={({ detail }) => setForm(f => ({ ...f, password: detail.value }))}
+                        placeholder="••••••••"
+                        controlId="login-password"
+                      />
+                    </FormField>
+
+                    <FormField label="Project" description="Optional — defaults to your primary project scope">
+                      <Input
+                        value={form.project}
+                        onChange={({ detail }) => setForm(f => ({ ...f, project: detail.value }))}
+                        placeholder="default"
+                        controlId="login-project"
+                      />
+                    </FormField>
+                  </SpaceBetween>
+                </Form>
+              </form>
+            </Container>
+
+            <Box textAlign="center" color="text-body-secondary" fontSize="body-s">
+              CloudX private cloud dashboard
+            </Box>
+          </SpaceBetween>
         </div>
-
-        <p className="login-form-title">Sign in to your account</p>
-
-        {error && <div className="alert alert-error">{error}</div>}
-
-        <form onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label className="form-label">Username</label>
-            <input
-              id="login-username"
-              className="form-input"
-              placeholder="admin"
-              value={form.username}
-              onChange={e => setForm(f => ({ ...f, username: e.target.value }))}
-              required
-            />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Password</label>
-            <input
-              id="login-password"
-              type="password"
-              className="form-input"
-              placeholder="••••••••"
-              value={form.password}
-              onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-              required
-            />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Project <span style={{color:'var(--text-muted)',fontWeight:400}}>(optional)</span></label>
-            <input
-              id="login-project"
-              className="form-input"
-              placeholder="default"
-              value={form.project}
-              onChange={e => setForm(f => ({ ...f, project: e.target.value }))}
-            />
-          </div>
-          <button id="login-submit" type="submit" className="btn btn-primary w-full" disabled={loading}
-            style={{ justifyContent: 'center', marginTop: 8 }}>
-            {loading ? <span className="spinner" style={{width:14,height:14}} /> : null}
-            {loading ? 'Signing in…' : 'Sign In'}
-          </button>
-        </form>
-
-        <p style={{ textAlign: 'center', marginTop: 24, fontSize: 12, color: 'var(--text-muted)' }}>
-          cloudx Private Cloud Dashboard
-        </p>
-      </div>
-    </div>
+      </Box>
+    </Box>
   )
 }

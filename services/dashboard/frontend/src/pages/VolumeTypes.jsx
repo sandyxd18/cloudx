@@ -1,335 +1,275 @@
 /**
- * VolumeTypes.jsx — Admin page for managing AWS EBS-style volume types
+ * VolumeTypes.jsx — administration of AWS EBS-style volume types.
  *
- * Volume types are performance profiles (gp2, gp3, io1, io2, sc1, st1, etc.)
- * Each type references a backend (lvm | ceph) and carries informational
- * performance specs (disk_type, max_iops, max_throughput).
- *
- * No volume types are auto-created — admin must add them before volumes
- * can be created by users.
+ * A volume type is a performance profile (gp2, gp3, io1, io2, st1, sc1…) that
+ * couples a disk tier hint with a storage backend (LVM or Ceph RBD). At least
+ * one type must exist before users can provision volumes.
  */
-
-import { useEffect, useState } from 'react'
-import { Plus, Trash2, Info } from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import Alert from '@cloudscape-design/components/alert'
+import Box from '@cloudscape-design/components/box'
+import Badge from '@cloudscape-design/components/badge'
+import Button from '@cloudscape-design/components/button'
+import ContentLayout from '@cloudscape-design/components/content-layout'
+import Header from '@cloudscape-design/components/header'
+import Modal from '@cloudscape-design/components/modal'
+import SpaceBetween from '@cloudscape-design/components/space-between'
+import Table from '@cloudscape-design/components/table'
+import TextFilter from '@cloudscape-design/components/text-filter'
+import Form from '@cloudscape-design/components/form'
+import FormField from '@cloudscape-design/components/form-field'
+import Input from '@cloudscape-design/components/input'
+import Select from '@cloudscape-design/components/select'
+import Checkbox from '@cloudscape-design/components/checkbox'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
-
-// ─── Constants ────────────────────────────────────────────────────────────────
+import { BoolStatus, TableEmpty, TableNoMatch, counterText } from '../components/common.jsx'
 
 const DISK_TYPES = [
-  { value: 'nvme_ssd', label: 'NVMe SSD',  desc: 'Highest IOPS — provisioned (io1, io2)' },
-  { value: 'sas_ssd',  label: 'SAS SSD',   desc: 'High throughput SSD (gp3)' },
-  { value: 'sata_ssd', label: 'SATA SSD',  desc: 'General purpose SSD (gp2)' },
-  { value: 'sas_hdd',  label: 'SAS HDD',   desc: 'Throughput HDD (st1)' },
-  { value: 'sata_hdd', label: 'SATA HDD',  desc: 'Cold HDD (sc1)' },
+  { value: 'nvme_ssd', label: 'NVMe SSD', description: 'Highest IOPS — provisioned (io1, io2)' },
+  { value: 'sas_ssd',  label: 'SAS SSD',  description: 'High throughput SSD (gp3)' },
+  { value: 'sata_ssd', label: 'SATA SSD', description: 'General purpose SSD (gp2)' },
+  { value: 'sas_hdd',  label: 'SAS HDD',  description: 'Throughput optimized HDD (st1)' },
+  { value: 'sata_hdd', label: 'SATA HDD', description: 'Cold HDD (sc1)' },
 ]
 
-const DISK_TYPE_COLOR = {
-  nvme_ssd: { fg: '#7c3aed', bg: '#7c3aed18', br: '#7c3aed40' },
-  sas_ssd:  { fg: '#0ea5e9', bg: '#0ea5e918', br: '#0ea5e940' },
-  sata_ssd: { fg: '#06b6d4', bg: '#06b6d418', br: '#06b6d440' },
-  sas_hdd:  { fg: '#f59e0b', bg: '#f59e0b18', br: '#f59e0b40' },
-  sata_hdd: { fg: '#6b7280', bg: '#6b728018', br: '#6b728040' },
+const BACKENDS = [
+  { value: 'lvm',  label: 'LVM', description: 'Local block device via logical volumes' },
+  { value: 'ceph', label: 'Ceph RBD', description: 'Network block device from the storage node' },
+]
+
+const DISK_BADGE = {
+  nvme_ssd: 'severity-high',
+  sas_ssd: 'blue',
+  sata_ssd: 'blue',
+  sas_hdd: 'severity-medium',
+  sata_hdd: 'grey',
 }
 
-const BACKEND_COLOR = {
-  lvm:  { fg: '#06b6d4', bg: '#06b6d418', br: '#06b6d440' },
-  ceph: { fg: '#8b5cf6', bg: '#8b5cf618', br: '#8b5cf640' },
-}
-
-// AWS EBS equivalents as quick-fill presets
+// AWS EBS equivalents offered as one-click presets.
 const PRESETS = [
-  { name: 'gp2',  disk_type: 'sata_ssd', backend: 'lvm',  max_iops: 3000,  max_throughput: 125,  description: 'General Purpose SSD (SATA)' },
-  { name: 'gp3',  disk_type: 'sas_ssd',  backend: 'lvm',  max_iops: 16000, max_throughput: 1000, description: 'General Purpose SSD (SAS) — throughput optimized' },
-  { name: 'io1',  disk_type: 'nvme_ssd', backend: 'lvm',  max_iops: 64000, max_throughput: 4000, description: 'Provisioned IOPS SSD NVMe (io1)' },
-  { name: 'io2',  disk_type: 'nvme_ssd', backend: 'ceph', max_iops: 64000, max_throughput: 4000, description: 'Provisioned IOPS SSD NVMe (io2) — Ceph RBD' },
-  { name: 'st1',  disk_type: 'sas_hdd',  backend: 'lvm',  max_iops: 500,   max_throughput: 500,  description: 'Throughput Optimized HDD (SAS)' },
-  { name: 'sc1',  disk_type: 'sata_hdd', backend: 'lvm',  max_iops: 250,   max_throughput: 250,  description: 'Cold HDD (SATA) — lowest cost' },
+  { name: 'gp2', disk_type: 'sata_ssd', backend: 'lvm',  max_iops: '3000',  max_throughput: '125',  description: 'General Purpose SSD (SATA)' },
+  { name: 'gp3', disk_type: 'sas_ssd',  backend: 'lvm',  max_iops: '16000', max_throughput: '1000', description: 'General Purpose SSD (SAS) — throughput optimized' },
+  { name: 'io1', disk_type: 'nvme_ssd', backend: 'lvm',  max_iops: '64000', max_throughput: '4000', description: 'Provisioned IOPS SSD NVMe' },
+  { name: 'io2', disk_type: 'nvme_ssd', backend: 'ceph', max_iops: '64000', max_throughput: '4000', description: 'Provisioned IOPS SSD NVMe — Ceph RBD' },
+  { name: 'st1', disk_type: 'sas_hdd',  backend: 'lvm',  max_iops: '500',   max_throughput: '500',  description: 'Throughput Optimized HDD' },
+  { name: 'sc1', disk_type: 'sata_hdd', backend: 'lvm',  max_iops: '250',   max_throughput: '250',  description: 'Cold HDD — lowest cost' },
 ]
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function Badge({ color, children }) {
-  return (
-    <span style={{
-      fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
-      background: color.bg, color: color.fg, border: `1px solid ${color.br}`,
-      letterSpacing: '0.04em',
-    }}>{children}</span>
-  )
-}
-
-function fmtIops(v) {
-  if (!v) return '—'
-  return v >= 1000 ? `${(v / 1000).toFixed(0)}K` : `${v}`
-}
-
-// ─── Create Modal ─────────────────────────────────────────────────────────────
-
-const EMPTY_FORM = { name: '', disk_type: 'sata_ssd', backend: 'lvm', max_iops: '', max_throughput: '', description: '', is_public: true }
-
-function CreateTypeModal({ onClose, onCreate }) {
-  const [form, setForm] = useState({ ...EMPTY_FORM })
+function CreateModal({ onDismiss, onCreate }) {
+  const [form, setForm] = useState({
+    name: '',
+    disk_type: DISK_TYPES[2],
+    backend: BACKENDS[0],
+    max_iops: '',
+    max_throughput: '',
+    description: '',
+    is_public: true,
+  })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const toast = useToast()
 
-  const f = field => e => {
-    const val = e.target.type === 'checkbox' ? e.target.checked
-               : e.target.type === 'number'  ? (e.target.value === '' ? '' : Number(e.target.value))
-               : e.target.value
-    setForm(v => ({ ...v, [field]: val }))
-  }
+  const applyPreset = (preset) => setForm(f => ({
+    ...f,
+    name: preset.name,
+    disk_type: DISK_TYPES.find(d => d.value === preset.disk_type) || f.disk_type,
+    backend: BACKENDS.find(b => b.value === preset.backend) || f.backend,
+    max_iops: preset.max_iops,
+    max_throughput: preset.max_throughput,
+    description: preset.description,
+  }))
 
-  const applyPreset = (preset) => setForm(p => ({ ...p, ...preset }))
-
-  const handleSubmit = async (e) => {
-    e.preventDefault(); setLoading(true); setError('')
+  const submit = async () => {
+    if (!form.name) { setError('Type name is required.'); return }
+    setLoading(true); setError('')
     try {
-      const payload = {
-        ...form,
-        max_iops:       form.max_iops       === '' ? null : Number(form.max_iops),
+      await onCreate({
+        name: form.name,
+        disk_type: form.disk_type.value,
+        backend: form.backend.value,
+        max_iops: form.max_iops === '' ? null : Number(form.max_iops),
         max_throughput: form.max_throughput === '' ? null : Number(form.max_throughput),
-      }
-      await onCreate(payload)
-      toast(`Volume type '${form.name}' created`, 'success')
-      onClose()
-    } catch (err) { setError(err.message) } finally { setLoading(false) }
+        description: form.description,
+        is_public: form.is_public,
+      })
+      onDismiss()
+    } catch (e) { setError(e.message) } finally { setLoading(false) }
   }
-
-  const selectedDisk = DISK_TYPES.find(d => d.value === form.disk_type)
-  const diskColor = DISK_TYPE_COLOR[form.disk_type] || DISK_TYPE_COLOR.sata_ssd
-  const backendColor = BACKEND_COLOR[form.backend] || BACKEND_COLOR.lvm
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={{ maxWidth: 560 }}>
-        <div className="modal-header">
-          <span className="modal-title">Create Volume Type</span>
-          <button className="modal-close btn" onClick={onClose}>✕</button>
-        </div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            {error && <div className="alert alert-error">{error}</div>}
+    <Modal
+      visible
+      onDismiss={onDismiss}
+      header="Create volume type"
+      size="medium"
+      footer={
+        <Box float="right">
+          <SpaceBetween direction="horizontal" size="xs">
+            <Button onClick={onDismiss}>Cancel</Button>
+            <Button variant="primary" loading={loading} onClick={submit} data-testid="vt-create-submit">Create type</Button>
+          </SpaceBetween>
+        </Box>
+      }
+    >
+      <Form>
+        <SpaceBetween size="m">
+          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
 
-            {/* Presets */}
-            <div style={{ marginBottom: 16 }}>
-              <div className="form-label" style={{ marginBottom: 6 }}>Quick Presets (AWS EBS equivalents)</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {PRESETS.map(p => (
-                  <button key={p.name} type="button" className="btn btn-secondary btn-sm"
-                    style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: 12 }}
-                    onClick={() => applyPreset(p)}>
-                    {p.name}
-                  </button>
-                ))}
-              </div>
-            </div>
+          <FormField label="Quick presets" description="AWS EBS equivalents — fills the form below.">
+            <SpaceBetween direction="horizontal" size="xs">
+              {PRESETS.map(p => (
+                <Button key={p.name} onClick={() => applyPreset(p)}>{p.name}</Button>
+              ))}
+            </SpaceBetween>
+          </FormField>
 
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <label className="form-label">Type Name *</label>
-                <input id="vt-name" className="form-input" placeholder="gp2, io2, custom-nvme …"
-                  value={form.name} onChange={f('name')} required style={{ fontFamily: 'monospace' }} />
-              </div>
-              <div className="form-group" style={{ flex: 1 }}>
-                <label className="form-label">Backend *</label>
-                <select id="vt-backend" className="form-select" value={form.backend} onChange={f('backend')}>
-                  <option value="lvm">LVM (block device)</option>
-                  <option value="ceph">Ceph RBD (network disk)</option>
-                </select>
-              </div>
-            </div>
+          <FormField label="Type name">
+            <Input value={form.name} onChange={({ detail }) => setForm(f => ({ ...f, name: detail.value }))} placeholder="gp2" controlId="vt-name" />
+          </FormField>
 
-            <div className="form-group">
-              <label className="form-label">Disk Type *</label>
-              <select id="vt-disk-type" className="form-select" value={form.disk_type} onChange={f('disk_type')}>
-                {DISK_TYPES.map(d => (
-                  <option key={d.value} value={d.value}>{d.label} — {d.desc}</option>
-                ))}
-              </select>
-            </div>
+          <FormField label="Backend">
+            <Select selectedOption={form.backend} onChange={({ detail }) => setForm(f => ({ ...f, backend: detail.selectedOption }))} options={BACKENDS} controlId="vt-backend" />
+          </FormField>
 
-            {/* Preview badges */}
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-              <Badge color={diskColor}>{selectedDisk?.label || form.disk_type}</Badge>
-              <Badge color={backendColor}>{form.backend.toUpperCase()}</Badge>
-            </div>
+          <FormField label="Disk type">
+            <Select selectedOption={form.disk_type} onChange={({ detail }) => setForm(f => ({ ...f, disk_type: detail.selectedOption }))} options={DISK_TYPES} controlId="vt-disk-type" />
+          </FormField>
 
-            <div className="form-row">
-              <div className="form-group" style={{ flex: 1 }}>
-                <label className="form-label">Max IOPS <span className="text-muted">(informational)</span></label>
-                <input id="vt-max-iops" type="number" min="1" className="form-input"
-                  placeholder="e.g. 3000" value={form.max_iops} onChange={f('max_iops')} />
-              </div>
-              <div className="form-group" style={{ flex: 1 }}>
-                <label className="form-label">Max Throughput MB/s <span className="text-muted">(informational)</span></label>
-                <input id="vt-max-tp" type="number" min="1" className="form-input"
-                  placeholder="e.g. 125" value={form.max_throughput} onChange={f('max_throughput')} />
-              </div>
-            </div>
+          <FormField label="Max IOPS" description="Informational for LVM; enforced via rbd QoS on Ceph.">
+            <Input value={form.max_iops} onChange={({ detail }) => setForm(f => ({ ...f, max_iops: detail.value }))} type="number" inputMode="numeric" placeholder="3000" controlId="vt-max-iops" />
+          </FormField>
 
-            <div className="form-group">
-              <label className="form-label">Description</label>
-              <input id="vt-description" className="form-input" placeholder="General Purpose SSD"
-                value={form.description} onChange={f('description')} />
-            </div>
+          <FormField label="Max throughput (MB/s)">
+            <Input value={form.max_throughput} onChange={({ detail }) => setForm(f => ({ ...f, max_throughput: detail.value }))} type="number" inputMode="numeric" placeholder="125" controlId="vt-max-tp" />
+          </FormField>
 
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 14 }}>
-              <input type="checkbox" checked={form.is_public} onChange={f('is_public')} />
-              Public (visible to all projects)
-            </label>
-          </div>
-          <div className="modal-footer">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-            <button id="vt-create-submit" type="submit" className="btn btn-primary" disabled={loading}>
-              <Plus size={14} /> Create Type
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+          <FormField label="Description">
+            <Input value={form.description} onChange={({ detail }) => setForm(f => ({ ...f, description: detail.value }))} placeholder="General Purpose SSD" controlId="vt-description" />
+          </FormField>
+
+          <Checkbox checked={form.is_public} onChange={({ detail }) => setForm(f => ({ ...f, is_public: detail.checked }))}>
+            Public — visible to all projects
+          </Checkbox>
+        </SpaceBetween>
+      </Form>
+    </Modal>
   )
 }
 
-// ─── Page ─────────────────────────────────────────────────────────────────────
-
 export default function VolumeTypesPage() {
-  const [types, setTypes] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [showCreate, setShowCreate] = useState(false)
   const toast = useToast()
+  const [types, setTypes]     = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filter, setFilter]   = useState('')
+  const [selected, setSelected] = useState([])
+  const [showCreate, setShowCreate] = useState(false)
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true)
-    api.getVolumeTypes().then(r => setTypes(r?.items || [])).finally(() => setLoading(false))
-  }
-  useEffect(() => { load() }, [])
+    api.getVolumeTypes()
+      .then(r => setTypes(r?.items || []))
+      .catch(e => toast(e.message, 'error'))
+      .finally(() => setLoading(false))
+  }, [toast])
 
-  const deleteType = async (ref, name) => {
-    if (!confirm(`Delete volume type "${name}"?`)) return
-    try { await api.deleteVolumeType(ref); toast(`Type '${name}' deleted`, 'success'); load() }
-    catch (e) { toast(e.message, 'error') }
+  useEffect(() => { load() }, [load])
+
+  const deleteSelected = async () => {
+    if (!selected.length) return
+    if (!confirm(`Delete ${selected.length} volume type(s)? This fails if volumes still use them.`)) return
+    for (const t of selected) {
+      try { await api.deleteVolumeType(t.id) }
+      catch (e) { toast(`${t.name}: ${e.message}`, 'error') }
+    }
+    setSelected([])
+    load()
   }
+
+  const q = filter.trim().toLowerCase()
+  const filtered = q ? types.filter(t => t.name?.toLowerCase().includes(q) || t.disk_type?.toLowerCase().includes(q)) : types
 
   return (
-    <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Volume Types</h1>
-          <p className="page-subtitle">
-            {types.length === 0
-              ? 'No types configured — volumes cannot be created until at least one type exists'
-              : `${types.length} type${types.length !== 1 ? 's' : ''} available`}
-          </p>
-        </div>
-        <div className="page-actions">
-          <button id="refresh-vtypes" className="btn btn-secondary btn-sm" onClick={load}>↻ Refresh</button>
-          <button id="create-vtype-btn" className="btn btn-primary" onClick={() => setShowCreate(true)}>
-            <Plus size={14} /> Add Type
-          </button>
-        </div>
-      </div>
-
-      {/* Info box */}
-      <div className="card" style={{ marginBottom: 16, padding: '12px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)' }}>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-          <Info size={16} style={{ color: 'var(--color-primary)', marginTop: 2, flexShrink: 0 }} />
-          <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
-            Volume types are <strong>AWS EBS-style performance profiles</strong>. Each type combines a disk tier hint
-            (NVMe/SAS/SATA) with a storage backend (LVM or Ceph RBD).
-            The IOPS and throughput values are <em>informational only</em> — they are not enforced by the hypervisor.
-            <br />
-            <strong>Admin must add at least one type</strong> before users can create volumes.
-          </div>
-        </div>
-      </div>
-
-      {types.length === 0 && !loading && (
-        <div className="card">
-          <div className="empty-state">
-            <div className="empty-state-icon">📊</div>
-            <h3>No volume types yet</h3>
-            <p>Add your first volume type to allow users to create volumes.</p>
-            <div style={{ marginTop: 16, display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
-              {PRESETS.map(p => (
-                <code key={p.name} style={{ fontSize: 11, background: 'var(--bg-tertiary)', padding: '3px 8px', borderRadius: 4 }}>
-                  {p.name}
-                </code>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {types.length > 0 && (
-        <div className="card">
-          {loading ? <div className="loading-overlay"><span className="spinner" /></div> :
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Disk Type</th>
-                    <th>Backend</th>
-                    <th>Max IOPS</th>
-                    <th>Max Throughput</th>
-                    <th>Description</th>
-                    <th>Public</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {types.map(t => {
-                    const dc = DISK_TYPE_COLOR[t.disk_type] || DISK_TYPE_COLOR.sata_ssd
-                    const bc = BACKEND_COLOR[t.backend] || BACKEND_COLOR.lvm
-                    const diskLabel = DISK_TYPES.find(d => d.value === t.disk_type)?.label || t.disk_type
-                    return (
-                      <tr key={t.id}>
-                        <td>
-                          <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 14 }}>{t.name}</span>
-                        </td>
-                        <td><Badge color={dc}>{diskLabel}</Badge></td>
-                        <td><Badge color={bc}>{t.backend.toUpperCase()}</Badge></td>
-                        <td style={{ fontVariantNumeric: 'tabular-nums' }}>
-                          {t.max_iops ? <strong>{t.max_iops.toLocaleString()}</strong> : <span className="text-muted">—</span>}
-                        </td>
-                        <td style={{ fontVariantNumeric: 'tabular-nums' }}>
-                          {t.max_throughput ? <strong>{t.max_throughput} MB/s</strong> : <span className="text-muted">—</span>}
-                        </td>
-                        <td className="text-muted" style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {t.description || '—'}
-                        </td>
-                        <td>
-                          <span className={`status-badge status-${t.is_public ? 'available' : 'inactive'}`}>
-                            {t.is_public ? 'public' : 'private'}
-                          </span>
-                        </td>
-                        <td>
-                          <div className="table-actions">
-                            <button className="btn btn-icon btn-sm" id={`delete-vt-${t.id}`}
-                              title="Delete (fails if volumes use this type)"
-                              onClick={() => deleteType(t.id, t.name)}>
-                              <Trash2 size={13} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+    <ContentLayout
+      header={
+        <Header
+          variant="h1"
+          counter={counterText(types.length, selected.length)}
+          description="Performance profiles that map volumes onto a storage backend"
+          actions={
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button iconName="refresh" onClick={load} data-testid="refresh-vtypes" ariaLabel="Refresh volume types" />
+              <Button disabled={!selected.length} onClick={deleteSelected}>Delete</Button>
+              <Button variant="primary" onClick={() => setShowCreate(true)} data-testid="create-vtype-btn">Create type</Button>
+            </SpaceBetween>
           }
-        </div>
-      )}
+        >
+          Volume types
+        </Header>
+      }
+    >
+      <SpaceBetween size="l">
+        {types.length === 0 && !loading && (
+          <Alert type="warning" header="No volume types configured">
+            Users cannot create volumes until at least one type exists. Use the presets in the create dialog
+            to add AWS EBS equivalents (gp2, gp3, io1, io2, st1, sc1).
+          </Alert>
+        )}
+
+        <Table
+          variant="full-page"
+          stickyHeader
+          loading={loading}
+          loadingText="Loading volume types"
+          selectionType="multi"
+          selectedItems={selected}
+          onSelectionChange={({ detail }) => setSelected(detail.selectedItems)}
+          items={filtered}
+          trackBy="id"
+          columnDefinitions={[
+            { id: 'name', header: 'Type name', cell: item => <Box fontWeight="bold">{item.name}</Box>, isRowHeader: true, sortingField: 'name' },
+            {
+              id: 'disk_type',
+              header: 'Disk type',
+              cell: item => (
+                <Badge color={DISK_BADGE[item.disk_type] || 'grey'}>
+                  {DISK_TYPES.find(d => d.value === item.disk_type)?.label || item.disk_type}
+                </Badge>
+              ),
+            },
+            { id: 'backend', header: 'Backend', cell: item => <Badge color={item.backend === 'ceph' ? 'blue' : 'green'}>{String(item.backend || '').toUpperCase()}</Badge> },
+            { id: 'lvm_type', header: 'LVM mode', cell: item => item.lvm_type || 'default' },
+            { id: 'iops', header: 'Max IOPS', cell: item => (item.max_iops ? item.max_iops.toLocaleString() : '—') },
+            { id: 'throughput', header: 'Max throughput', cell: item => (item.max_throughput ? `${item.max_throughput} MB/s` : '—') },
+            { id: 'description', header: 'Description', cell: item => item.description || '—' },
+            { id: 'public', header: 'Visibility', cell: item => <BoolStatus value={item.is_public} trueText="Public" falseText="Private" /> },
+          ]}
+          filter={
+            <TextFilter
+              filteringText={filter}
+              filteringPlaceholder="Find volume types"
+              filteringAriaLabel="Filter volume types"
+              countText={`${filtered.length} matches`}
+              onChange={({ detail }) => setFilter(detail.filteringText)}
+            />
+          }
+          empty={
+            filter
+              ? <TableNoMatch onClear={() => setFilter('')} />
+              : <TableEmpty
+                  title="No volume types"
+                  description="Add a volume type so users can provision volumes."
+                  action={<Button variant="primary" onClick={() => setShowCreate(true)}>Create type</Button>}
+                />
+          }
+        />
+      </SpaceBetween>
 
       {showCreate && (
-        <CreateTypeModal
-          onClose={() => setShowCreate(false)}
-          onCreate={async (data) => { await api.createVolumeType(data); load() }}
+        <CreateModal
+          onDismiss={() => setShowCreate(false)}
+          onCreate={async (payload) => { await api.createVolumeType(payload); toast(`Volume type "${payload.name}" created`, 'success'); load() }}
         />
       )}
-    </div>
+    </ContentLayout>
   )
 }

@@ -1,207 +1,249 @@
-import { useEffect, useState, useRef } from 'react'
-import { Plus, Trash2, ChevronDown, ArrowLeftRight } from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import Box from '@cloudscape-design/components/box'
+import Button from '@cloudscape-design/components/button'
+import ButtonDropdown from '@cloudscape-design/components/button-dropdown'
+import ContentLayout from '@cloudscape-design/components/content-layout'
+import Header from '@cloudscape-design/components/header'
+import Modal from '@cloudscape-design/components/modal'
+import SpaceBetween from '@cloudscape-design/components/space-between'
+import Table from '@cloudscape-design/components/table'
+import TextFilter from '@cloudscape-design/components/text-filter'
+import Form from '@cloudscape-design/components/form'
+import FormField from '@cloudscape-design/components/form-field'
+import Input from '@cloudscape-design/components/input'
+import Select from '@cloudscape-design/components/select'
+import Alert from '@cloudscape-design/components/alert'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
+import { ResourceStatus, TableEmpty, TableNoMatch, shortId, counterText } from '../components/common.jsx'
 
-function FipActions({ fip, onAssociate, onDisassociate, onDelete }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef()
-  useEffect(() => {
-    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
-  }, [])
+function AllocateModal({ onDismiss, onCreate, networks }) {
+  const [pool, setPool] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const externalNets = networks.filter(n => n.external || n['router:external'] === 'External')
 
-  const isAssoc = !!(fip.port_id || fip.fixed_ip_address)
+  const submit = async () => {
+    if (!pool) { setError('Select an external network pool.'); return }
+    setLoading(true); setError('')
+    try { await onCreate({ network: pool.value }); onDismiss() }
+    catch (e) { setError(e.message) } finally { setLoading(false) }
+  }
+
   return (
-    <div className="hz-action-group" ref={ref}>
-      <button className="btn btn-sm btn-hz-primary" onClick={() => isAssoc ? onDisassociate(fip) : onAssociate(fip)}>
-        {isAssoc ? 'Disassociate' : 'Associate'}
-      </button>
-      <button className="btn btn-sm btn-hz-dropdown" onClick={() => setOpen(o => !o)}>
-        <ChevronDown size={12} />
-      </button>
-      {open && (
-        <div className="dropdown-menu dropdown-menu-right">
-          <button className="dropdown-item danger" onClick={() => { setOpen(false); onDelete(fip.id) }}>Release Floating IP</button>
-        </div>
-      )}
-    </div>
+    <Modal
+      visible
+      onDismiss={onDismiss}
+      header="Allocate floating IP"
+      footer={
+        <Box float="right">
+          <SpaceBetween direction="horizontal" size="xs">
+            <Button onClick={onDismiss}>Cancel</Button>
+            <Button variant="primary" loading={loading} onClick={submit} data-testid="fip-allocate-submit">Allocate</Button>
+          </SpaceBetween>
+        </Box>
+      }
+    >
+      <Form>
+        <SpaceBetween size="m">
+          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
+          <FormField label="Pool (external network)">
+            <Select
+              selectedOption={pool}
+              onChange={({ detail }) => setPool(detail.selectedOption)}
+              options={(externalNets.length ? externalNets : networks).map(n => ({ value: n.name, label: n.name }))}
+              placeholder="Choose a pool"
+              empty="No external networks"
+              controlId="fip-network"
+            />
+          </FormField>
+        </SpaceBetween>
+      </Form>
+    </Modal>
+  )
+}
+
+function AssociateModal({ fip, onDismiss, onAssociate }) {
+  const [target, setTarget] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const submit = async () => {
+    if (!target) { setError('Enter a server name or port ID.'); return }
+    setLoading(true); setError('')
+    try { await onAssociate({ port: target }); onDismiss() }
+    catch (e) { setError(e.message) } finally { setLoading(false) }
+  }
+
+  return (
+    <Modal
+      visible
+      onDismiss={onDismiss}
+      header="Associate floating IP"
+      footer={
+        <Box float="right">
+          <SpaceBetween direction="horizontal" size="xs">
+            <Button onClick={onDismiss}>Cancel</Button>
+            <Button variant="primary" loading={loading} onClick={submit} data-testid="fip-assoc-submit">Associate</Button>
+          </SpaceBetween>
+        </Box>
+      }
+    >
+      <Form>
+        <SpaceBetween size="m">
+          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
+          <Alert type="info">Floating IP: <b>{fip.floating_ip_address || fip.floating_ip}</b></Alert>
+          <FormField label="Server name or port ID" description="The DNAT rule is programmed in OVN for the selected port.">
+            <Input value={target} onChange={({ detail }) => setTarget(detail.value)} placeholder="my-instance" controlId="fip-assoc-port" />
+          </FormField>
+        </SpaceBetween>
+      </Form>
+    </Modal>
   )
 }
 
 export default function FloatingIPsPage() {
-  const [fips, setFips]       = useState([])
-  const [loading, setLoading] = useState(true)
-  const [showCreate, setShowCreate] = useState(false)
-  const [showAssoc, setShowAssoc]   = useState(null)
-  const [networks, setNetworks]     = useState([])
-  const [newFipNet, setNewFipNet]   = useState('')
-  const [assocPort, setAssocPort]   = useState('')
-  const [selected, setSelected]     = useState([])
   const toast = useToast()
+  const [fips, setFips]         = useState([])
+  const [networks, setNetworks] = useState([])
+  const [loading, setLoading]   = useState(true)
+  const [filter, setFilter]     = useState('')
+  const [selected, setSelected] = useState([])
+  const [showAllocate, setShowAllocate] = useState(false)
+  const [associate, setAssociate] = useState(null)
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true)
-    Promise.all([api.getFloatingIPs(), api.getNetworks()])
-      .then(([f, n]) => { setFips(f?.items || []); setNetworks(n?.items || []) })
+    Promise.allSettled([api.getFloatingIPs(), api.getNetworks()])
+      .then(([f, n]) => {
+        if (f.status === 'fulfilled') setFips(f.value?.items || [])
+        if (n.status === 'fulfilled') setNetworks(n.value?.items || [])
+      })
       .finally(() => setLoading(false))
-  }
-  useEffect(() => { load() }, [])
+  }, [])
 
-  const createFip = async () => {
-    if (!newFipNet) return
-    try { await api.createFloatingIP({ network: newFipNet }); toast('Floating IP allocated', 'success'); setShowCreate(false); load() }
-    catch (e) { toast(e.message, 'error') }
-  }
+  useEffect(() => { load() }, [load])
 
-  const deleteFip = async (id) => {
-    if (!confirm('Release this floating IP?')) return
-    try { await api.deleteFloatingIP(id); toast('Floating IP released', 'success'); load() }
-    catch (e) { toast(e.message, 'error') }
-  }
+  const one = selected.length === 1 ? selected[0] : null
+  const oneAssociated = !!(one?.port_id || one?.fixed_ip_address || one?.fixed_ip)
 
   const releaseSelected = async () => {
     if (!selected.length) return
     if (!confirm(`Release ${selected.length} floating IP(s)?`)) return
-    for (const id of selected) { try { await api.deleteFloatingIP(id) } catch(e) {} }
-    setSelected([]); toast(`${selected.length} IP(s) released`, 'success'); load()
-  }
-
-  const associate = async () => {
-    if (!assocPort || !showAssoc) return
-    try {
-      await api.associateFloatingIP(showAssoc.id, { port: assocPort })
-      toast('Floating IP associated', 'success'); setShowAssoc(null); load()
-    } catch (e) { toast(e.message, 'error') }
+    for (const f of selected) {
+      try { await api.deleteFloatingIP(f.id) } catch (e) { toast(e.message, 'error') }
+    }
+    setSelected([])
+    toast(`${selected.length} floating IP(s) released`, 'success')
+    load()
   }
 
   const disassociate = async (fip) => {
-    try { await api.disassociateFloatingIP(fip.id); toast('Disassociated', 'success'); load() }
+    try { await api.disassociateFloatingIP(fip.id); toast('Floating IP disassociated', 'success'); load() }
     catch (e) { toast(e.message, 'error') }
   }
 
-  const toggleSelect = id => setSelected(s => s.includes(id) ? s.filter(x=>x!==id) : [...s, id])
-  const toggleAll = () => setSelected(s => s.length === fips.length ? [] : fips.map(x=>x.id))
+  const q = filter.trim().toLowerCase()
+  const filtered = q
+    ? fips.filter(f => (f.floating_ip_address || f.floating_ip || '').toLowerCase().includes(q))
+    : fips
 
   return (
-    <div>
-      <div className="page-header">
-        <div><h1 className="page-title">Floating IPs</h1><p className="page-subtitle">{fips.length} floating IPs allocated</p></div>
-        <div className="page-actions">
-          <button id="allocate-fip-btn" className="btn btn-primary" onClick={() => setShowCreate(true)}>
-            <Plus size={14} /> Allocate IP To Project
-          </button>
-          {selected.length > 0 && (
-            <button className="btn btn-danger" onClick={releaseSelected}>
-              <Trash2 size={14} /> Release Floating IPs ({selected.length})
-            </button>
-          )}
-        </div>
-      </div>
+    <ContentLayout
+      header={
+        <Header
+          variant="h1"
+          counter={counterText(fips.length, selected.length)}
+          description="Public addresses mapped to instance ports via OVN DNAT/SNAT"
+          actions={
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button iconName="refresh" onClick={load} ariaLabel="Refresh floating IPs" />
+              <ButtonDropdown
+                disabled={!selected.length}
+                items={[
+                  { id: 'associate',    text: 'Associate',    disabled: !one || oneAssociated },
+                  { id: 'disassociate', text: 'Disassociate', disabled: !one || !oneAssociated },
+                  { id: 'release',      text: 'Release floating IP' },
+                ]}
+                onItemClick={({ detail }) => {
+                  if (detail.id === 'release') releaseSelected()
+                  else if (detail.id === 'associate' && one) setAssociate(one)
+                  else if (detail.id === 'disassociate' && one) disassociate(one)
+                }}
+              >
+                Actions
+              </ButtonDropdown>
+              <Button variant="primary" onClick={() => setShowAllocate(true)} data-testid="allocate-fip-btn">
+                Allocate floating IP
+              </Button>
+            </SpaceBetween>
+          }
+        >
+          Floating IPs
+        </Header>
+      }
+    >
+      <Table
+        variant="full-page"
+        stickyHeader
+        loading={loading}
+        loadingText="Loading floating IPs"
+        selectionType="multi"
+        selectedItems={selected}
+        onSelectionChange={({ detail }) => setSelected(detail.selectedItems)}
+        items={filtered}
+        trackBy="id"
+        columnDefinitions={[
+          {
+            id: 'ip',
+            header: 'Floating IP',
+            cell: item => <Box fontWeight="bold">{item.floating_ip_address || item.floating_ip || '—'}</Box>,
+            isRowHeader: true,
+          },
+          {
+            id: 'status',
+            header: 'Status',
+            cell: item => <ResourceStatus status={item.status || (item.port_id ? 'active' : 'down')} />,
+          },
+          { id: 'fixed', header: 'Mapped fixed IP', cell: item => item.fixed_ip_address || item.fixed_ip || '—' },
+          { id: 'port', header: 'Port', cell: item => (item.port_id ? shortId(item.port_id, 12) : '—') },
+          { id: 'pool', header: 'Pool', cell: item => (item.floating_network_id ? shortId(item.floating_network_id, 12) : '—') },
+          { id: 'router', header: 'Router', cell: item => (item.router_id ? shortId(item.router_id, 12) : '—') },
+        ]}
+        filter={
+          <TextFilter
+            filteringText={filter}
+            filteringPlaceholder="Find floating IPs"
+            filteringAriaLabel="Filter floating IPs"
+            countText={`${filtered.length} matches`}
+            onChange={({ detail }) => setFilter(detail.filteringText)}
+          />
+        }
+        empty={
+          filter
+            ? <TableNoMatch onClear={() => setFilter('')} />
+            : <TableEmpty
+                title="No floating IPs"
+                description="Allocate a floating IP from an external network pool to expose an instance."
+                action={<Button variant="primary" onClick={() => setShowAllocate(true)}>Allocate floating IP</Button>}
+              />
+        }
+      />
 
-      <div className="toolbar">
-        <div className="search-box">
-          <span style={{color:'var(--text-muted)'}}>🔍</span>
-          <input placeholder="Filter floating IPs…" />
-        </div>
-      </div>
-
-      <div className="card">
-        {loading ? <div className="loading-overlay"><span className="spinner" /></div> :
-          fips.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-state-icon"><ArrowLeftRight size={40}/></div>
-              <h3>No floating IPs</h3>
-              <p>Allocate a floating IP from a public network pool</p>
-              <button className="btn btn-primary" onClick={() => setShowCreate(true)}><Plus size={14}/> Allocate IP To Project</button>
-            </div>
-          ) : (
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th style={{width:32}}><input type="checkbox" onChange={toggleAll} checked={selected.length === fips.length && fips.length > 0} /></th>
-                    <th>IP Address</th>
-                    <th>Description</th>
-                    <th>DNS Name</th>
-                    <th>DNS Domain</th>
-                    <th>Mapped Fixed IP Address</th>
-                    <th>Pool</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {fips.map(f => (
-                    <tr key={f.id} className={selected.includes(f.id) ? 'row-selected' : ''}>
-                      <td><input type="checkbox" checked={selected.includes(f.id)} onChange={() => toggleSelect(f.id)} /></td>
-                      <td><span className="mono name-cell">{f.floating_ip_address || f.floating_ip || '—'}</span></td>
-                      <td className="text-muted">—</td>
-                      <td className="text-muted">—</td>
-                      <td className="text-muted">—</td>
-                      <td><span className="mono">{f.fixed_ip_address || f.fixed_ip || '—'}</span></td>
-                      <td className="text-muted">{f.floating_network_id ? f.floating_network_id.slice(0,8)+'…' : '—'}</td>
-                      <td><span className={`status-badge ${(f.status === 'ACTIVE' || f.port_id) ? 'status-active' : 'status-inactive'}`}>{f.status || (f.port_id ? 'ACTIVE' : 'DOWN')}</span></td>
-                      <td><FipActions fip={f} onAssociate={(fip) => { setShowAssoc(fip); setAssocPort('') }} onDisassociate={disassociate} onDelete={deleteFip} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-      </div>
-
-      {/* Allocate Modal */}
-      {showCreate && (
-        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowCreate(false)}>
-          <div className="modal">
-            <div className="modal-header">
-              <span className="modal-title">Allocate Floating IP</span>
-              <button className="modal-close btn" onClick={() => setShowCreate(false)}>✕</button>
-            </div>
-            <div className="modal-body">
-              <div className="form-group">
-                <label className="form-label">Pool (External Network) *</label>
-                <select id="fip-network" className="form-select" value={newFipNet} onChange={e => setNewFipNet(e.target.value)}>
-                  <option value="">-- Select Pool --</option>
-                  {networks.map(n => <option key={n.id} value={n.name}>{n.name}</option>)}
-                </select>
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => setShowCreate(false)}>Cancel</button>
-              <button id="fip-allocate-submit" className="btn btn-primary" onClick={createFip}><Plus size={14} /> Allocate IP</button>
-            </div>
-          </div>
-        </div>
+      {showAllocate && (
+        <AllocateModal
+          networks={networks}
+          onDismiss={() => setShowAllocate(false)}
+          onCreate={async (payload) => { await api.createFloatingIP(payload); toast('Floating IP allocated', 'success'); load() }}
+        />
       )}
-
-      {/* Associate Modal */}
-      {showAssoc && (
-        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowAssoc(null)}>
-          <div className="modal">
-            <div className="modal-header">
-              <span className="modal-title">Manage Floating IP Associations</span>
-              <button className="modal-close btn" onClick={() => setShowAssoc(null)}>✕</button>
-            </div>
-            <div className="modal-body">
-              <div className="alert alert-info">
-                IP: <strong className="mono">{showAssoc.floating_ip_address || showAssoc.floating_ip}</strong>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Port or Server Name *</label>
-                <input id="fip-assoc-port" className="form-input" placeholder="server-name or port-id" value={assocPort} onChange={e => setAssocPort(e.target.value)} />
-                <p className="form-hint">Enter the server name or port name to associate</p>
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-secondary" onClick={() => setShowAssoc(null)}>Cancel</button>
-              <button id="fip-assoc-submit" className="btn btn-primary" onClick={associate}>Associate</button>
-            </div>
-          </div>
-        </div>
+      {associate && (
+        <AssociateModal
+          fip={associate}
+          onDismiss={() => setAssociate(null)}
+          onAssociate={async (payload) => { await api.associateFloatingIP(associate.id, payload); toast('Floating IP associated', 'success'); load() }}
+        />
       )}
-    </div>
+    </ContentLayout>
   )
 }

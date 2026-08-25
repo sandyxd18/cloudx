@@ -1,28 +1,29 @@
-import { useEffect, useState, useRef } from 'react'
-import { Link as RouterLink } from 'react-router-dom'
-import {
-  Play, Square, RotateCcw, Trash2, Plus, MoreVertical, Terminal,
-  PauseCircle, PowerOff, Wrench, Camera, RefreshCw, ChevronDown,
-  Shield, HardDrive, Link, Unlink, Lock, Unlock, Server, Monitor,
-  Archive, ArchiveRestore, CheckCircle, XCircle
-} from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
+import Box from '@cloudscape-design/components/box'
+import Button from '@cloudscape-design/components/button'
+import ButtonDropdown from '@cloudscape-design/components/button-dropdown'
+import ContentLayout from '@cloudscape-design/components/content-layout'
+import Header from '@cloudscape-design/components/header'
+import Link from '@cloudscape-design/components/link'
+import Modal from '@cloudscape-design/components/modal'
+import Pagination from '@cloudscape-design/components/pagination'
+import Select from '@cloudscape-design/components/select'
+import SpaceBetween from '@cloudscape-design/components/space-between'
+import Table from '@cloudscape-design/components/table'
+import TextFilter from '@cloudscape-design/components/text-filter'
+import Form from '@cloudscape-design/components/form'
+import FormField from '@cloudscape-design/components/form-field'
+import Input from '@cloudscape-design/components/input'
+import Alert from '@cloudscape-design/components/alert'
+import Checkbox from '@cloudscape-design/components/checkbox'
+import Spinner from '@cloudscape-design/components/spinner'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import useEventStream from '../hooks/useEventStream.js'
+import { ComputeStatus, TableEmpty, TableNoMatch, timeAgo, shortId, counterText } from '../components/common.jsx'
 
-
-function statusBadge(s) {
-  const m = {
-    ACTIVE: 'active', SHUTOFF: 'shutoff', ERROR: 'error', BUILD: 'building',
-    PAUSED: 'paused', SUSPENDED: 'suspended', RESCUE: 'rescue',
-    STARTING: 'building', STOPPING: 'building', REBOOT: 'building',
-    PAUSING: 'building', RESUMING: 'building', SUSPENDING: 'building',
-    DELETING: 'building', REBUILD: 'building', RESIZE: 'building',
-    UNRESCUING: 'building', SHELVING: 'building', UNSHELVING: 'building',
-    SHELVED_OFFLOADED: 'inactive', VERIFY_RESIZE: 'paused',
-  }
-  return 'status-badge status-' + (m[s] || 'inactive').toLowerCase()
-}
+const PAGE_SIZE = 15
 
 function powerState(s) {
   if (s === 'ACTIVE') return 'Running'
@@ -33,345 +34,280 @@ function powerState(s) {
 }
 
 function taskState(s) {
-  const tasks = { BUILD: 'Spawning', STARTING: 'Powering On', STOPPING: 'Powering Off',
+  const tasks = {
+    BUILD: 'Spawning', STARTING: 'Powering on', STOPPING: 'Powering off',
     REBOOT: 'Rebooting', PAUSING: 'Pausing', RESUMING: 'Resuming',
     SUSPENDING: 'Suspending', DELETING: 'Deleting', RESCUE: 'Rescuing',
-    REBUILD: 'Rebuilding', RESIZE: 'Resizing', UNRESCUING: 'Unrescuing' }
+    REBUILD: 'Rebuilding', RESIZE: 'Resizing', UNRESCUING: 'Unrescuing',
+    SHELVING: 'Shelving', UNSHELVING: 'Unshelving',
+  }
   return tasks[s] || '—'
 }
 
-function timeAgo(dt) {
-  if (!dt) return '—'
-  const d = new Date(dt), now = new Date()
-  const diff = Math.floor((now - d) / 1000)
-  if (diff < 60) return `${diff}s ago`
-  if (diff < 3600) return `${Math.floor(diff/60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`
-  return `${Math.floor(diff/86400)}d ago`
-}
-
-// ── Actions dropdown ──────────────────────────────────────────────────────────
-function ActionsDropdown({ server, onAction }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef()
-  useEffect(() => {
-    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
-  }, [])
-
-  const isActive  = server.status === 'ACTIVE'
-  const isShutoff    = server.status === 'SHUTOFF'
-  const isPaused     = server.status === 'PAUSED'
-  const isShelved    = server.status === 'SHELVED_OFFLOADED'
-  const isVerifyResize = server.status === 'VERIFY_RESIZE' || server.status === 'RESIZE'
-
-  const items = [
-    { label: 'Create Snapshot', icon: <Camera size={13}/>, action: 'snapshot', primary: true },
-    { sep: true },
-    { label: 'Open Console',   icon: <Monitor size={13}/>,     action: 'open-console', disabled: !isActive },
-    { label: 'View Log',       icon: <Terminal size={13}/>,    action: 'logs' },
-    { sep: true },
-    { label: 'Associate Floating IP', icon: <Link size={13}/>,   action: 'associate-fip' },
-    { label: 'Attach Volume',  icon: <HardDrive size={13}/>, action: 'attach-vol' },
-    { label: 'Detach Volume',  icon: <Unlink size={13}/>,    action: 'detach-vol' },
-    { label: 'Edit Security Groups', icon: <Shield size={13}/>, action: 'edit-sg' },
-    { sep: true },
-    { label: 'Rescue VM',      icon: <Wrench size={13}/>,       action: 'rescue',       disabled: !isActive },
-    { label: 'Pause VM',       icon: <PauseCircle size={13}/>,  action: 'pause',        disabled: !isActive },
-    { label: 'Resume VM',      icon: <Play size={13}/>,         action: 'resume',       disabled: !isPaused },
-    { label: 'Suspend VM',     icon: <PowerOff size={13}/>,     action: 'suspend',      disabled: !isActive },
-    { sep: true },
-    { label: 'Shelve VM',      icon: <Archive size={13}/>,      action: 'shelve',       disabled: !isActive && !isShutoff },
-    { label: 'Unshelve VM',    icon: <ArchiveRestore size={13}/>, action: 'unshelve',   disabled: !isShelved },
-    { sep: true },
-    { label: 'Confirm Resize', icon: <CheckCircle size={13}/>,  action: 'confirmResize', disabled: !isVerifyResize },
-    { label: 'Revert Resize',  icon: <XCircle size={13}/>,      action: 'revertResize',  disabled: !isVerifyResize },
-    { sep: true },
-    { label: 'Soft Reboot VM', icon: <RotateCcw size={13}/>,    action: 'reboot',       disabled: !isActive },
-    { label: 'Hard Reboot VM', icon: <RefreshCw size={13}/>,    action: 'hard_reboot',  disabled: !isActive },
-    { label: 'Shut Off VM',    icon: <Square size={13}/>,       action: 'stop',         disabled: !isActive },
-    { label: 'Start VM',       icon: <Play size={13}/>,         action: 'start',        disabled: !isShutoff },
-    { label: 'Lock VM',        icon: <Lock size={13}/>,         action: 'lock' },
-    { sep: true },
-    { label: 'Delete VM',      icon: <Trash2 size={13}/>,       action: 'delete',       danger: true },
-  ]
-
-  return (
-    <div className="hz-action-group" ref={ref}>
-      <button className="btn btn-sm btn-hz-primary" onClick={() => onAction(server, items[0].action)}>
-        {items[0].icon} {items[0].label}
-      </button>
-      <button className="btn btn-sm btn-hz-dropdown" onClick={() => setOpen(o => !o)}>
-        <ChevronDown size={12} />
-      </button>
-      {open && (
-        <div className="dropdown-menu dropdown-menu-right">
-          {items.slice(1).map((a, i) =>
-            a.sep ? <div key={i} className="dropdown-sep" /> :
-            <button
-              key={a.action}
-              className={`dropdown-item${a.danger ? ' danger' : ''}`}
-              disabled={a.disabled}
-              style={a.disabled ? { opacity: 0.35, pointerEvents: 'none' } : {}}
-              onClick={() => { setOpen(false); onAction(server, a.action) }}
-            >
-              {a.icon} {a.label}
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── noVNC Console Modal ──────────────────────────────────────────────────────
-function ConsoleModal({ server, onClose }) {
-  const [url, setUrl] = useState(null)
-  const [err, setErr] = useState('')
-  const toast = useToast()
-
-  useEffect(() => {
-    api.getRemoteConsole(server.id)
-      .then(data => {
-        const consoleUrl = data?.remote_console?.url
-        if (consoleUrl) setUrl(consoleUrl)
-        else setErr('No console URL returned')
-      })
-      .catch(e => setErr(e.message))
-  }, [server.id])
-
-  return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={{ width: '90vw', maxWidth: 1100, height: '85vh', display: 'flex', flexDirection: 'column' }}>
-        <div className="modal-header">
-          <span className="modal-title"><Monitor size={15} style={{marginRight:6}}/>Console — {server.name}</span>
-          <button className="modal-close btn" onClick={onClose}>✕</button>
-        </div>
-        <div style={{ flex: 1, background: '#000', borderRadius: '0 0 8px 8px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {err ? (
-            <div style={{ color: '#f87171', textAlign: 'center', padding: 24 }}>
-              <Monitor size={40} style={{ opacity: 0.4, marginBottom: 12 }} />
-              <p style={{ marginBottom: 8 }}>Console unavailable</p>
-              <p style={{ fontSize: 12, opacity: 0.7 }}>{err}</p>
-              <p style={{ fontSize: 12, opacity: 0.5, marginTop: 12 }}>Make sure the VM is ACTIVE and novnc-proxy is running.</p>
-            </div>
-          ) : !url ? (
-            <div style={{ color: '#9ca3af' }}><span className="spinner" /> Loading console…</div>
-          ) : (
-            <iframe
-              src={url}
-              title={`Console — ${server.name}`}
-              style={{ width: '100%', height: '100%', border: 'none' }}
-              allow="fullscreen"
-            />
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ── Create Instance Modal ─────────────────────────────────────────────────────
-function LaunchModal({ onClose, onCreate }) {
-  const [form, setForm] = useState({ name: '', flavor: '', image: '', keypair: '', network: '' })
+// ── Launch instance modal ────────────────────────────────────────────────────
+function LaunchModal({ onDismiss, onCreate }) {
+  const [form, setForm] = useState({ name: '', flavor: null, image: null, keypair: null, network: null })
   const [flavors, setFlavors]   = useState([])
   const [images, setImages]     = useState([])
   const [keypairs, setKeypairs] = useState([])
   const [networks, setNetworks] = useState([])
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState('')
-  const toast = useToast()
 
   useEffect(() => {
-    Promise.all([api.getFlavors(), api.getImages(), api.getKeypairs(), api.getNetworks()])
+    Promise.allSettled([api.getFlavors(), api.getImages(), api.getKeypairs(), api.getNetworks()])
       .then(([f, im, k, n]) => {
-        setFlavors(f?.items || [])
-        setImages((im?.items || []).filter(i => i.status === 'ACTIVE'))
-        setKeypairs(k?.items || [])
-        setNetworks(n?.items || [])
+        if (f.status === 'fulfilled')  setFlavors(f.value?.items || [])
+        if (im.status === 'fulfilled') setImages((im.value?.items || []).filter(i => i.status === 'ACTIVE'))
+        if (k.status === 'fulfilled')  setKeypairs(k.value?.items || [])
+        if (n.status === 'fulfilled')  setNetworks(n.value?.items || [])
       })
   }, [])
 
-  const f = field => e => setForm(v => ({ ...v, [field]: e.target.value }))
-
-  const handleSubmit = async (e) => {
-    e.preventDefault(); setLoading(true); setError('')
+  const submit = async () => {
+    if (!form.name || !form.flavor || !form.image || !form.network) {
+      setError('Name, flavor, image, and network are required.')
+      return
+    }
+    setLoading(true); setError('')
     try {
-      await onCreate(form)
-      toast('Instance launched!', 'success')
-      onClose()
-    } catch(err) { setError(err.message) } finally { setLoading(false) }
+      await onCreate({
+        name: form.name,
+        flavor: form.flavor.value,
+        image: form.image.value,
+        network: form.network.value,
+        keypair: form.keypair?.value || undefined,
+      })
+      onDismiss()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal modal-wide">
-        <div className="modal-header">
-          <span className="modal-title">Launch Instance</span>
-          <button className="modal-close btn" onClick={onClose}>✕</button>
-        </div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            {error && <div className="alert alert-error">{error}</div>}
-            <div className="form-group">
-              <label className="form-label">Instance Name *</label>
-              <input id="server-name" className="form-input" placeholder="my-instance" value={form.name} onChange={f('name')} required />
-            </div>
-            <div className="form-row">
-              <div className="form-group">
-                <label className="form-label">Flavor *</label>
-                <select id="server-flavor" className="form-select" value={form.flavor} onChange={f('flavor')} required>
-                  <option value="">-- Select Flavor --</option>
-                  {flavors.map(fl => (
-                    <option key={fl.id} value={fl.name}>{fl.name} ({fl.vcpus}vCPU / {fl.ram_mb}MB)</option>
-                  ))}
-                </select>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Image *</label>
-                <select id="server-image" className="form-select" value={form.image} onChange={f('image')} required>
-                  <option value="">-- Select Image --</option>
-                  {images.map(im => (
-                    <option key={im.id} value={im.name}>{im.name} ({im.disk_format})</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            <div className="form-row">
-              <div className="form-group">
-                <label className="form-label">Network *</label>
-                <select id="server-network" className="form-select" value={form.network} onChange={f('network')} required>
-                  <option value="">-- Select Network --</option>
-                  {networks.map(n => (
-                    <option key={n.id} value={n.name}>{n.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Key Pair</label>
-                <select id="server-keypair" className="form-select" value={form.keypair} onChange={f('keypair')}>
-                  <option value="">-- No Key Pair --</option>
-                  {keypairs.map(k => (
-                    <option key={k.name} value={k.name}>{k.name}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
-          <div className="modal-footer">
-            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-            <button id="server-create-submit" type="submit" className="btn btn-primary" disabled={loading}>
-              {loading ? <span className="spinner" style={{width:14,height:14}} /> : <Play size={14} />}
-              {loading ? 'Launching…' : 'Launch Instance'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Modal
+      visible
+      onDismiss={onDismiss}
+      header="Launch instance"
+      size="medium"
+      footer={
+        <Box float="right">
+          <SpaceBetween direction="horizontal" size="xs">
+            <Button onClick={onDismiss}>Cancel</Button>
+            <Button variant="primary" loading={loading} onClick={submit} data-testid="server-create-submit">
+              Launch instance
+            </Button>
+          </SpaceBetween>
+        </Box>
+      }
+    >
+      <Form>
+        <SpaceBetween size="m">
+          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
+
+          <FormField label="Instance name" description="Must be unique within the project.">
+            <Input
+              value={form.name}
+              onChange={({ detail }) => setForm(f => ({ ...f, name: detail.value }))}
+              placeholder="my-instance"
+              controlId="server-name"
+            />
+          </FormField>
+
+          <FormField label="Flavor" description="Compute, memory, and root disk profile.">
+            <Select
+              selectedOption={form.flavor}
+              onChange={({ detail }) => setForm(f => ({ ...f, flavor: detail.selectedOption }))}
+              options={flavors.map(fl => ({
+                value: fl.name,
+                label: fl.name,
+                description: `${fl.vcpus} vCPU · ${fl.ram_mb} MB RAM · ${fl.disk_gb} GB disk`,
+              }))}
+              placeholder="Choose a flavor"
+              empty="No flavors defined"
+              controlId="server-flavor"
+            />
+          </FormField>
+
+          <FormField label="Image" description="Boot image (root volume is created from it).">
+            <Select
+              selectedOption={form.image}
+              onChange={({ detail }) => setForm(f => ({ ...f, image: detail.selectedOption }))}
+              options={images.map(im => ({ value: im.name, label: im.name, description: im.disk_format }))}
+              placeholder="Choose an image"
+              empty="No active images"
+              controlId="server-image"
+            />
+          </FormField>
+
+          <FormField label="Network">
+            <Select
+              selectedOption={form.network}
+              onChange={({ detail }) => setForm(f => ({ ...f, network: detail.selectedOption }))}
+              options={networks.map(n => ({ value: n.name, label: n.name }))}
+              placeholder="Choose a network"
+              empty="No networks"
+              controlId="server-network"
+            />
+          </FormField>
+
+          <FormField label="Key pair" description="Optional — injected via cloud-init for SSH access.">
+            <Select
+              selectedOption={form.keypair}
+              onChange={({ detail }) => setForm(f => ({ ...f, keypair: detail.selectedOption }))}
+              options={keypairs.map(k => ({ value: k.name, label: k.name }))}
+              placeholder="Proceed without a key pair"
+              empty="No key pairs"
+              controlId="server-keypair"
+            />
+          </FormField>
+        </SpaceBetween>
+      </Form>
+    </Modal>
   )
 }
 
-// ── View Log Modal ────────────────────────────────────────────────────────────
-function LogsModal({ server, onClose }) {
-  const [logs, setLogs]       = useState('')
+// ── Console log modal ────────────────────────────────────────────────────────
+function LogsModal({ server, onDismiss }) {
+  const [logs, setLogs] = useState('')
   const [loading, setLoading] = useState(true)
   const [autoRefresh, setAutoRefresh] = useState(true)
 
-  const fetchLogs = () =>
-    api.getServerLogs(server.id)
+  const fetchLogs = useCallback(() => {
+    return api.getServerLogs(server.id)
       .then(r => setLogs(r?.output || '(no output)'))
       .catch(e => setLogs('Error: ' + e.message))
       .finally(() => setLoading(false))
-
-  useEffect(() => {
-    fetchLogs()
   }, [server.id])
+
+  useEffect(() => { fetchLogs() }, [fetchLogs])
 
   useEffect(() => {
     if (!autoRefresh) return
     const id = setInterval(fetchLogs, 2000)
     return () => clearInterval(id)
-  }, [server.id, autoRefresh])
+  }, [autoRefresh, fetchLogs])
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal modal-wide">
-        <div className="modal-header">
-          <span className="modal-title">Console Log — {server.name}</span>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <label style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={autoRefresh}
-                onChange={e => setAutoRefresh(e.target.checked)}
-                style={{ cursor: 'pointer' }}
-              />
-              Auto-refresh (2s)
-            </label>
-            <button className="modal-close btn" onClick={onClose}>✕</button>
-          </div>
-        </div>
-        <div className="modal-body">
-          {loading ? <div className="loading-overlay"><span className="spinner" /></div> :
-            <div className="console-output">{logs || '(empty)'}</div>}
-        </div>
-        <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={fetchLogs}>↻ Refresh Now</button>
-          <button className="btn btn-secondary" onClick={onClose}>Close</button>
-        </div>
-      </div>
-    </div>
+    <Modal
+      visible
+      onDismiss={onDismiss}
+      size="large"
+      header={`Console log — ${server.name}`}
+      footer={
+        <Box float="right">
+          <SpaceBetween direction="horizontal" size="xs">
+            <Button iconName="refresh" onClick={fetchLogs}>Refresh</Button>
+            <Button variant="primary" onClick={onDismiss}>Close</Button>
+          </SpaceBetween>
+        </Box>
+      }
+    >
+      <SpaceBetween size="s">
+        <Checkbox checked={autoRefresh} onChange={({ detail }) => setAutoRefresh(detail.checked)}>
+          Auto-refresh every 2 seconds
+        </Checkbox>
+        {loading ? <Box textAlign="center" padding="l"><Spinner /></Box> : <pre className="log-output">{logs || '(empty)'}</pre>}
+      </SpaceBetween>
+    </Modal>
   )
 }
 
+// ── noVNC console modal ──────────────────────────────────────────────────────
+function ConsoleModal({ server, onDismiss }) {
+  const [url, setUrl] = useState(null)
+  const [error, setError] = useState('')
 
-// ── Main Page ─────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    api.getRemoteConsole(server.id)
+      .then(data => {
+        const consoleUrl = data?.remote_console?.url
+        if (consoleUrl) setUrl(consoleUrl)
+        else setError('No console URL was returned.')
+      })
+      .catch(e => setError(e.message))
+  }, [server.id])
+
+  return (
+    <Modal
+      visible
+      onDismiss={onDismiss}
+      size="max"
+      header={`Console — ${server.name}`}
+      footer={<Box float="right"><Button variant="primary" onClick={onDismiss}>Close</Button></Box>}
+    >
+      {error ? (
+        <Alert type="error" header="Console unavailable">
+          {error} Ensure the instance is ACTIVE and the noVNC proxy is running.
+        </Alert>
+      ) : !url ? (
+        <Box textAlign="center" padding="xxl"><Spinner size="large" /> Connecting to console…</Box>
+      ) : (
+        <iframe src={url} title={`Console — ${server.name}`} className="console-frame console-frame-tall" allow="fullscreen" />
+      )}
+    </Modal>
+  )
+}
+
+// ── Page ─────────────────────────────────────────────────────────────────────
 export default function ServersPage() {
-  const [servers, setServers]   = useState([])
-  const [loading, setLoading]   = useState(true)
-  const [search, setSearch]     = useState('')
+  const navigate = useNavigate()
+  const toast = useToast()
+  const [servers, setServers] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filter, setFilter]   = useState('')
+  const [page, setPage]       = useState(1)
   const [selected, setSelected] = useState([])
-  const [showCreate, setShowCreate] = useState(false)
+  const [showLaunch, setShowLaunch] = useState(false)
   const [showLogs, setShowLogs] = useState(null)
   const [showConsole, setShowConsole] = useState(null)
-  const toast = useToast()
-  useEventStream('/api/compute/events', load)
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true)
-    api.getServers().then(r => setServers(r?.items || [])).finally(() => setLoading(false))
-  }
-  useEffect(() => { load() }, [])
+    api.getServers()
+      .then(r => setServers(r?.items || []))
+      .catch(e => toast(e.message, 'error'))
+      .finally(() => setLoading(false))
+  }, [toast])
 
-  async function handleAction(server, action) {
+  useEffect(() => { load() }, [load])
+
+  // Live refresh on compute events pushed over the WebSocket.
+  const { lastEvent } = useEventStream()
+  useEffect(() => {
+    if (lastEvent?.type?.startsWith('server.')) load()
+  }, [lastEvent, load])
+
+  const runAction = async (server, action) => {
     if (action === 'delete') {
       if (!confirm(`Delete instance "${server.name}"?`)) return
-      try { await api.deleteServer(server.id); toast('Instance deleted', 'success'); load() }
+      try { await api.deleteServer(server.id); toast('Instance deletion started', 'success'); load() }
       catch (e) { toast(e.message, 'error') }
       return
     }
     if (action === 'logs')         { setShowLogs(server); return }
     if (action === 'open-console') { setShowConsole(server); return }
-    if (action === 'snapshot')     { toast('Snapshot feature coming soon', 'info'); return }
-    if (action === 'associate-fip'){ toast('Use CLI: cloudx floating-ip associate <ip> --server ' + server.name, 'info'); return }
-    if (action === 'edit-sg')      { toast('Use CLI: cloudx server edit-sg ' + server.name, 'info'); return }
-    if (action === 'attach-vol')   { toast('Use CLI: cloudx volume attach --server ' + server.name, 'info'); return }
-    if (action === 'detach-vol')   { toast('Use CLI: cloudx volume detach --server ' + server.name, 'info'); return }
+    if (action === 'detail')       { navigate(`/servers/${server.id}`); return }
     if (action === 'shelve') {
-      try { await api.shelveServer(server.id); toast('Shelving…', 'success'); setTimeout(load, 2000) } catch(e) { toast(e.message, 'error') }
+      try { await api.shelveServer(server.id); toast('Shelving instance', 'success'); setTimeout(load, 2000) }
+      catch (e) { toast(e.message, 'error') }
       return
     }
     if (action === 'unshelve') {
-      try { await api.unshelveServer(server.id); toast('Unshelving…', 'success'); setTimeout(load, 2000) } catch(e) { toast(e.message, 'error') }
+      try { await api.unshelveServer(server.id); toast('Unshelving instance', 'success'); setTimeout(load, 2000) }
+      catch (e) { toast(e.message, 'error') }
       return
     }
     if (action === 'confirmResize') {
-      try { await api.confirmResize(server.id); toast('Resize confirmed', 'success'); setTimeout(load, 1500) } catch(e) { toast(e.message, 'error') }
+      try { await api.confirmResize(server.id); toast('Resize confirmed', 'success'); setTimeout(load, 1500) }
+      catch (e) { toast(e.message, 'error') }
       return
     }
     if (action === 'revertResize') {
-      try { await api.revertResize(server.id); toast('Resize reverted', 'success'); setTimeout(load, 1500) } catch(e) { toast(e.message, 'error') }
+      try { await api.revertResize(server.id); toast('Resize reverted', 'success'); setTimeout(load, 1500) }
+      catch (e) { toast(e.message, 'error') }
       return
     }
     try {
@@ -381,124 +317,173 @@ export default function ServersPage() {
     } catch (e) { toast(e.message, 'error') }
   }
 
-  const handleDeleteSelected = async () => {
+  const bulkDelete = async () => {
     if (!selected.length) return
     if (!confirm(`Delete ${selected.length} instance(s)?`)) return
-    for (const id of selected) {
-      try { await api.deleteServer(id) } catch(e) {}
+    for (const s of selected) {
+      try { await api.deleteServer(s.id) } catch { /* continue */ }
     }
     setSelected([])
-    toast(`${selected.length} instance(s) deleted`, 'success')
+    toast(`${selected.length} instance(s) queued for deletion`, 'success')
     load()
   }
 
-  const toggleSelect = (id) => setSelected(s => s.includes(id) ? s.filter(x=>x!==id) : [...s, id])
-  const toggleAll = () => setSelected(s => s.length === filtered.length ? [] : filtered.map(x=>x.id))
+  const bulkAction = async (action) => {
+    if (!selected.length) return
+    for (const s of selected) {
+      try { await api.serverAction(s.id, action) } catch { /* continue */ }
+    }
+    toast(`Action "${action}" sent to ${selected.length} instance(s)`, 'success')
+    setTimeout(load, 1500)
+  }
 
-  const filtered = servers.filter(s =>
-    s.name?.toLowerCase().includes(search.toLowerCase()) ||
-    s.status?.toLowerCase().includes(search.toLowerCase())
-  )
+  const q = filter.trim().toLowerCase()
+  const filtered = q
+    ? servers.filter(s =>
+        s.name?.toLowerCase().includes(q) ||
+        s.status?.toLowerCase().includes(q) ||
+        s.ip_address?.toLowerCase().includes(q) ||
+        s.flavor_name?.toLowerCase().includes(q))
+    : servers
+
+  const pageItems = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+  const one = selected.length === 1 ? selected[0] : null
+  const isActive  = one?.status === 'ACTIVE'
+  const isShutoff = one?.status === 'SHUTOFF'
+  const isPaused  = one?.status === 'PAUSED'
+  const isShelved = one?.status === 'SHELVED_OFFLOADED'
+  const isVerify  = one?.status === 'VERIFY_RESIZE' || one?.status === 'RESIZE'
 
   return (
-    <div>
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">Instances</h1>
-          <p className="page-subtitle">{servers.length} instances total</p>
-        </div>
-        <div className="page-actions">
-          <button id="refresh-servers" className="btn btn-secondary btn-sm" onClick={load}>↻ Refresh</button>
-          <button id="create-server-btn" className="btn btn-primary" onClick={() => setShowCreate(true)}>
-            <Plus size={14} /> Launch Instance
-          </button>
-        </div>
-      </div>
+    <ContentLayout
+      header={
+        <Header
+          variant="h1"
+          counter={counterText(servers.length, selected.length)}
+          description="Virtual machines backed by libvirt/KVM with boot-from-volume root disks"
+          actions={
+            <SpaceBetween direction="horizontal" size="xs">
+              <Button iconName="refresh" onClick={load} data-testid="refresh-servers" ariaLabel="Refresh instances" />
+              <ButtonDropdown
+                disabled={!selected.length}
+                items={[
+                  { id: 'start',  text: 'Start',       disabled: !selected.length },
+                  { id: 'stop',   text: 'Stop',        disabled: !selected.length },
+                  { id: 'reboot', text: 'Reboot',      disabled: !selected.length },
+                  { id: 'delete', text: 'Delete',      disabled: !selected.length },
+                ]}
+                onItemClick={({ detail }) => detail.id === 'delete' ? bulkDelete() : bulkAction(detail.id)}
+              >
+                Instance state
+              </ButtonDropdown>
+              <ButtonDropdown
+                disabled={!one}
+                items={[
+                  { id: 'detail',        text: 'View details' },
+                  { id: 'open-console',  text: 'Open console', disabled: !isActive },
+                  { id: 'logs',          text: 'View console log' },
+                  { id: 'sep1', text: '—', disabled: true },
+                  { id: 'pause',    text: 'Pause',    disabled: !isActive },
+                  { id: 'resume',   text: 'Resume',   disabled: !isPaused },
+                  { id: 'suspend',  text: 'Suspend',  disabled: !isActive },
+                  { id: 'rescue',   text: 'Rescue',   disabled: !isActive },
+                  { id: 'sep2', text: '—', disabled: true },
+                  { id: 'shelve',   text: 'Shelve',   disabled: !(isActive || isShutoff) },
+                  { id: 'unshelve', text: 'Unshelve', disabled: !isShelved },
+                  { id: 'confirmResize', text: 'Confirm resize', disabled: !isVerify },
+                  { id: 'revertResize',  text: 'Revert resize',  disabled: !isVerify },
+                  { id: 'sep3', text: '—', disabled: true },
+                  { id: 'lock',   text: 'Lock' },
+                  { id: 'unlock', text: 'Unlock' },
+                ]}
+                onItemClick={({ detail }) => one && !detail.id.startsWith('sep') && runAction(one, detail.id)}
+              >
+                Actions
+              </ButtonDropdown>
+              <Button variant="primary" onClick={() => setShowLaunch(true)} data-testid="create-server-btn">
+                Launch instance
+              </Button>
+            </SpaceBetween>
+          }
+        >
+          Instances
+        </Header>
+      }
+    >
+      <Table
+        variant="full-page"
+        stickyHeader
+        loading={loading}
+        loadingText="Loading instances"
+        selectionType="multi"
+        selectedItems={selected}
+        onSelectionChange={({ detail }) => setSelected(detail.selectedItems)}
+        items={pageItems}
+        trackBy="id"
+        columnDefinitions={[
+          {
+            id: 'name',
+            header: 'Instance name',
+            cell: item => (
+              <SpaceBetween size="xxxs">
+                <Link href={`/servers/${item.id}`} onFollow={(e) => { e.preventDefault(); navigate(`/servers/${item.id}`) }}>
+                  {item.name}
+                </Link>
+                <Box variant="small" color="text-body-secondary">{shortId(item.id, 16)}</Box>
+              </SpaceBetween>
+            ),
+            sortingField: 'name',
+            isRowHeader: true,
+          },
+          { id: 'status', header: 'Instance state', cell: item => <ComputeStatus status={item.status} />, sortingField: 'status' },
+          { id: 'image', header: 'Image', cell: item => item.image_name || item.image || '—' },
+          { id: 'ip', header: 'Private IP', cell: item => item.ip_address || item.fixed_ip || '—' },
+          { id: 'flavor', header: 'Flavor', cell: item => item.flavor_name || item.flavor || '—' },
+          { id: 'keypair', header: 'Key pair', cell: item => item.keypair || '—' },
+          { id: 'az', header: 'Availability zone', cell: item => item.availability_zone || 'nova' },
+          { id: 'task', header: 'Task', cell: item => taskState(item.status) },
+          { id: 'power', header: 'Power state', cell: item => powerState(item.status) },
+          { id: 'age', header: 'Launch time', cell: item => timeAgo(item.created_at) },
+        ]}
+        filter={
+          <TextFilter
+            filteringText={filter}
+            filteringPlaceholder="Find instances"
+            filteringAriaLabel="Filter instances"
+            countText={`${filtered.length} matches`}
+            onChange={({ detail }) => { setFilter(detail.filteringText); setPage(1) }}
+          />
+        }
+        pagination={
+          <Pagination
+            currentPageIndex={page}
+            pagesCount={Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))}
+            onChange={({ detail }) => setPage(detail.currentPageIndex)}
+          />
+        }
+        empty={
+          filter
+            ? <TableNoMatch onClear={() => setFilter('')} />
+            : <TableEmpty
+                title="No instances"
+                description="Launch your first instance to get started."
+                action={<Button variant="primary" onClick={() => setShowLaunch(true)}>Launch instance</Button>}
+              />
+        }
+      />
 
-      {/* Toolbar */}
-      <div className="toolbar">
-        <div className="toolbar-left">
-          <div className="search-box">
-            <span style={{ color: 'var(--text-muted)' }}>🔍</span>
-            <input placeholder="Filter instances…" value={search} onChange={e => setSearch(e.target.value)} />
-          </div>
-        </div>
-        <div className="toolbar-right">
-          {selected.length > 0 && (
-            <button className="btn btn-danger btn-sm" onClick={handleDeleteSelected}>
-              <Trash2 size={13} /> Delete Instances ({selected.length})
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="card">
-        {loading ? (
-          <div className="loading-overlay"><span className="spinner" /></div>
-        ) : filtered.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-state-icon"><Server size={40} /></div>
-            <h3>No instances found</h3>
-            <p>Launch your first instance to get started</p>
-            <button className="btn btn-primary" onClick={() => setShowCreate(true)}><Plus size={14}/> Launch Instance</button>
-          </div>
-        ) : (
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th style={{width:32}}>
-                    <input type="checkbox" onChange={toggleAll} checked={selected.length === filtered.length && filtered.length > 0} />
-                  </th>
-                  <th>Instance Name</th>
-                  <th>Image Name</th>
-                  <th>IP Address</th>
-                  <th>Flavor</th>
-                  <th>Key Pair</th>
-                  <th>Status</th>
-                  <th>Availability Zone</th>
-                  <th>Task</th>
-                  <th>Power State</th>
-                  <th>Age</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map(s => (
-                  <tr key={s.id} className={selected.includes(s.id) ? 'row-selected' : ''}>
-                    <td><input type="checkbox" checked={selected.includes(s.id)} onChange={() => toggleSelect(s.id)} /></td>
-                    <td>
-                      <RouterLink
-                        to={`/servers/${s.id}`}
-                        style={{ textDecoration: 'none', color: 'inherit' }}
-                      >
-                        <div className="name-cell" style={{ color: '#7eaadb', cursor: 'pointer' }}>{s.name}</div>
-                        <div className="mono text-muted" style={{fontSize:10}}>{s.id?.slice(0,16)}…</div>
-                      </RouterLink>
-                    </td>
-                    <td className="text-muted">{s.image_name || s.image || '—'}</td>
-                    <td className="mono">{s.ip_address || s.fixed_ip || '—'}</td>
-                    <td>{s.flavor_name || s.flavor || '—'}</td>
-                    <td>{s.keypair || '—'}</td>
-                    <td><span className={statusBadge(s.status)}>{s.status}</span></td>
-                    <td className="text-muted">nova</td>
-                    <td className="text-muted">{taskState(s.status)}</td>
-                    <td className="text-muted">{powerState(s.status)}</td>
-                    <td className="text-muted">{timeAgo(s.created_at)}</td>
-                    <td>
-                      <ActionsDropdown server={s} onAction={handleAction} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {showCreate  && <LaunchModal onClose={() => setShowCreate(false)} onCreate={async (form) => { await api.createServer({ name: form.name, flavor: form.flavor, image: form.image, network: form.network, keypair: form.keypair || undefined }); load() }} />}
-      {showLogs    && <LogsModal server={showLogs} onClose={() => setShowLogs(null)} />}
-      {showConsole && <ConsoleModal server={showConsole} onClose={() => setShowConsole(null)} />}
-    </div>
+      {showLaunch && (
+        <LaunchModal
+          onDismiss={() => setShowLaunch(false)}
+          onCreate={async (payload) => {
+            await api.createServer(payload)
+            toast('Instance launch started', 'success')
+            load()
+          }}
+        />
+      )}
+      {showLogs && <LogsModal server={showLogs} onDismiss={() => setShowLogs(null)} />}
+      {showConsole && <ConsoleModal server={showConsole} onDismiss={() => setShowConsole(null)} />}
+    </ContentLayout>
   )
 }

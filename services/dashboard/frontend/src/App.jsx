@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { useEffect } from 'react'
 import { ToastProvider, AuthProvider, useAuth, useToast } from './context.jsx'
+import { ThemeProvider } from './theme.jsx'
 import Layout from './components/Layout.jsx'
 import LoginPage from './pages/Login.jsx'
 import OverviewPage from './pages/Overview.jsx'
@@ -30,7 +31,7 @@ function PrivateRoute({ children }) {
 }
 
 // Listens for the cloudx:session-expired event dispatched by api.js
-// and redirects to /login with a toast message instead of a hard refresh.
+// and redirects to /login with a notification instead of a hard refresh.
 function SessionExpiredHandler() {
   const { logout } = useAuth()
   const navigate = useNavigate()
@@ -39,7 +40,7 @@ function SessionExpiredHandler() {
   useEffect(() => {
     const handler = () => {
       logout()
-      toast('Session expired. Please log in again.', 'error')
+      toast('Session expired. Please sign in again.', 'error')
       navigate('/login', { replace: true })
     }
     window.addEventListener('cloudx:session-expired', handler)
@@ -86,12 +87,14 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <ToastProvider>
-          <AppRoutes />
-        </ToastProvider>
-      </AuthProvider>
-    </BrowserRouter>
+    <ThemeProvider>
+      <BrowserRouter>
+        <AuthProvider>
+          <ToastProvider>
+            <AppRoutes />
+          </ToastProvider>
+        </AuthProvider>
+      </BrowserRouter>
+    </ThemeProvider>
   )
 }

@@ -1,37 +1,52 @@
-import { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect, useMemo } from 'react'
 import { api } from './api.js'
 
 const ToastCtx = createContext(null)
+const FlashCtx = createContext([])
 const AuthCtx  = createContext(null)
 
-// ── Toast provider ────────────────────────────────────────────────
+// ── Notification provider ─────────────────────────────────────────────────
+// Keeps the legacy `useToast()(msg, type)` call signature used across pages,
+// but renders through Cloudscape's <Flashbar/> in the AppLayout shell.
+// Type mapping: success → success, error → error, info → info, warning → warning.
 export function ToastProvider({ children }) {
-  const [toasts, setToasts] = useState([])
+  const [items, setItems] = useState([])
 
-  const addToast = useCallback((msg, type = 'info') => {
-    const id = Date.now()
-    setToasts(t => [...t, { id, msg, type }])
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3500)
+  const dismiss = useCallback((id) => {
+    setItems(list => list.filter(i => i.id !== id))
   }, [])
 
-  const icons = { success: '✓', error: '✕', info: 'ℹ' }
+  const addToast = useCallback((msg, type = 'info') => {
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const flashType = type === 'error' ? 'error'
+      : type === 'success' ? 'success'
+      : type === 'warning' ? 'warning'
+      : 'info'
+    setItems(list => [...list, {
+      id,
+      type: flashType,
+      content: msg,
+      dismissible: true,
+      dismissLabel: 'Dismiss message',
+      onDismiss: () => dismiss(id),
+    }])
+    // Auto-dismiss non-error notifications, matching the previous toast UX.
+    if (flashType !== 'error') {
+      setTimeout(() => dismiss(id), 5000)
+    }
+  }, [dismiss])
 
   return (
     <ToastCtx.Provider value={addToast}>
-      {children}
-      <div className="toast-container">
-        {toasts.map(t => (
-          <div key={t.id} className={`toast toast-${t.type}`}>
-            <span>{icons[t.type] || 'ℹ'}</span>
-            <span>{t.msg}</span>
-          </div>
-        ))}
-      </div>
+      <FlashCtx.Provider value={items}>
+        {children}
+      </FlashCtx.Provider>
     </ToastCtx.Provider>
   )
 }
 
 export const useToast = () => useContext(ToastCtx)
+export const useFlashItems = () => useContext(FlashCtx)
 
 // ── Auth provider ─────────────────────────────────────────────────
 export function AuthProvider({ children }) {
@@ -81,22 +96,24 @@ export function AuthProvider({ children }) {
 
   /**
    * Switch to a different project by calling the re-issue token endpoint.
-   * Falls back to a toast if the endpoint isn't available.
    */
   const switchProject = useCallback(async (projectId) => {
     try {
       const data = await api.switchProject(projectId)
       if (data?.user) setUser(data.user)
-      // Re-check session to get fresh user context with new project
       await checkSession()
     } catch (e) {
-      // If endpoint doesn't exist yet, just log
       console.warn('switchProject failed:', e.message)
     }
   }, [checkSession])
 
+  const value = useMemo(
+    () => ({ user, loading, login, logout, checkSession, projects, switchProject }),
+    [user, loading, login, logout, checkSession, projects, switchProject],
+  )
+
   return (
-    <AuthCtx.Provider value={{ user, loading, login, logout, checkSession, projects, switchProject }}>
+    <AuthCtx.Provider value={value}>
       {loading ? null : children}
     </AuthCtx.Provider>
   )

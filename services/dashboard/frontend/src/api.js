@@ -100,6 +100,7 @@ export const api = {
 
   // Networking — Networks
   getNetworks: () => request('GET', '/networking/networks'),
+  getNetwork: (id) => request('GET', `/networking/networks/${id}`),
   createNetwork: (b) => request('POST', '/networking/networks', b),
   deleteNetwork: (id) => request('DELETE', `/networking/networks/${id}`),
 
@@ -107,6 +108,9 @@ export const api = {
   getSubnets: () => request('GET', '/networking/subnets'),
   createSubnet: (b) => request('POST', '/networking/subnets', b),
   deleteSubnet: (id) => request('DELETE', `/networking/subnets/${id}`),
+
+  // Networking — Ports
+  getPorts: () => request('GET', '/networking/ports'),
 
   // Networking — Routers
   getRouters: () => request('GET', '/networking/routers'),
@@ -175,6 +179,7 @@ export const api = {
 
   // Block Store — Volumes
   getVolumes: () => request('GET', '/block-store/volumes'),
+  getVolume: (id) => request('GET', `/block-store/volumes/${id}`),
   createVolume: (b) => request('POST', '/block-store/volumes', b),
   deleteVolume: (id) => request('DELETE', `/block-store/volumes/${id}`),
   extendVolume: (id, b) => request('POST', `/block-store/volumes/${id}/extend`, b),
@@ -185,6 +190,12 @@ export const api = {
   getSnapshots: () => request('GET', '/block-store/snapshots'),
   createSnapshot: (volId, b) => request('POST', `/block-store/volumes/${volId}/snapshots`, b),
   deleteSnapshot: (id) => request('DELETE', `/block-store/snapshots/${id}`),
+
+  // Block Store — Volume backups to object storage (Fase 5)
+  getVolumeBackups: () => request('GET', '/block-store/backups'),
+  createVolumeBackup: (volId, b) => request('POST', `/block-store/volumes/${volId}/backup`, b),
+  deleteVolumeBackup: (id) => request('DELETE', `/block-store/backups/${id}`),
+  restoreVolumeBackup: (id, b) => request('POST', `/block-store/backups/${id}/restore`, b),
 
   // Block Store — Volume Types
   getVolumeTypes:    () => request('GET', '/block-store/volume-types'),
