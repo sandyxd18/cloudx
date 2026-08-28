@@ -1,8 +1,30 @@
 # CloudX — Private Cloud Lab
 
-**CloudX** adalah private cloud platform single-node berbasis Docker Compose yang mengimplementasikan API mirip OpenStack. Compute menggunakan libvirt + QEMU/KVM, networking menggunakan OVN/OVS, inter-service communication via **RabbitMQ** (AMQP), dan seluruh stack dikelola melalui CLI `cloudx` serta web Dashboard.
+**CloudX** adalah private cloud platform adaptif (single-node all-in-one atau multi-node terdistribusi) berbasis Docker Compose yang mengimplementasikan API mirip OpenStack. Compute menggunakan libvirt + QEMU/KVM, networking menggunakan OVN/OVS, inter-service communication via **RabbitMQ** (AMQP), dan seluruh stack dikelola melalui CLI `cloudx` serta web Dashboard berbasis AWS Cloudscape Design System.
 
-> **Untuk lab lokal & pembelajaran.** Bukan untuk production. Single-node tanpa live migration atau multi-scheduler.
+---
+
+## 🖥️ Kebutuhan Sistem & Spesifikasi Server (Requirements)
+
+Sebelum melakukan instalasi dan testing, pastikan server/node Anda memenuhi spesifikasi berikut:
+
+### 1. Mode Single-Node All-in-One (Testing & Development)
+* **Sistem Operasi**: Ubuntu 22.04 / 24.04 LTS atau Debian 12 (Linux Kernel 5.15+)
+* **CPU / Harware Virtualization**: Minimal 4 vCPUs / Cores dengan dukungan **KVM** (`/dev/kvm` harus tersedia dan writable oleh user).
+* **RAM**: Minimal 8 GB RAM (Direkomendasikan **16 GB RAM** untuk menjalankan full stack: KVM VMs + MinIO + Prometheus + Grafana).
+* **Disk Storage**:
+  * Minimal 50 GB free disk space (SSD/NVMe direkomendasikan) untuk OS & Docker.
+  * Minimal 1 dedicated block device / partisi kosong (contoh: `/dev/sdb` min 20 GB) untuk LVM Volume Group (`vg-cloudx`).
+* **Jaringan (Network Interfaces)**: Minimal **2 Network Interfaces (NIC)**:
+  * `NETWORK_INTERFACE` (e.g. `enp0s3`): Interface internal/management (akses API & komunikasi antar-container).
+  * `PROVIDER_INTERFACE` (e.g. `enp0s8`): Interface provider/eksternal diikat ke `br-ex` untuk Floating IP & routing keluar.
+* **Prasyarat Software**: Docker v24.0+, Docker Compose v2.20+, Python 3.10+, `qemu-kvm`, `libvirt-daemon-system`, `openvswitch-switch`, `ovn-host`. (Semua paket OS di-setup otomatis via `make node-bootstrap`).
+
+### 2. Mode Multi-Node (Cluster Testing / Pseudo-Production)
+* **Control Plane Node**: 4 vCPU, 8 GB RAM, 50 GB SSD (Menjalankan PostgreSQL, RabbitMQ Cluster, OVN DB, API Gateway, Dashboard).
+* **Compute Node(s)**: 8+ vCPU (Intel VT-x / AMD-V / `/dev/kvm`), 16+ GB RAM, 30 GB SSD. *Catatan:* Compute node tidak membutuhkan storage lokal VM; disk VM dialokasikan dari Storage Node.
+* **Storage Node(s)**: 4 vCPU, 8 GB RAM, Dedicated Disks (`/dev/sdb`, `/dev/sdc`) untuk LVM / Ceph RBD + MinIO Object Store.
+* **Gateway Node(s)**: 2 vCPU, 4 GB RAM, 2 NICs (`br-ex` + provider adapter).
 
 ---
 

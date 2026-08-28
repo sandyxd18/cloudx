@@ -1,5 +1,20 @@
 # CloudX Setup Guide
 
+## 🖥️ Kebutuhan Sistem & Spesifikasi Server (Requirements)
+
+Sebelum melakukan setup, pastikan server/virtual machine Anda memenuhi kriteria berikut:
+
+### Kebutuhan Server Single-Node (All-in-One Lab & Testing):
+- **OS**: Ubuntu 22.04 LTS / 24.04 LTS atau Debian 12 (Linux Kernel 5.15+)
+- **CPU**: Minimal 4 Cores dengan dukungan **Hardware Virtualization** (`/dev/kvm`). Cek dengan `ls -l /dev/kvm`.
+- **RAM**: Minimal 8 GB RAM (Direkomendasikan **16 GB RAM** untuk pengujian VM + MinIO + Monitoring stack).
+- **Disk Space**: Minimal 50 GB SSD free space + 1 dedicated block device/partisi (contoh: `/dev/sdb` min 20 GB) untuk LVM VG.
+- **Jaringan**: Minimal **2 Network Adapter (NIC)**:
+  - Adapter 1 (`NETWORK_INTERFACE`): Management/Internal network (contoh: `enp0s3`).
+  - Adapter 2 (`PROVIDER_INTERFACE`): Provider/External network (contoh: `enp0s8`) diikat ke `br-ex`.
+
+---
+
 ## 🚀 Bootstrap (Fresh Node)
 
 Jalankan langkah berikut secara berurutan saat pertama kali setup node baru.
