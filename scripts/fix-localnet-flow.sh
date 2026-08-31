@@ -93,7 +93,7 @@ ACTIONS+="load:0->NXM_NX_REG13[16..31],"
 ACTIONS+="resubmit(,8)"
 
 echo "  Injecting: $FLOW"
-sudo ovs-ofctl add-flow br-int "cookie=${COOKIE},-1,${FLOW},actions=${ACTIONS}"
+sudo ovs-ofctl add-flow br-int "cookie=${COOKIE},${FLOW},actions=${ACTIONS}"
 echo "  ✓ table=0 flow injected"
 
 # ── Verify ─────────────────────────────────────────────────────────────────────
