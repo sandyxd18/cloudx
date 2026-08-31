@@ -1,6 +1,8 @@
 # Image Storage Backends
 
-`image-api` supports two storage backends through `IMAGE_STORAGE_BACKEND`.
+MinIO digunakan untuk dua fungsi utama di CloudX:
+1. **Glance Image Storage**: Menyimpan blob image OS (`IMAGE_STORAGE_BACKEND=minio`).
+2. **Cinder Volume & PostgreSQL Backups (Fase 5)**: Menyimpan backup otomatis database harian (23:00 Asia/Jakarta) dan ekspor volume block storage ke bucket `cloudx-backups`.
 
 ## File Backend
 

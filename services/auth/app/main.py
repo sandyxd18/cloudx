@@ -26,7 +26,7 @@ import bcrypt
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy import (
     Boolean, DateTime, ForeignKey, String, Text,
-    create_engine, select, UniqueConstraint, text,
+    create_engine, select, UniqueConstraint, text, inspect,
 )
 from sqlalchemy.orm import (
     DeclarativeBase, Mapped, Session,

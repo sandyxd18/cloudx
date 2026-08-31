@@ -338,9 +338,7 @@ services:
     network_mode: host
     command: >
       bash -c "pip install websockify --quiet &&
-      websockify 0.0.0.0:6080
-      --web /opt/novnc
-      --wrap-mode ignore"
+      websockify 6080 127.0.0.1:5900"
     restart: unless-stopped
 
   image-worker:

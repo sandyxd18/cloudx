@@ -423,13 +423,6 @@ services:
       memcached:
         condition: service_started
 
-  novnc:
-    image: theasp/novnc:latest
-    network_mode: host
-    environment:
-      DISPLAY_WIDTH: 1280
-      DISPLAY_HEIGHT: 720
-
   # ── noVNC WebSocket Proxy ─────────────────────────────────────────────────────
   # websockify bridges browser WebSocket to libvirt TCP VNC ports.
   # Port 6080 is the standard OpenStack noVNC proxy port.
@@ -438,9 +431,7 @@ services:
     network_mode: host
     command: >
       bash -c "pip install websockify --quiet &&
-      websockify 0.0.0.0:6080
-      --web /opt/novnc
-      --wrap-mode ignore"
+      websockify 6080 127.0.0.1:5900"
     restart: unless-stopped
 
   # ── Image Worker (Glance task-based import) ───────────────────────────────────

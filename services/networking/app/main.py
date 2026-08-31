@@ -361,6 +361,7 @@ class TrunkSubPortsPayload(BaseModel):
 
 class FloatingIPIn(BaseModel):
     name: str | None = None
+    network: str | None = None
     external_network: str | None = None
     floating_ip: str | None = Field(default=None, examples=["203.0.113.10"])
     fixed_port: str | None = None
@@ -886,6 +887,46 @@ def ensure_ovn_bridge_mapping(physnet: str, bridge: str) -> None:
         value = mapping
     ovs("set", "open", ".", f"external_ids:ovn-bridge-mappings={value}", check=False)
 
+
+PROVIDER_BRIDGE = os.getenv("PROVIDER_BRIDGE", "br-ex")
+PROVIDER_PHYSNET = os.getenv("PROVIDER_PHYSNET", "physnet1")
+PROVIDER_INTERFACE = os.getenv("PROVIDER_INTERFACE", "enp0s8")
+INTERNAL_VIP_ADDRESS = os.getenv("INTERNAL_VIP_ADDRESS", "192.168.18.80/24")
+
+def external_network_defaults(name: str) -> dict:
+    cidr = "192.168.18.0/24"
+    gateway = "192.168.18.1"
+    if "/" in INTERNAL_VIP_ADDRESS:
+        import ipaddress
+        try:
+            net = ipaddress.ip_network(INTERNAL_VIP_ADDRESS, strict=False)
+            cidr = str(net)
+            gateway = str(net.network_address + 1)
+        except Exception:
+            pass
+    return {
+        "provider": True,
+        "physical_network": PROVIDER_PHYSNET,
+        "bridge_mapping": f"{PROVIDER_PHYSNET}:{PROVIDER_BRIDGE}",
+        "provider_bridge": PROVIDER_BRIDGE,
+        "provider_cidr": cidr,
+        "gateway_ip": gateway,
+        "allocation_start": "192.168.18.200",
+        "allocation_end": "192.168.18.220",
+    }
+
+def allocation_bounds_for_network(cidr: str, gateway_ip: str, start: str | None = None, end: str | None = None) -> tuple[str, str]:
+    if start and end:
+        return start, end
+    import ipaddress
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+        hosts = list(net.hosts())
+        s = start or (str(hosts[199]) if len(hosts) > 199 else str(hosts[1]))
+        e = end or (str(hosts[-2]) if len(hosts) > 2 else str(hosts[-1]))
+        return s, e
+    except Exception:
+        return start or "192.168.18.200", end or "192.168.18.220"
 
 def ensure_provider_ovn(network_name: str, physnet: str, bridge: str) -> None:
     ovn("--may-exist", "ls-add", network_name)
@@ -1862,7 +1903,8 @@ def delete_port(ref: str, _: CurrentUser, db: DB):
 def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
     if payload.name and get_by_ref(db, FloatingIP, payload.name):
         raise HTTPException(status_code=409, detail="floating-ip already exists")
-    external_network = require_by_ref(db, Network, payload.external_network, "network") if payload.external_network else None
+    ext_net_ref = payload.external_network or payload.network
+    external_network = require_by_ref(db, Network, ext_net_ref, "network") if ext_net_ref else None
     if external_network and not external_network.external:
         raise HTTPException(status_code=400, detail="floating IP network must be external")
     floating_ip = payload.floating_ip or (allocate_floating_ip(db, external_network) if external_network else None)
@@ -1900,7 +1942,7 @@ def show_floating_ip(ref: str, current: CurrentUser, db: DB):
 
 
 @app.post("/floating-ips/{ref}/associate")
-def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, _: CurrentUser, db: DB):
+def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, current: CurrentUser, db: DB):
     fip = require_floating_ip(db, ref)
     port = resolve_association_port(db, payload)
     router = find_router_for_fip(db, payload.router)

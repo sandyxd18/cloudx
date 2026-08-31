@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, inspect, select, text
+from sqlalchemy import Boolean, DateTime, Integer, String, ForeignKey, create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 try:
@@ -1637,7 +1637,7 @@ class Aggregate(Base):
     id:           Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     name:         Mapped[str] = mapped_column(String, unique=True, index=True)
     availability_zone: Mapped[str | None] = mapped_column(String, nullable=True)
-    metadata:     Mapped[str | None] = mapped_column(String, nullable=True)  # JSON string
+    extra_metadata:     Mapped[str | None] = mapped_column(String, nullable=True)  # JSON string
     created_at:   Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at:   Mapped[datetime] = mapped_column(DateTime, default=now)
 
@@ -1675,7 +1675,7 @@ def _aggregate_to_dict(db: Session, agg: Aggregate) -> dict:
     meta = {}
     try:
         import json as _json
-        meta = _json.loads(agg.metadata or "{}")
+        meta = _json.loads(agg.extra_metadata or "{}")
     except Exception:
         pass
     return {
