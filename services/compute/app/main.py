@@ -10,7 +10,7 @@ from typing import Annotated
 
 import requests
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
@@ -188,6 +188,7 @@ class Keypair(Base):
     name: Mapped[str] = mapped_column(String, unique=True, index=True)
     public_key: Mapped[str] = mapped_column(String)
     fingerprint: Mapped[str] = mapped_column(String)
+    key_type: Mapped[str] = mapped_column(String, default="rsa")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -247,6 +248,7 @@ class FlavorIn(BaseModel):
 
 class KeypairIn(BaseModel):
     name: str
+    key_type: str = "rsa"  # rsa | ed25519
 
 
 class KeypairImportIn(BaseModel):
@@ -358,6 +360,13 @@ def ensure_columns():
             conn.execute(text("UPDATE compute_servers SET flavor_name = flavor WHERE flavor_name IS NULL"))
             conn.execute(text("UPDATE compute_servers SET locked = FALSE WHERE locked IS NULL"))
 
+    if "compute_keypairs" in table_names:
+        kp_columns = {column["name"] for column in inspector.get_columns("compute_keypairs")}
+        with engine.begin() as conn:
+            if "key_type" not in kp_columns:
+                conn.execute(text("ALTER TABLE compute_keypairs ADD COLUMN key_type VARCHAR DEFAULT 'rsa'"))
+                conn.execute(text("UPDATE compute_keypairs SET key_type = 'rsa' WHERE key_type IS NULL"))
+
     if "compute_flavors" in table_names:
         flavor_columns = {column["name"] for column in inspector.get_columns("compute_flavors")}
         with engine.begin() as conn:
@@ -458,13 +467,24 @@ def public_key_fingerprint(public_key: str) -> str:
     return f"SHA256:{digest}"
 
 
-def generate_keypair_material() -> tuple[str, str]:
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    private_pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.TraditionalOpenSSL,
-        encryption_algorithm=serialization.NoEncryption(),
-    ).decode("ascii")
+def generate_keypair_material(key_type: str = "rsa") -> tuple[str, str]:
+    """Generate an SSH key pair. Returns (private_key_pem, public_key_openssh)."""
+    if key_type == "ed25519":
+        private_key = ed25519.Ed25519PrivateKey.generate()
+        # Ed25519 has no "TraditionalOpenSSL" PKCS1 form — PEM here is PKCS8, which
+        # OpenSSH, PuTTYgen, and every mainstream SSH client accept transparently.
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("ascii")
+    else:
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("ascii")
     public_key = private_key.public_key().public_bytes(
         encoding=serialization.Encoding.OpenSSH,
         format=serialization.PublicFormat.OpenSSH,
@@ -1482,8 +1502,9 @@ def ssh_info(ref: str, _: CurrentUser, db: DB):
 def create_keypair(payload: KeypairIn, _: CurrentUser, db: DB):
     if get_keypair(db, payload.name):
         raise HTTPException(status_code=409, detail="keypair already exists")
-    private_key, public_key = generate_keypair_material()
-    keypair = Keypair(name=payload.name, public_key=public_key, fingerprint=public_key_fingerprint(public_key))
+    key_type = payload.key_type if payload.key_type in ("rsa", "ed25519") else "rsa"
+    private_key, public_key = generate_keypair_material(key_type)
+    keypair = Keypair(name=payload.name, public_key=public_key, fingerprint=public_key_fingerprint(public_key), key_type=key_type)
     db.add(keypair)
     db.commit()
     db.refresh(keypair)

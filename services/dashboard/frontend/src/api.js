@@ -91,6 +91,7 @@ export const api = {
   // Compute — Keypairs
   getKeypairs: () => request('GET', '/compute/keypairs'),
   createKeypair: (b) => request('POST', '/compute/keypairs', b),
+  importKeypair: (b) => request('POST', '/compute/keypairs/import', b),
   deleteKeypair: (name) => request('DELETE', `/compute/keypairs/${name}`),
 
   // Compute — Server Groups

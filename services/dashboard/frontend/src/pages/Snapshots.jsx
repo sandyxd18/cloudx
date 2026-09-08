@@ -1,80 +1,21 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import Header from '@cloudscape-design/components/header'
-import Modal from '@cloudscape-design/components/modal'
 import Pagination from '@cloudscape-design/components/pagination'
-import Select from '@cloudscape-design/components/select'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import Table from '@cloudscape-design/components/table'
 import TextFilter from '@cloudscape-design/components/text-filter'
-import Form from '@cloudscape-design/components/form'
-import FormField from '@cloudscape-design/components/form-field'
-import Input from '@cloudscape-design/components/input'
-import Alert from '@cloudscape-design/components/alert'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import { ResourceStatus, TableEmpty, TableNoMatch, fmtDate, shortId, counterText } from '../components/common.jsx'
 
 const PAGE_SIZE = 15
 
-function CreateModal({ onDismiss, onCreate }) {
-  const [volumes, setVolumes] = useState([])
-  const [volume, setVolume]   = useState(null)
-  const [name, setName]       = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError]     = useState('')
-
-  useEffect(() => {
-    api.getVolumes().then(r => setVolumes(r?.items || [])).catch(() => setVolumes([]))
-  }, [])
-
-  const submit = async () => {
-    if (!volume) { setError('Select a source volume.'); return }
-    if (!name) { setError('Snapshot name is required.'); return }
-    setLoading(true); setError('')
-    try { await onCreate(volume.value, { name }); onDismiss() }
-    catch (e) { setError(e.message) } finally { setLoading(false) }
-  }
-
-  return (
-    <Modal
-      visible
-      onDismiss={onDismiss}
-      header="Create volume snapshot"
-      footer={
-        <Box float="right">
-          <SpaceBetween direction="horizontal" size="xs">
-            <Button onClick={onDismiss}>Cancel</Button>
-            <Button variant="primary" loading={loading} onClick={submit} data-testid="snap-create-submit">Create snapshot</Button>
-          </SpaceBetween>
-        </Box>
-      }
-    >
-      <Form>
-        <SpaceBetween size="m">
-          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
-          <FormField label="Source volume">
-            <Select
-              selectedOption={volume}
-              onChange={({ detail }) => setVolume(detail.selectedOption)}
-              options={volumes.map(v => ({ value: v.id, label: v.name, description: `${v.size_gb || v.size || 0} GiB · ${v.status}` }))}
-              placeholder="Choose a volume"
-              empty="No volumes"
-              controlId="snap-volume"
-            />
-          </FormField>
-          <FormField label="Snapshot name">
-            <Input value={name} onChange={({ detail }) => setName(detail.value)} placeholder="snap-2026-01-01" controlId="snap-name" />
-          </FormField>
-        </SpaceBetween>
-      </Form>
-    </Modal>
-  )
-}
-
 export default function SnapshotsPage() {
+  const navigate = useNavigate()
   const toast = useToast()
   const [snaps, setSnaps]     = useState([])
   const [volumes, setVolumes] = useState([])
@@ -82,7 +23,6 @@ export default function SnapshotsPage() {
   const [filter, setFilter]   = useState('')
   const [page, setPage]       = useState(1)
   const [selected, setSelected] = useState([])
-  const [showCreate, setShowCreate] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -124,7 +64,7 @@ export default function SnapshotsPage() {
             <SpaceBetween direction="horizontal" size="xs">
               <Button iconName="refresh" onClick={load} ariaLabel="Refresh snapshots" />
               <Button disabled={!selected.length} onClick={deleteSelected}>Delete</Button>
-              <Button variant="primary" onClick={() => setShowCreate(true)}>Create snapshot</Button>
+              <Button variant="primary" onClick={() => navigate('/snapshots/create')} data-testid="create-snapshot-btn">Create snapshot</Button>
             </SpaceBetween>
           }
         >
@@ -183,17 +123,10 @@ export default function SnapshotsPage() {
             : <TableEmpty
                 title="No snapshots"
                 description="Create a snapshot to capture a point-in-time copy of a volume."
-                action={<Button variant="primary" onClick={() => setShowCreate(true)}>Create snapshot</Button>}
+                action={<Button variant="primary" onClick={() => navigate('/snapshots/create')}>Create snapshot</Button>}
               />
         }
       />
-
-      {showCreate && (
-        <CreateModal
-          onDismiss={() => setShowCreate(false)}
-          onCreate={async (volId, payload) => { await api.createSnapshot(volId, payload); toast('Snapshot creation started', 'success'); load() }}
-        />
-      )}
     </ContentLayout>
   )
 }

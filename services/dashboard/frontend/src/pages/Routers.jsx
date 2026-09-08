@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
 import ButtonDropdown from '@cloudscape-design/components/button-dropdown'
@@ -10,65 +11,11 @@ import Table from '@cloudscape-design/components/table'
 import TextFilter from '@cloudscape-design/components/text-filter'
 import Form from '@cloudscape-design/components/form'
 import FormField from '@cloudscape-design/components/form-field'
-import Input from '@cloudscape-design/components/input'
 import Select from '@cloudscape-design/components/select'
 import Alert from '@cloudscape-design/components/alert'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import { ResourceStatus, BoolStatus, TableEmpty, TableNoMatch, shortId, counterText } from '../components/common.jsx'
-
-function CreateModal({ onDismiss, onCreate, networks }) {
-  const [name, setName] = useState('')
-  const [gw, setGw] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  const submit = async () => {
-    if (!name) { setError('Router name is required.'); return }
-    setLoading(true); setError('')
-    try {
-      await onCreate({ name, external_gateway_network: gw?.value || undefined })
-      onDismiss()
-    } catch (e) { setError(e.message) } finally { setLoading(false) }
-  }
-
-  const externalNets = networks.filter(n => n.external || n['router:external'] === 'External')
-
-  return (
-    <Modal
-      visible
-      onDismiss={onDismiss}
-      header="Create router"
-      footer={
-        <Box float="right">
-          <SpaceBetween direction="horizontal" size="xs">
-            <Button onClick={onDismiss}>Cancel</Button>
-            <Button variant="primary" loading={loading} onClick={submit} data-testid="router-create-submit">Create router</Button>
-          </SpaceBetween>
-        </Box>
-      }
-    >
-      <Form>
-        <SpaceBetween size="m">
-          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
-          <FormField label="Router name">
-            <Input value={name} onChange={({ detail }) => setName(detail.value)} placeholder="my-router" controlId="router-name" />
-          </FormField>
-          <FormField label="External gateway network" description="Optional — enables SNAT and floating IPs.">
-            <Select
-              selectedOption={gw}
-              onChange={({ detail }) => setGw(detail.selectedOption)}
-              options={(externalNets.length ? externalNets : networks).map(n => ({ value: n.name, label: n.name }))}
-              placeholder="No gateway"
-              empty="No networks"
-              controlId="router-gw"
-            />
-          </FormField>
-        </SpaceBetween>
-      </Form>
-    </Modal>
-  )
-}
 
 function InterfaceModal({ router, onDismiss, onAdd }) {
   const [subnets, setSubnets] = useState([])
@@ -166,13 +113,13 @@ function GatewayModal({ router, onDismiss, onSet, networks }) {
 }
 
 export default function RoutersPage() {
+  const navigate = useNavigate()
   const toast = useToast()
   const [routers, setRouters]   = useState([])
   const [networks, setNetworks] = useState([])
   const [loading, setLoading]   = useState(true)
   const [filter, setFilter]     = useState('')
   const [selected, setSelected] = useState([])
-  const [showCreate, setShowCreate] = useState(false)
   const [addIface, setAddIface] = useState(null)
   const [setGateway, setSetGateway] = useState(null)
 
@@ -228,7 +175,7 @@ export default function RoutersPage() {
               >
                 Actions
               </ButtonDropdown>
-              <Button variant="primary" onClick={() => setShowCreate(true)} data-testid="create-router-btn">Create router</Button>
+              <Button variant="primary" onClick={() => navigate('/routers/create')} data-testid="create-router-btn">Create router</Button>
             </SpaceBetween>
           }
         >
@@ -283,18 +230,11 @@ export default function RoutersPage() {
             : <TableEmpty
                 title="No routers"
                 description="Create a router to connect subnets and reach external networks."
-                action={<Button variant="primary" onClick={() => setShowCreate(true)}>Create router</Button>}
+                action={<Button variant="primary" onClick={() => navigate('/routers/create')}>Create router</Button>}
               />
         }
       />
 
-      {showCreate && (
-        <CreateModal
-          networks={networks}
-          onDismiss={() => setShowCreate(false)}
-          onCreate={async (payload) => { await api.createRouter(payload); toast('Router created', 'success'); load() }}
-        />
-      )}
       {addIface && (
         <InterfaceModal
           router={addIface}

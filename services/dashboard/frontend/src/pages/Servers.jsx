@@ -8,13 +8,9 @@ import Header from '@cloudscape-design/components/header'
 import Link from '@cloudscape-design/components/link'
 import Modal from '@cloudscape-design/components/modal'
 import Pagination from '@cloudscape-design/components/pagination'
-import Select from '@cloudscape-design/components/select'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import Table from '@cloudscape-design/components/table'
 import TextFilter from '@cloudscape-design/components/text-filter'
-import Form from '@cloudscape-design/components/form'
-import FormField from '@cloudscape-design/components/form-field'
-import Input from '@cloudscape-design/components/input'
 import Alert from '@cloudscape-design/components/alert'
 import Checkbox from '@cloudscape-design/components/checkbox'
 import Spinner from '@cloudscape-design/components/spinner'
@@ -42,131 +38,6 @@ function taskState(s) {
     SHELVING: 'Shelving', UNSHELVING: 'Unshelving',
   }
   return tasks[s] || '—'
-}
-
-// ── Launch instance modal ────────────────────────────────────────────────────
-function LaunchModal({ onDismiss, onCreate }) {
-  const [form, setForm] = useState({ name: '', flavor: null, image: null, keypair: null, network: null })
-  const [flavors, setFlavors]   = useState([])
-  const [images, setImages]     = useState([])
-  const [keypairs, setKeypairs] = useState([])
-  const [networks, setNetworks] = useState([])
-  const [loading, setLoading]   = useState(false)
-  const [error, setError]       = useState('')
-
-  useEffect(() => {
-    Promise.allSettled([api.getFlavors(), api.getImages(), api.getKeypairs(), api.getNetworks()])
-      .then(([f, im, k, n]) => {
-        if (f.status === 'fulfilled')  setFlavors(f.value?.items || [])
-        if (im.status === 'fulfilled') setImages((im.value?.items || []).filter(i => i.status === 'ACTIVE'))
-        if (k.status === 'fulfilled')  setKeypairs(k.value?.items || [])
-        if (n.status === 'fulfilled')  setNetworks(n.value?.items || [])
-      })
-  }, [])
-
-  const submit = async () => {
-    if (!form.name || !form.flavor || !form.image || !form.network) {
-      setError('Name, flavor, image, and network are required.')
-      return
-    }
-    setLoading(true); setError('')
-    try {
-      await onCreate({
-        name: form.name,
-        flavor: form.flavor.value,
-        image: form.image.value,
-        network: form.network.value,
-        keypair: form.keypair?.value || undefined,
-      })
-      onDismiss()
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <Modal
-      visible
-      onDismiss={onDismiss}
-      header="Launch instance"
-      size="medium"
-      footer={
-        <Box float="right">
-          <SpaceBetween direction="horizontal" size="xs">
-            <Button onClick={onDismiss}>Cancel</Button>
-            <Button variant="primary" loading={loading} onClick={submit} data-testid="server-create-submit">
-              Launch instance
-            </Button>
-          </SpaceBetween>
-        </Box>
-      }
-    >
-      <Form>
-        <SpaceBetween size="m">
-          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
-
-          <FormField label="Instance name" description="Must be unique within the project.">
-            <Input
-              value={form.name}
-              onChange={({ detail }) => setForm(f => ({ ...f, name: detail.value }))}
-              placeholder="my-instance"
-              controlId="server-name"
-            />
-          </FormField>
-
-          <FormField label="Flavor" description="Compute, memory, and root disk profile.">
-            <Select
-              selectedOption={form.flavor}
-              onChange={({ detail }) => setForm(f => ({ ...f, flavor: detail.selectedOption }))}
-              options={flavors.map(fl => ({
-                value: fl.name,
-                label: fl.name,
-                description: `${fl.vcpus} vCPU · ${fl.ram_mb} MB RAM · ${fl.disk_gb} GB disk`,
-              }))}
-              placeholder="Choose a flavor"
-              empty="No flavors defined"
-              controlId="server-flavor"
-            />
-          </FormField>
-
-          <FormField label="Image" description="Boot image (root volume is created from it).">
-            <Select
-              selectedOption={form.image}
-              onChange={({ detail }) => setForm(f => ({ ...f, image: detail.selectedOption }))}
-              options={images.map(im => ({ value: im.name, label: im.name, description: im.disk_format }))}
-              placeholder="Choose an image"
-              empty="No active images"
-              controlId="server-image"
-            />
-          </FormField>
-
-          <FormField label="Network">
-            <Select
-              selectedOption={form.network}
-              onChange={({ detail }) => setForm(f => ({ ...f, network: detail.selectedOption }))}
-              options={networks.map(n => ({ value: n.name, label: n.name }))}
-              placeholder="Choose a network"
-              empty="No networks"
-              controlId="server-network"
-            />
-          </FormField>
-
-          <FormField label="Key pair" description="Optional — injected via cloud-init for SSH access.">
-            <Select
-              selectedOption={form.keypair}
-              onChange={({ detail }) => setForm(f => ({ ...f, keypair: detail.selectedOption }))}
-              options={keypairs.map(k => ({ value: k.name, label: k.name }))}
-              placeholder="Proceed without a key pair"
-              empty="No key pairs"
-              controlId="server-keypair"
-            />
-          </FormField>
-        </SpaceBetween>
-      </Form>
-    </Modal>
-  )
 }
 
 // ── Console log modal ────────────────────────────────────────────────────────
@@ -260,7 +131,6 @@ export default function ServersPage() {
   const [filter, setFilter]   = useState('')
   const [page, setPage]       = useState(1)
   const [selected, setSelected] = useState([])
-  const [showLaunch, setShowLaunch] = useState(false)
   const [showLogs, setShowLogs] = useState(null)
   const [showConsole, setShowConsole] = useState(null)
 
@@ -400,7 +270,7 @@ export default function ServersPage() {
               >
                 Actions
               </ButtonDropdown>
-              <Button variant="primary" onClick={() => setShowLaunch(true)} data-testid="create-server-btn">
+              <Button variant="primary" onClick={() => navigate('/servers/create')} data-testid="create-server-btn">
                 Launch instance
               </Button>
             </SpaceBetween>
@@ -467,21 +337,11 @@ export default function ServersPage() {
             : <TableEmpty
                 title="No instances"
                 description="Launch your first instance to get started."
-                action={<Button variant="primary" onClick={() => setShowLaunch(true)}>Launch instance</Button>}
+                action={<Button variant="primary" onClick={() => navigate('/servers/create')}>Launch instance</Button>}
               />
         }
       />
 
-      {showLaunch && (
-        <LaunchModal
-          onDismiss={() => setShowLaunch(false)}
-          onCreate={async (payload) => {
-            await api.createServer(payload)
-            toast('Instance launch started', 'success')
-            load()
-          }}
-        />
-      )}
       {showLogs && <LogsModal server={showLogs} onDismiss={() => setShowLogs(null)} />}
       {showConsole && <ConsoleModal server={showConsole} onDismiss={() => setShowConsole(null)} />}
     </ContentLayout>

@@ -1,108 +1,19 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
 import ButtonDropdown from '@cloudscape-design/components/button-dropdown'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import Header from '@cloudscape-design/components/header'
-import Modal from '@cloudscape-design/components/modal'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import Table from '@cloudscape-design/components/table'
 import TextFilter from '@cloudscape-design/components/text-filter'
-import Form from '@cloudscape-design/components/form'
-import FormField from '@cloudscape-design/components/form-field'
-import Input from '@cloudscape-design/components/input'
-import Select from '@cloudscape-design/components/select'
-import Alert from '@cloudscape-design/components/alert'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import { ResourceStatus, TableEmpty, TableNoMatch, shortId, counterText } from '../components/common.jsx'
 
-function AllocateModal({ onDismiss, onCreate, networks }) {
-  const [pool, setPool] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const externalNets = networks.filter(n => n.external || n['router:external'] === 'External')
-
-  const submit = async () => {
-    if (!pool) { setError('Select an external network pool.'); return }
-    setLoading(true); setError('')
-    try { await onCreate({ network: pool.value }); onDismiss() }
-    catch (e) { setError(e.message) } finally { setLoading(false) }
-  }
-
-  return (
-    <Modal
-      visible
-      onDismiss={onDismiss}
-      header="Allocate floating IP"
-      footer={
-        <Box float="right">
-          <SpaceBetween direction="horizontal" size="xs">
-            <Button onClick={onDismiss}>Cancel</Button>
-            <Button variant="primary" loading={loading} onClick={submit} data-testid="fip-allocate-submit">Allocate</Button>
-          </SpaceBetween>
-        </Box>
-      }
-    >
-      <Form>
-        <SpaceBetween size="m">
-          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
-          <FormField label="Pool (external network)">
-            <Select
-              selectedOption={pool}
-              onChange={({ detail }) => setPool(detail.selectedOption)}
-              options={(externalNets.length ? externalNets : networks).map(n => ({ value: n.name, label: n.name }))}
-              placeholder="Choose a pool"
-              empty="No external networks"
-              controlId="fip-network"
-            />
-          </FormField>
-        </SpaceBetween>
-      </Form>
-    </Modal>
-  )
-}
-
-function AssociateModal({ fip, onDismiss, onAssociate }) {
-  const [target, setTarget] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  const submit = async () => {
-    if (!target) { setError('Enter a server name or port ID.'); return }
-    setLoading(true); setError('')
-    try { await onAssociate({ port: target }); onDismiss() }
-    catch (e) { setError(e.message) } finally { setLoading(false) }
-  }
-
-  return (
-    <Modal
-      visible
-      onDismiss={onDismiss}
-      header="Associate floating IP"
-      footer={
-        <Box float="right">
-          <SpaceBetween direction="horizontal" size="xs">
-            <Button onClick={onDismiss}>Cancel</Button>
-            <Button variant="primary" loading={loading} onClick={submit} data-testid="fip-assoc-submit">Associate</Button>
-          </SpaceBetween>
-        </Box>
-      }
-    >
-      <Form>
-        <SpaceBetween size="m">
-          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
-          <Alert type="info">Floating IP: <b>{fip.floating_ip_address || fip.floating_ip}</b></Alert>
-          <FormField label="Server name or port ID" description="The DNAT rule is programmed in OVN for the selected port.">
-            <Input value={target} onChange={({ detail }) => setTarget(detail.value)} placeholder="my-instance" controlId="fip-assoc-port" />
-          </FormField>
-        </SpaceBetween>
-      </Form>
-    </Modal>
-  )
-}
-
 export default function FloatingIPsPage() {
+  const navigate = useNavigate()
   const toast = useToast()
   const [fips, setFips]         = useState([])
   const [networks, setNetworks] = useState([])
@@ -167,13 +78,13 @@ export default function FloatingIPsPage() {
                 ]}
                 onItemClick={({ detail }) => {
                   if (detail.id === 'release') releaseSelected()
-                  else if (detail.id === 'associate' && one) setAssociate(one)
+                  else if (detail.id === 'associate' && one) navigate(`/floating-ips/associate?id=${one.id}`)
                   else if (detail.id === 'disassociate' && one) disassociate(one)
                 }}
               >
                 Actions
               </ButtonDropdown>
-              <Button variant="primary" onClick={() => setShowAllocate(true)} data-testid="allocate-fip-btn">
+              <Button variant="primary" onClick={() => navigate('/floating-ips/allocate')} data-testid="allocate-fip-btn">
                 Allocate floating IP
               </Button>
             </SpaceBetween>
@@ -225,25 +136,10 @@ export default function FloatingIPsPage() {
             : <TableEmpty
                 title="No floating IPs"
                 description="Allocate a floating IP from an external network pool to expose an instance."
-                action={<Button variant="primary" onClick={() => setShowAllocate(true)}>Allocate floating IP</Button>}
+                action={<Button variant="primary" onClick={() => navigate('/floating-ips/allocate')}>Allocate floating IP</Button>}
               />
         }
       />
-
-      {showAllocate && (
-        <AllocateModal
-          networks={networks}
-          onDismiss={() => setShowAllocate(false)}
-          onCreate={async (payload) => { await api.createFloatingIP(payload); toast('Floating IP allocated', 'success'); load() }}
-        />
-      )}
-      {associate && (
-        <AssociateModal
-          fip={associate}
-          onDismiss={() => setAssociate(null)}
-          onAssociate={async (payload) => { await api.associateFloatingIP(associate.id, payload); toast('Floating IP associated', 'success'); load() }}
-        />
-      )}
     </ContentLayout>
   )
 }

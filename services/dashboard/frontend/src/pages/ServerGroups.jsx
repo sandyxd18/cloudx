@@ -1,17 +1,12 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import Header from '@cloudscape-design/components/header'
-import Modal from '@cloudscape-design/components/modal'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import Table from '@cloudscape-design/components/table'
 import TextFilter from '@cloudscape-design/components/text-filter'
-import Form from '@cloudscape-design/components/form'
-import FormField from '@cloudscape-design/components/form-field'
-import Input from '@cloudscape-design/components/input'
-import Select from '@cloudscape-design/components/select'
-import Alert from '@cloudscape-design/components/alert'
 import Badge from '@cloudscape-design/components/badge'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
@@ -24,57 +19,13 @@ const POLICIES = [
   { value: 'soft-affinity',      label: 'Soft affinity',      description: 'Prefer the same host (best effort)' },
 ]
 
-function CreateModal({ onDismiss, onCreate }) {
-  const [name, setName] = useState('')
-  const [policy, setPolicy] = useState(POLICIES[0])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  const submit = async () => {
-    if (!name) { setError('Name is required.'); return }
-    setLoading(true); setError('')
-    try {
-      await onCreate({ name, policy: policy.value })
-      onDismiss()
-    } catch (e) { setError(e.message) } finally { setLoading(false) }
-  }
-
-  return (
-    <Modal
-      visible
-      onDismiss={onDismiss}
-      header="Create server group"
-      footer={
-        <Box float="right">
-          <SpaceBetween direction="horizontal" size="xs">
-            <Button onClick={onDismiss}>Cancel</Button>
-            <Button variant="primary" loading={loading} onClick={submit} data-testid="servergroup-create-submit">Create server group</Button>
-          </SpaceBetween>
-        </Box>
-      }
-    >
-      <Form>
-        <SpaceBetween size="m">
-          {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
-          <FormField label="Name">
-            <Input value={name} onChange={({ detail }) => setName(detail.value)} placeholder="my-server-group" controlId="sg-name" />
-          </FormField>
-          <FormField label="Placement policy" description="Controls how the scheduler distributes group members across hosts.">
-            <Select selectedOption={policy} onChange={({ detail }) => setPolicy(detail.selectedOption)} options={POLICIES} controlId="sg-policy" />
-          </FormField>
-        </SpaceBetween>
-      </Form>
-    </Modal>
-  )
-}
-
 export default function ServerGroupsPage() {
+  const navigate = useNavigate()
   const toast = useToast()
   const [groups, setGroups]   = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter]   = useState('')
   const [selected, setSelected] = useState([])
-  const [showCreate, setShowCreate] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -111,7 +62,7 @@ export default function ServerGroupsPage() {
             <SpaceBetween direction="horizontal" size="xs">
               <Button iconName="refresh" onClick={load} ariaLabel="Refresh server groups" />
               <Button disabled={!selected.length} onClick={deleteSelected}>Delete</Button>
-              <Button variant="primary" onClick={() => setShowCreate(true)} data-testid="create-sg-btn">Create server group</Button>
+              <Button variant="primary" onClick={() => navigate('/server-groups/create')} data-testid="create-sg-btn">Create server group</Button>
             </SpaceBetween>
           }
         >
@@ -162,17 +113,10 @@ export default function ServerGroupsPage() {
             : <TableEmpty
                 title="No server groups"
                 description="Create a server group to control how instances are placed across hosts."
-                action={<Button variant="primary" onClick={() => setShowCreate(true)}>Create server group</Button>}
+                action={<Button variant="primary" onClick={() => navigate('/server-groups/create')}>Create server group</Button>}
               />
         }
       />
-
-      {showCreate && (
-        <CreateModal
-          onDismiss={() => setShowCreate(false)}
-          onCreate={async (payload) => { await api.createServerGroup(payload); toast('Server group created', 'success'); load() }}
-        />
-      )}
     </ContentLayout>
   )
 }
