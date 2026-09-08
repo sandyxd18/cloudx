@@ -113,6 +113,48 @@ Host bridge preparation is explicit and dry-run by default:
 sudo scripts/bootstrap-provider-network.sh --dry-run
 ```
 
+### Gateway IP collides with the real LAN gateway (bridged provider network)
+
+If the provider network's `PROVIDER_INTERFACE` is a **bridged** adapter onto a physical LAN
+(not an isolated host-only network), `networking-api` used to derive the OVN router's
+external gateway IP as `network_address + 1` of `INTERNAL_VIP_ADDRESS`. On a `/24` LAN this
+is almost always `.1` — which is already the real router's address. Symptoms:
+
+- ARP for the floating IP intermittently resolves to the physical router's MAC instead of
+  the OVN router port's MAC.
+- Instances boot but hang retrying `169.254.169.254` metadata forever (`failed N/20`).
+- `ping <floating-ip>` from the host times out even though NAT/ACL flows show hits.
+
+Fix: set explicit provider network variables in `.env` (read by `networking-api`, wired
+through `docker-compose*.yml`) to an address range that does **not** overlap anything else
+on the physical LAN:
+
+```env
+PROVIDER_CIDR=192.168.18.0/24
+PROVIDER_GATEWAY=192.168.18.90        # any free host on the LAN, NOT the real gateway
+PROVIDER_ALLOCATION_START=192.168.18.200
+PROVIDER_ALLOCATION_END=192.168.18.220
+```
+
+Then `docker compose up -d --build networking-api` and recreate `public-net`/`public-subnet`/
+`router1` from scratch — the gateway IP is baked into the network row at creation time and is
+not corrected retroactively. After `router set-gateway`, if `get_local_chassis_id()` logged a
+warning (e.g. ovn-controller had just restarted), the external port stays unbound — confirm
+with `ovn-sbctl list Port_Binding cr-lrp-<router>-external` (`chassis` must be non-empty,
+`up: true`) and fix manually if needed:
+
+```bash
+CHASSIS=$(ovn-sbctl --format=list --columns=name find Chassis | grep -oP '(?<=: ")[^"]+')
+ovn-nbctl lrp-set-gateway-chassis lrp-<router>-external "$CHASSIS"
+```
+
+Also add the host route for the private subnet via the **OVN gateway IP**, not the real LAN
+gateway:
+
+```bash
+sudo ip route add 192.168.12.0/24 via 192.168.18.90 dev br-ex
+```
+
 ## Volume Attach
 
 If attach fails with `Bus 'pci.0' does not support hotplugging`, rebuild `compute-worker` and recreate the VM. New domains include a `virtio-scsi` controller and block-store volumes attach as SCSI disks for hotplug support:

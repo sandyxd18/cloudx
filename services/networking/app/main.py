@@ -904,6 +904,12 @@ def external_network_defaults(name: str) -> dict:
             gateway = str(net.network_address + 1)
         except Exception:
             pass
+    # Explicit env overrides (see docs/provider-network.md). Required when the
+    # provider network is bridged onto a physical LAN: network_address+1 may
+    # collide with the real LAN gateway, so operators must be able to pick a
+    # free IP for the OVN router's external port.
+    cidr = os.getenv("PROVIDER_CIDR") or cidr
+    gateway = os.getenv("PROVIDER_GATEWAY") or gateway
     return {
         "provider": True,
         "physical_network": PROVIDER_PHYSNET,
@@ -911,8 +917,8 @@ def external_network_defaults(name: str) -> dict:
         "provider_bridge": PROVIDER_BRIDGE,
         "provider_cidr": cidr,
         "gateway_ip": gateway,
-        "allocation_start": "192.168.18.200",
-        "allocation_end": "192.168.18.220",
+        "allocation_start": os.getenv("PROVIDER_ALLOCATION_START") or "192.168.18.200",
+        "allocation_end": os.getenv("PROVIDER_ALLOCATION_END") or "192.168.18.220",
     }
 
 def allocation_bounds_for_network(cidr: str, gateway_ip: str, start: str | None = None, end: str | None = None) -> tuple[str, str]:

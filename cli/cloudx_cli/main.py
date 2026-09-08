@@ -1033,8 +1033,13 @@ def fip_list(ctx):
 @click.option("--router", required=True)
 @click.pass_context
 def fip_associate(ctx, ip, server, router):
+    port = _api("get", f"{DEFAULT_URLS['compute']}/servers/{server}",
+                ctx.obj["profile"]).get("port_id")
+    if not port:
+        click.echo(f"❌ No port found for server '{server}'", err=True)
+        sys.exit(1)
     _api("post", f"{DEFAULT_URLS['network']}/floating-ips/{ip}/associate",
-         ctx.obj["profile"], json={"server": server, "router": router})
+         ctx.obj["profile"], json={"server": server, "port": port, "router": router})
     click.echo(f"✓ Floating IP {ip} associated")
 
 @floating_ip.command("disassociate")
