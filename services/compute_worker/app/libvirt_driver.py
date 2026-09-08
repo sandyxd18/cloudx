@@ -152,6 +152,44 @@ def connect():
     return conn
 
 
+# Map libvirt's VIR_DOMAIN_* state ints to the reduced set this driver reports.
+# (state ints: 0=NOSTATE 1=RUNNING 2=BLOCKED 3=PAUSED 4=SHUTDOWN 5=SHUTOFF
+#  6=CRASHED 7=PMSUSPENDED)
+_LIBVIRT_STATE_MAP = {
+    1: "RUNNING",
+    2: "RUNNING",   # blocked-on-resource still counts as running for our purposes
+    3: "PAUSED",
+    4: "SHUTOFF",   # in the middle of shutting down
+    5: "SHUTOFF",
+    6: "SHUTOFF",   # crashed
+    7: "PAUSED",    # suspended-to-RAM by the host
+}
+
+
+def get_all_domain_states() -> dict[str, str]:
+    """Snapshot every domain known to this hypervisor: {domain_name: state}.
+
+    ``state`` is one of ``RUNNING`` / ``PAUSED`` / ``SHUTOFF``. A domain
+    defined-but-not-running still shows up here as ``SHUTOFF`` — only a
+    domain absent from this dict is truly "MISSING" from the hypervisor
+    (undefined, e.g. after ``virsh undefine`` or a destroyed transient domain).
+
+    Used by the power-state reconciliation loop; never raises — callers should
+    treat an empty dict + logged warning as "hypervisor unreachable, skip sync".
+    """
+    if libvirt is None:
+        raise RuntimeError("libvirt-python is not installed")
+    conn = connect()
+    try:
+        states: dict[str, str] = {}
+        for domain in conn.listAllDomains():
+            state_id, _reason = domain.state()
+            states[domain.name()] = _LIBVIRT_STATE_MAP.get(state_id, "SHUTOFF")
+        return states
+    finally:
+        conn.close()
+
+
 def define_and_start(xml: str) -> None:
     conn = connect()
     try:

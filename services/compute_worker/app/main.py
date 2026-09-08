@@ -9,6 +9,12 @@ DB updates go through the Conductor service via RPC.
 All lifecycle operations (spawn, delete, start, stop, etc.) are async
 RPC Cast handlers. Console log and VNC info are RPC Call handlers
 (they return a reply to the caller).
+
+A background thread (``sync_power_states_loop``) also runs alongside the AMQP
+consumer, polling libvirt every ``SYNC_POWER_STATE_INTERVAL`` seconds (default
+30s) to correct DB drift when a domain stops/disappears outside of our own
+RPC handlers (crash, OOM, host reboot, `virsh destroy`, ...). See
+``sync_power_states`` for the reconciliation rules.
 """
 
 from __future__ import annotations
@@ -16,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import time
 
 import requests
@@ -33,6 +40,8 @@ from pathlib import Path  # noqa: E402
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@rabbitmq:5672/")
 LOG_LEVEL    = os.getenv("LOG_LEVEL", "INFO")
+COMPUTE_HOST = os.getenv("COMPUTE_HOST", "single-node")
+SYNC_POWER_STATE_INTERVAL = int(os.getenv("SYNC_POWER_STATE_INTERVAL", "30"))
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
@@ -73,6 +82,87 @@ def conductor_delete_record(server_id: str) -> None:
     _rpc.cast("conductor", "delete_server_record", {
         "server_id": server_id,
     })
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Power-state reconciliation (nova-compute _sync_power_states equivalent)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Anything that stops a domain outside our own RPC handlers — `virsh destroy`,
+# a libvirtd restart, an OOM kill, a host kernel/package upgrade tearing down
+# qemu processes — leaves compute_servers.status stuck at whatever it was
+# before (usually ACTIVE), because nothing tells the database. This loop is
+# the fix: periodically diff what libvirt actually has against what the DB
+# thinks, and correct the DB.
+#
+# Statuses mid-transition (BUILD, DELETING, REBOOT, REBUILD, RESIZE,
+# VERIFY_RESIZE, RESCUE, PAUSING, SHELVED_OFFLOADED, UNSHELVING, ...) are left
+# alone — an RPC handler already owns that server and will set its own
+# terminal status. We only correct the steady states: ACTIVE, SHUTOFF, PAUSED,
+# SUSPENDED.
+
+# Steady-state statuses this loop is allowed to correct. Any other status
+# means a handler is actively mid-flight — do not touch it.
+_SYNC_MANAGED_STATUSES = {"ACTIVE", "SHUTOFF", "PAUSED", "SUSPENDED"}
+
+# Expected DB status for each hypervisor-reported power state.
+_EXPECTED_STATUS_FOR_POWER_STATE = {
+    "RUNNING": "ACTIVE",
+    "PAUSED": "PAUSED",
+    # A domain that libvirt reports as SHUTOFF, or one missing entirely
+    # (destroyed/undefined outside of our control), both mean: not running.
+    "SHUTOFF": "SHUTOFF",
+    "MISSING": "SHUTOFF",
+}
+
+
+def sync_power_states() -> None:
+    """One reconciliation pass: compare libvirt reality against the DB.
+
+    Never raises — errors are logged and the next scheduled pass will retry.
+    """
+    try:
+        result = _rpc.call("conductor", "get_host_servers", {"host": COMPUTE_HOST}, timeout=10)
+    except Exception as exc:
+        log.warning("[sync] could not fetch host servers from conductor: %s", exc)
+        return
+    servers = result.get("servers", [])
+    if not servers:
+        return
+
+    try:
+        domain_states = libvirt_driver.get_all_domain_states()
+    except Exception as exc:
+        log.warning("[sync] could not read libvirt domain states, skipping pass: %s", exc)
+        return
+
+    for server in servers:
+        db_status = server.get("status")
+        if db_status not in _SYNC_MANAGED_STATUSES:
+            continue  # a handler owns this server right now (BUILD, DELETING, ...)
+
+        domain_name = server.get("libvirt_domain_name")
+        if not domain_name:
+            continue  # not spawned yet / no hypervisor domain to check
+
+        power_state = domain_states.get(domain_name, "MISSING")
+        expected_status = _EXPECTED_STATUS_FOR_POWER_STATE[power_state]
+
+        if expected_status != db_status:
+            log.warning(
+                "[sync] server %s (%s): domain '%s' is %s on hypervisor but DB says %s — correcting to %s",
+                server.get("name"), server.get("id"), domain_name, power_state, db_status, expected_status,
+            )
+            conductor_update_server(server["id"], {"status": expected_status})
+
+
+def sync_power_states_loop() -> None:
+    """Background daemon loop — runs sync_power_states() every SYNC_POWER_STATE_INTERVAL seconds."""
+    log.info("[sync] power-state reconciliation loop started (interval=%ds, host=%s)",
+              SYNC_POWER_STATE_INTERVAL, COMPUTE_HOST)
+    while True:
+        time.sleep(SYNC_POWER_STATE_INTERVAL)
+        sync_power_states()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -648,6 +738,8 @@ def main():
     else:
         log.error("Could not connect to RabbitMQ after 30 attempts")
         sys.exit(1)
+
+    threading.Thread(target=sync_power_states_loop, daemon=True).start()
 
     consumer = RPCConsumer(
         queue_name="compute",

@@ -18,6 +18,8 @@ Compute:
 - ``update_server``        — update status and/or fields on a server record
 - ``delete_server_record`` — hard-delete a server record from DB
 - ``mark_server_error``    — set status=ERROR + error_message
+- ``get_host_servers``     — list non-deleted servers assigned to a host
+  (used by compute-worker's power-state reconciliation loop)
 
 Block Storage:
 - ``update_volume``        — update status and/or fields on a volume
@@ -167,6 +169,33 @@ def handle_delete_server_record(args: dict) -> dict:
     _publish_server_event("server.delete", server_id)
 
     return {"ok": True, "deleted": result.rowcount}
+
+
+def handle_get_host_servers(args: dict) -> dict:
+    """List non-deleted servers assigned to a compute host.
+
+    Used by compute-worker's power-state reconciliation loop to know which
+    servers it is responsible for, without granting the worker direct DB
+    access (see database_migration_standard skill).
+
+    Expected args::
+
+        {"host": "single-node"}
+    """
+    host = args.get("host")
+    if not host:
+        return {"error": "host required"}
+
+    with SessionLocal() as db:
+        rows = db.execute(
+            text(
+                "SELECT id, name, status, libvirt_domain_name "
+                "FROM compute_servers WHERE host = :host AND status != 'DELETED'"
+            ),
+            {"host": host},
+        ).mappings().all()
+
+    return {"servers": [dict(row) for row in rows]}
 
 
 def handle_mark_server_error(args: dict) -> dict:
@@ -425,6 +454,7 @@ HANDLERS = {
     "update_server":         handle_update_server,
     "delete_server_record":  handle_delete_server_record,
     "mark_server_error":     handle_mark_server_error,
+    "get_host_servers":      handle_get_host_servers,
     # Block storage
     "update_volume":         handle_update_volume,
     "delete_volume_record":  handle_delete_volume_record,

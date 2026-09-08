@@ -13,6 +13,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# services/compute_worker/app/main.py and conductor's main.py do
+# `sys.path.insert(0, "..")` then `from shared.rpc import ...`, matching the
+# Docker image layout (shared/ copied next to app/). Outside a container,
+# "shared" only exists at services/shared — add it so importing those worker
+# main modules directly (as the tests below do) doesn't blow up.
+SERVICES_DIR = ROOT / "services"
+if str(SERVICES_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVICES_DIR))
+
 NETWORKING = os.getenv("NETWORKING_API_URL", "http://localhost:8001")
 IMAGE = os.getenv("IMAGE_API_URL", "http://localhost:8002")
 COMPUTE = os.getenv("COMPUTE_API_URL", "http://localhost:8003")
@@ -751,3 +760,149 @@ def test_ovn_northd_start_creates_runtime_dir():
     content = script.read_text()
     assert "mkdir -p /var/run/ovn" in content
     assert "--pidfile=/var/run/ovn/ovn-northd.pid" in content
+
+
+# ─── Power-state reconciliation (compute-worker sync_power_states) ────────────
+
+def test_sync_power_states_corrects_missing_domain_to_shutoff(monkeypatch):
+    """DB says ACTIVE, domain is gone from the hypervisor -> corrected to SHUTOFF."""
+    fastapi = pytest.importorskip("fastapi")
+    assert fastapi
+    from services.compute_worker.app import main
+
+    servers = [{"id": "srv-1", "name": "vmtest", "status": "ACTIVE",
+                "libvirt_domain_name": "mini-os-vmtest-abc123"}]
+
+    def fake_call(routing_key, method, args, timeout=None):
+        assert routing_key == "conductor" and method == "get_host_servers"
+        return {"servers": servers}
+
+    updates = []
+    monkeypatch.setattr(main._rpc, "call", fake_call)
+    monkeypatch.setattr(main, "conductor_update_server",
+                         lambda server_id, fields: updates.append((server_id, fields)))
+    monkeypatch.setattr(main.libvirt_driver, "get_all_domain_states", lambda: {})  # domain missing entirely
+
+    main.sync_power_states()
+
+    assert updates == [("srv-1", {"status": "SHUTOFF"})]
+
+
+def test_sync_power_states_corrects_shutoff_domain_to_shutoff(monkeypatch):
+    """DB says ACTIVE, libvirt reports the domain SHUTOFF -> corrected to SHUTOFF."""
+    fastapi = pytest.importorskip("fastapi")
+    assert fastapi
+    from services.compute_worker.app import main
+
+    servers = [{"id": "srv-1", "name": "vmtest", "status": "ACTIVE",
+                "libvirt_domain_name": "mini-os-vmtest-abc123"}]
+
+    monkeypatch.setattr(main._rpc, "call", lambda *a, **kw: {"servers": servers})
+    updates = []
+    monkeypatch.setattr(main, "conductor_update_server",
+                         lambda server_id, fields: updates.append((server_id, fields)))
+    monkeypatch.setattr(main.libvirt_driver, "get_all_domain_states",
+                         lambda: {"mini-os-vmtest-abc123": "SHUTOFF"})
+
+    main.sync_power_states()
+
+    assert updates == [("srv-1", {"status": "SHUTOFF"})]
+
+
+def test_sync_power_states_ignores_transitional_status(monkeypatch):
+    """A server mid-BUILD/DELETING/etc. is owned by an RPC handler — never touched."""
+    fastapi = pytest.importorskip("fastapi")
+    assert fastapi
+    from services.compute_worker.app import main
+
+    servers = [{"id": "srv-1", "name": "vmtest", "status": "BUILD",
+                "libvirt_domain_name": None}]
+
+    monkeypatch.setattr(main._rpc, "call", lambda *a, **kw: {"servers": servers})
+    updates = []
+    monkeypatch.setattr(main, "conductor_update_server",
+                         lambda server_id, fields: updates.append((server_id, fields)))
+    monkeypatch.setattr(main.libvirt_driver, "get_all_domain_states", lambda: {})
+
+    main.sync_power_states()
+
+    assert updates == []
+
+
+def test_sync_power_states_no_op_when_status_already_matches(monkeypatch):
+    """Domain RUNNING and DB already ACTIVE — nothing to correct."""
+    fastapi = pytest.importorskip("fastapi")
+    assert fastapi
+    from services.compute_worker.app import main
+
+    servers = [{"id": "srv-1", "name": "vmtest", "status": "ACTIVE",
+                "libvirt_domain_name": "mini-os-vmtest-abc123"}]
+
+    monkeypatch.setattr(main._rpc, "call", lambda *a, **kw: {"servers": servers})
+    updates = []
+    monkeypatch.setattr(main, "conductor_update_server",
+                         lambda server_id, fields: updates.append((server_id, fields)))
+    monkeypatch.setattr(main.libvirt_driver, "get_all_domain_states",
+                         lambda: {"mini-os-vmtest-abc123": "RUNNING"})
+
+    main.sync_power_states()
+
+    assert updates == []
+
+
+def test_sync_power_states_recovers_shutoff_to_active(monkeypatch):
+    """DB says SHUTOFF but the domain is actually RUNNING again -> corrected to ACTIVE."""
+    fastapi = pytest.importorskip("fastapi")
+    assert fastapi
+    from services.compute_worker.app import main
+
+    servers = [{"id": "srv-1", "name": "vmtest", "status": "SHUTOFF",
+                "libvirt_domain_name": "mini-os-vmtest-abc123"}]
+
+    monkeypatch.setattr(main._rpc, "call", lambda *a, **kw: {"servers": servers})
+    updates = []
+    monkeypatch.setattr(main, "conductor_update_server",
+                         lambda server_id, fields: updates.append((server_id, fields)))
+    monkeypatch.setattr(main.libvirt_driver, "get_all_domain_states",
+                         lambda: {"mini-os-vmtest-abc123": "RUNNING"})
+
+    main.sync_power_states()
+
+    assert updates == [("srv-1", {"status": "ACTIVE"})]
+
+
+def test_libvirt_get_all_domain_states_maps_states(monkeypatch):
+    """get_all_domain_states() reduces libvirt's state ints to RUNNING/PAUSED/SHUTOFF."""
+    pytest.importorskip("fastapi")
+    from services.compute_worker.app import libvirt_driver
+
+    class FakeDomain:
+        def __init__(self, name, state_id):
+            self._name = name
+            self._state_id = state_id
+
+        def name(self):
+            return self._name
+
+        def state(self):
+            return (self._state_id, 0)
+
+    class FakeConn:
+        def listAllDomains(self):
+            return [FakeDomain("vm-running", 1), FakeDomain("vm-paused", 3),
+                    FakeDomain("vm-shutoff", 5), FakeDomain("vm-crashed", 6)]
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(libvirt_driver, "libvirt", object())  # bypass "not installed" check
+    monkeypatch.setattr(libvirt_driver, "connect", lambda: FakeConn())
+
+    states = libvirt_driver.get_all_domain_states()
+
+    assert states == {
+        "vm-running": "RUNNING",
+        "vm-paused": "PAUSED",
+        "vm-shutoff": "SHUTOFF",
+        "vm-crashed": "SHUTOFF",
+    }
