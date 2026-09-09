@@ -214,11 +214,13 @@ class ServerIn(BaseModel):
     network: str
     networks: list[str] = Field(default_factory=list)
     key_name: str | None = None
+    keypair: str | None = None          # frontend alias for key_name
     backend: str | None = None
     user_data: str | None = None
     security_groups: list[str] = Field(default_factory=list)
     server_group: str | None = None   # server group id or name
     volume_size: int | None = None    # root volume size override (GB)
+    volume_type: str | None = None    # root volume type override (gp2, gp3, io1, sc1)
 
 
 class ServerResizeIn(BaseModel):
@@ -418,6 +420,31 @@ def obj_to_dict(obj):
 def server_to_dict(server: Server) -> dict:
     data = obj_to_dict(server)
     data["metadata_url_debug"] = f"http://localhost:8775/openstack/latest/meta_data.json?instance_id={server.id}"
+
+    # ── Enrich from networking-api: security groups + floating IP ──────────────
+    # security_groups: read the port's security_group_ids, map to names
+    if server.port_id:
+        try:
+            port = api_get(f"{NETWORKING_API_URL}/ports/{server.port_id}")
+            sg_ids = port.get("security_group_ids") or []
+            if sg_ids:
+                sg_names = []
+                for sg_id in sg_ids:
+                    try:
+                        sg = api_get(f"{NETWORKING_API_URL}/security-groups/{sg_id}")
+                        sg_names.append(sg.get("name", sg_id))
+                    except Exception:
+                        sg_names.append(sg_id)
+                data["security_groups"] = sg_names
+            # floating_ip: query for a floating IP bound to this port
+            fips = api_get(f"{NETWORKING_API_URL}/floating-ips")
+            fip_items = fips.get("items", [])
+            for fip in fip_items:
+                if fip.get("port_id") == server.port_id or fip.get("fixed_ip_address") == server.ip_address:
+                    data["floating_ip"] = fip.get("floating_ip_address") or fip.get("floating_ip")
+                    break
+        except Exception:
+            pass  # enrichment is best-effort; don't fail the whole response
     return data
 
 
@@ -884,7 +911,8 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
         raise HTTPException(status_code=400, detail="create server requires exactly one boot source: --image or --boot-volume")
     free_deleted_server_name(db, payload.name)
     backend = selected_backend(payload.backend)
-    keypair = require_keypair(db, payload.key_name) if payload.key_name else None
+    keypair_ref = payload.key_name or payload.keypair
+    keypair = require_keypair(db, keypair_ref) if keypair_ref else None
     flavor = require_flavor(db, payload.flavor)
     ensure_capacity(db, flavor)
     # Check server group anti-affinity
@@ -913,15 +941,27 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
         if payload.image:
             image = api_get(f"{IMAGE_API_URL}/images/{payload.image}")
             image_id = image["id"]
+            # Custom root-volume sizing (AWS-style block device mapping):
+            # user may only grow the disk beyond the flavor default, never shrink it.
+            root_size_gb = flavor.disk_gb
+            if payload.volume_size is not None:
+                if payload.volume_size < flavor.disk_gb:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"root volume size {payload.volume_size} GB is below the flavor minimum of {flavor.disk_gb} GB",
+                    )
+                root_size_gb = payload.volume_size
             root_volume = block_post(
                 "/internal/volumes",
                 {
                     "name": f"{payload.name}-root-{server_id[:8]}",
-                    "size_gb": flavor.disk_gb,
+                    "size_gb": root_size_gb,
                     "image_id": image["id"],
                     "image_ref": image["id"],
                     "bootable": True,
                     "source_type": "image",
+                    "volume_type": payload.volume_type,
+                    "project_id": project_id,
                 },
             )
             boot_source = "image"
@@ -968,7 +1008,7 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
             flavor_name=snapshot["flavor_name"],
             vcpus=snapshot["vcpus"],
             ram_mb=snapshot["ram_mb"],
-            disk_gb=snapshot["disk_gb"],
+            disk_gb=root_volume.get("size_gb") or snapshot["disk_gb"],
             network_id=network["id"],
             port_id=port["id"],
             extra_port_ids=format_comma_list([p["id"] for p in ports[1:]]),
@@ -977,6 +1017,7 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
             vendor_data="{}",
             keypair_name=keypair.name if keypair else None,
             public_key_snapshot=keypair.public_key if keypair else None,
+            project_id=project_id,
             backend=backend,
             mac_address=port.get("mac_address"),
             ip_address=port.get("fixed_ip") or port.get("ip_address"),

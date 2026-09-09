@@ -16,6 +16,7 @@ import KeypairImportPage from './pages/KeypairImport.jsx'
 import NetworksPage from './pages/Networks.jsx'
 import NetworkCreatePage from './pages/NetworkCreate.jsx'
 import NetworkDetailPage from './pages/NetworkDetail.jsx'
+import SubnetCreatePage from './pages/SubnetCreate.jsx'
 import RoutersPage from './pages/Routers.jsx'
 import RouterCreatePage from './pages/RouterCreate.jsx'
 import FloatingIPsPage from './pages/FloatingIPs.jsx'
@@ -87,6 +88,7 @@ function AppRoutes() {
           <Route path="networks" element={<NetworksPage />} />
           <Route path="networks/create" element={<NetworkCreatePage />} />
           <Route path="networks/:id" element={<NetworkDetailPage />} />
+          <Route path="subnets/create" element={<SubnetCreatePage />} />
           <Route path="routers" element={<RoutersPage />} />
           <Route path="routers/create" element={<RouterCreatePage />} />
           <Route path="floating-ips" element={<FloatingIPsPage />} />

@@ -327,9 +327,13 @@ def _http_post(url: str, payload: dict, timeout: int = 60) -> dict | None:
 
 def _http_delete(url: str, timeout: int = 20) -> None:
     try:
-        requests.delete(url, timeout=timeout)
-    except Exception:
-        pass
+        resp = requests.delete(url, timeout=timeout)
+        if resp.status_code >= 400:
+            # Never swallow cleanup failures silently — a silent 401 here is
+            # exactly how orphaned ports accumulated before /internal endpoints.
+            log.warning("DELETE %s → HTTP %d: %s", url, resp.status_code, resp.text[:200])
+    except Exception as exc:
+        log.warning("DELETE %s failed: %s", url, exc)
 
 
 def _probe_block_store_url(base_url: str) -> str:
@@ -528,13 +532,14 @@ def handle_delete_instance(args: dict) -> None:
         if root_volume_id and not keep_root_volume:
             _http_delete(f"{bs_url}/internal/volumes/{root_volume_id}")
 
-        # 3. Delete ports via networking API
+        # 3. Delete ports via networking API (internal endpoint — no auth,
+        #    same service-to-service pattern as block-store's /internal/volumes)
         port_ids = [port_id] if port_id else []
         if extra_port_ids:
             port_ids.extend([p for p in extra_port_ids.split(",") if p.strip()])
         for pid in port_ids:
             if pid:
-                _http_delete(f"{networking_url}/ports/{pid}")
+                _http_delete(f"{networking_url}/internal/ports/{pid}")
 
         # 4. Update status via conductor
         conductor_update_server(server_id, {

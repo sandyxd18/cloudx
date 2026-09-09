@@ -1126,7 +1126,17 @@ def resolve_association_port(db: Session, payload: FloatingIPAssociateIn) -> Por
     if payload.port:
         return require_by_ref(db, Port, payload.port, "port")
     if payload.server:
+        # payload.server may be a server UUID (Port.device_id) or a server
+        # NAME (e.g. "test1") — compute ports follow the
+        # "{server_name}-{server_id[:8]}-port" naming convention.
         port = db.scalar(select(Port).where(Port.device_id == payload.server).order_by(Port.created_at))
+        if not port:
+            port = db.scalar(
+                select(Port).where(
+                    Port.device_owner.like("compute:%"),
+                    Port.name.like(f"{payload.server}-%-port"),
+                ).order_by(Port.created_at)
+            )
         if port:
             return port
         raise HTTPException(status_code=404, detail=f"port for server '{payload.server}' not found")
@@ -1479,6 +1489,7 @@ def create_network(payload: NetworkIn, current: CurrentUser, db: DB):
         gateway_ip=provider_defaults.get("gateway_ip"),
         allocation_start=allocation_start,
         allocation_end=allocation_end,
+        project_id=current.get("project_id"),
     )
     if payload.external:
         ensure_provider_ovn(payload.name, provider_defaults["physical_network"], provider_defaults["provider_bridge"])
@@ -1905,6 +1916,54 @@ def delete_port(ref: str, _: CurrentUser, db: DB):
     return {"status": "deleted", "id": port.id, "name": port.name}
 
 
+# ── Internal port management (service-to-service, no auth) ────────────────────
+# Mirrors block-store's /internal/volumes pattern: compute-worker calls these
+# during instance deletion, where it has no user auth token to present.
+
+def _delete_port_record(db: Session, port: Port) -> dict:
+    port.security_group_ids = None
+    apply_security_groups(db, port)
+    ovn("--if-exists", "lsp-del", port.name)
+    db.delete(port)
+    db.commit()
+    return {"status": "deleted", "id": port.id, "name": port.name}
+
+
+@app.delete("/internal/ports/{ref}", status_code=200)
+def delete_port_internal(ref: str, db: DB):
+    """Service-to-service port deletion — used by compute-worker on instance teardown."""
+    port = require_by_ref(db, Port, ref, "port")
+    return _delete_port_record(db, port)
+
+
+@app.post("/internal/ports/purge-orphaned")
+def purge_orphaned_ports(db: DB):
+    """Delete compute-owned ports whose server no longer exists.
+
+    Historical safety net: before /internal/ports existed, compute-worker's
+    port cleanup failed silently (401 against the authed endpoint), so ports
+    of deleted instances accumulated. A port is orphaned when its
+    device_owner starts with 'compute:' and its device_id no longer matches
+    any live compute_servers row (all services share the same PostgreSQL DB).
+    """
+    compute_ports = db.scalars(
+        select(Port).where(Port.device_owner.like("compute:%"), Port.device_id.is_not(None))
+    ).all()
+    deleted = []
+    for port in compute_ports:
+        live = db.execute(
+            text("SELECT 1 FROM compute_servers WHERE id = :sid AND status != 'DELETED'"),
+            {"sid": port.device_id},
+        ).first()
+        if not live:
+            try:
+                _delete_port_record(db, port)
+                deleted.append({"id": port.id, "name": port.name, "device_id": port.device_id})
+            except Exception:
+                continue
+    return {"purged": len(deleted), "ports": deleted}
+
+
 @app.post("/floating-ips", status_code=201)
 def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
     if payload.name and get_by_ref(db, FloatingIP, payload.name):
@@ -2000,7 +2059,7 @@ def delete_floating_ip(ref: str, _: CurrentUser, db: DB):
 def create_security_group(payload: SecurityGroupIn, current: CurrentUser, db: DB):
     if get_by_ref(db, SecurityGroup, payload.name):
         raise HTTPException(status_code=409, detail="security-group already exists")
-    group = SecurityGroup(name=payload.name, description=payload.description, project_id=payload.project_id)
+    group = SecurityGroup(name=payload.name, description=payload.description, project_id=current.get("project_id"))
     db.add(group)
     db.commit()
     db.refresh(group)

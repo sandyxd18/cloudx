@@ -48,7 +48,9 @@ export default function FloatingIPAssociatePage() {
     if (!router) { setError('Select a router.'); return }
     setLoading(true); setError('')
     try {
-      await api.associateFloatingIP(fip.id, { server: server.value, router: router.value })
+      // Send the instance's port_id directly — the backend resolves it without
+      // any name/UUID ambiguity.
+      await api.associateFloatingIP(fip.id, { port: server.portId, router: router.value })
       toast(`Floating IP ${fip.floating_ip_address || fip.floating_ip} associated`, 'success')
       back()
     } catch (e) {
@@ -82,7 +84,7 @@ export default function FloatingIPAssociatePage() {
             <Select
               selectedOption={server}
               onChange={({ detail }) => setServer(detail.selectedOption)}
-              options={servers.map(s => ({ value: s.name, label: s.name, description: `Fixed IP: ${s.ip_address || '—'}` }))}
+              options={servers.map(s => ({ value: s.id, portId: s.port_id, label: s.name, description: `Fixed IP: ${s.ip_address || '—'}` }))}
               placeholder="Choose an instance"
               empty="No instances"
               controlId="fip-assoc-server"

@@ -217,6 +217,7 @@ class VolumeInternalIn(BaseModel):
     bootable:         bool = False
     source_type:      str | None = None
     volume_type:      str | None = None
+    project_id:       str | None = None
 
 
 class AttachIn(BaseModel):
@@ -643,7 +644,7 @@ def create_volume(payload: VolumeIn, current: CurrentUser, db: DB):
 
 @app.post("/internal/volumes", status_code=201)
 def create_volume_internal(payload: VolumeInternalIn, db: DB):
-    return _create_volume_record(db, payload)
+    return _create_volume_record(db, payload, project_id=payload.project_id)
 
 
 def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: str | None = None, multiattach: bool = False) -> dict:

@@ -87,6 +87,7 @@ const CRUMBS = {
   '/volume-types/create': [{ text: 'Storage', href: '/volumes' }, { text: 'Volume types', href: '/volume-types' }, { text: 'Create volume type', href: '/volume-types/create' }],
   '/networks':         [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }],
   '/networks/create':  [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }, { text: 'Create network', href: '/networks/create' }],
+  '/subnets/create':   [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }, { text: 'Create subnet', href: '/subnets/create' }],
   '/routers':          [{ text: 'Networking', href: '/networks' }, { text: 'Routers', href: '/routers' }],
   '/routers/create':   [{ text: 'Networking', href: '/networks' }, { text: 'Routers', href: '/routers' }, { text: 'Create router', href: '/routers/create' }],
   '/security-groups':        [{ text: 'Networking', href: '/networks' }, { text: 'Security groups', href: '/security-groups' }],

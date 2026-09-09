@@ -110,7 +110,15 @@ export default function NetworkDetail() {
               content: (
                 <Table
                   variant="container"
-                  header={<Header variant="h2" counter={`(${subnets.length})`}>Subnets</Header>}
+                  header={
+                    <Header
+                      variant="h2"
+                      counter={`(${subnets.length})`}
+                      actions={<Button variant="primary" onClick={() => navigate(`/subnets/create?network=${id}`)}>Create subnet</Button>}
+                    >
+                      Subnets
+                    </Header>
+                  }
                   items={subnets}
                   trackBy="id"
                   columnDefinitions={[
