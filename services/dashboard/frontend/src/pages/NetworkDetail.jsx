@@ -23,19 +23,26 @@ export default function NetworkDetail() {
   const [network, setNetwork] = useState(null)
   const [subnets, setSubnets] = useState([])
   const [ports, setPorts]     = useState([])
+  const [liveServerIds, setLiveServerIds] = useState(new Set())
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [net, subs, prts] = await Promise.allSettled([
+    const [net, subs, prts, srvs] = await Promise.allSettled([
       api.getNetwork(id),
       api.getSubnets(),
       api.getPorts(),
+      api.getServers(),
     ])
     if (net.status === 'fulfilled') setNetwork(net.value)
     else toast('Failed to load network', 'error')
     if (subs.status === 'fulfilled') setSubnets((subs.value?.items || []).filter(s => s.network_id === id))
     if (prts.status === 'fulfilled') setPorts((prts.value?.items || []).filter(p => p.network_id === id))
+    if (srvs.status === 'fulfilled') {
+      // Live server ids — ports referencing a deleted instance are rendered
+      // as non-clickable "Deleted instance" instead of a dead detail link.
+      setLiveServerIds(new Set((srvs.value?.items || []).map(s => s.id)))
+    }
     setLoading(false)
   }, [id, toast])
 
@@ -45,7 +52,7 @@ export default function NetworkDetail() {
   if (!network) return <Alert type="error" header="Network not found">The requested network does not exist or is not visible in this project.</Alert>
 
   const isExternal = !!(network.external || network['router:external'] === 'External')
-  const attachedPorts = ports.filter(p => p.device_id)
+  const attachedPorts = ports.filter(p => p.device_id && liveServerIds.has(p.device_id))
 
   return (
     <ContentLayout
@@ -151,9 +158,13 @@ export default function NetworkDetail() {
                     {
                       id: 'device',
                       header: 'Attached device',
-                      cell: p => p.device_id
-                        ? <Link href={`/servers/${p.device_id}`} onFollow={(e) => { e.preventDefault(); navigate(`/servers/${p.device_id}`) }}>{shortId(p.device_id, 12)}</Link>
-                        : 'Unbound',
+                      cell: p => {
+                        if (!p.device_id) return 'Unbound'
+                        if (liveServerIds.has(p.device_id)) {
+                          return <Link href={`/servers/${p.device_id}`} onFollow={(e) => { e.preventDefault(); navigate(`/servers/${p.device_id}`) }}>{shortId(p.device_id, 12)}</Link>
+                        }
+                        return <Box variant="small" color="text-body-secondary">Deleted instance ({shortId(p.device_id, 8)})</Box>
+                      },
                     },
                     { id: 'owner', header: 'Device owner', cell: p => p.device_owner || '—' },
                     { id: 'dns', header: 'DNS name', cell: p => p.dns_name || '—' },

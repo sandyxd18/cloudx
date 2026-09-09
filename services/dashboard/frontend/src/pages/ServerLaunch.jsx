@@ -11,11 +11,15 @@ import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import FormPage from '../components/FormPage.jsx'
 
+const DEFAULT_ROOT_GB = 8
+
+const fmtRam = (mb) => (mb >= 1024 ? `${(mb / 1024).toFixed(mb % 1024 ? 1 : 0)} GB` : `${mb} MB`)
+
 export default function ServerLaunchPage() {
   const navigate = useNavigate()
   const toast = useToast()
   const [form, setForm] = useState({ name: '', flavor: null, image: null, keypair: null, network: null })
-  const [rootSizeGb, setRootSizeGb] = useState('')
+  const [rootSizeGb, setRootSizeGb] = useState(String(DEFAULT_ROOT_GB))
   const [volumeType, setVolumeType] = useState(null)
   const [flavors, setFlavors]       = useState([])
   const [images, setImages]         = useState([])
@@ -40,17 +44,6 @@ export default function ServerLaunchPage() {
       })
   }, [])
 
-  // When the flavor changes, re-seed the root volume size input with the
-  // flavor's default disk (the minimum allowed — the user may only grow it).
-  const onFlavorChange = (selectedOption) => {
-    setForm(f => ({ ...f, flavor: selectedOption }))
-    const fl = flavors.find(x => x.name === selectedOption?.value)
-    setRootSizeGb(fl ? String(fl.disk_gb) : '')
-  }
-
-  const flavorMinGb = flavors.find(x => x.name === form.flavor?.value)?.disk_gb || 0
-  const sizeTooSmall = rootSizeGb !== '' && Number(rootSizeGb) < flavorMinGb
-
   const back = () => navigate('/servers')
 
   const submit = async () => {
@@ -58,8 +51,8 @@ export default function ServerLaunchPage() {
       setError('Name, flavor, image, and network are required.')
       return
     }
-    if (sizeTooSmall) {
-      setError(`Root volume size must be at least the flavor minimum of ${flavorMinGb} GB.`)
+    if (rootSizeGb !== '' && Number(rootSizeGb) < 1) {
+      setError('Root volume size must be at least 1 GiB.')
       return
     }
     setLoading(true); setError('')
@@ -70,7 +63,7 @@ export default function ServerLaunchPage() {
         image: form.image.value,
         network: form.network.value,
         key_name: form.keypair?.value || undefined,
-        volume_size: rootSizeGb !== '' ? Number(rootSizeGb) : undefined,
+        volume_size: rootSizeGb !== '' ? Number(rootSizeGb) : DEFAULT_ROOT_GB,
         volume_type: volumeType?.value || undefined,
       })
       toast('Instance launch started', 'success')
@@ -111,25 +104,27 @@ export default function ServerLaunchPage() {
             selectedOption={form.image}
             onChange={({ detail }) => setForm(f => ({ ...f, image: detail.selectedOption }))}
             options={images.map(im => ({ value: im.name, label: im.name, description: im.disk_format }))}
-            placeholder="Choose an image"
+            placeholder="Search and choose an image"
             empty="No active images"
+            filteringType="auto"
             controlId="server-image"
           />
         </FormField>
       </Container>
 
       <Container header={<Header variant="h2">Instance type</Header>}>
-        <FormField label="Flavor" description="Compute and memory profile — the root disk size can be customized in the Storage section below.">
+        <FormField label="Flavor" description="Compute and memory profile — storage size is configured separately below.">
           <Select
             selectedOption={form.flavor}
-            onChange={({ detail }) => onFlavorChange(detail.selectedOption)}
+            onChange={({ detail }) => setForm(f => ({ ...f, flavor: detail.selectedOption }))}
             options={flavors.map(fl => ({
               value: fl.name,
               label: fl.name,
-              description: `${fl.vcpus} vCPU · ${fl.ram_mb} MB RAM · ${fl.disk_gb} GB min disk`,
+              description: `${fl.vcpus} vCPU · ${fmtRam(fl.ram_mb)}`,
             }))}
-            placeholder="Choose a flavor"
+            placeholder="Search and choose a flavor"
             empty="No flavors defined"
+            filteringType="auto"
             controlId="server-flavor"
           />
         </FormField>
@@ -141,8 +136,9 @@ export default function ServerLaunchPage() {
             selectedOption={form.keypair}
             onChange={({ detail }) => setForm(f => ({ ...f, keypair: detail.selectedOption }))}
             options={keypairs.map(k => ({ value: k.name, label: k.name }))}
-            placeholder="Proceed without a key pair"
+            placeholder="Search for a key pair"
             empty="No key pairs"
+            filteringType="auto"
             controlId="server-keypair"
           />
         </FormField>
@@ -154,26 +150,26 @@ export default function ServerLaunchPage() {
             selectedOption={form.network}
             onChange={({ detail }) => setForm(f => ({ ...f, network: detail.selectedOption }))}
             options={networks.map(n => ({ value: n.name, label: n.name }))}
-            placeholder="Choose a network"
+            placeholder="Search and choose a network"
             empty="No networks"
+            filteringType="auto"
             controlId="server-network"
           />
         </FormField>
       </Container>
 
-      <Container header={<Header variant="h2" description="AWS-style block device mapping for the root volume">Storage</Header>}>
+      <Container header={<Header variant="h2" description="EC2-style block device mapping — the size is fully user-defined">Storage</Header>}>
         <SpaceBetween size="l">
           <FormField
             label="Root volume size (GiB)"
-            description={flavorMinGb ? `Minimum ${flavorMinGb} GiB (flavor default). You can only increase the size.` : 'Choose a flavor first.'}
-            constraintText={sizeTooSmall ? `Size must be at least ${flavorMinGb} GiB` : undefined}
+            description={`Default ${DEFAULT_ROOT_GB} GiB — freely customizable (minimum 1 GiB).`}
           >
             <Input
               value={rootSizeGb}
               onChange={({ detail }) => setRootSizeGb(detail.value)}
               type="number"
               inputMode="numeric"
-              placeholder={flavorMinGb ? String(flavorMinGb) : '10'}
+              placeholder={String(DEFAULT_ROOT_GB)}
               controlId="server-root-size"
             />
           </FormField>
@@ -192,6 +188,7 @@ export default function ServerLaunchPage() {
                   label: t.name,
                   description: `${t.disk_type} · ${String(t.backend || '').toUpperCase()}`,
                 }))}
+                filteringType="auto"
                 controlId="server-vol-type"
               />
             </FormField>

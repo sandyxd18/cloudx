@@ -417,9 +417,32 @@ def obj_to_dict(obj):
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
 
 
+# Image id → name cache: server_to_dict enriches every server response with the
+# image name, and GET /servers calls it per row — one image-api HTTP call per
+# row per request is wasteful, and image names are effectively immutable.
+# ponytail: unbounded dict cache is fine for a lab; move to TTL/memo if the
+# image catalog ever gets large or churns.
+_image_name_cache: dict[str, str] = {}
+
+
 def server_to_dict(server: Server) -> dict:
     data = obj_to_dict(server)
     data["metadata_url_debug"] = f"http://localhost:8775/openstack/latest/meta_data.json?instance_id={server.id}"
+
+    # ── Enrich image name from image-api (cached, best-effort) ─────────────────
+    if server.image_id:
+        cached = _image_name_cache.get(server.image_id)
+        if cached:
+            data["image_name"] = cached
+        else:
+            try:
+                image = api_get(f"{IMAGE_API_URL}/images/{server.image_id}")
+                name = image.get("name")
+                if name:
+                    _image_name_cache[server.image_id] = name
+                    data["image_name"] = name
+            except Exception:
+                pass
 
     # ── Enrich from networking-api: security groups + floating IP ──────────────
     # security_groups: read the port's security_group_ids, map to names
@@ -941,16 +964,12 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
         if payload.image:
             image = api_get(f"{IMAGE_API_URL}/images/{payload.image}")
             image_id = image["id"]
-            # Custom root-volume sizing (AWS-style block device mapping):
-            # user may only grow the disk beyond the flavor default, never shrink it.
-            root_size_gb = flavor.disk_gb
-            if payload.volume_size is not None:
-                if payload.volume_size < flavor.disk_gb:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"root volume size {payload.volume_size} GB is below the flavor minimum of {flavor.disk_gb} GB",
-                    )
-                root_size_gb = payload.volume_size
+            # EC2-style block device mapping: the root volume size is chosen
+            # entirely by the user (default 8 GiB) — flavors are instance-type
+            # profiles (vCPU/RAM) and no longer dictate storage size.
+            root_size_gb = payload.volume_size if payload.volume_size is not None else 8
+            if root_size_gb < 1:
+                raise HTTPException(status_code=400, detail="root volume size must be at least 1 GB")
             root_volume = block_post(
                 "/internal/volumes",
                 {

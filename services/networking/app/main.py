@@ -11,7 +11,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, inspect, select, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, inspect, or_, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 try:
@@ -1920,7 +1920,38 @@ def delete_port(ref: str, _: CurrentUser, db: DB):
 # Mirrors block-store's /internal/volumes pattern: compute-worker calls these
 # during instance deletion, where it has no user auth token to present.
 
+def _disassociate_floating_ips_for_port(db: Session, port: Port) -> list[str]:
+    """Reset any floating IPs bound to this port: remove the OVN NAT rule and
+    clear the association so the FIP returns to DOWN/unallocated-binding state.
+
+    Called before a port is deleted (instance teardown / purge) — otherwise the
+    FIP row keeps pointing at a port that no longer exists.
+    Returns the list of released floating IP addresses."""
+    fips = db.scalars(
+        select(FloatingIP).where(
+            or_(FloatingIP.port_id == port.id,
+                FloatingIP.fixed_port_id == port.id)
+        )
+    ).all()
+    released = []
+    for fip in fips:
+        router = db.get(Router, fip.router_id) if fip.router_id else None
+        if router and fip.floating_ip:
+            ovn("--if-exists", "lr-nat-del", router.name, "dnat_and_snat", fip.floating_ip, check=False)
+        fip.fixed_port_id = None
+        fip.port_id = None
+        fip.fixed_ip_address = None
+        fip.server_id = None
+        fip.router_id = None
+        fip.status = "DOWN"
+        released.append(fip.floating_ip or fip.floating_ip_address or fip.id)
+    if fips:
+        db.commit()
+    return released
+
+
 def _delete_port_record(db: Session, port: Port) -> dict:
+    _disassociate_floating_ips_for_port(db, port)
     port.security_group_ids = None
     apply_security_groups(db, port)
     ovn("--if-exists", "lsp-del", port.name)
@@ -1938,13 +1969,15 @@ def delete_port_internal(ref: str, db: DB):
 
 @app.post("/internal/ports/purge-orphaned")
 def purge_orphaned_ports(db: DB):
-    """Delete compute-owned ports whose server no longer exists.
+    """Delete compute-owned ports whose server no longer exists, and release
+    floating IPs pointing at ports that are already gone.
 
     Historical safety net: before /internal/ports existed, compute-worker's
     port cleanup failed silently (401 against the authed endpoint), so ports
-    of deleted instances accumulated. A port is orphaned when its
-    device_owner starts with 'compute:' and its device_id no longer matches
-    any live compute_servers row (all services share the same PostgreSQL DB).
+    of deleted instances accumulated; floating IPs bound to those ports kept
+    referencing dead fixed IPs. A port is orphaned when its device_owner
+    starts with 'compute:' and its device_id no longer matches any live
+    compute_servers row (all services share the same PostgreSQL DB).
     """
     compute_ports = db.scalars(
         select(Port).where(Port.device_owner.like("compute:%"), Port.device_id.is_not(None))
@@ -1961,7 +1994,32 @@ def purge_orphaned_ports(db: DB):
                 deleted.append({"id": port.id, "name": port.name, "device_id": port.device_id})
             except Exception:
                 continue
-    return {"purged": len(deleted), "ports": deleted}
+
+    # Floating IPs whose port_id no longer resolves to any port row —
+    # leftovers from deletions that happened before the port-delete hook
+    # existed. Release them the same way disassociate does.
+    stale_fips = db.scalars(
+        select(FloatingIP).where(FloatingIP.port_id.is_not(None))
+    ).all()
+    live_port_ids = {p.id for p in db.scalars(select(Port)).all()}
+    released_fips = []
+    for fip in stale_fips:
+        if fip.port_id in live_port_ids:
+            continue
+        router = db.get(Router, fip.router_id) if fip.router_id else None
+        if router and fip.floating_ip:
+            ovn("--if-exists", "lr-nat-del", router.name, "dnat_and_snat", fip.floating_ip, check=False)
+        fip.fixed_port_id = None
+        fip.port_id = None
+        fip.fixed_ip_address = None
+        fip.server_id = None
+        fip.router_id = None
+        fip.status = "DOWN"
+        released_fips.append(fip.floating_ip or fip.floating_ip_address or fip.id)
+    if released_fips:
+        db.commit()
+
+    return {"purged": len(deleted), "ports": deleted, "released_floating_ips": released_fips}
 
 
 @app.post("/floating-ips", status_code=201)

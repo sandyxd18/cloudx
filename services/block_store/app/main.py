@@ -532,13 +532,21 @@ def _response_detail(response: requests.Response) -> str:
 
 
 def get_server(ref: str) -> dict:
-    try:
-        response = requests.get(f"{COMPUTE_API_URL}/servers/{ref}", timeout=8)
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_response_detail(response))
-    return response.json()
+    """Resolve a server (id or name) for attach/detach flows.
+
+    Queries the shared PostgreSQL compute_servers table directly instead of
+    calling compute-api over HTTP — that endpoint requires an auth token this
+    service-to-service call never had (the same silent-401 class of bug as the
+    port-cleanup one). All CloudX services share one database.
+    """
+    with SessionLocal() as db:
+        row = db.execute(
+            text("SELECT id, name, status FROM compute_servers WHERE (id = :ref OR name = :ref) AND status != 'DELETED' LIMIT 1"),
+            {"ref": ref},
+        ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"server '{ref}' not found")
+    return dict(row)
 
 
 # ── RPC helpers ────────────────────────────────────────────────────────────────
