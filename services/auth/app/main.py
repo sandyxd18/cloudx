@@ -33,8 +33,8 @@ from sqlalchemy.orm import (
     mapped_column, sessionmaker,
 )
 
-# Load shared request_id_middleware
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+# Load shared modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 try:
     from shared.request_id_middleware import RequestIDMiddleware
 except ImportError:

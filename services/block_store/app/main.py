@@ -37,22 +37,17 @@ try:
 except ImportError:
     from auth_middleware import CurrentUser, AdminUser, OptionalAuth
 
-# Import shared RPC library
+# Import shared modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 try:
     from shared.rpc import RPCClient
 except ImportError:
     from rpc import RPCClient
 
-# Load shared request_id_middleware
 try:
     from shared.request_id_middleware import RequestIDMiddleware
 except ImportError:
-    try:
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-        from shared.request_id_middleware import RequestIDMiddleware
-    except ImportError:
-        RequestIDMiddleware = None
+    RequestIDMiddleware = None
 
 log = logging.getLogger("block-store-api")
 

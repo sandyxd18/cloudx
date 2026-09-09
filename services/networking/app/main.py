@@ -19,25 +19,16 @@ try:
 except ImportError:
     from auth_middleware import CurrentUser, AdminUser, OptionalAuth
 
-# Load shared request_id_middleware
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 try:
     from shared.request_id_middleware import RequestIDMiddleware
 except ImportError:
-    try:
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-        from shared.request_id_middleware import RequestIDMiddleware
-    except ImportError:
-        RequestIDMiddleware = None
+    RequestIDMiddleware = None
 
-# Optional RPC client for event publishing
 try:
     from shared.rpc import RPCClient as _RPCClientClass
 except ImportError:
-    try:
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-        from shared.rpc import RPCClient as _RPCClientClass
-    except ImportError:
-        _RPCClientClass = None
+    _RPCClientClass = None
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@rabbitmq:5672/")
 log = logging.getLogger("networking-api")
