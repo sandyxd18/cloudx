@@ -24,6 +24,7 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 
 import requests
 
@@ -42,6 +43,13 @@ RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@rabbitmq:5672/")
 LOG_LEVEL    = os.getenv("LOG_LEVEL", "INFO")
 COMPUTE_HOST = os.getenv("COMPUTE_HOST", "single-node")
 SYNC_POWER_STATE_INTERVAL = int(os.getenv("SYNC_POWER_STATE_INTERVAL", "30"))
+
+# Instance monitoring (EC2-style "Monitoring" tab): sample every 10s, keep 24h.
+# ponytail: in-memory ring buffer, lost on worker restart. Upgrade path is a
+# dedicated monitoring service/timeseries DB — planned separately by the user.
+METRICS_SAMPLE_INTERVAL = int(os.getenv("METRICS_SAMPLE_INTERVAL", "10"))
+METRICS_RETENTION_HOURS = int(os.getenv("METRICS_RETENTION_HOURS", "24"))
+METRICS_BUFFER_SIZE = max(1, (METRICS_RETENTION_HOURS * 3600) // METRICS_SAMPLE_INTERVAL)
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
@@ -163,6 +171,143 @@ def sync_power_states_loop() -> None:
     while True:
         time.sleep(SYNC_POWER_STATE_INTERVAL)
         sync_power_states()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Instance monitoring (EC2-style "Monitoring" tab) — sampling + ring buffer
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Every METRICS_SAMPLE_INTERVAL seconds, snapshot raw libvirt counters for every
+# RUNNING instance and diff them against the previous sample to derive rates
+# (CPU %, bytes/sec, IOPS). Samples are kept in a per-server ring buffer capped
+# at METRICS_RETENTION_HOURS (24h @ 10s = 8640 points/server) — this is an
+# in-process cache, not durable storage; it resets on worker restart.
+
+# server_id -> deque of {timestamp (epoch seconds), cpu_percent, mem_used_mb,
+#                         mem_total_mb, net_rx_bps, net_tx_bps, disk_read_bps,
+#                         disk_write_bps, disk_read_iops, disk_write_iops}
+_metrics_history: dict[str, deque] = {}
+# server_id -> last raw counters, for delta/rate computation between samples.
+_metrics_last_raw: dict[str, dict] = {}
+_metrics_lock = threading.Lock()
+
+
+def _compute_rate(current: dict, previous: dict | None) -> dict:
+    """Diff two raw counter samples into per-second rates + a CPU percentage."""
+    now_wall = time.time()
+    mem_total_mb = round((current.get("mem_total_kb") or 0) / 1024, 1)
+    mem_used_kb = current.get("mem_used_kb")
+    mem_used_mb = round(mem_used_kb / 1024, 1) if mem_used_kb is not None else None
+
+    sample = {
+        "timestamp": now_wall,
+        "cpu_percent": 0.0,
+        "mem_used_mb": mem_used_mb,
+        "mem_total_mb": mem_total_mb,
+        "mem_percent": round((mem_used_mb / mem_total_mb) * 100, 1) if mem_used_mb and mem_total_mb else None,
+        "net_rx_bps": 0.0,
+        "net_tx_bps": 0.0,
+        "disk_read_bps": 0.0,
+        "disk_write_bps": 0.0,
+        "disk_read_iops": 0.0,
+        "disk_write_iops": 0.0,
+    }
+
+    if not previous:
+        return sample  # first sample for this server — no delta possible yet
+
+    elapsed = current["timestamp"] - previous["timestamp"]
+    if elapsed <= 0:
+        return sample
+
+    nr_vcpus = max(1, current.get("nr_vcpus") or 1)
+    cpu_delta_ns = current["cpu_time_ns"] - previous["cpu_time_ns"]
+    # cpu_time_ns is cumulative ns of CPU consumed across all vCPUs.
+    # % = (ns consumed / (elapsed_s * 1e9 * nr_vcpus)) * 100
+    cpu_percent = (cpu_delta_ns / (elapsed * 1_000_000_000 * nr_vcpus)) * 100
+    sample["cpu_percent"] = round(max(0.0, min(100.0, cpu_percent)), 1)
+
+    def rate(key: str) -> float:
+        delta = current.get(key, 0) - previous.get(key, 0)
+        return round(max(0.0, delta) / elapsed, 1)
+
+    sample["net_rx_bps"] = rate("net_rx_bytes")
+    sample["net_tx_bps"] = rate("net_tx_bytes")
+    sample["disk_read_bps"] = rate("disk_read_bytes")
+    sample["disk_write_bps"] = rate("disk_write_bytes")
+    sample["disk_read_iops"] = rate("disk_read_req")
+    sample["disk_write_iops"] = rate("disk_write_req")
+    return sample
+
+
+def collect_metrics() -> None:
+    """One sampling pass: read libvirt counters for every RUNNING server and record a rate sample."""
+    try:
+        result = _rpc.call("conductor", "get_host_servers", {"host": COMPUTE_HOST}, timeout=10)
+    except Exception as exc:
+        log.warning("[metrics] could not fetch host servers from conductor: %s", exc)
+        return
+    servers = result.get("servers", [])
+
+    live_ids = set()
+    for server in servers:
+        domain_name = server.get("libvirt_domain_name")
+        if not domain_name or server.get("status") not in ("ACTIVE", "PAUSED"):
+            continue
+        server_id = server["id"]
+        live_ids.add(server_id)
+        try:
+            raw = libvirt_driver.get_domain_raw_counters(domain_name, server.get("tap_name"))
+        except Exception as exc:
+            log.debug("[metrics] could not read counters for %s: %s", domain_name, exc)
+            continue
+        if raw is None:
+            continue  # domain not active despite DB status
+
+        with _metrics_lock:
+            previous = _metrics_last_raw.get(server_id)
+            sample = _compute_rate(raw, previous)
+            _metrics_last_raw[server_id] = raw
+            buf = _metrics_history.setdefault(server_id, deque(maxlen=METRICS_BUFFER_SIZE))
+            buf.append(sample)
+
+    # Drop buffers/raw-state for servers that are no longer live (deleted, stopped)
+    # so memory doesn't grow unbounded across the worker's lifetime.
+    with _metrics_lock:
+        stale = set(_metrics_last_raw) - live_ids
+        for server_id in stale:
+            _metrics_last_raw.pop(server_id, None)
+
+
+def get_metrics_history(server_id: str, since_epoch: float | None = None) -> list[dict]:
+    """Return recorded samples for a server, optionally filtered to `timestamp >= since_epoch`."""
+    with _metrics_lock:
+        buf = _metrics_history.get(server_id)
+        samples = list(buf) if buf else []
+    if since_epoch is not None:
+        samples = [s for s in samples if s["timestamp"] >= since_epoch]
+    return samples
+
+
+def collect_metrics_loop() -> None:
+    """Background daemon loop — samples every METRICS_SAMPLE_INTERVAL seconds."""
+    log.info("[metrics] instance monitoring loop started (interval=%ds, retention=%dh, buffer=%d samples/server)",
+              METRICS_SAMPLE_INTERVAL, METRICS_RETENTION_HOURS, METRICS_BUFFER_SIZE)
+    while True:
+        time.sleep(METRICS_SAMPLE_INTERVAL)
+        collect_metrics()
+
+
+def handle_get_metrics(args: dict) -> dict:
+    """RPC Call — return recorded monitoring samples for one server.
+
+    Expected args:: {"server_id": "uuid", "since_epoch": 1234567890.0 (optional)}
+    """
+    server_id = args.get("server_id")
+    if not server_id:
+        return {"error": "server_id required"}
+    samples = get_metrics_history(server_id, args.get("since_epoch"))
+    return {"server_id": server_id, "samples": samples, "sample_interval": METRICS_SAMPLE_INTERVAL}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -705,6 +850,7 @@ HANDLERS = {
     "health":           handle_health,
     "get_logs":         handle_get_logs,
     "get_console_info": handle_get_console_info,
+    "get_metrics":      handle_get_metrics,
     # Hotplug (Cast)
     "attach_volume":    handle_attach_volume,
     "detach_volume":    handle_detach_volume,
@@ -740,6 +886,7 @@ def main():
         sys.exit(1)
 
     threading.Thread(target=sync_power_states_loop, daemon=True).start()
+    threading.Thread(target=collect_metrics_loop, daemon=True).start()
 
     consumer = RPCConsumer(
         queue_name="compute",

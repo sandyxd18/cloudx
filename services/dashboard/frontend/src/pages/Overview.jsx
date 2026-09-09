@@ -16,20 +16,6 @@ import Table from '@cloudscape-design/components/table'
 import { api } from '../api.js'
 import { ComputeStatus, PageLoading, TableEmpty } from '../components/common.jsx'
 
-// Sparkline series — placement does not retain history, so the trend is
-// synthesized around the live value for a visual reference only.
-function makeSeries(max, points = 12) {
-  const now = Date.now()
-  const data = []
-  for (let i = points; i >= 0; i--) {
-    data.push({
-      x: new Date(now - i * 5 * 60 * 1000),
-      y: Math.max(0, Math.round(max * (0.4 + Math.random() * 0.4))),
-    })
-  }
-  return data
-}
-
 function MetricCard({ label, value, sub, href, onNavigate }) {
   return (
     <Container>
@@ -50,7 +36,8 @@ export default function OverviewPage() {
   const [networks, setNetworks] = useState([])
   const [volumes, setVolumes]   = useState([])
   const [images, setImages]     = useState([])
-  const [usages, setUsages]     = useState(null)
+  const [host, setHost]         = useState(null)
+  const [allocHistory, setAllocHistory] = useState([])
   const [quota, setQuota]       = useState(null)
   const [catalog, setCatalog]   = useState([])
   const [loading, setLoading]   = useState(true)
@@ -62,14 +49,16 @@ export default function OverviewPage() {
       api.getNetworks(),
       api.getVolumes(),
       api.getImages(),
-      api.getUsages(),
+      api.getHost(),
+      api.getAllocationHistory(3),
       api.getServiceCatalog(),
-    ]).then(([s, n, v, im, u, c]) => {
+    ]).then(([s, n, v, im, h, ah, c]) => {
       if (s.status === 'fulfilled')  setServers(s.value?.items || [])
       if (n.status === 'fulfilled')  setNetworks(n.value?.items || [])
       if (v.status === 'fulfilled')  setVolumes(v.value?.items || [])
       if (im.status === 'fulfilled') setImages(im.value?.items || [])
-      if (u.status === 'fulfilled')  setUsages(u.value)
+      if (h.status === 'fulfilled')  setHost(h.value)
+      if (ah.status === 'fulfilled') setAllocHistory(ah.value?.samples || [])
       if (c.status === 'fulfilled')  setCatalog(c.value?.catalog || c.value?.items || [])
       setLoading(false)
     })
@@ -82,16 +71,18 @@ export default function OverviewPage() {
 
   const activeServers = servers.filter(s => s.status === 'ACTIVE').length
   const totalDisk     = volumes.reduce((a, v) => a + (v.size_gb || v.size || 0), 0)
-  const vcpusUsed     = usages?.usages?.VCPU || 0
-  const ramUsedMb     = usages?.usages?.MEMORY_MB || 0
-  const vcpusTotal    = usages?.inventories?.VCPU?.total || 0
-  const ramTotalMb    = usages?.inventories?.MEMORY_MB?.total || 0
+  const inv           = host?.placement || {}
+  const vcpusUsed     = inv.used_vcpu || 0
+  const vcpusTotal    = inv.total_vcpu || 0
+  const ramUsedMb     = inv.used_ram_mb || 0
+  const ramTotalMb    = inv.total_ram_mb || 0
+  const diskTotalGb   = inv.total_disk_gb || 0
 
   const utilization = [
     { label: 'vCPU', used: vcpusUsed, total: vcpusTotal || 1, unit: 'cores' },
     { label: 'Memory', used: Math.round(ramUsedMb / 1024), total: Math.round(ramTotalMb / 1024) || 1, unit: 'GB' },
-    { label: 'Block storage', used: totalDisk, total: Math.max(totalDisk, 500), unit: 'GB' },
-    { label: 'Instances', used: servers.length, total: Math.max(servers.length, 20), unit: '' },
+    { label: 'Block storage', used: totalDisk, total: diskTotalGb || Math.max(totalDisk, 1), unit: 'GB' },
+    { label: 'Instances', used: servers.length, total: vcpusTotal || Math.max(servers.length, 1), unit: '' },
   ]
 
   const quotaRows = quota ? [
@@ -99,6 +90,9 @@ export default function OverviewPage() {
     { label: 'Storage', used: quota.usage?.gigabytes ?? totalDisk, total: quota.gigabytes ?? 1000, unit: 'GB' },
     { label: 'Snapshots', used: quota.usage?.snapshots ?? 0, total: quota.snapshots ?? 10, unit: '' },
   ] : []
+
+  const vcpuSeries = allocHistory.map(s => ({ x: new Date(s.timestamp * 1000), y: s.used_vcpu }))
+  const ramSeries  = allocHistory.map(s => ({ x: new Date(s.timestamp * 1000), y: Math.round((s.used_ram_mb || 0) / 1024) }))
 
   return (
     <ContentLayout
@@ -126,28 +120,28 @@ export default function OverviewPage() {
           <MetricCard label="Images" value={images.length} sub="available images" href="/images" onNavigate={navigate} />
         </Grid>
 
-        {/* ── Trends ────────────────────────────────────────────────────────── */}
+        {/* ── Trends (real cluster allocation history, sampled every 60s) ────── */}
         <Grid gridDefinition={[{ colspan: { default: 12, m: 6 } }, { colspan: { default: 12, m: 6 } }]}>
           <Container header={<Header variant="h2" description={`${vcpusUsed} of ${vcpusTotal} vCPUs allocated`}>vCPU allocation</Header>}>
             <AreaChart
-              series={[{ title: 'vCPUs', type: 'area', data: makeSeries(vcpusTotal || 8) }]}
+              series={[{ title: 'vCPUs', type: 'area', data: vcpuSeries }]}
               xScaleType="time"
               height={180}
               hideFilter
               hideLegend
               ariaLabel="vCPU allocation over time"
-              empty={<Box textAlign="center" color="inherit">No data available</Box>}
+              empty={<Box textAlign="center" color="inherit">No history yet — samples accumulate every minute.</Box>}
             />
           </Container>
           <Container header={<Header variant="h2" description={`${Math.round(ramUsedMb / 1024)} of ${Math.round(ramTotalMb / 1024)} GB allocated`}>Memory allocation</Header>}>
             <AreaChart
-              series={[{ title: 'Memory (MB)', type: 'area', data: makeSeries(ramTotalMb || 16384) }]}
+              series={[{ title: 'Memory (GB)', type: 'area', data: ramSeries }]}
               xScaleType="time"
               height={180}
               hideFilter
               hideLegend
               ariaLabel="Memory allocation over time"
-              empty={<Box textAlign="center" color="inherit">No data available</Box>}
+              empty={<Box textAlign="center" color="inherit">No history yet — samples accumulate every minute.</Box>}
             />
           </Container>
         </Grid>

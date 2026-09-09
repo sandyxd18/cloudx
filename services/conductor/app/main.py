@@ -189,7 +189,7 @@ def handle_get_host_servers(args: dict) -> dict:
     with SessionLocal() as db:
         rows = db.execute(
             text(
-                "SELECT id, name, status, libvirt_domain_name "
+                "SELECT id, name, status, libvirt_domain_name, tap_name "
                 "FROM compute_servers WHERE host = :host AND status != 'DELETED'"
             ),
             {"host": host},

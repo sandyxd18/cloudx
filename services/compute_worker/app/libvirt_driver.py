@@ -190,6 +190,82 @@ def get_all_domain_states() -> dict[str, str]:
         conn.close()
 
 
+def get_domain_raw_counters(name: str, tap_name: str | None, disk_target: str = "sda") -> dict | None:
+    """Read the current instantaneous hypervisor counters for one domain.
+
+    Returns raw cumulative counters (not rates) — the caller is responsible for
+    diffing two samples over the elapsed wall-clock time to get CPU %, bytes/sec,
+    and IOPS. Returns None if the domain isn't running (no live stats to read).
+
+    Fields:
+      cpu_time_ns   — cumulative CPU time in nanoseconds (domain.info()[4])
+      nr_vcpus      — number of vCPUs, needed to normalize CPU time into a 0-100% figure
+      mem_total_kb  — max/allocated memory (KB)
+      mem_used_kb   — actual guest memory in use (KB), from memoryStats() 'available'-'unused'
+      net_rx_bytes / net_tx_bytes / net_rx_packets / net_tx_packets — cumulative, from interfaceStats
+      disk_read_bytes / disk_write_bytes / disk_read_req / disk_write_req — cumulative, from blockStats
+      timestamp     — time.monotonic() at sample time, for rate calculation
+    """
+    if libvirt is None:
+        raise RuntimeError("libvirt-python is not installed")
+    import time as _time
+    conn, domain = lookup(name)
+    try:
+        if not domain.isActive():
+            return None
+
+        # virDomainGetInfo() returns (state, maxMem, memory, nrVirtCpu, cpuTime).
+        _state, max_mem_kb, current_mem_kb, nr_vcpus, cpu_time_ns = domain.info()
+
+        mem_used_kb = current_mem_kb
+        try:
+            stats = domain.memoryStats()
+            # 'available' and 'unused' are only reported when the guest has the
+            # virtio balloon driver + qemu-guest-agent; fall back to domain.info().
+            if "available" in stats and "unused" in stats:
+                mem_used_kb = stats["available"] - stats["unused"]
+            elif "rss" in stats:
+                mem_used_kb = stats["rss"]
+        except Exception:
+            pass
+
+        net_rx_bytes = net_tx_bytes = net_rx_packets = net_tx_packets = 0
+        if tap_name:
+            try:
+                rx_bytes, rx_packets, _rx_errs, _rx_drop, tx_bytes, tx_packets, _tx_errs, _tx_drop = \
+                    domain.interfaceStats(tap_name)
+                net_rx_bytes, net_tx_bytes = rx_bytes, tx_bytes
+                net_rx_packets, net_tx_packets = rx_packets, tx_packets
+            except Exception:
+                pass
+
+        disk_read_req = disk_read_bytes = disk_write_req = disk_write_bytes = 0
+        try:
+            read_req, read_bytes, write_req, write_bytes, _errs = domain.blockStats(disk_target)
+            disk_read_req, disk_read_bytes = read_req, read_bytes
+            disk_write_req, disk_write_bytes = write_req, write_bytes
+        except Exception:
+            pass
+
+        return {
+            "cpu_time_ns": cpu_time_ns,
+            "nr_vcpus": nr_vcpus,
+            "mem_total_kb": max_mem_kb,
+            "mem_used_kb": mem_used_kb,
+            "net_rx_bytes": net_rx_bytes,
+            "net_tx_bytes": net_tx_bytes,
+            "net_rx_packets": net_rx_packets,
+            "net_tx_packets": net_tx_packets,
+            "disk_read_bytes": disk_read_bytes,
+            "disk_write_bytes": disk_write_bytes,
+            "disk_read_req": disk_read_req,
+            "disk_write_req": disk_write_req,
+            "timestamp": _time.monotonic(),
+        }
+    finally:
+        conn.close()
+
+
 def define_and_start(xml: str) -> None:
     conn = connect()
     try:

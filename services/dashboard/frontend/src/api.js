@@ -79,6 +79,13 @@ export const api = {
   shelveServer: (id) => request('POST', `/compute/servers/${id}/shelve`, {}),
   unshelveServer: (id) => request('POST', `/compute/servers/${id}/unshelve`, {}),
 
+  // Compute — Instance monitoring (EC2-style "Monitoring" tab)
+  getServerMetrics: (id, timeRange = '1h') => request('GET', `/compute/servers/${id}/metrics?time_range=${timeRange}`),
+
+  // Compute — Host capacity & cluster allocation trend (Overview page)
+  getHost: () => request('GET', '/compute/host'),
+  getAllocationHistory: (hours = 24) => request('GET', `/compute/allocation-history?hours=${hours}`),
+
   // Compute — Resize confirm / revert
   confirmResize: (id) => request('POST', `/compute/servers/${id}/confirmResize`, {}),
   revertResize: (id) => request('POST', `/compute/servers/${id}/revertResize`, {}),

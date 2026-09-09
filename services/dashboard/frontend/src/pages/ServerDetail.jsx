@@ -17,6 +17,7 @@ import Spinner from '@cloudscape-design/components/spinner'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import { ComputeStatus, PageLoading, TableEmpty, fmtDate, timeAgo } from '../components/common.jsx'
+import InstanceMonitoring from '../components/InstanceMonitoring.jsx'
 
 export default function ServerDetail() {
   const { id } = useParams()
@@ -216,6 +217,11 @@ export default function ServerDetail() {
                   </Container>
                 </SpaceBetween>
               ),
+            },
+            {
+              id: 'monitoring',
+              label: 'Monitoring',
+              content: <InstanceMonitoring serverId={id} isActive={isActive} />,
             },
             {
               id: 'networking',

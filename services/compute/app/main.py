@@ -4,7 +4,10 @@ import logging
 import os
 import shutil
 import sys
+import threading
+import time
 import uuid
+from collections import deque
 from datetime import datetime
 from typing import Annotated
 
@@ -54,6 +57,17 @@ DEFAULT_VM_USER = os.getenv("DEFAULT_VM_USER", "ubuntu")
 NOVNC_BASE_URL = os.getenv("NOVNC_BASE_URL", "http://localhost:6080/vnc.html")
 RPC_CALL_TIMEOUT = int(os.getenv("RPC_CALL_TIMEOUT", "30"))
 ONLY_BACKEND = "libvirt"
+
+# Cluster-wide allocation trend for the dashboard Overview page: sample
+# placement_inventory() every ALLOCATION_HISTORY_SAMPLE_INTERVAL seconds, keep
+# ALLOCATION_HISTORY_RETENTION_HOURS worth of points in memory.
+# ponytail: in-memory ring buffer, lost on API restart. Same upgrade path as
+# compute-worker's instance metrics — a dedicated monitoring service/timeseries
+# DB if/when that's built.
+ALLOCATION_HISTORY_SAMPLE_INTERVAL = int(os.getenv("ALLOCATION_HISTORY_SAMPLE_INTERVAL", "60"))
+ALLOCATION_HISTORY_RETENTION_HOURS = int(os.getenv("ALLOCATION_HISTORY_RETENTION_HOURS", "24"))
+_ALLOCATION_HISTORY_SIZE = max(1, (ALLOCATION_HISTORY_RETENTION_HOURS * 3600) // ALLOCATION_HISTORY_SAMPLE_INTERVAL)
+_allocation_history: deque = deque(maxlen=_ALLOCATION_HISTORY_SIZE)
 
 # ── Internal Service Token ────────────────────────────────────────────────────
 # JWT obtained at startup for service-to-service calls (networking, image, block-store).
@@ -611,6 +625,25 @@ def placement_inventory(db: Session) -> dict:
     }
 
 
+def collect_allocation_history() -> None:
+    """One sampling pass: snapshot cluster-wide vCPU/RAM/disk allocation for the Overview trend chart."""
+    with SessionLocal() as db:
+        try:
+            inv = placement_inventory(db)
+        except Exception as exc:
+            log.warning("[allocation-history] sampling failed: %s", exc)
+            return
+    _allocation_history.append({"timestamp": time.time(), **inv})
+
+
+def allocation_history_loop() -> None:
+    log.info("[allocation-history] cluster trend sampler started (interval=%ds, retention=%dh)",
+              ALLOCATION_HISTORY_SAMPLE_INTERVAL, ALLOCATION_HISTORY_RETENTION_HOURS)
+    while True:
+        time.sleep(ALLOCATION_HISTORY_SAMPLE_INTERVAL)
+        collect_allocation_history()
+
+
 def ensure_capacity(db: Session, flavor: Flavor) -> None:
     inv = placement_inventory(db)
     if flavor.vcpus > inv["free_vcpu"] or flavor.ram_mb > inv["free_ram_mb"] or flavor.disk_gb > inv["free_disk_gb"]:
@@ -711,6 +744,7 @@ def _startup_rpc():
     global _rpc
     _rpc = RPCClient()
     log.info("RPC client initialized")
+    threading.Thread(target=allocation_history_loop, daemon=True).start()
 
 
 @app.on_event("shutdown")
@@ -758,6 +792,19 @@ def host_show(_: CurrentUser, db: DB):
     except Exception:
         worker = {"status": "unreachable"}
     return {"host": "single-node", "worker": worker, "placement": placement_inventory(db)}
+
+
+@app.get("/allocation-history")
+def allocation_history(_: CurrentUser, hours: float = 24):
+    """Cluster-wide vCPU/RAM/disk allocation trend for the dashboard Overview page.
+
+    Backed by an in-memory ring buffer sampled every ALLOCATION_HISTORY_SAMPLE_INTERVAL
+    seconds (default 60s); resets on API restart and only covers up to
+    ALLOCATION_HISTORY_RETENTION_HOURS (default 24h) of history.
+    """
+    since = time.time() - max(0.0, hours) * 3600
+    samples = [s for s in _allocation_history if s["timestamp"] >= since]
+    return {"samples": samples, "sample_interval": ALLOCATION_HISTORY_SAMPLE_INTERVAL}
 
 
 @app.post("/flavors", status_code=201)
@@ -1465,6 +1512,27 @@ def unshelve_server(ref: str, current: CurrentUser, db: DB):
         "_networking_url": NETWORKING_API_URL,
     })
     return {"server": server.name, "status": "unshelving"}
+
+
+_METRICS_TIME_RANGE_HOURS = {"1h": 1, "3h": 3, "6h": 6, "12h": 12, "24h": 24}
+
+
+@app.get("/servers/{ref}/metrics")
+def server_metrics(ref: str, _: CurrentUser, db: DB, time_range: str = "1h"):
+    """EC2-style instance monitoring: CPU/memory/network/disk samples from the hypervisor.
+
+    Backed by compute-worker's in-memory ring buffer (see collect_metrics_loop);
+    samples are taken every 10s and retained for up to 24h, reset on worker restart.
+    """
+    server = require_server(db, ref)
+    hours = _METRICS_TIME_RANGE_HOURS.get(time_range, 1)
+    since_epoch = time.time() - hours * 3600
+    try:
+        result = call_worker("get_metrics", {"server_id": server.id, "since_epoch": since_epoch}, timeout=RPC_CALL_TIMEOUT)
+        result["time_range"] = time_range
+        return result
+    except Exception as exc:
+        return {"server_id": server.id, "samples": [], "sample_interval": 10, "time_range": time_range, "error": str(exc)}
 
 
 @app.get("/servers/{ref}/logs")
