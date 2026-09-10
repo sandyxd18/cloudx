@@ -13,9 +13,10 @@ import SideNavigation from '@cloudscape-design/components/side-navigation'
 import BreadcrumbGroup from '@cloudscape-design/components/breadcrumb-group'
 import Flashbar from '@cloudscape-design/components/flashbar'
 import Autosuggest from '@cloudscape-design/components/autosuggest'
-import { Moon, Sun } from 'lucide-react'
+import { Moon, Sun, Terminal } from 'lucide-react'
 import { useAuth, useFlashItems } from '../context.jsx'
 import { useTheme } from '../theme.jsx'
+import { useXShell } from './XShellContext.jsx'
 
 // ── Navigation model ─────────────────────────────────────────────────────────
 const NAV_ITEMS = [
@@ -142,6 +143,7 @@ export default function Layout() {
   const { user, logout, projects, switchProject } = useAuth()
   const { isDark, toggleMode } = useTheme()
   const flashItems = useFlashItems()
+  const { open: xshellOpen, setOpen: setXShellOpen } = useXShell()
   const navigate = useNavigate()
   const location = useLocation()
   const [navOpen, setNavOpen] = useState(true)
@@ -187,6 +189,15 @@ export default function Layout() {
           switchProject(detail.id)
         }
       },
+    },
+    // XShell / XIDE docked panel toggle — the AWS CloudShell terminal icon.
+    {
+      type: 'button',
+      iconSvg: <Terminal size={16} />,
+      text: xshellOpen ? 'XShell' : 'XShell',
+      ariaLabel: xshellOpen ? 'Close XShell' : 'Open XShell',
+      title: xshellOpen ? 'Close XShell' : 'Open XShell',
+      onClick: () => setXShellOpen(!xshellOpen),
     },
     // Dark / light visual mode toggle.
     {

@@ -2,6 +2,8 @@ import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-route
 import { useEffect } from 'react'
 import { ToastProvider, AuthProvider, useAuth, useToast } from './context.jsx'
 import { ThemeProvider } from './theme.jsx'
+import { XShellProvider } from './components/XShellContext.jsx'
+import XShellPanel from './components/XShellPanel.jsx'
 import Layout from './components/Layout.jsx'
 import LoginPage from './pages/Login.jsx'
 import OverviewPage from './pages/Overview.jsx'
@@ -123,7 +125,10 @@ export default function App() {
       <BrowserRouter>
         <AuthProvider>
           <ToastProvider>
-            <AppRoutes />
+            <XShellProvider>
+              <AppRoutes />
+              <XShellPanel />
+            </XShellProvider>
           </ToastProvider>
         </AuthProvider>
       </BrowserRouter>

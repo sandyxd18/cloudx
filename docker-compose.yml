@@ -524,6 +524,28 @@ services:
     depends_on:
       - haproxy
 
+  # ── XIDE (Cloud9-style in-browser IDE) ──────────────────────────────────────
+  # Single lightweight code-server (VS Code in the browser, MIT license) serving
+  # per-user isolated workspaces. Runs host-network and serves its own HTTP+WS
+  # natively on :8085 — no reverse-proxy WebSocket bridging needed.
+  xide:
+    image: codercom/code-server:latest
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - /usr/bin/entrypoint.sh
+      - --bind-addr
+      - 0.0.0.0:8085
+      - --auth
+      - none
+      - --disable-telemetry
+    environment:
+      DOCKER_USER: coder
+    volumes:
+      - xide-workspaces:/home/coder
+    depends_on:
+      - dashboard
+
 volumes:
   postgres-data:
   ovn-nb-data:
@@ -531,3 +553,4 @@ volumes:
   image-data:
   minio-data:
   rabbitmq-data:
+  xide-workspaces:

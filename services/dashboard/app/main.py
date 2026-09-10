@@ -6,10 +6,14 @@ Auth token is passed through from the client's Authorization header.
 WebSocket /ws/events broadcasts live status events from RabbitMQ.
 """
 import asyncio
+import fcntl
 import json
 import logging
 import os
+import pty
+import struct
 import sys
+import termios
 import uuid
 from pathlib import Path
 
@@ -106,6 +110,133 @@ async def ws_events(ws: WebSocket):
     finally:
         _ws_clients.discard(ws)
         log.info("WebSocket client disconnected (%d remaining)", len(_ws_clients))
+
+
+# ── XShell: WebSocket → PTY gateway ────────────────────────────────────────────
+# Spawns a bash shell with the `cloudx` CLI pre-configured for the dashboard
+# session's user/project, then pipes terminal bytes over the WebSocket. Pure
+# stdlib (pty/termios/fcntl) — no extra dependencies.
+
+async def _pty_read_loop(ws: WebSocket, master_fd: int) -> None:
+    """Background task: read PTY output and stream it to the WebSocket."""
+    loop = asyncio.get_event_loop()
+    try:
+        while True:
+            try:
+                data = await loop.run_in_executor(None, os.read, master_fd, 4096)
+            except OSError:
+                break
+            if not data:
+                break
+            await ws.send_bytes(data)
+    except Exception:
+        pass
+
+
+def _set_winsize(master_fd: int, cols: int, rows: int) -> None:
+    try:
+        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    except Exception:
+        pass
+
+
+@app.websocket("/ws/xshell")
+async def ws_xshell(ws: WebSocket):
+    """XShell terminal: authenticate via the dashboard session cookie, spawn bash."""
+    await ws.accept()
+
+    session_id = ws.cookies.get(SESSION_COOKIE_NAME)
+    if not session_id or not _memcached:
+        await ws.send_text("\r\n✗ Not authenticated. Re-open the dashboard session.\r\n")
+        await ws.close(code=4401)
+        return
+
+    raw = _memcached.get(f"session:{session_id}")
+    if not raw:
+        await ws.send_text("\r\n✗ Session expired — sign in again.\r\n")
+        await ws.close(code=4401)
+        return
+
+    session = json.loads(raw.decode("utf-8"))
+    user = session.get("user") or {}
+    project = session.get("project") or {}
+    token = session.get("token") or ""
+
+    username = user.get("username", "user")
+    project_name = project.get("name") or user.get("project_id", "")
+    env_map = {
+        "CLOUDX_AUTH_URL":       "http://127.0.0.1:8005",
+        "CLOUDX_COMPUTE_URL":    "http://127.0.0.1:8003",
+        "CLOUDX_NETWORK_URL":    "http://127.0.0.1:8001",
+        "CLOUDX_IMAGE_URL":      "http://127.0.0.1:8002",
+        "CLOUDX_VOLUME_URL":     "http://127.0.0.1:8004",
+        "CLOUDX_PLACEMENT_URL":  "http://127.0.0.1:8006",
+        "CLOUDX_TOKEN":          token,
+        "CLOUDX_USER":           username,
+        "CLOUDX_PROJECT":        project_name,
+        "PS1":                   r"\u@cloudx-xshell:\[\e[32m\]\w\[\e[0m\]\$ ",
+        "TERM":                  "xterm-256color",
+    }
+
+    # Spawn the shell in a fresh PTY.
+    pid, master_fd = pty.fork()
+    if pid == 0:  # child — exec the shell
+        try:
+            for k, v in env_map.items():
+                os.environ[k] = v
+            os.environ["HOME"] = os.getenv("HOME", "/root")
+            os.chdir(os.environ["HOME"])
+            os.execvp("bash", ["bash", "--noprofile", "--norc"])
+        except Exception:
+            os._exit(1)
+    parent_pid = pid  # keep reference
+
+    # Reader task drains PTY → WebSocket.
+    reader = asyncio.create_task(_pty_read_loop(ws, master_fd))
+
+    banner = (
+        f"\r\n  Welcome to XShell (CloudX cloud shell)\r\n"
+        f"  Authenticated as '{username}' (Project: {project_name})\r\n"
+        f"  `cloudx` CLI is ready — try `cloudx server list`.\r\n"
+        f"  Ctrl+D to exit.\r\n\r\n"
+    )
+    await ws.send_text(banner)
+
+    try:
+        while True:
+            try:
+                msg = await ws.receive_text()
+            except WebSocketDisconnect:
+                break
+            # Handle resize control messages (JSON {"type":"resize",cols,rows}).
+            if msg.startswith("{") and '"type"' in msg:
+                try:
+                    ctl = json.loads(msg)
+                    if ctl.get("type") == "resize":
+                        _set_winsize(master_fd, int(ctl.get("cols", 80)), int(ctl.get("rows", 24)))
+                except Exception:
+                    pass
+                continue
+            try:
+                os.write(master_fd, msg.encode())
+            except OSError:
+                break
+    finally:
+        reader.cancel()
+        # Reap the child and tidy up the PTY.
+        try:
+            os.close(master_fd)
+        except Exception:
+            pass
+        try:
+            os.kill(parent_pid, 15)
+        except Exception:
+            pass
+        try:
+            os.waitpid(parent_pid, 0)
+        except Exception:
+            pass
+        log.info("XShell session ended for %s", username)
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────────
