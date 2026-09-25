@@ -19,6 +19,7 @@ import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import useEventStream from '../hooks/useEventStream.js'
 import { ResourceStatus, BoolStatus, TableEmpty, TableNoMatch, shortId, counterText } from '../components/common.jsx'
+import DeleteModal from '../components/DeleteModal.jsx'
 
 const PAGE_SIZE = 15
 
@@ -74,6 +75,8 @@ export default function VolumesPage() {
   const [page, setPage]       = useState(1)
   const [selected, setSelected] = useState([])
   const [extendVol, setExtendVol]   = useState(null)
+  const [deleteModal, setDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -94,10 +97,12 @@ export default function VolumesPage() {
 
   const deleteSelected = async () => {
     if (!selected.length) return
-    if (!confirm(`Delete ${selected.length} volume(s)?`)) return
+    setDeleting(true)
     for (const v of selected) {
       try { await api.deleteVolume(v.id) } catch { /* continue */ }
     }
+    setDeleting(false)
+    setDeleteModal(false)
     setSelected([])
     toast(`${selected.length} volume(s) queued for deletion`, 'success')
     load()
@@ -146,7 +151,7 @@ export default function VolumesPage() {
                   { id: 'delete',   text: 'Delete volume' },
                 ]}
                 onItemClick={({ detail }) => {
-                  if (detail.id === 'delete') deleteSelected()
+                  if (detail.id === 'delete') setDeleteModal(true)
                   else if (!one) return
                   else if (detail.id === 'extend') setExtendVol(one)
                   else if (detail.id === 'snapshot') navigate(`/snapshots/create?volume=${one.id}`)
@@ -239,6 +244,17 @@ export default function VolumesPage() {
           volume={extendVol}
           onDismiss={() => setExtendVol(null)}
           onExtend={async (id, size) => { await api.extendVolume(id, { new_size_gb: size }); toast('Volume extend started', 'success'); load() }}
+        />
+      )}
+      {deleteModal && (
+        <DeleteModal
+          visible
+          itemCount={selected.length}
+          itemName={selected.length === 1 ? selected[0].name : undefined}
+          title="Delete Volume"
+          loading={deleting}
+          onDismiss={() => setDeleteModal(false)}
+          onConfirm={deleteSelected}
         />
       )}
     </ContentLayout>

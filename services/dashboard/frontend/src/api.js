@@ -2,8 +2,8 @@
 
 const BASE = '/api'
 
-async function request(method, path, body = null, opts = {}) {
-  const headers = { 'Content-Type': 'application/json' }
+async function request(method, path, body = null, opts = {}, skipJson = false) {
+  const headers = skipJson ? {} : { 'Content-Type': 'application/json' }
 
   const config = {
     method,
@@ -12,13 +12,20 @@ async function request(method, path, body = null, opts = {}) {
     ...opts,
   }
   if (body !== null) {
-    config.body = JSON.stringify(body)
+    config.body = skipJson ? body : JSON.stringify(body)
   }
 
   const resp = await fetch(`${BASE}${path}`, config)
   if (resp.status === 401) {
-    window.dispatchEvent(new CustomEvent('cloudx:session-expired'))
-    throw new Error('Session expired. Please log in again.')
+    if (!path.startsWith('/auth/session')) {
+      window.dispatchEvent(new CustomEvent('cloudx:session-expired'))
+    }
+    let detail = 'Session expired. Please log in again.'
+    try {
+      const err = await resp.json()
+      if (err.detail) detail = err.detail
+    } catch { /* noop */ }
+    throw new Error(detail)
   }
   if (!resp.ok) {
     let detail = `HTTP ${resp.status}`
@@ -103,6 +110,7 @@ export const api = {
 
   // Compute — Server Groups
   getServerGroups: () => request('GET', '/compute/server-groups'),
+  getServerGroup: (id) => request('GET', `/compute/server-groups/${id}`),
   createServerGroup: (b) => request('POST', '/compute/server-groups', b),
   deleteServerGroup: (id) => request('DELETE', `/compute/server-groups/${id}`),
 
@@ -175,6 +183,7 @@ export const api = {
 
   // Images
   getImages: () => request('GET', '/image/images'),
+  getImage: (id) => request('GET', `/image/images/${id}`),
   deleteImage: (id) => request('DELETE', `/image/images/${id}`),
   deactivateImage: (id) => request('POST', `/image/images/${id}/deactivate`, {}),
   reactivateImage: (id) => request('POST', `/image/images/${id}/reactivate`, {}),
@@ -196,6 +205,7 @@ export const api = {
 
   // Block Store — Snapshots
   getSnapshots: () => request('GET', '/block-store/snapshots'),
+  getSnapshot: (id) => request('GET', `/block-store/snapshots/${id}`),
   createSnapshot: (volId, b) => request('POST', `/block-store/volumes/${volId}/snapshots`, b),
   deleteSnapshot: (id) => request('DELETE', `/block-store/snapshots/${id}`),
 
@@ -210,6 +220,34 @@ export const api = {
   createVolumeType:  (b) => request('POST', '/block-store/volume-types', b),
   updateVolumeType:  (ref, b) => request('PATCH', `/block-store/volume-types/${ref}`, b),
   deleteVolumeType:  (ref) => request('DELETE', `/block-store/volume-types/${ref}`),
+
+  // Object Store
+  getBuckets: () => request('GET', '/object-store/buckets'),
+  getBucket: (name) => request('GET', `/object-store/buckets/${name}`),
+  createBucket: (b) => request('POST', '/object-store/buckets', b),
+  deleteBucket: (name) => request('DELETE', `/object-store/buckets/${name}`),
+  getBucketObjects: (name) => request('GET', `/object-store/buckets/${name}/objects`),
+  uploadObject: (name, key, file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request('PUT', `/object-store/buckets/${name}/objects/${key}`, form, {}, true)
+  },
+  deleteObject: (name, key) => request('DELETE', `/object-store/buckets/${name}/objects/${key}`),
+  getBucketTypes: () => request('GET', '/object-store/admin/bucket-types'),
+  createBucketType: (b) => request('POST', '/object-store/admin/bucket-types', b),
+  deleteBucketType: (ref) => request('DELETE', `/object-store/admin/bucket-types/${ref}`),
+
+  // Load Balancer
+  getLoadBalancers: () => request('GET', '/load-balancer/load-balancers'),
+  getLoadBalancer: (id) => request('GET', `/load-balancer/load-balancers/${id}`),
+  createLoadBalancer: (b) => request('POST', '/load-balancer/load-balancers', b),
+  deleteLoadBalancer: (id) => request('DELETE', `/load-balancer/load-balancers/${id}`),
+  getListeners: (lbId) => request('GET', `/load-balancer/load-balancers/${lbId}/listeners`),
+  createListener: (lbId, b) => request('POST', `/load-balancer/load-balancers/${lbId}/listeners`, b),
+  createPool: (listenerId, b) => request('POST', `/load-balancer/listeners/${listenerId}/pools`, b),
+  getPool: (poolId) => request('GET', `/load-balancer/pools/${poolId}`),
+  syncPoolMembers: (poolId) => request('POST', `/load-balancer/pools/${poolId}/sync`),
+  createHealthMonitor: (poolId, b) => request('POST', `/load-balancer/pools/${poolId}/health-monitors`, b),
 
   // Placement
   getUsages: () => request('GET', '/placement/usages'),
@@ -229,6 +267,11 @@ export const api = {
   getQuota: (projectId, withUsage = true) =>
     request('GET', `/block-store/os-quota-sets/${projectId}${withUsage ? '?usage=true' : ''}`),
   updateQuota: (projectId, b) => request('PUT', `/block-store/os-quota-sets/${projectId}`, b),
+
+  // XIDE — Cloud IDE workspaces
+  getXIDEWorkspaces: () => request('GET', '/xide/workspaces'),
+  createXIDEWorkspace: (b) => request('POST', '/xide/workspaces', b),
+  deleteXIDEWorkspace: (id) => request('DELETE', `/xide/workspaces/${id}`),
 
   // Service Catalog
   getServiceCatalog: () => request('GET', '/auth/v3/auth/catalog'),

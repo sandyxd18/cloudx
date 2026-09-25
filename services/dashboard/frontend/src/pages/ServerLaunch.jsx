@@ -35,7 +35,14 @@ export default function ServerLaunchPage() {
         if (f.status === 'fulfilled')  setFlavors(f.value?.items || [])
         if (im.status === 'fulfilled') setImages((im.value?.items || []).filter(i => i.status === 'ACTIVE'))
         if (k.status === 'fulfilled')  setKeypairs(k.value?.items || [])
-        if (n.status === 'fulfilled')  setNetworks(n.value?.items || [])
+        if (n.status === 'fulfilled') {
+          const allNets = n.value?.items || []
+          const tenantNets = allNets.filter(net => !net.external && net['router:external'] !== 'External')
+          setNetworks(tenantNets)
+          if (tenantNets.length) {
+            setForm(f => ({ ...f, network: { value: tenantNets[0].name, label: tenantNets[0].name } }))
+          }
+        }
         if (vt.status === 'fulfilled') {
           const types = vt.value?.items || []
           setVolTypes(types)

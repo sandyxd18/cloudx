@@ -11,6 +11,7 @@ COPY shared/auth_middleware.py ./app/auth_middleware.py
 COPY shared/rpc.py ./shared/rpc.py
 COPY shared/request_id_middleware.py ./shared/request_id_middleware.py
 COPY shared/metrics.py ./shared/metrics.py
+COPY shared/service_client.py ./shared/service_client.py
 COPY block_store/app ./app
 
-CMD ["sh", "-c", "uvicorn app.main:app --host ${HOST:-127.0.0.1} --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn app.main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000}"]

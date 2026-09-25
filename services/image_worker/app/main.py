@@ -210,6 +210,10 @@ def main():
         log.error("Could not connect to RabbitMQ after 30 attempts")
         sys.exit(1)
 
+    # Start background image reconciler thread
+    from app.reconciler import start_reconcile_thread  # noqa: E402
+    start_reconcile_thread()
+
     consumer = RPCConsumer(
         queue_name="image",
         handlers=HANDLERS,

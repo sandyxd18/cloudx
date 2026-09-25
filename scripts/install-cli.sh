@@ -44,16 +44,37 @@ ensure_python_venv() {
 ensure_python_venv
 python3 -m venv "$venv_dir"
 "$venv_dir/bin/pip" install --upgrade pip
-"$venv_dir/bin/pip" install -r "$root_dir/cli/requirements.txt"
+"$venv_dir/bin/pip" install -e "$root_dir/cli"
 
 mkdir -p "$bin_dir"
-for cmd in networking image compute block-store; do
-  cat > "$bin_dir/$cmd" <<EOF
-#!/usr/bin/env bash
-exec "$venv_dir/bin/python" "$root_dir/cli/$cmd" "\$@"
-EOF
-  chmod +x "$bin_dir/$cmd"
+for cmd in cloudx networking image compute block-store object-store load-balancer; do
+  ln -sf "$venv_dir/bin/cloudx" "$bin_dir/$cmd"
 done
 
-echo "Installed CLI commands to $bin_dir"
+echo "✓ Installed CLI commands to $bin_dir"
+
+# Auto-configure ~/.cloudx/credentials if auth-api is running and credentials don't exist
+CREDS_FILE="${HOME}/.cloudx/credentials"
+if [ ! -f "$CREDS_FILE" ]; then
+  mkdir -p "${HOME}/.cloudx"
+  echo "Setting up initial credentials in $CREDS_FILE..."
+  python3 -c "
+import requests, os
+try:
+    resp = requests.post('http://127.0.0.1:8005/auth/tokens', json={'username': 'admin', 'password': 'admin123'}, timeout=3)
+    if resp.status_code == 201:
+        token = resp.json()['token']
+        headers = {'Authorization': f'Bearer {token}'}
+        k_resp = requests.post('http://127.0.0.1:8005/auth/access-keys', json={'name': 'cli-key'}, headers=headers, timeout=3)
+        if k_resp.status_code == 201:
+            kdata = k_resp.json()
+            creds_content = f\"[default]\ncloudx_access_key_id = {kdata['access_key']}\ncloudx_secret_access_key = {kdata['secret_key']}\ncloudx_auth_url = http://127.0.0.1:8005\n\"
+            with open('$CREDS_FILE', 'w') as f:
+                f.write(creds_content)
+            print('✓ Credentials auto-configured in $CREDS_FILE')
+except Exception as e:
+    print(f'Note: Could not auto-fetch credentials from auth-api ({e}). Run cloudx login when stack is active.')
+" || true
+fi
+
 echo "Make sure $bin_dir is in PATH."

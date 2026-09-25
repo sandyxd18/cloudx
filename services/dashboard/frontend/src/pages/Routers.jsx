@@ -5,6 +5,7 @@ import Button from '@cloudscape-design/components/button'
 import ButtonDropdown from '@cloudscape-design/components/button-dropdown'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import Header from '@cloudscape-design/components/header'
+import Link from '@cloudscape-design/components/link'
 import Modal from '@cloudscape-design/components/modal'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import Table from '@cloudscape-design/components/table'
@@ -16,6 +17,8 @@ import Alert from '@cloudscape-design/components/alert'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import { ResourceStatus, BoolStatus, TableEmpty, TableNoMatch, shortId, counterText } from '../components/common.jsx'
+
+import DeleteModal from '../components/DeleteModal.jsx'
 
 function InterfaceModal({ router, onDismiss, onAdd }) {
   const [subnets, setSubnets] = useState([])
@@ -122,6 +125,8 @@ export default function RoutersPage() {
   const [selected, setSelected] = useState([])
   const [addIface, setAddIface] = useState(null)
   const [setGateway, setSetGateway] = useState(null)
+  const [deleteModal, setDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -139,10 +144,12 @@ export default function RoutersPage() {
 
   const deleteSelected = async () => {
     if (!selected.length) return
-    if (!confirm(`Delete ${selected.length} router(s)?`)) return
+    setDeleting(true)
     for (const r of selected) {
       try { await api.deleteRouter(r.id) } catch (e) { toast(`${r.name}: ${e.message}`, 'error') }
     }
+    setDeleting(false)
+    setDeleteModal(false)
     setSelected([])
     load()
   }
@@ -168,7 +175,7 @@ export default function RoutersPage() {
                   { id: 'delete',    text: 'Delete router' },
                 ]}
                 onItemClick={({ detail }) => {
-                  if (detail.id === 'delete') deleteSelected()
+                  if (detail.id === 'delete') setDeleteModal(true)
                   else if (detail.id === 'interface' && one) setAddIface(one)
                   else if (detail.id === 'gateway' && one) setSetGateway(one)
                 }}
@@ -199,7 +206,9 @@ export default function RoutersPage() {
             header: 'Router name',
             cell: item => (
               <SpaceBetween size="xxxs">
-                <Box fontWeight="bold">{item.name}</Box>
+                <Link href={`/routers/${item.id}`} onFollow={(e) => { e.preventDefault(); navigate(`/routers/${item.id}`) }}>
+                  {item.name}
+                </Link>
                 <Box variant="small" color="text-body-secondary">{shortId(item.id, 16)}</Box>
               </SpaceBetween>
             ),
@@ -248,6 +257,17 @@ export default function RoutersPage() {
           networks={networks}
           onDismiss={() => setSetGateway(null)}
           onSet={async (payload) => { await api.setRouterGateway(setGateway.id, payload); toast('Gateway set', 'success'); load() }}
+        />
+      )}
+      {deleteModal && (
+        <DeleteModal
+          visible
+          itemCount={selected.length}
+          itemName={selected.length === 1 ? selected[0].name : undefined}
+          title="Delete Router"
+          loading={deleting}
+          onDismiss={() => setDeleteModal(false)}
+          onConfirm={deleteSelected}
         />
       )}
     </ContentLayout>

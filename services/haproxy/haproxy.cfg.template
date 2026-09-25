@@ -109,3 +109,25 @@ backend placement_back
     http-check expect status 200
     balance roundrobin
 %%PLACEMENT_SERVERS%%
+
+# ── Object Store API ──────────────────────────────────────────────────────────
+frontend object_store_front
+    bind *:${OBJECT_STORE_PORT}
+    default_backend object_store_back
+
+backend object_store_back
+    option httpchk GET /health
+    http-check expect status 200
+    balance roundrobin
+%%OBJECT_STORE_SERVERS%%
+
+# ── Load Balancer API ─────────────────────────────────────────────────────────
+frontend load_balancer_front
+    bind *:${LOAD_BALANCER_PORT}
+    default_backend load_balancer_back
+
+backend load_balancer_back
+    option httpchk GET /health
+    http-check expect status 200
+    balance roundrobin
+%%LOAD_BALANCER_SERVERS%%

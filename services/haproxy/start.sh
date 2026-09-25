@@ -9,6 +9,8 @@ export IMAGE_PORT="${IMAGE_PORT:-8002}"
 export COMPUTE_PORT="${COMPUTE_PORT:-8003}"
 export BLOCK_STORE_PORT="${BLOCK_STORE_PORT:-8004}"
 export PLACEMENT_PORT="${PLACEMENT_PORT:-8006}"
+export OBJECT_STORE_PORT="${OBJECT_STORE_PORT:-8007}"
+export LOAD_BALANCER_PORT="${LOAD_BALANCER_PORT:-8008}"
 export DASHBOARD_PORT="${DASHBOARD_PORT:-8080}"
 
 # Per-service backend host lists (comma-separated). Single controller → 127.0.0.1.
@@ -19,6 +21,8 @@ IMAGE_BACKENDS="${IMAGE_BACKENDS:-127.0.0.1}"
 COMPUTE_BACKENDS="${COMPUTE_BACKENDS:-127.0.0.1}"
 BLOCK_STORE_BACKENDS="${BLOCK_STORE_BACKENDS:-127.0.0.1}"
 PLACEMENT_BACKENDS="${PLACEMENT_BACKENDS:-127.0.0.1}"
+OBJECT_STORE_BACKENDS="${OBJECT_STORE_BACKENDS:-127.0.0.1}"
+LOAD_BALANCER_BACKENDS="${LOAD_BALANCER_BACKENDS:-127.0.0.1}"
 DASHBOARD_BACKENDS="${DASHBOARD_BACKENDS:-127.0.0.1}"
 
 # ── Helper: render "server nodeN <host>:<port> check ..." lines ────────────────
@@ -56,6 +60,8 @@ replace_marker "%%IMAGE_SERVERS%%"       "$(render_servers "$IMAGE_BACKENDS" "$I
 replace_marker "%%COMPUTE_SERVERS%%"     "$(render_servers "$COMPUTE_BACKENDS" "$COMPUTE_PORT")"
 replace_marker "%%BLOCK_STORE_SERVERS%%" "$(render_servers "$BLOCK_STORE_BACKENDS" "$BLOCK_STORE_PORT")"
 replace_marker "%%PLACEMENT_SERVERS%%"   "$(render_servers "$PLACEMENT_BACKENDS" "$PLACEMENT_PORT")"
+replace_marker "%%OBJECT_STORE_SERVERS%%" "$(render_servers "$OBJECT_STORE_BACKENDS" "$OBJECT_STORE_PORT")"
+replace_marker "%%LOAD_BALANCER_SERVERS%%" "$(render_servers "$LOAD_BALANCER_BACKENDS" "$LOAD_BALANCER_PORT")"
 replace_marker "%%DASHBOARD_SERVERS%%"   "$(render_servers "$DASHBOARD_BACKENDS" "$DASHBOARD_PORT")"
 
 mv /etc/haproxy/haproxy.cfg.tmp /etc/haproxy/haproxy.cfg

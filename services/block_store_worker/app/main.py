@@ -752,12 +752,14 @@ def main():
     log.info("  Ceph: %s  Pool=%s", STORAGE_CEPH_RBD_DRIVER, CEPH_POOL)
     log.info("=" * 60)
 
-    # Initialize storage backends (LVM VG, etc.)
+    # Initialize storage backends (LVM VG, etc.).
+    # In a lab/VM environment this may fail when loop devices are not yet ready;
+    # keep the worker alive so it can still process record-level RPCs such as
+    # delete_volume_record via conductor.
     try:
         _init_storage()
     except Exception as exc:
-        log.error("Storage initialization failed: %s", exc)
-        sys.exit(1)
+        log.warning("Storage initialization failed: %s. Continuing anyway (backend ops may fail).", exc)
 
     # Wait for RabbitMQ
     for attempt in range(30):
@@ -771,6 +773,10 @@ def main():
     else:
         log.error("Could not connect to RabbitMQ after 30 attempts")
         sys.exit(1)
+
+    # Start background storage reconciler thread (same interval as compute_worker)
+    from app.reconciler import start_reconcile_thread  # noqa: E402
+    start_reconcile_thread(_rpc)
 
     consumer = RPCConsumer(
         queue_name="block-store",

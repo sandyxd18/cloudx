@@ -65,6 +65,8 @@ _CLOUDX_SERVICES = [
     {"name": "network",      "type": "network",      "url": os.getenv("NETWORKING_API_URL", "http://networking-api:8000")},
     {"name": "volume",       "type": "block-storage","url": os.getenv("BLOCK_STORE_API_URL","http://block-store-api:8000")},
     {"name": "placement",    "type": "placement",    "url": os.getenv("PLACEMENT_API_URL",  "http://placement-api:8000")},
+    {"name": "object-store", "type": "object-store", "url": os.getenv("OBJECT_STORE_API_URL","http://object-store-api:8000")},
+    {"name": "load-balancer","type": "load-balancer","url": os.getenv("LOAD_BALANCER_API_URL","http://load-balancer-api:8000")},
     {"name": "metadata",     "type": "metadata",     "url": os.getenv("METADATA_API_URL",   "http://metadata-api:8775")},
 ]
 
@@ -499,6 +501,34 @@ def _bootstrap():
             print(f"[auth] bootstrap: admin user '{ADMIN_USERNAME}' created in project '{ADMIN_PROJECT}'", flush=True)
         else:
             print(f"[auth] bootstrap: admin user '{ADMIN_USERNAME}' already exists", flush=True)
+
+        # ── Create service project and system service users ───────────────────
+        service_proj = db.scalar(select(Project).where(Project.name == "service"))
+        if not service_proj:
+            service_proj = Project(name="service", description="CloudX System Service Accounts Project")
+            db.add(service_proj)
+            db.commit()
+            db.refresh(service_proj)
+
+        service_accounts = [
+            ("service_compute", "service_compute@cloudx.local"),
+            ("service_network", "service_network@cloudx.local"),
+            ("service_image", "service_image@cloudx.local"),
+            ("service_block_store", "service_block_store@cloudx.local"),
+            ("service_load_balancer", "service_load_balancer@cloudx.local"),
+            ("service_object_store", "service_object_store@cloudx.local"),
+        ]
+        for svc_user, svc_email in service_accounts:
+            existing_svc_user = db.scalar(select(User).where(User.username == svc_user))
+            if not existing_svc_user:
+                db.add(User(
+                    username=svc_user,
+                    email=svc_email,
+                    password_hash=_hash_password(ADMIN_PASSWORD),
+                    project_id=service_proj.id,
+                    role="admin",
+                ))
+        db.commit()
 
         # ── Bootstrap service catalog ─────────────────────────────────────────
         _bootstrap_service_catalog(db)

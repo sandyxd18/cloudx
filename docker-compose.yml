@@ -242,6 +242,7 @@ services:
       NETWORKING_API_URL: http://127.0.0.1:8001
       BLOCK_STORE_API_URL: http://127.0.0.1:8004
       PLACEMENT_API_URL: http://127.0.0.1:8006
+      OBJECT_STORE_API_URL: http://127.0.0.1:8007
       NOVNC_BASE_URL: ${NOVNC_BASE_URL:-http://localhost:6080/vnc.html}
       COMPUTE_BACKEND: ${COMPUTE_BACKEND:-libvirt}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@127.0.0.1:5672/}
@@ -343,6 +344,28 @@ services:
       image-api:
         condition: service_started
 
+  # ── Object Store API (swift/s3 gateway) ─────────────────────────────────────
+  object-store-api:
+    build:
+      context: ./services
+      dockerfile: object_store/Dockerfile
+      network: host
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8007
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@127.0.0.1:5432/mini_openstack}
+      AUTH_API_URL: http://127.0.0.1:8005
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-cloudx-secret-key-change-in-production-min32chars!}
+      NETWORKING_API_URL: http://127.0.0.1:8001
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-api:
+        condition: service_started
+    volumes:
+      - object-store-data:/var/lib/mini-openstack/object-store
+
   # ── Block Storage Worker (cinder-volume equivalent) ─────────────────────────
   block-store-worker:
     build:
@@ -397,6 +420,33 @@ services:
       auth-api:
         condition: service_started
 
+  # ── Load Balancer API (Octavia-like) ──────────────────────────────────────────
+  load-balancer-api:
+    build:
+      context: ./services
+      dockerfile: load_balancer/Dockerfile
+      network: host
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8008
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@127.0.0.1:5432/mini_openstack}
+      AUTH_API_URL: http://127.0.0.1:8005
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-cloudx-secret-key-change-in-production-min32chars!}
+      NETWORKING_API_URL: http://127.0.0.1:8001
+      COMPUTE_API_URL: http://127.0.0.1:8003
+    network_mode: host
+    volumes:
+      - ./services/load_balancer/app:/app/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-api:
+        condition: service_started
+      networking-api:
+        condition: service_started
+      compute-api:
+        condition: service_started
+
   # ── Dashboard (React + FastAPI proxy) ───────────────────────────────────────
   dashboard:
     build:
@@ -404,7 +454,7 @@ services:
       dockerfile: dashboard/Dockerfile
       network: host
     environment:
-      HOST: 127.0.0.1
+      HOST: 0.0.0.0
       PORT: 8080
       AUTH_API_URL: http://127.0.0.1:8005
       COMPUTE_API_URL: http://127.0.0.1:8003
@@ -412,9 +462,16 @@ services:
       IMAGE_API_URL: http://127.0.0.1:8002
       BLOCK_STORE_API_URL: http://127.0.0.1:8004
       PLACEMENT_API_URL: http://127.0.0.1:8006
+      OBJECT_STORE_API_URL: http://127.0.0.1:8007
+      LOAD_BALANCER_API_URL: http://127.0.0.1:8008
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@127.0.0.1:5672/}
       MEMCACHED_URL: 127.0.0.1:11211
+      XIDE_WORKSPACE_ROOT: /var/lib/xide-workspaces
     network_mode: host
+    volumes:
+      - xide-workspaces:/var/lib/xide-workspaces
+      - ./services/dashboard/app:/app/app
+      - ./services/dashboard/frontend/dist:/app/app/static
     depends_on:
       auth-api:
         condition: service_started
@@ -481,6 +538,8 @@ services:
       COMPUTE_PORT: 8003
       BLOCK_STORE_PORT: 8004
       PLACEMENT_PORT: 8006
+      OBJECT_STORE_PORT: 8007
+      LOAD_BALANCER_PORT: 8008
       DASHBOARD_PORT: 8080
     depends_on:
       auth-api:
@@ -539,6 +598,7 @@ services:
       - --auth
       - none
       - --disable-telemetry
+      - --disable-update-check
     environment:
       DOCKER_USER: coder
     volumes:
@@ -552,5 +612,6 @@ volumes:
   ovn-sb-data:
   image-data:
   minio-data:
+  object-store-data:
   rabbitmq-data:
   xide-workspaces:

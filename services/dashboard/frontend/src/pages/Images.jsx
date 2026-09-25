@@ -5,6 +5,7 @@ import Button from '@cloudscape-design/components/button'
 import ButtonDropdown from '@cloudscape-design/components/button-dropdown'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import Header from '@cloudscape-design/components/header'
+import Link from '@cloudscape-design/components/link'
 import Pagination from '@cloudscape-design/components/pagination'
 import Select from '@cloudscape-design/components/select'
 import SpaceBetween from '@cloudscape-design/components/space-between'
@@ -13,6 +14,7 @@ import TextFilter from '@cloudscape-design/components/text-filter'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import { ResourceStatus, BoolStatus, TableEmpty, TableNoMatch, fmtBytes, shortId, counterText } from '../components/common.jsx'
+import DeleteModal from '../components/DeleteModal.jsx'
 
 const PAGE_SIZE = 15
 
@@ -38,6 +40,8 @@ export default function ImagesPage() {
   const [visFilter, setVisFilter] = useState({ value: '', label: 'All visibility' })
   const [page, setPage]       = useState(1)
   const [selected, setSelected] = useState([])
+  const [deleteModal, setDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -53,10 +57,12 @@ export default function ImagesPage() {
 
   const deleteSelected = async () => {
     if (!selected.length) return
-    if (!confirm(`Delete ${selected.length} image(s)?`)) return
+    setDeleting(true)
     for (const img of selected) {
       try { await api.deleteImage(img.id) } catch { /* continue */ }
     }
+    setDeleting(false)
+    setDeleteModal(false)
     setSelected([])
     toast(`${selected.length} image(s) deleted`, 'success')
     load()
@@ -109,7 +115,7 @@ export default function ImagesPage() {
                   { id: 'delete',     text: 'Delete' },
                 ]}
                 onItemClick={({ detail }) => {
-                  if (detail.id === 'delete') deleteSelected()
+                  if (detail.id === 'delete') setDeleteModal(true)
                   else if (detail.id === 'visibility' && one) toggleVisibility(one)
                   else if (detail.id === 'active' && one) toggleActive(one)
                   else if (detail.id === 'launch') navigate('/servers')
@@ -143,7 +149,9 @@ export default function ImagesPage() {
             header: 'Image name',
             cell: item => (
               <SpaceBetween size="xxxs">
-                <Box fontWeight="bold">{item.name}</Box>
+                <Link href={`/images/${item.id}`} onFollow={(e) => { e.preventDefault(); navigate(`/images/${item.id}`) }}>
+                  {item.name}
+                </Link>
                 <Box variant="small" color="text-body-secondary">{shortId(item.id, 16)}</Box>
               </SpaceBetween>
             ),
@@ -191,6 +199,17 @@ export default function ImagesPage() {
               />
         }
       />
+      {deleteModal && (
+        <DeleteModal
+          visible
+          itemCount={selected.length}
+          itemName={selected.length === 1 ? selected[0].name : undefined}
+          title="Delete Image"
+          loading={deleting}
+          onDismiss={() => setDeleteModal(false)}
+          onConfirm={deleteSelected}
+        />
+      )}
     </ContentLayout>
   )
 }

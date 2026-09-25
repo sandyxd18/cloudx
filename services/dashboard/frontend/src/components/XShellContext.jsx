@@ -12,15 +12,19 @@ const STORAGE_KEY_OPEN   = 'cloudx:xshell:open'
 const STORAGE_KEY_HEIGHT = 'cloudx:xshell:height'
 const STORAGE_KEY_MODE   = 'cloudx:xshell:mode'   // 'xshell' | 'xide'
 
-const DEFAULT_HEIGHT = 280
+const DEFAULT_HEIGHT = Math.floor(window.innerHeight * 0.45)
 const MIN_HEIGHT     = 120
 const MAX_HEIGHT     = 0.85 // fraction of viewport height
+const MIN_VISIBLE    = 350  // auto-expand to default if stored value below this
 
 export function XShellProvider({ children }) {
   const [open, setOpenState]               = useState(() => localStorage.getItem(STORAGE_KEY_OPEN) === '1')
   const [height, setHeightState]           = useState(() => {
     const stored = Number(localStorage.getItem(STORAGE_KEY_HEIGHT))
-    return Number.isFinite(stored) && stored >= MIN_HEIGHT ? stored : DEFAULT_HEIGHT
+    if (Number.isFinite(stored) && stored >= MIN_HEIGHT) {
+      return stored < MIN_VISIBLE ? DEFAULT_HEIGHT : stored
+    }
+    return DEFAULT_HEIGHT
   })
   const [mode, setModeState]               = useState(() => localStorage.getItem(STORAGE_KEY_MODE) || 'xshell')
 

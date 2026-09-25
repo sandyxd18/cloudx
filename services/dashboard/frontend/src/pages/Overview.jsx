@@ -114,7 +114,7 @@ export default function OverviewPage() {
       <SpaceBetween size="l">
         {/* ── Resource counters ─────────────────────────────────────────────── */}
         <Grid gridDefinition={[{ colspan: { default: 12, xs: 6, s: 3 } }, { colspan: { default: 12, xs: 6, s: 3 } }, { colspan: { default: 12, xs: 6, s: 3 } }, { colspan: { default: 12, xs: 6, s: 3 } }]}>
-          <MetricCard label="Instances" value={servers.length} sub={`${activeServers} running`} href="/servers" onNavigate={navigate} />
+          <MetricCard label="Instances" value={activeServers} sub={servers.length <= 1 ? "running" : "of " + servers.length + " total"} href="/servers" onNavigate={navigate} />
           <MetricCard label="Networks" value={networks.length} sub="total networks" href="/networks" onNavigate={navigate} />
           <MetricCard label="Volumes" value={volumes.length} sub={`${totalDisk} GB provisioned`} href="/volumes" onNavigate={navigate} />
           <MetricCard label="Images" value={images.length} sub="available images" href="/images" onNavigate={navigate} />
@@ -236,7 +236,9 @@ function ApiAccessPanel({ catalog }) {
     { name: 'image',       type: 'Glance',   url: `${base}:8002` },
     { name: 'volume',      type: 'Cinder',   url: `${base}:8004` },
     { name: 'network',     type: 'Neutron',  url: `${base}:8001` },
-    { name: 'placement',   type: 'Placement',url: `${base}:8006` },
+    { name: 'placement',    type: 'Placement',   url: `${base}:8006` },
+    { name: 'object-store', type: 'Object Store', url: `${base}:8007` },
+    { name: 'load-balancer', type: 'Load Balancer', url: `${base}:8008` },
   ]
 
   return (

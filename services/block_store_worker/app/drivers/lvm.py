@@ -58,42 +58,45 @@ def _pv_exists(pv: str) -> bool:
 
 def ensure_vg() -> None:
     """
-    Ensure the VG exists. If not, create it from LVM_PV_NAME.
-
-    Steps:
-      1. Parse LVM_PV_NAME (comma-separated list of physical volumes)
-      2. For each PV, run pvcreate if it is not already a PV
-      3. Run vgcreate if the VG does not exist yet
-
-    This function is idempotent — safe to call on every startup.
+    Ensure the VG exists. If not, auto-recover or create from PVs/loopback backing file.
+    Idempotent — safe to call on startup and reconciliation cycles.
     """
     vg = vg_name()
 
-    if not LVM_PV_NAME:
-        raise RuntimeError(
-            f"LVM_PV_NAME is not configured. Cannot auto-create VG '{vg}'. "
-            "Set LVM_PV_NAME to a comma-separated list of block devices (e.g. /dev/sdb)."
-        )
-
-    pvs = [p.strip() for p in LVM_PV_NAME.split(",") if p.strip()]
-    if not pvs:
-        raise RuntimeError("LVM_PV_NAME is empty after parsing. Provide at least one block device.")
+    # Refresh system LVM state
+    subprocess.run(["pvscan"], capture_output=True)
+    subprocess.run(["vgchange", "-ay", vg], capture_output=True)
 
     if _vg_exists(vg):
-        log.info("LVM: VG '%s' already exists — skipping creation", vg)
+        log.info("LVM: VG '%s' active and ready", vg)
         return
 
-    log.info("LVM: VG '%s' not found — creating from PVs: %s", vg, pvs)
+    # Auto-recovery using loopback device if LVM_PV_NAME is not set or loopback is preferred
+    img_path = f"/var/lib/{vg}.img"
+    pvs = [p.strip() for p in LVM_PV_NAME.split(",") if p.strip()] if LVM_PV_NAME else []
 
-    # pvcreate for each PV that is not already initialized
+    if not pvs:
+        log.info("LVM: LVM_PV_NAME not set, initializing self-healing loop device at %s", img_path)
+        if not os.path.exists(img_path):
+            log.info("LVM: Creating 10GB backing file at %s", img_path)
+            subprocess.run(["dd", "if=/dev/zero", f"of={img_path}", "bs=1M", "count=10240"], check=True)
+
+        res = subprocess.run(["losetup", "-j", img_path], capture_output=True, text=True)
+        loop_dev = res.stdout.split(":")[0].strip() if res.stdout else ""
+        if not loop_dev:
+            res_attach = subprocess.run(["losetup", "--find", "--show", img_path], capture_output=True, text=True, check=True)
+            loop_dev = res_attach.stdout.strip()
+            log.info("LVM: Attached %s to loop device %s", img_path, loop_dev)
+
+        pvs = [loop_dev]
+
+    log.info("LVM: Initializing VG '%s' from PVs: %s", vg, pvs)
+
     for pv in pvs:
-        if _pv_exists(pv):
-            log.info("LVM: PV '%s' already initialized — skipping pvcreate", pv)
-        else:
+        if not _pv_exists(pv):
             log.info("LVM: pvcreate %s", pv)
             _run(["pvcreate", "-y", pv])
 
-    # vgcreate
     log.info("LVM: vgcreate %s %s", vg, " ".join(pvs))
     _run(["vgcreate", vg] + pvs)
     log.info("LVM: VG '%s' created successfully", vg)

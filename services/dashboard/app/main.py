@@ -6,18 +6,22 @@ Auth token is passed through from the client's Authorization header.
 WebSocket /ws/events broadcasts live status events from RabbitMQ.
 """
 import asyncio
+import datetime
 import fcntl
 import json
 import logging
 import os
 import pty
+import shutil
 import struct
 import sys
 import termios
 import uuid
 from pathlib import Path
 
+
 import httpx
+import websockets
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -40,6 +44,8 @@ NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000
 IMAGE_API_URL      = os.getenv("IMAGE_API_URL",      "http://image-api:8000").rstrip("/")
 BLOCK_STORE_API_URL= os.getenv("BLOCK_STORE_API_URL","http://block-store-api:8000").rstrip("/")
 PLACEMENT_API_URL  = os.getenv("PLACEMENT_API_URL",  "http://placement-api:8000").rstrip("/")
+OBJECT_STORE_API_URL = os.getenv("OBJECT_STORE_API_URL","http://object-store-api:8000").rstrip("/")
+LOAD_BALANCER_API_URL = os.getenv("LOAD_BALANCER_API_URL","http://load-balancer-api:8000").rstrip("/")
 RABBITMQ_URL       = os.getenv("RABBITMQ_URL",       "amqp://cloudx:cloudx@rabbitmq:5672/")
 MEMCACHED_URL      = os.getenv("MEMCACHED_URL",      "memcached:11211")
 SESSION_COOKIE_NAME = "cloudx_session"
@@ -52,6 +58,8 @@ _ROUTES: list[tuple[str, str]] = [
     ("/api/image",       IMAGE_API_URL),
     ("/api/block-store", BLOCK_STORE_API_URL),
     ("/api/placement",   PLACEMENT_API_URL),
+    ("/api/object-store",OBJECT_STORE_API_URL),
+    ("/api/load-balancer",LOAD_BALANCER_API_URL),
 ]
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -117,22 +125,6 @@ async def ws_events(ws: WebSocket):
 # session's user/project, then pipes terminal bytes over the WebSocket. Pure
 # stdlib (pty/termios/fcntl) — no extra dependencies.
 
-async def _pty_read_loop(ws: WebSocket, master_fd: int) -> None:
-    """Background task: read PTY output and stream it to the WebSocket."""
-    loop = asyncio.get_event_loop()
-    try:
-        while True:
-            try:
-                data = await loop.run_in_executor(None, os.read, master_fd, 4096)
-            except OSError:
-                break
-            if not data:
-                break
-            await ws.send_bytes(data)
-    except Exception:
-        pass
-
-
 def _set_winsize(master_fd: int, cols: int, rows: int) -> None:
     try:
         fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
@@ -178,21 +170,65 @@ async def ws_xshell(ws: WebSocket):
         "TERM":                  "xterm-256color",
     }
 
-    # Spawn the shell in a fresh PTY.
-    pid, master_fd = pty.fork()
-    if pid == 0:  # child — exec the shell
-        try:
-            for k, v in env_map.items():
-                os.environ[k] = v
-            os.environ["HOME"] = os.getenv("HOME", "/root")
-            os.chdir(os.environ["HOME"])
-            os.execvp("bash", ["bash", "--noprofile", "--norc"])
-        except Exception:
-            os._exit(1)
-    parent_pid = pid  # keep reference
+    # Allocate PTY pair.  We keep master in the server, pass slave_fd to the
+    # child.  Using asyncio.subprocess (instead of pty.fork) keeps Uvicorn's
+    # event loop healthy on Linux: no locks inherited from the parent process.
+    master_fd, slave_fd = pty.openpty()
+    os.set_blocking(master_fd, False)
 
-    # Reader task drains PTY → WebSocket.
-    reader = asyncio.create_task(_pty_read_loop(ws, master_fd))
+    env = os.environ.copy()
+    env.update(env_map)
+    env["HOME"] = os.getenv("HOME", "/root")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bash", "-i",
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env=env,
+            cwd=env["HOME"],
+            preexec_fn=lambda: os.login_tty(slave_fd),
+        )
+    except Exception as exc:
+        log.exception("XShell: failed to spawn bash")
+        await ws.send_text(f"\r\n✗ Failed to spawn shell: {exc}\r\n")
+        try:
+            os.close(master_fd)
+            os.close(slave_fd)
+        except Exception:
+            pass
+        await ws.close(code=4500)
+        return
+    finally:
+        # Slave is owned by the child now; close our copy.
+        try:
+            os.close(slave_fd)
+        except Exception:
+            pass
+
+    loop = asyncio.get_event_loop()
+    reader_handle = None
+
+    def _on_master_ready():
+        try:
+            data = os.read(master_fd, 4096)
+            if data:
+                asyncio.create_task(ws.send_bytes(data))
+            else:
+                loop.remove_reader(master_fd)
+        except BlockingIOError:
+            pass
+        except OSError:
+            try:
+                loop.remove_reader(master_fd)
+            except Exception:
+                pass
+
+    try:
+        loop.add_reader(master_fd, _on_master_ready)
+    except Exception:
+        pass
 
     banner = (
         f"\r\n  Welcome to XShell (CloudX cloud shell)\r\n"
@@ -222,18 +258,20 @@ async def ws_xshell(ws: WebSocket):
             except OSError:
                 break
     finally:
-        reader.cancel()
-        # Reap the child and tidy up the PTY.
+        try:
+            loop.remove_reader(master_fd)
+        except Exception:
+            pass
         try:
             os.close(master_fd)
         except Exception:
             pass
         try:
-            os.kill(parent_pid, 15)
+            proc.kill()
         except Exception:
             pass
         try:
-            os.waitpid(parent_pid, 0)
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
         except Exception:
             pass
         log.info("XShell session ended for %s", username)
@@ -274,15 +312,52 @@ async def shutdown():
     if _memcached:
         _memcached.close()
 
-# ── Session Endpoints ─────────────────────────────────────────────────────────
+# ── Session Endpoints & Storage ───────────────────────────────────────────────
+
+_local_sessions: dict[str, dict] = {}
+
+
+def _save_session(session_id: str, session_data: dict) -> None:
+    _local_sessions[session_id] = session_data
+    if _memcached:
+        try:
+            _memcached.set(f"session:{session_id}", json.dumps(session_data).encode("utf-8"), expire=86400)
+        except Exception:
+            pass
+
+
+def _get_session(session_id: str) -> dict | None:
+    if not session_id:
+        return None
+    if _memcached:
+        try:
+            raw = _memcached.get(f"session:{session_id}")
+            if raw:
+                return json.loads(raw.decode("utf-8"))
+        except Exception:
+            pass
+    return _local_sessions.get(session_id)
+
+
+def _delete_session(session_id: str) -> None:
+    if not session_id:
+        return
+    _local_sessions.pop(session_id, None)
+    if _memcached:
+        try:
+            _memcached.delete(f"session:{session_id}")
+        except Exception:
+            pass
+
 
 class LoginRequest(BaseModel):
     username: str
     password: str
 
+
 @app.post("/api/auth/session/login")
 async def session_login(payload: LoginRequest, response: Response):
-    """Authenticate with auth-api, store token in Memcached, return HTTPOnly cookie."""
+    """Authenticate with auth-api, store token in session store, return HTTPOnly cookie."""
     try:
         resp = await _http_client.post(
             f"{AUTH_API_URL}/auth/tokens",
@@ -299,15 +374,14 @@ async def session_login(payload: LoginRequest, response: Response):
     if not token:
         raise HTTPException(status_code=500, detail="No token returned from auth-api")
     
-    # Store token and user data in Memcached (TTL: 24h = 86400s)
+    # Store token and user data in dual-layer session store (TTL: 24h = 86400s)
     session_id = str(uuid.uuid4())
     session_data = {
         "token": token,
         "user": data.get("user"),
         "project": data.get("project")
     }
-    if _memcached:
-        _memcached.set(f"session:{session_id}", json.dumps(session_data).encode("utf-8"), expire=86400)
+    _save_session(session_id, session_data)
     
     # Set cookie
     response.set_cookie(
@@ -315,29 +389,30 @@ async def session_login(payload: LoginRequest, response: Response):
         value=session_id,
         httponly=True,
         max_age=86400,
+        path="/",
         samesite="lax",
     )
     return {"message": "ok"}
 
+
 @app.post("/api/auth/session/logout")
 async def session_logout(request: Request, response: Response):
     session_id = request.cookies.get(SESSION_COOKIE_NAME)
-    if session_id and _memcached:
-        _memcached.delete(f"session:{session_id}")
-    response.delete_cookie(SESSION_COOKIE_NAME)
+    if session_id:
+        _delete_session(session_id)
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     return {"message": "ok"}
+
 
 @app.get("/api/auth/session/me")
 async def session_me(request: Request):
     session_id = request.cookies.get(SESSION_COOKIE_NAME)
-    if not session_id or not _memcached:
+    if not session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
     
-    raw = _memcached.get(f"session:{session_id}")
-    if not raw:
+    data = _get_session(session_id)
+    if not data:
         raise HTTPException(status_code=401, detail="Session expired")
-    
-    data = json.loads(raw.decode("utf-8"))
     
     # Extract fields cleanly for frontend context
     user = data.get("user") or {}
@@ -350,6 +425,259 @@ async def session_me(request: Request):
         "project_id": project.get("id") or user.get("project_id", ""),
         "project_name": project.get("name", ""),
     }
+
+# ── XIDE workspace management ─────────────────────────────────────────────────
+# Lightweight workspace metadata stored under a JSON file on the shared volume.
+# Each workspace is a subdirectory inside the code-server /home/coder tree.
+
+XIDE_ROOT = Path(os.getenv("XIDE_WORKSPACE_ROOT", "/var/lib/xide-workspaces"))
+XIDE_META_FILE = XIDE_ROOT / ".cloudx-xide-workspaces.json"
+
+
+def _xide_guard(request: Request) -> dict | None:
+    """Verify the dashboard session cookie and return session data or None."""
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    return _get_session(session_id)
+
+
+def _xide_load_meta() -> list[dict]:
+    _xide_ensure_dir()
+    if XIDE_META_FILE.exists():
+        try:
+            return json.loads(XIDE_META_FILE.read_text())
+        except Exception:
+            return []
+    return []
+
+
+def _xide_save_meta(meta: list[dict]) -> None:
+    _xide_ensure_dir()
+    XIDE_META_FILE.write_text(json.dumps(meta, indent=2))
+
+
+def _xide_ensure_dir() -> None:
+    XIDE_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+@app.get("/api/xide/workspaces")
+async def xide_list_workspaces(request: Request):
+    """List all XIDE workspaces. Session auth required."""
+    session = _xide_guard(request)
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user = session.get("user") or {}
+    username = user.get("username", "")
+    all_meta = _xide_load_meta()
+    items = [w for w in all_meta if w.get("owner") == username]
+    return {"items": items}
+
+
+@app.post("/api/xide/workspaces")
+async def xide_create_workspace(request: Request):
+    """Create a new XIDE workspace under /home/coder/<username>/<workspace-name>."""
+    session = _xide_guard(request)
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Workspace name is required")
+    description = (body.get("description") or "").strip()
+    profile = (body.get("profile") or "default").strip()
+    auto_stop = (body.get("auto_stop") or "1h").strip()
+
+    user = session.get("user") or {}
+    username = user.get("username", "user")
+    owner_dir = XIDE_ROOT / username
+    ws_dir = owner_dir / name
+
+    all_meta = _xide_load_meta()
+    if any(w.get("owner") == username and w.get("name") == name for w in all_meta):
+        raise HTTPException(status_code=409, detail=f"Workspace '{name}' already exists")
+
+    owner_dir.mkdir(parents=True, exist_ok=True)
+    ws_dir.mkdir(parents=True, exist_ok=True)
+
+    ws_id = str(uuid.uuid4())[:12]
+    entry = {
+        "id": ws_id,
+        "name": name,
+        "owner": username,
+        "description": description,
+        "profile": profile,
+        "auto_stop": auto_stop,
+        "path": str(ws_dir),
+        "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+
+    all_meta.append(entry)
+    _xide_save_meta(all_meta)
+    return {"workspace": entry}
+
+
+@app.delete("/api/xide/workspaces/{ws_id}")
+async def xide_delete_workspace(ws_id: str, request: Request):
+    """Delete an XIDE workspace including its directory on disk."""
+    session = _xide_guard(request)
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    user = session.get("user") or {}
+    username = user.get("username", "")
+    all_meta = _xide_load_meta()
+    entry = next((w for w in all_meta if w.get("id") == ws_id and w.get("owner") == username), None)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    ws_path = Path(entry.get("path", ""))
+    if ws_path.exists():
+        shutil.rmtree(ws_path, ignore_errors=True)
+
+    all_meta = [w for w in all_meta if w.get("id") != ws_id]
+    _xide_save_meta(all_meta)
+    return {"message": "ok"}
+
+
+# ── XIDE reverse proxy → code-server container ─────────────────────────────────
+
+XIDE_BACKEND = os.getenv("XIDE_BACKEND_URL", "http://127.0.0.1:8085").rstrip("/")
+XIDE_WS_BACKEND = XIDE_BACKEND.replace("http://", "ws://").replace("https://", "wss://")
+XIDE_PROXY_PREFIX = "/xide-proxy"
+
+
+async def _xide_http_proxy(request: Request) -> Response:
+    """Forward HTTP requests to code-server, guarded by dashboard session auth."""
+    session = _xide_guard(request)
+    if session is None:
+        return Response(content="Not authenticated", status_code=401)
+
+    full_path = request.url.path
+    rel_path = full_path[len(XIDE_PROXY_PREFIX):] if full_path.startswith(XIDE_PROXY_PREFIX) else full_path
+    if not rel_path.startswith("/"):
+        rel_path = f"/{rel_path}"
+    qs = str(request.url.query)
+    target = f"{XIDE_BACKEND}{rel_path}"
+    if qs:
+        target = f"{target}?{qs}"
+
+    body = await request.body()
+
+    fwd_headers = {}
+    for hdr in ("content-type", "accept", "accept-language",
+                "cache-control"):
+        val = request.headers.get(hdr)
+        if val:
+            fwd_headers[hdr] = val
+
+    resp = await _http_client.request(
+        method=request.method,
+        url=target,
+        headers=fwd_headers,
+        content=body if body else None,
+    )
+
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers={k: v for k, v in resp.headers.items()
+                 if k.lower() not in ("transfer-encoding", "content-encoding")},
+        media_type=resp.headers.get("content-type"),
+    )
+
+
+@app.api_route(f"{XIDE_PROXY_PREFIX}/{{path:path}}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+async def xide_proxy_route(path: str, request: Request):
+    """Proxy all XIDE HTTP requests to code-server after session auth check.
+    
+    Uses request.url.path directly so the full /xide-proxy/... prefix reaches
+    the upstream code-server (which expects it via --base-path).
+    """
+    return await _xide_http_proxy(request)
+
+
+@app.get(XIDE_PROXY_PREFIX, include_in_schema=False)
+@app.get(f"{XIDE_PROXY_PREFIX}/", include_in_schema=False)
+async def xide_index_proxy(request: Request):
+    """Proxy XIDE index (code-server entrypoint) with auth guard."""
+    return await _xide_http_proxy(request)
+
+
+@app.websocket(f"{XIDE_PROXY_PREFIX}/{{path:path}}")
+async def ws_xide_proxy(ws: WebSocket, path: str = ""):
+    """WebSocket proxy for code-server's real-time channel.
+
+    Bridges the browser WebSocket through FastAPI → upstream code-server.
+    Supports sub-paths (e.g. /socket) and forwards subprotocols + cookies.
+    """
+    session_id = ws.cookies.get(SESSION_COOKIE_NAME)
+    if not session_id or not _memcached:
+        await ws.accept()
+        await ws.send_text("\r\n\x1b[31m✗ Not authenticated\x1b[0m\r\n")
+        await ws.close(code=4401)
+        return
+
+    raw = _memcached.get(f"session:{session_id}")
+    if not raw:
+        await ws.accept()
+        await ws.send_text("\r\n\x1b[31m✗ Session expired — sign in again\x1b[0m\r\n")
+        await ws.close(code=4401)
+        return
+
+    # Accept with the same subprotocol(s) the browser requested
+    subprotocols = ws.scope.get("subprotocols", [])
+    await ws.accept(subprotocol=subprotocols[0] if subprotocols else None)
+
+    # Build upstream URL preserving sub-path and query string
+    upstream_url = f"{XIDE_WS_BACKEND}/{path}"
+    if ws.url.query:
+        upstream_url = f"{upstream_url}?{ws.url.query.decode()}"
+
+    # Forward cookie so upstream code-server recognises the session
+    extra_headers = {}
+    cookie = ws.headers.get("cookie")
+    if cookie:
+        extra_headers["Cookie"] = cookie
+
+    try:
+        async with websockets.connect(
+            upstream_url,
+            subprotocols=subprotocols,
+            extra_headers=extra_headers,
+        ) as upstream:
+            async def client_to_upstream():
+                try:
+                    while True:
+                        data = await ws.receive()
+                        if "text" in data:
+                            await upstream.send(data["text"])
+                        elif "bytes" in data:
+                            await upstream.send(data["bytes"])
+                except Exception:
+                    pass
+
+            async def upstream_to_client():
+                try:
+                    async for message in upstream:
+                        if isinstance(message, bytes):
+                            await ws.send_bytes(message)
+                        else:
+                            await ws.send_text(message)
+                except Exception:
+                    pass
+
+            client_task = asyncio.create_task(client_to_upstream())
+            upstream_task = asyncio.create_task(upstream_to_client())
+
+            done, _ = await asyncio.wait(
+                [client_task, upstream_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in [client_task, upstream_task]:
+                t.cancel()
+    except Exception:
+        pass
+
 
 # ── Reverse Proxy ─────────────────────────────────────────────────────────────
 
@@ -384,17 +712,12 @@ async def proxy(path: str, request: Request):
         if val:
             fwd_headers[hdr] = val
 
-    # Inject token from Memcached if available
+    # Inject token from session store if available
     session_id = request.cookies.get(SESSION_COOKIE_NAME)
-    if session_id and _memcached:
-        raw = _memcached.get(f"session:{session_id}")
-        if raw:
-            try:
-                data = json.loads(raw.decode("utf-8"))
-                if data.get("token"):
-                    fwd_headers["authorization"] = f"Bearer {data['token']}"
-            except Exception:
-                pass
+    if session_id:
+        data = _get_session(session_id)
+        if data and data.get("token"):
+            fwd_headers["authorization"] = f"Bearer {data['token']}"
     
     # Fallback if authorization header was provided directly (e.g. CLI or tests)
     if not fwd_headers.get("authorization") and request.headers.get("authorization"):
@@ -422,9 +745,18 @@ async def proxy(path: str, request: Request):
 if STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
 
+# NOTE: /xide/* routes are defined above (before SPA fallback) so they take
+# priority over the catch-all /{full_path:path} below.
+
 @app.get("/{full_path:path}", include_in_schema=False)
 async def spa_fallback(full_path: str):
-    """Serve index.html for all non-API routes (SPA client-side routing)."""
+    """Serve index.html for all non-API routes (SPA client-side routing).
+
+    Excludes /xide by virtue of route ordering — /xide routes are registered
+    earlier and are more specific, so FastAPI matches them first.
+    """
+    if full_path.startswith("xide-proxy"):
+        return Response(content="Not found", status_code=404)
     index = STATIC_DIR / "index.html"
     if not index.exists():
         return Response(content="Dashboard not built yet", status_code=503)

@@ -1087,10 +1087,13 @@ def list_servers(
     limit: int = Query(default=200, ge=1, le=1000),
     marker: str | None = None,
     tags: str | None = None,
+    server_group_id: str | None = None,
 ):
     q = select(Server).where(Server.status != "DELETED")
     if current.get("role") != "admin":
         q = q.where(Server.project_id == current["project_id"])
+    if server_group_id:
+        q = q.where(Server.server_group_id == server_group_id)
     if tags:
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]
         for tag in tag_list:

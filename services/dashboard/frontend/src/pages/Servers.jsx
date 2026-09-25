@@ -18,6 +18,7 @@ import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import useEventStream from '../hooks/useEventStream.js'
 import { ComputeStatus, TableEmpty, TableNoMatch, timeAgo, shortId, counterText } from '../components/common.jsx'
+import DeleteModal from '../components/DeleteModal.jsx'
 
 const PAGE_SIZE = 15
 
@@ -133,6 +134,8 @@ export default function ServersPage() {
   const [selected, setSelected] = useState([])
   const [showLogs, setShowLogs] = useState(null)
   const [showConsole, setShowConsole] = useState(null)
+  const [deleteModal, setDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -152,9 +155,8 @@ export default function ServersPage() {
 
   const runAction = async (server, action) => {
     if (action === 'delete') {
-      if (!confirm(`Delete instance "${server.name}"?`)) return
-      try { await api.deleteServer(server.id); toast('Instance deletion started', 'success'); load() }
-      catch (e) { toast(e.message, 'error') }
+      setSelected([server])
+      setDeleteModal(true)
       return
     }
     if (action === 'logs')         { setShowLogs(server); return }
@@ -189,10 +191,12 @@ export default function ServersPage() {
 
   const bulkDelete = async () => {
     if (!selected.length) return
-    if (!confirm(`Delete ${selected.length} instance(s)?`)) return
+    setDeleting(true)
     for (const s of selected) {
       try { await api.deleteServer(s.id) } catch { /* continue */ }
     }
+    setDeleting(false)
+    setDeleteModal(false)
     setSelected([])
     toast(`${selected.length} instance(s) queued for deletion`, 'success')
     load()
@@ -242,7 +246,7 @@ export default function ServersPage() {
                   { id: 'reboot', text: 'Reboot',      disabled: !selected.length },
                   { id: 'delete', text: 'Delete',      disabled: !selected.length },
                 ]}
-                onItemClick={({ detail }) => detail.id === 'delete' ? bulkDelete() : bulkAction(detail.id)}
+                onItemClick={({ detail }) => detail.id === 'delete' ? setDeleteModal(true) : bulkAction(detail.id)}
               >
                 Instance state
               </ButtonDropdown>
@@ -344,6 +348,17 @@ export default function ServersPage() {
 
       {showLogs && <LogsModal server={showLogs} onDismiss={() => setShowLogs(null)} />}
       {showConsole && <ConsoleModal server={showConsole} onDismiss={() => setShowConsole(null)} />}
+      {deleteModal && (
+        <DeleteModal
+          visible
+          itemCount={selected.length}
+          itemName={selected.length === 1 ? selected[0].name : undefined}
+          title="Delete Instance"
+          loading={deleting}
+          onDismiss={() => setDeleteModal(false)}
+          onConfirm={bulkDelete}
+        />
+      )}
     </ContentLayout>
   )
 }

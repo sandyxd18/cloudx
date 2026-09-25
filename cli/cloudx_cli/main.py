@@ -31,12 +31,14 @@ CONFIG_FILE = CLOUDX_DIR / "config"
 CREDS_FILE  = CLOUDX_DIR / "credentials"
 
 DEFAULT_URLS = {
-    "auth":     os.getenv("CLOUDX_AUTH_URL",        "http://localhost:8005"),
-    "compute":  os.getenv("CLOUDX_COMPUTE_URL",     "http://localhost:8003"),
-    "network":  os.getenv("CLOUDX_NETWORK_URL",     "http://localhost:8001"),
-    "image":    os.getenv("CLOUDX_IMAGE_URL",       "http://localhost:8002"),
-    "volume":   os.getenv("CLOUDX_VOLUME_URL",      "http://localhost:8004"),
-    "placement":os.getenv("CLOUDX_PLACEMENT_URL",   "http://localhost:8006"),
+    "auth":          os.getenv("CLOUDX_AUTH_URL",          "http://127.0.0.1:8005"),
+    "compute":       os.getenv("CLOUDX_COMPUTE_URL",       "http://127.0.0.1:8003"),
+    "network":       os.getenv("CLOUDX_NETWORK_URL",       "http://127.0.0.1:8001"),
+    "image":         os.getenv("CLOUDX_IMAGE_URL",         "http://127.0.0.1:8002"),
+    "volume":        os.getenv("CLOUDX_VOLUME_URL",        "http://127.0.0.1:8004"),
+    "placement":     os.getenv("CLOUDX_PLACEMENT_URL",     "http://127.0.0.1:8006"),
+    "object-store":  os.getenv("CLOUDX_OBJECT_STORE_URL",  "http://127.0.0.1:8007"),
+    "load-balancer": os.getenv("CLOUDX_LOAD_BALANCER_URL", "http://127.0.0.1:8008"),
 }
 
 
@@ -1534,6 +1536,80 @@ def host_check(ctx):
 def host_show(ctx):
     data = _api("get", f"{DEFAULT_URLS['compute']}/host", ctx.obj["profile"])
     _output(data, ctx.obj["fmt"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOAD BALANCER
+# ═══════════════════════════════════════════════════════════════════════════════
+@cli.group("load-balancer")
+@click.pass_context
+def load_balancer(ctx):
+    """Manage load balancers (NLB L4 & ALB L7)"""
+
+@load_balancer.command("list")
+@click.pass_context
+def lb_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['load-balancer']}/load-balancers", ctx.obj["profile"])
+    _output(data.get("items", data), ctx.obj["fmt"],
+            ["id", "name", "lb_type", "vip_address", "provisioning_status", "operating_status"])
+
+@load_balancer.command("show")
+@click.argument("ref")
+@click.pass_context
+def lb_show(ctx, ref):
+    data = _api("get", f"{DEFAULT_URLS['load-balancer']}/load-balancers/{ref}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@load_balancer.command("create")
+@click.argument("name")
+@click.option("--network", required=True, help="Network name or ID")
+@click.option("--subnet", default=None, help="Subnet name or ID")
+@click.option("--type", "lb_type", type=click.Choice(["nlb", "alb"]), default="nlb")
+@click.pass_context
+def lb_create(ctx, name, network, subnet, lb_type):
+    payload = {"name": name, "vip_network_id": network, "lb_type": lb_type}
+    if subnet: payload["vip_subnet_id"] = subnet
+    data = _api("post", f"{DEFAULT_URLS['load-balancer']}/load-balancers", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+@load_balancer.command("delete")
+@click.argument("ref")
+@click.pass_context
+def lb_delete(ctx, ref):
+    _api("delete", f"{DEFAULT_URLS['load-balancer']}/load-balancers/{ref}", ctx.obj["profile"])
+    click.echo(f"✓ Load balancer {ref} deleted")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OBJECT STORE
+# ═══════════════════════════════════════════════════════════════════════════════
+@cli.group("object-store")
+@click.pass_context
+def object_store(ctx):
+    """Manage object storage buckets and objects"""
+
+@object_store.command("list")
+@click.pass_context
+def bucket_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['object-store']}/buckets", ctx.obj["profile"])
+    _output(data.get("buckets", data), ctx.obj["fmt"], ["id", "name", "created_at"])
+
+@object_store.command("create")
+@click.argument("name")
+@click.option("--type-id", help="Bucket type ID (optional)")
+@click.pass_context
+def bucket_create(ctx, name, type_id):
+    payload = {"name": name}
+    if type_id: payload["bucket_type_id"] = type_id
+    data = _api("post", f"{DEFAULT_URLS['object-store']}/buckets", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+@object_store.command("delete")
+@click.argument("name")
+@click.pass_context
+def bucket_delete(ctx, name):
+    _api("delete", f"{DEFAULT_URLS['object-store']}/buckets/{name}", ctx.obj["profile"])
+    click.echo(f"✓ Bucket {name} deleted")
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ import TextFilter from '@cloudscape-design/components/text-filter'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import { ResourceStatus, BoolStatus, TableEmpty, TableNoMatch, shortId, counterText } from '../components/common.jsx'
+import DeleteModal from '../components/DeleteModal.jsx'
 
 export default function NetworksPage() {
   const navigate = useNavigate()
@@ -21,6 +22,8 @@ export default function NetworksPage() {
   const [loading, setLoading]   = useState(true)
   const [filter, setFilter]     = useState('')
   const [selected, setSelected] = useState([])
+  const [deleteModal, setDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -38,10 +41,12 @@ export default function NetworksPage() {
 
   const deleteSelected = async () => {
     if (!selected.length) return
-    if (!confirm(`Delete ${selected.length} network(s)?`)) return
+    setDeleting(true)
     for (const n of selected) {
       try { await api.deleteNetwork(n.id) } catch (e) { toast(`${n.name}: ${e.message}`, 'error') }
     }
+    setDeleting(false)
+    setDeleteModal(false)
     setSelected([])
     load()
   }
@@ -66,7 +71,7 @@ export default function NetworksPage() {
                   { id: 'delete', text: 'Delete network' },
                 ]}
                 onItemClick={({ detail }) => {
-                  if (detail.id === 'delete') deleteSelected()
+                  if (detail.id === 'delete') setDeleteModal(true)
                   else if (detail.id === 'detail' && selected[0]) navigate(`/networks/${selected[0].id}`)
                 }}
               >
@@ -143,6 +148,17 @@ export default function NetworksPage() {
               />
         }
       />
+      {deleteModal && (
+        <DeleteModal
+          visible
+          itemCount={selected.length}
+          itemName={selected.length === 1 ? selected[0].name : undefined}
+          title="Delete Network"
+          loading={deleting}
+          onDismiss={() => setDeleteModal(false)}
+          onConfirm={deleteSelected}
+        />
+      )}
     </ContentLayout>
   )
 }

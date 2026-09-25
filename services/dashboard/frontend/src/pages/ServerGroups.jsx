@@ -4,6 +4,7 @@ import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import Header from '@cloudscape-design/components/header'
+import Link from '@cloudscape-design/components/link'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import Table from '@cloudscape-design/components/table'
 import TextFilter from '@cloudscape-design/components/text-filter'
@@ -11,6 +12,7 @@ import Badge from '@cloudscape-design/components/badge'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import { TableEmpty, TableNoMatch, shortId, counterText } from '../components/common.jsx'
+import DeleteModal from '../components/DeleteModal.jsx'
 
 const POLICIES = [
   { value: 'anti-affinity',      label: 'Anti-affinity',      description: 'Place instances on different hosts' },
@@ -26,6 +28,8 @@ export default function ServerGroupsPage() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter]   = useState('')
   const [selected, setSelected] = useState([])
+  const [deleteModal, setDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -39,10 +43,12 @@ export default function ServerGroupsPage() {
 
   const deleteSelected = async () => {
     if (!selected.length) return
-    if (!confirm(`Delete ${selected.length} server group(s)?`)) return
+    setDeleting(true)
     for (const g of selected) {
       try { await api.deleteServerGroup(g.id) } catch { /* continue */ }
     }
+    setDeleting(false)
+    setDeleteModal(false)
     setSelected([])
     toast(`${selected.length} server group(s) deleted`, 'success')
     load()
@@ -61,7 +67,7 @@ export default function ServerGroupsPage() {
           actions={
             <SpaceBetween direction="horizontal" size="xs">
               <Button iconName="refresh" onClick={load} ariaLabel="Refresh server groups" />
-              <Button disabled={!selected.length} onClick={deleteSelected}>Delete</Button>
+              <Button disabled={!selected.length} onClick={() => setDeleteModal(true)}>Delete</Button>
               <Button variant="primary" onClick={() => navigate('/server-groups/create')} data-testid="create-sg-btn">Create server group</Button>
             </SpaceBetween>
           }
@@ -81,19 +87,31 @@ export default function ServerGroupsPage() {
         items={filtered}
         trackBy="id"
         columnDefinitions={[
-          { id: 'name', header: 'Name', cell: item => <Box fontWeight="bold">{item.name}</Box>, isRowHeader: true, sortingField: 'name' },
+          {
+            id: 'name',
+            header: 'Name',
+            cell: item => (
+              <Link href={`/server-groups/${item.id}`} onFollow={(e) => { e.preventDefault(); navigate(`/server-groups/${item.id}`) }}>
+                {item.name}
+              </Link>
+            ),
+            isRowHeader: true,
+            sortingField: 'name',
+          },
           { id: 'id', header: 'Group ID', cell: item => shortId(item.id, 16) },
           {
             id: 'policy',
             header: 'Policy',
-            cell: item => <Badge color={item.policy?.includes('anti') ? 'blue' : 'green'}>{item.policy}</Badge>,
+            cell: item => <Badge color={(item.policy || '').includes('anti') ? 'blue' : 'green'}>{item.policy || 'affinity'}</Badge>,
             sortingField: 'policy',
           },
           {
             id: 'members',
             header: 'Members',
             cell: item => {
-              const members = (item.members || '').split(',').filter(Boolean)
+              const members = Array.isArray(item.members)
+                ? item.members
+                : (typeof item.members === 'string' ? item.members.split(',').filter(Boolean) : [])
               return members.length ? `${members.length} instance(s)` : '—'
             },
           },
@@ -117,6 +135,17 @@ export default function ServerGroupsPage() {
               />
         }
       />
+      {deleteModal && (
+        <DeleteModal
+          visible
+          itemCount={selected.length}
+          itemName={selected.length === 1 ? selected[0].name : undefined}
+          title="Delete Server Group"
+          loading={deleting}
+          onDismiss={() => setDeleteModal(false)}
+          onConfirm={deleteSelected}
+        />
+      )}
     </ContentLayout>
   )
 }

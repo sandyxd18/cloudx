@@ -27,6 +27,8 @@ scrape_configs:
           - "127.0.0.1:8003"   # compute-api
           - "127.0.0.1:8004"   # block-store-api
           - "127.0.0.1:8006"   # placement-api
+          - "127.0.0.1:8007"   # object-store-api
+          - "127.0.0.1:8008"   # load-balancer-api
         labels:
           group: control-plane
 

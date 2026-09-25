@@ -12,6 +12,7 @@ import TextFilter from '@cloudscape-design/components/text-filter'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import { TableEmpty, TableNoMatch, shortId, counterText } from '../components/common.jsx'
+import DeleteModal from '../components/DeleteModal.jsx'
 
 export default function SecurityGroupsPage() {
   const navigate = useNavigate()
@@ -20,6 +21,8 @@ export default function SecurityGroupsPage() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter]   = useState('')
   const [selected, setSelected] = useState([])
+  const [deleteModal, setDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -44,10 +47,12 @@ export default function SecurityGroupsPage() {
 
   const deleteSelected = async () => {
     if (!selected.length) return
-    if (!confirm(`Delete ${selected.length} security group(s)?`)) return
+    setDeleting(true)
     for (const sg of selected) {
       try { await api.deleteSecurityGroup(sg.id) } catch (e) { toast(`${sg.name}: ${e.message}`, 'error') }
     }
+    setDeleting(false)
+    setDeleteModal(false)
     setSelected([])
     load()
   }
@@ -72,7 +77,7 @@ export default function SecurityGroupsPage() {
                   { id: 'delete', text: 'Delete security group' },
                 ]}
                 onItemClick={({ detail }) => {
-                  if (detail.id === 'delete') deleteSelected()
+                  if (detail.id === 'delete') setDeleteModal(true)
                   else if (detail.id === 'rules' && one) navigate(`/security-groups/${one.id}`)
                 }}
               >
@@ -144,6 +149,17 @@ export default function SecurityGroupsPage() {
               />
         }
       />
+      {deleteModal && (
+        <DeleteModal
+          visible
+          itemCount={selected.length}
+          itemName={selected.length === 1 ? selected[0].name : undefined}
+          title="Delete Security Group"
+          loading={deleting}
+          onDismiss={() => setDeleteModal(false)}
+          onConfirm={deleteSelected}
+        />
+      )}
     </ContentLayout>
   )
 }

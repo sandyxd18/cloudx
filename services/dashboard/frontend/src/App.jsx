@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom'
-import { useEffect } from 'react'
+import { Component, useEffect } from 'react'
 import { ToastProvider, AuthProvider, useAuth, useToast } from './context.jsx'
 import { ThemeProvider } from './theme.jsx'
 import { XShellProvider } from './components/XShellContext.jsx'
@@ -21,6 +21,7 @@ import NetworkDetailPage from './pages/NetworkDetail.jsx'
 import SubnetCreatePage from './pages/SubnetCreate.jsx'
 import RoutersPage from './pages/Routers.jsx'
 import RouterCreatePage from './pages/RouterCreate.jsx'
+import RouterDetailPage from './pages/RouterDetail.jsx'
 import FloatingIPsPage from './pages/FloatingIPs.jsx'
 import FloatingIPAllocatePage from './pages/FloatingIPAllocate.jsx'
 import FloatingIPAssociatePage from './pages/FloatingIPAssociate.jsx'
@@ -29,19 +30,47 @@ import SecurityGroupCreatePage from './pages/SecurityGroupCreate.jsx'
 import SecurityGroupDetailPage from './pages/SecurityGroupDetail.jsx'
 import ImagesPage from './pages/Images.jsx'
 import ImageCreatePage from './pages/ImageCreate.jsx'
+import ImageDetailPage from './pages/ImageDetail.jsx'
 import VolumesPage from './pages/Volumes.jsx'
 import VolumeCreatePage from './pages/VolumeCreate.jsx'
 import VolumeDetailPage from './pages/VolumeDetail.jsx'
 import SnapshotsPage from './pages/Snapshots.jsx'
 import SnapshotCreatePage from './pages/SnapshotCreate.jsx'
+import SnapshotDetailPage from './pages/SnapshotDetail.jsx'
 import VolumeTypesPage from './pages/VolumeTypes.jsx'
+import ObjectStorePage from './pages/ObjectStore.jsx'
+import BucketCreatePage from './pages/BucketCreate.jsx'
+import BucketDetailPage from './pages/BucketDetail.jsx'
+import LoadBalancersPage from './pages/LoadBalancers.jsx'
+import LoadBalancerCreatePage from './pages/LoadBalancerCreate.jsx'
+import LoadBalancerDetailPage from './pages/LoadBalancerDetail.jsx'
 import VolumeTypeCreatePage from './pages/VolumeTypeCreate.jsx'
 import ServerGroupsPage from './pages/ServerGroups.jsx'
 import ServerGroupCreatePage from './pages/ServerGroupCreate.jsx'
+import ServerGroupDetailPage from './pages/ServerGroupDetail.jsx'
 import AdminPage from './pages/Admin.jsx'
 import TopologyPage from './pages/Topology.jsx'
 import ConsolePage from './pages/Console.jsx'
 import RolesPage from './pages/Roles.jsx'
+import XIDEPage from './pages/XIDE.jsx'
+import XIDECreatePage from './pages/XIDECreate.jsx'
+
+class XShellErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false }
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+  componentDidCatch(error) {
+    console.error('XShell panel crashed, hiding:', error)
+  }
+  render() {
+    if (this.state.hasError) return null
+    return this.props.children
+  }
+}
 
 function PrivateRoute({ children }) {
   const { user } = useAuth()
@@ -87,12 +116,14 @@ function AppRoutes() {
           <Route path="keypairs/import" element={<KeypairImportPage />} />
           <Route path="server-groups" element={<ServerGroupsPage />} />
           <Route path="server-groups/create" element={<ServerGroupCreatePage />} />
+          <Route path="server-groups/:id" element={<ServerGroupDetailPage />} />
           <Route path="networks" element={<NetworksPage />} />
           <Route path="networks/create" element={<NetworkCreatePage />} />
           <Route path="networks/:id" element={<NetworkDetailPage />} />
           <Route path="subnets/create" element={<SubnetCreatePage />} />
           <Route path="routers" element={<RoutersPage />} />
           <Route path="routers/create" element={<RouterCreatePage />} />
+          <Route path="routers/:id" element={<RouterDetailPage />} />
           <Route path="floating-ips" element={<FloatingIPsPage />} />
           <Route path="floating-ips/allocate" element={<FloatingIPAllocatePage />} />
           <Route path="floating-ips/associate" element={<FloatingIPAssociatePage />} />
@@ -101,6 +132,7 @@ function AppRoutes() {
           <Route path="security-groups/:id" element={<SecurityGroupDetailPage />} />
           <Route path="images" element={<ImagesPage />} />
           <Route path="images/create" element={<ImageCreatePage />} />
+          <Route path="images/:id" element={<ImageDetailPage />} />
           <Route path="volumes" element={<VolumesPage />} />
           <Route path="volumes/create" element={<VolumeCreatePage />} />
           <Route path="volumes/:id" element={<VolumeDetailPage />} />
@@ -108,10 +140,19 @@ function AppRoutes() {
           <Route path="volume-types/create" element={<VolumeTypeCreatePage />} />
           <Route path="snapshots" element={<SnapshotsPage />} />
           <Route path="snapshots/create" element={<SnapshotCreatePage />} />
+          <Route path="snapshots/:id" element={<SnapshotDetailPage />} />
+          <Route path="object-store" element={<ObjectStorePage />} />
+          <Route path="object-store/create" element={<BucketCreatePage />} />
+          <Route path="object-store/buckets/:name" element={<BucketDetailPage />} />
+          <Route path="load-balancers" element={<LoadBalancersPage />} />
+          <Route path="load-balancers/create" element={<LoadBalancerCreatePage />} />
+          <Route path="load-balancers/:id" element={<LoadBalancerDetailPage />} />
           <Route path="topology" element={<TopologyPage />} />
           <Route path="console/:id" element={<ConsolePage />} />
           <Route path="roles" element={<RolesPage />} />
           <Route path="admin" element={<AdminPage />} />
+          <Route path="xide" element={<XIDEPage />} />
+          <Route path="xide/create" element={<XIDECreatePage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
@@ -127,7 +168,9 @@ export default function App() {
           <ToastProvider>
             <XShellProvider>
               <AppRoutes />
-              <XShellPanel />
+              <XShellErrorBoundary>
+                <XShellPanel />
+              </XShellErrorBoundary>
             </XShellProvider>
           </ToastProvider>
         </AuthProvider>

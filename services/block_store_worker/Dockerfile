@@ -11,8 +11,8 @@ RUN apt-get update \
         ceph-common \
         curl \
         ca-certificates \
-    && curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc \
-    && chmod +x /usr/local/bin/mc \
+    && (curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc || curl -fsSL https://dl.minio.org.cn/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc) \
+    && chmod +x /usr/local/bin/mc || true \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

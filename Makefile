@@ -41,6 +41,12 @@ start: up
 start-minio: up-minio
 
 # ── Service management ────────────────────────────────────────────────────────
+reload:
+	docker compose up -d --build
+
+rebuild:
+	docker compose build --no-cache && docker compose up -d
+
 down:
 	docker compose down
 
@@ -69,17 +75,7 @@ cleanup-all:
 # ── CLI install ───────────────────────────────────────────────────────────────
 # Installs the unified 'cloudx' command to ~/.local/bin
 install-cli:
-	pip3 install --user --break-system-packages tabulate click requests 2>/dev/null || \
-	pip3 install --user tabulate click requests
-	pip3 install --user --break-system-packages ./cli 2>/dev/null || \
-	pip3 install --user ./cli
-	@echo ""
-	@echo "✓ cloudx CLI installed. Make sure ~/.local/bin is in your PATH:"
-	@echo "  export PATH=\"\$$HOME/.local/bin:\$$PATH\""
-	@echo ""
-	@echo "Quick start:"
-	@echo "  cloudx auth configure        # Setup credentials"
-	@echo "  cloudx server list           # List servers"
+	./scripts/install-cli.sh
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 test:

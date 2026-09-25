@@ -4,6 +4,7 @@ import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import Header from '@cloudscape-design/components/header'
+import Link from '@cloudscape-design/components/link'
 import Pagination from '@cloudscape-design/components/pagination'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import Table from '@cloudscape-design/components/table'
@@ -11,6 +12,7 @@ import TextFilter from '@cloudscape-design/components/text-filter'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import { ResourceStatus, TableEmpty, TableNoMatch, fmtDate, shortId, counterText } from '../components/common.jsx'
+import DeleteModal from '../components/DeleteModal.jsx'
 
 const PAGE_SIZE = 15
 
@@ -23,6 +25,8 @@ export default function SnapshotsPage() {
   const [filter, setFilter]   = useState('')
   const [page, setPage]       = useState(1)
   const [selected, setSelected] = useState([])
+  const [deleteModal, setDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -40,10 +44,12 @@ export default function SnapshotsPage() {
 
   const deleteSelected = async () => {
     if (!selected.length) return
-    if (!confirm(`Delete ${selected.length} snapshot(s)?`)) return
+    setDeleting(true)
     for (const s of selected) {
       try { await api.deleteSnapshot(s.id) } catch { /* continue */ }
     }
+    setDeleting(false)
+    setDeleteModal(false)
     setSelected([])
     toast(`${selected.length} snapshot(s) deleted`, 'success')
     load()
@@ -63,7 +69,7 @@ export default function SnapshotsPage() {
           actions={
             <SpaceBetween direction="horizontal" size="xs">
               <Button iconName="refresh" onClick={load} ariaLabel="Refresh snapshots" />
-              <Button disabled={!selected.length} onClick={deleteSelected}>Delete</Button>
+              <Button disabled={!selected.length} onClick={() => setDeleteModal(true)}>Delete</Button>
               <Button variant="primary" onClick={() => navigate('/snapshots/create')} data-testid="create-snapshot-btn">Create snapshot</Button>
             </SpaceBetween>
           }
@@ -88,7 +94,9 @@ export default function SnapshotsPage() {
             header: 'Snapshot name',
             cell: item => (
               <SpaceBetween size="xxxs">
-                <Box fontWeight="bold">{item.name || '—'}</Box>
+                <Link href={`/snapshots/${item.id}`} onFollow={(e) => { e.preventDefault(); navigate(`/snapshots/${item.id}`) }}>
+                  {item.name || '—'}
+                </Link>
                 <Box variant="small" color="text-body-secondary">{shortId(item.id, 16)}</Box>
               </SpaceBetween>
             ),
@@ -127,6 +135,17 @@ export default function SnapshotsPage() {
               />
         }
       />
+      {deleteModal && (
+        <DeleteModal
+          visible
+          itemCount={selected.length}
+          itemName={selected.length === 1 ? selected[0].name : undefined}
+          title="Delete Snapshot"
+          loading={deleting}
+          onDismiss={() => setDeleteModal(false)}
+          onConfirm={deleteSelected}
+        />
+      )}
     </ContentLayout>
   )
 }

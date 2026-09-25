@@ -775,11 +775,39 @@ def delete_volume_internal(ref: str, db: DB):
     return {"status": "deleting", "id": volume.id}
 
 
-@app.get("/volumes")
-def list_volumes(current: CurrentUser, db: DB):
+def _list_volumes_query(current: CurrentUser, db: DB):
     q = select(Volume)
     if current.get("role") != "admin":
         q = q.where(Volume.project_id == current["project_id"])
+    return q
+
+
+def _reconcile_orphan_volumes(db: DB):
+    """Mark volumes as available if their attached server no longer exists."""
+    orphan = (
+        select(Volume)
+        .where(Volume.status == "in-use")
+        .where(Volume.attached_to_server_id.isnot(None))
+    )
+    try:
+        resp = requests.get(f"{COMPUTE_API_URL}/servers", timeout=5)
+        if resp.status_code == 200:
+            servers = resp.json().get("items", [])
+            active_ids = {s.get("id") for s in servers}
+            for vol in db.scalars(orphan).all():
+                if vol.attached_to_server_id not in active_ids:
+                    vol.attached_to_server_id = None
+                    vol.target_device = None
+                    vol.status = "available"
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+@app.get("/volumes")
+def list_volumes(current: CurrentUser, db: DB):
+    _reconcile_orphan_volumes(db)
+    q = _list_volumes_query(current, db)
     return {"items": [volume_to_os_dict(v) for v in db.scalars(q.order_by(Volume.created_at)).all()]}
 
 
@@ -925,7 +953,10 @@ def attach_volume(ref: str, payload: AttachIn, db: DB):
 
 @app.post("/volumes/{ref}/detach")
 def detach_volume(ref: str, db: DB):
-    """Hotplug detach via compute-api → compute-worker (hotplug path)."""
+    """Hotplug detach via compute-api → compute-worker (hotplug path).
+    Jika compute-api mengembalikan 404 (instance sudah terhapus), tetap
+    lepas attach secara lokal supaya volume tidak stuck 'in-use'.
+    """
     volume = require_volume(db, ref)
     if volume.status != "in-use" or not volume.attached_to_server_id:
         raise HTTPException(status_code=409, detail="volume is not attached")
@@ -941,6 +972,14 @@ def detach_volume(ref: str, db: DB):
             },
             timeout=60,
         )
+        if resp.status_code == 404:
+            # instance sudah terhapus — tetap lepas attach lokal
+            volume.attached_to_server_id = None
+            volume.target_device = None
+            volume.status = "available"
+            db.commit()
+            db.refresh(volume)
+            return obj_to_dict(volume)
         if resp.status_code >= 400:
             raise HTTPException(status_code=502, detail=f"compute-api detach failed: {_response_detail(resp)}")
     except requests.RequestException as exc:

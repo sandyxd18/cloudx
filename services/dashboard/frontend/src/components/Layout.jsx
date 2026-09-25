@@ -31,6 +31,7 @@ const NAV_ITEMS = [
       { type: 'link', text: 'Images',        href: '/images' },
       { type: 'link', text: 'Key pairs',     href: '/keypairs' },
       { type: 'link', text: 'Server groups', href: '/server-groups' },
+      { type: 'link', text: 'XIDE',          href: '/xide' },
     ],
   },
   {
@@ -38,8 +39,9 @@ const NAV_ITEMS = [
     text: 'Storage',
     defaultExpanded: true,
     items: [
-      { type: 'link', text: 'Volumes',   href: '/volumes' },
-      { type: 'link', text: 'Snapshots', href: '/snapshots' },
+      { type: 'link', text: 'Volumes',    href: '/volumes' },
+      { type: 'link', text: 'Snapshots',  href: '/snapshots' },
+      { type: 'link', text: 'Object Store', href: '/object-store' },
     ],
   },
   {
@@ -51,6 +53,7 @@ const NAV_ITEMS = [
       { type: 'link', text: 'Routers',         href: '/routers' },
       { type: 'link', text: 'Security groups', href: '/security-groups' },
       { type: 'link', text: 'Floating IPs',    href: '/floating-ips' },
+      { type: 'link', text: 'Load Balancers',  href: '/load-balancers' },
       { type: 'link', text: 'Topology',        href: '/topology' },
     ],
   },
@@ -86,6 +89,7 @@ const CRUMBS = {
   '/snapshots/create': [{ text: 'Storage', href: '/volumes' }, { text: 'Snapshots', href: '/snapshots' }, { text: 'Create snapshot', href: '/snapshots/create' }],
   '/volume-types':        [{ text: 'Storage', href: '/volumes' }, { text: 'Volume types', href: '/volume-types' }],
   '/volume-types/create': [{ text: 'Storage', href: '/volumes' }, { text: 'Volume types', href: '/volume-types' }, { text: 'Create volume type', href: '/volume-types/create' }],
+  '/object-store':     [{ text: 'Storage', href: '/volumes' }, { text: 'Object Store', href: '/object-store' }],
   '/networks':         [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }],
   '/networks/create':  [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }, { text: 'Create network', href: '/networks/create' }],
   '/subnets/create':   [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }, { text: 'Create subnet', href: '/subnets/create' }],
@@ -97,10 +101,14 @@ const CRUMBS = {
   '/floating-ips/allocate':  [{ text: 'Networking', href: '/networks' }, { text: 'Floating IPs', href: '/floating-ips' }, { text: 'Allocate floating IP', href: '/floating-ips/allocate' }],
   '/floating-ips/associate': [{ text: 'Networking', href: '/networks' }, { text: 'Floating IPs', href: '/floating-ips' }, { text: 'Associate floating IP', href: '/floating-ips/associate' }],
   '/topology':         [{ text: 'Networking', href: '/networks' }, { text: 'Topology', href: '/topology' }],
+  '/load-balancers':   [{ text: 'Networking', href: '/networks' }, { text: 'Load Balancers', href: '/load-balancers' }],
+  '/load-balancers/create': [{ text: 'Networking', href: '/networks' }, { text: 'Load Balancers', href: '/load-balancers' }, { text: 'Create load balancer', href: '/load-balancers/create' }],
   '/admin':            [{ text: 'Administration', href: '/admin' }, { text: 'Projects & users', href: '/admin' }],
   '/roles':            [{ text: 'Administration', href: '/admin' }, { text: 'Roles', href: '/roles' }],
   '/flavors':          [{ text: 'Administration', href: '/admin' }, { text: 'Flavors', href: '/flavors' }],
   '/flavors/create':   [{ text: 'Administration', href: '/admin' }, { text: 'Flavors', href: '/flavors' }, { text: 'Create flavor', href: '/flavors/create' }],
+  '/xide':             [{ text: 'Compute', href: '/servers' }, { text: 'XIDE environments', href: '/xide' }],
+  '/xide/create':      [{ text: 'Compute', href: '/servers' }, { text: 'XIDE environments', href: '/xide' }, { text: 'Create environment', href: '/xide/create' }],
 }
 
 // Global search targets — jump straight to a service page.
@@ -120,6 +128,7 @@ const SEARCH_TARGETS = [
   { value: 'Projects & users', href: '/admin' },
   { value: 'Roles', href: '/roles' },
   { value: 'Flavors', href: '/flavors' },
+  { value: 'XIDE environments', href: '/xide' },
 ]
 
 function buildCrumbs(pathname) {
@@ -236,7 +245,15 @@ export default function Layout() {
 
   return (
     <>
-      <div id="cloudx-top-nav">
+      <div
+        id="cloudx-top-nav"
+        style={{
+          position: 'sticky',
+          top: 0,
+          zIndex: 2001,
+          background: 'var(--awsui-color-background-layout-main)',
+        }}
+      >
         <TopNavigation
           identity={{
             href: '/',

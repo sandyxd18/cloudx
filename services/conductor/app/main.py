@@ -313,6 +313,31 @@ def handle_mark_volume_error(args: dict) -> dict:
     return {"ok": True}
 
 
+def handle_list_all_volumes(_args: dict) -> dict:
+    """Return all volume records (used by block-store-worker reconciler)."""
+    with SessionLocal() as db:
+        rows = db.execute(
+            text(
+                "SELECT id, name, status, backend, path, size_gb, "
+                "attached_to_server_id, target_device, project_id "
+                "FROM block_store_volumes"
+            ),
+        ).mappings().all()
+    return {"volumes": [dict(row) for row in rows]}
+
+
+def handle_list_all_snapshots(_args: dict) -> dict:
+    """Return all snapshot records (used by block-store-worker reconciler)."""
+    with SessionLocal() as db:
+        rows = db.execute(
+            text(
+                "SELECT id, name, status, backend, path, size_gb, volume_id "
+                "FROM block_store_snapshots"
+            ),
+        ).mappings().all()
+    return {"snapshots": [dict(row) for row in rows]}
+
+
 def handle_update_snapshot(args: dict) -> dict:
     """Update snapshot status/path.
 
@@ -456,6 +481,8 @@ HANDLERS = {
     "mark_server_error":     handle_mark_server_error,
     "get_host_servers":      handle_get_host_servers,
     # Block storage
+    "list_all_volumes":      handle_list_all_volumes,
+    "list_all_snapshots":    handle_list_all_snapshots,
     "update_volume":         handle_update_volume,
     "delete_volume_record":  handle_delete_volume_record,
     "mark_volume_error":     handle_mark_volume_error,
