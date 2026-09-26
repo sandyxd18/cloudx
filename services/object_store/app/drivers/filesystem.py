@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO
@@ -40,9 +41,7 @@ class FilesystemDriver(ObjectStoreDriver):
     def delete_bucket(self, bucket_name: str) -> None:
         bp = self._bucket_path(bucket_name)
         if bp.exists():
-            for child in bp.iterdir():
-                child.unlink()
-            bp.rmdir()
+            shutil.rmtree(bp, ignore_errors=True)
 
     # ── Object ────────────────────────────────────────────────────────────────
 

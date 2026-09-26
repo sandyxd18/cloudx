@@ -59,13 +59,24 @@ export default function ObjectStorePage() {
   const deleteSelected = async () => {
     if (!selected.length) return
     setDeleting(true)
+    let deletedCount = 0
+    let lastError = null
     for (const b of selected) {
-      try { await api.deleteBucket(b.name) } catch { /* ignore */ }
+      try {
+        await api.deleteBucket(b.name)
+        deletedCount++
+      } catch (e) {
+        lastError = e
+      }
     }
     setDeleting(false)
     setDeleteModal(false)
     setSelected([])
-    toast(`${selected.length} bucket(s) deleted`, 'success')
+    if (lastError && deletedCount === 0) {
+      toast(lastError.message || 'Failed to delete bucket', 'error')
+    } else {
+      toast(`${deletedCount} bucket(s) deleted`, 'success')
+    }
     load()
   }
 

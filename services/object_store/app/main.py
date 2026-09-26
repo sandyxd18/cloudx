@@ -101,7 +101,7 @@ class ObjectMeta(Base):
     __tablename__ = "object_store_objects"
 
     id:           Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    bucket_id:    Mapped[str] = mapped_column(String, ForeignKey("object_store_buckets.id"))
+    bucket_id:    Mapped[str] = mapped_column(String, ForeignKey("object_store_buckets.id", ondelete="CASCADE"))
     key:          Mapped[str] = mapped_column(String, index=True)
     size:         Mapped[int] = mapped_column(Integer, default=0)
     content_type: Mapped[str] = mapped_column(String, default="application/octet-stream")
@@ -348,14 +348,17 @@ def delete_bucket(name: str, current: CurrentUser, db: DB):
     bt = db.query(BucketType).filter_by(id=b.bucket_type_id).first()
     driver = _get_driver(bt)
 
-    # Cascade delete all objects inside this bucket
+    # Cascade delete all objects inside this bucket from storage driver
     objs = db.query(ObjectMeta).filter_by(bucket_id=b.id).all()
     for obj in objs:
         try:
             driver.delete_object(name, obj.key)
         except Exception as exc:
             log.warning("Backend delete object %s/%s: %s (continuing)", name, obj.key, exc)
-        db.delete(obj)
+
+    # Delete object records from DB and flush to prevent FK constraint error
+    db.query(ObjectMeta).filter_by(bucket_id=b.id).delete(synchronize_session=False)
+    db.flush()
 
     try:
         driver.delete_bucket(name)
