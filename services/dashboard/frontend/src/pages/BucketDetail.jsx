@@ -53,15 +53,10 @@ export default function BucketDetailPage() {
 
       if (b.network_id) {
         const nets = nData?.items || []
-        const subs = sData?.items || []
         const matchedNet = nets.find(item => item.id === b.network_id || item.name === b.network_id)
-        const matchedSub = subs.find(item => item.network_id === (matchedNet?.id || b.network_id))
         setNetworkName(matchedNet?.name || b.network_id)
-        const ip = matchedSub?.gateway_ip || matchedSub?.gateway || (matchedSub?.cidr ? matchedSub.cidr.split('/')[0] : '')
-        setNetworkIp(ip)
       } else {
         setNetworkName('')
-        setNetworkIp('')
       }
     } catch (e) {
       toast(e.message, 'error')
@@ -111,7 +106,7 @@ export default function BucketDetailPage() {
 
   const hostIp = (bucket?.visibility === 'public-read' && bucket?.floating_ip)
     ? bucket.floating_ip
-    : (networkIp || window.location.hostname || '127.0.0.1')
+    : (window.location.hostname || '127.0.0.1')
   const endpointUrl = `http://${hostIp}:8080/api/object-store/buckets/${bucket.name}`
 
   return (

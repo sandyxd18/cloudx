@@ -11,6 +11,7 @@ import TextFilter from '@cloudscape-design/components/text-filter'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import { ResourceStatus, TableEmpty, TableNoMatch, shortId, counterText } from '../components/common.jsx'
+import DeleteModal from '../components/DeleteModal.jsx'
 
 export default function FloatingIPsPage() {
   const navigate = useNavigate()
@@ -20,8 +21,8 @@ export default function FloatingIPsPage() {
   const [loading, setLoading]   = useState(true)
   const [filter, setFilter]     = useState('')
   const [selected, setSelected] = useState([])
-  const [showAllocate, setShowAllocate] = useState(false)
-  const [associate, setAssociate] = useState(null)
+  const [deleteModal, setDeleteModal] = useState(false)
+  const [releasing, setReleasing] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -38,12 +39,14 @@ export default function FloatingIPsPage() {
   const one = selected.length === 1 ? selected[0] : null
   const oneAssociated = !!(one?.port_id || one?.fixed_ip_address || one?.fixed_ip)
 
-  const releaseSelected = async () => {
+  const handleReleaseConfirmed = async () => {
     if (!selected.length) return
-    if (!confirm(`Release ${selected.length} floating IP(s)?`)) return
+    setReleasing(true)
     for (const f of selected) {
       try { await api.deleteFloatingIP(f.id) } catch (e) { toast(e.message, 'error') }
     }
+    setReleasing(false)
+    setDeleteModal(false)
     setSelected([])
     toast(`${selected.length} floating IP(s) released`, 'success')
     load()
@@ -77,7 +80,7 @@ export default function FloatingIPsPage() {
                   { id: 'release',      text: 'Release floating IP' },
                 ]}
                 onItemClick={({ detail }) => {
-                  if (detail.id === 'release') releaseSelected()
+                  if (detail.id === 'release') setDeleteModal(true)
                   else if (detail.id === 'associate' && one) navigate(`/floating-ips/associate?id=${one.id}`)
                   else if (detail.id === 'disassociate' && one) disassociate(one)
                 }}
@@ -140,6 +143,20 @@ export default function FloatingIPsPage() {
               />
         }
       />
+      {deleteModal && (
+        <DeleteModal
+          visible
+          title="Release Floating IP"
+          confirmButtonText="Release"
+          itemCount={selected.length}
+          itemName={selected.length === 1 ? (selected[0].floating_ip_address || selected[0].floating_ip) : undefined}
+          requireText={false}
+          description="Releasing a floating IP unmaps it from instances and returns it to the public pool."
+          loading={releasing}
+          onDismiss={() => setDeleteModal(false)}
+          onConfirm={handleReleaseConfirmed}
+        />
+      )}
     </ContentLayout>
   )
 }

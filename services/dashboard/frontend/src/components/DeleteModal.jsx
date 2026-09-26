@@ -10,9 +10,11 @@ import SpaceBetween from '@cloudscape-design/components/space-between'
 export default function DeleteModal({
   visible = true,
   title = 'Delete resource',
+  confirmButtonText = 'Delete',
   description,
   itemCount = 1,
   itemName,
+  requireText = true,
   requireCheckbox = false,
   checkboxLabel = 'I understand that this action is permanent and will delete this resource and all objects/data contained inside it.',
   loading = false,
@@ -29,7 +31,7 @@ export default function DeleteModal({
     }
   }, [visible])
 
-  const textValid = confirmText.trim().toLowerCase() === 'delete'
+  const textValid = !requireText || confirmText.trim().toLowerCase() === 'delete'
   const isValid = textValid && (!requireCheckbox || checked)
 
   const handleConfirm = () => {
@@ -59,7 +61,7 @@ export default function DeleteModal({
               onClick={handleConfirm}
               data-testid="delete-modal-confirm"
             >
-              Delete
+              {confirmButtonText}
             </Button>
           </SpaceBetween>
         </Box>
@@ -77,17 +79,19 @@ export default function DeleteModal({
             {checkboxLabel}
           </Checkbox>
         )}
-        <FormField
-          label='To confirm deletion, type "delete" below.'
-        >
-          <Input
-            value={confirmText}
-            onChange={({ detail }) => setConfirmText(detail.value)}
-            placeholder="delete"
-            autoFocus
-            controlId="delete-modal-input"
-          />
-        </FormField>
+        {requireText && (
+          <FormField
+            label='To confirm deletion, type "delete" below.'
+          >
+            <Input
+              value={confirmText}
+              onChange={({ detail }) => setConfirmText(detail.value)}
+              placeholder="delete"
+              autoFocus
+              controlId="delete-modal-input"
+            />
+          </FormField>
+        )}
       </SpaceBetween>
     </Modal>
   )

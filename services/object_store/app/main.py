@@ -187,15 +187,14 @@ def _allocate_bucket_fip(b: Bucket, token: str | None = None) -> tuple[str | Non
     try:
         from shared.service_client import ServiceClient
         client = ServiceClient("object_store")
-        ext_net = b.network_id
-        if not ext_net:
-            nr = client.get(f"{NETWORKING_API_URL}/networks")
-            if nr.status_code == 200:
-                nets = nr.json().get("items", [])
-                for n in nets:
-                    if n.get("external") or n.get("router:external") == "External":
-                        ext_net = n.get("id") or n.get("name")
-                        break
+        ext_net = None
+        nr = client.get(f"{NETWORKING_API_URL}/networks")
+        if nr.status_code == 200:
+            nets = nr.json().get("items", [])
+            for n in nets:
+                if n.get("external") or n.get("router:external") == "External":
+                    ext_net = n.get("id") or n.get("name")
+                    break
         ext_net = ext_net or "public-net"
         res = client.post(
             f"{NETWORKING_API_URL}/floating-ips",
