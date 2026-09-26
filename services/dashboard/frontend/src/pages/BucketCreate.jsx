@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Container from '@cloudscape-design/components/container'
 import FormField from '@cloudscape-design/components/form-field'
@@ -17,9 +17,18 @@ const VISIBILITY_OPTIONS = [
 export default function BucketCreatePage() {
   const navigate = useNavigate()
   const toast = useToast()
-  const [form, setForm] = useState({ name: '', visibility: VISIBILITY_OPTIONS[0] })
+  const [form, setForm] = useState({ name: '', visibility: VISIBILITY_OPTIONS[0], selectedNetwork: null })
+  const [networks, setNetworks] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    api.getNetworks().then(r => {
+      const items = r?.items || []
+      const tenantNets = items.filter(n => !n.external && n['router:external'] !== 'External')
+      setNetworks(tenantNets)
+    }).catch(() => {})
+  }, [])
 
   const back = () => navigate('/object-store')
 
@@ -30,6 +39,7 @@ export default function BucketCreatePage() {
       await api.createBucket({
         name: form.name.trim(),
         visibility: form.visibility.value,
+        network_id: form.selectedNetwork?.value || undefined,
       })
       toast('Bucket created successfully', 'success')
       back()
@@ -68,6 +78,15 @@ export default function BucketCreatePage() {
               onChange={({ detail }) => setForm(f => ({ ...f, visibility: detail.selectedOption }))}
               options={VISIBILITY_OPTIONS}
               controlId="bucket-visibility"
+            />
+          </FormField>
+          <FormField label="Network (Optional)" description="Select associated tenant network for this bucket endpoint.">
+            <Select
+              selectedOption={form.selectedNetwork}
+              onChange={({ detail }) => setForm(f => ({ ...f, selectedNetwork: detail.selectedOption }))}
+              options={networks.map(n => ({ label: n.name, value: n.id }))}
+              placeholder="Select network (Optional)"
+              controlId="bucket-network"
             />
           </FormField>
         </SpaceBetween>

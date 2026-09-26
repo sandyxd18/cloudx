@@ -365,6 +365,8 @@ services:
         condition: service_started
     volumes:
       - object-store-data:/var/lib/mini-openstack/object-store
+      - ./services/object_store/app:/app/app
+      - ./services/shared:/app/shared
 
   # ── Block Storage Worker (cinder-volume equivalent) ─────────────────────────
   block-store-worker:
@@ -437,6 +439,7 @@ services:
     network_mode: host
     volumes:
       - ./services/load_balancer/app:/app/app
+      - ./services/shared:/app/shared
     depends_on:
       postgres:
         condition: service_healthy

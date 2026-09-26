@@ -130,6 +130,7 @@ export const api = {
 
   // Networking — Routers
   getRouters: () => request('GET', '/networking/routers'),
+  getRouter: (id) => request('GET', `/networking/routers/${id}`),
   createRouter: (b) => request('POST', '/networking/routers', b),
   deleteRouter: (id) => request('DELETE', `/networking/routers/${id}`),
   setRouterGateway: (id, b) => request('POST', `/networking/routers/${id}/gateway`, b),
@@ -225,6 +226,7 @@ export const api = {
   getBuckets: () => request('GET', '/object-store/buckets'),
   getBucket: (name) => request('GET', `/object-store/buckets/${name}`),
   createBucket: (b) => request('POST', '/object-store/buckets', b),
+  updateBucket: (name, b) => request('PATCH', `/object-store/buckets/${name}`, b),
   deleteBucket: (name) => request('DELETE', `/object-store/buckets/${name}`),
   getBucketObjects: (name) => request('GET', `/object-store/buckets/${name}/objects`),
   uploadObject: (name, key, file) => {

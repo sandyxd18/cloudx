@@ -17,18 +17,21 @@ from typing import Annotated, BinaryIO
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, text, inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-sys = __import__("sys")
-os_mod = os
-
+import sys
+sys.path.insert(0, "/app")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 try:
-    from app.auth_middleware import CurrentUser, AdminUser
+    from shared.auth_middleware import CurrentUser, AdminUser
 except ImportError:
-    from auth_middleware import CurrentUser, AdminUser
+    try:
+        from app.auth_middleware import CurrentUser, AdminUser
+    except ImportError:
+        from auth_middleware import CurrentUser, AdminUser
 
 try:
     from shared.request_id_middleware import RequestIDMiddleware
@@ -87,6 +90,7 @@ class Bucket(Base):
     project_id:      Mapped[str] = mapped_column(String, index=True)
     bucket_type_id:  Mapped[str] = mapped_column(String, ForeignKey("object_store_bucket_types.id"))
     visibility:      Mapped[str] = mapped_column(String, default="private")  # private | public-read
+    network_id:      Mapped[str | None] = mapped_column(String, nullable=True)
     status:          Mapped[str] = mapped_column(String, default="active")   # active | error | deleting
     size_bytes:      Mapped[int] = mapped_column(Integer, default=0)
     object_count:    Mapped[int] = mapped_column(Integer, default=0)
@@ -117,6 +121,11 @@ class BucketIn(BaseModel):
     name: str
     bucket_type_id: str | None = None
     visibility: str = Field(default="private", pattern="^(private|public-read)$")
+    network_id: str | None = None
+
+
+class BucketUpdateIn(BaseModel):
+    visibility: str = Field(..., pattern="^(private|public-read)$")
 
 
 class BucketEndpointIn(BaseModel):
@@ -154,6 +163,12 @@ DB = Annotated[Session, Depends(get_db)]
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
+    inspector = inspect(engine)
+    if "object_store_buckets" in inspector.get_table_names():
+        columns = {c["name"] for c in inspector.get_columns("object_store_buckets")}
+        with engine.begin() as conn:
+            if "network_id" not in columns:
+                conn.execute(text("ALTER TABLE object_store_buckets ADD COLUMN network_id VARCHAR"))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -173,6 +188,7 @@ def _bucket_to_dict(b: Bucket, bt: BucketType | None = None) -> dict:
         "project_id": b.project_id,
         "bucket_type_id": b.bucket_type_id,
         "visibility": b.visibility,
+        "network_id": getattr(b, "network_id", None),
         "status": b.status,
         "size_bytes": b.size_bytes,
         "object_count": b.object_count,
@@ -286,6 +302,7 @@ def create_bucket(payload: BucketIn, current: CurrentUser, db: DB):
         project_id=project_id,
         bucket_type_id=bt.id,
         visibility=payload.visibility,
+        network_id=payload.network_id,
     )
     db.add(b)
     db.commit()
@@ -309,6 +326,18 @@ def show_bucket(name: str, current: CurrentUser, db: DB):
     return _bucket_to_dict(b, bt)
 
 
+@app.patch("/buckets/{name}")
+def update_bucket(name: str, payload: BucketUpdateIn, current: CurrentUser, db: DB):
+    project_id = current.get("project_id") or current.get("tenant_id") or "default"
+    b = db.query(Bucket).filter_by(name=name, project_id=project_id).first()
+    if not b:
+        raise HTTPException(status_code=404, detail="bucket not found")
+    b.visibility = payload.visibility
+    db.commit()
+    bt = db.query(BucketType).filter_by(id=b.bucket_type_id).first()
+    return _bucket_to_dict(b, bt)
+
+
 @app.delete("/buckets/{name}")
 def delete_bucket(name: str, current: CurrentUser, db: DB):
     project_id = current.get("project_id") or current.get("tenant_id") or "default"
@@ -316,12 +345,18 @@ def delete_bucket(name: str, current: CurrentUser, db: DB):
     if not b:
         raise HTTPException(status_code=404, detail="bucket not found")
 
-    # Must be empty
-    if db.query(ObjectMeta).filter_by(bucket_id=b.id).first():
-        raise HTTPException(status_code=409, detail="bucket is not empty")
-
     bt = db.query(BucketType).filter_by(id=b.bucket_type_id).first()
     driver = _get_driver(bt)
+
+    # Cascade delete all objects inside this bucket
+    objs = db.query(ObjectMeta).filter_by(bucket_id=b.id).all()
+    for obj in objs:
+        try:
+            driver.delete_object(name, obj.key)
+        except Exception as exc:
+            log.warning("Backend delete object %s/%s: %s (continuing)", name, obj.key, exc)
+        db.delete(obj)
+
     try:
         driver.delete_bucket(name)
     except Exception as exc:

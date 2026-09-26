@@ -25,12 +25,17 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_en
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 import sys
+sys.path.insert(0, "/app")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 try:
-    from app.auth_middleware import CurrentUser, AdminUser
+    from shared.auth_middleware import CurrentUser, AdminUser
 except ImportError:
-    from auth_middleware import CurrentUser, AdminUser
+    try:
+        from app.auth_middleware import CurrentUser, AdminUser
+    except ImportError:
+        from auth_middleware import CurrentUser, AdminUser
 
 try:
     from shared.request_id_middleware import RequestIDMiddleware

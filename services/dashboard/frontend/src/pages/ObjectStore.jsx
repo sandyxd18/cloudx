@@ -43,6 +43,19 @@ export default function ObjectStorePage() {
 
   useEffect(() => { load() }, [load])
 
+  const one = selected.length === 1 ? selected[0] : null
+
+  const toggleVisibility = async (b) => {
+    const next = b.visibility === 'public-read' ? 'private' : 'public-read'
+    try {
+      await api.updateBucket(b.name, { visibility: next })
+      toast(`Visibility set to ${next}`, 'success')
+      load()
+    } catch (e) {
+      toast(e.message, 'error')
+    }
+  }
+
   const deleteSelected = async () => {
     if (!selected.length) return
     setDeleting(true)
@@ -71,10 +84,12 @@ export default function ObjectStorePage() {
               <ButtonDropdown
                 disabled={!selected.length}
                 items={[
+                  { id: 'visibility', text: one?.visibility === 'public-read' ? 'Make private' : 'Make public', disabled: !one },
                   { id: 'delete', text: 'Delete bucket' },
                 ]}
                 onItemClick={({ detail }) => {
                   if (detail.id === 'delete') setDeleteModal(true)
+                  else if (detail.id === 'visibility' && one) toggleVisibility(one)
                 }}
               >
                 Actions
@@ -115,7 +130,11 @@ export default function ObjectStorePage() {
                     ),
                     sortingField: 'name',
                   },
-                  { id: 'type', header: 'Bucket Type', cell: item => item.bucket_type?.name || item.bucket_type_id || 'default' },
+                  {
+                    id: 'type',
+                    header: 'Bucket Type',
+                    cell: item => item.bucket_type?.name || types.find(t => t.id === item.bucket_type_id)?.name || item.bucket_type_id || 'default',
+                  },
                   { id: 'visibility', header: 'Visibility', cell: item => item.visibility },
                   { id: 'objects', header: 'Objects', cell: item => item.object_count ?? 0 },
                   { id: 'size', header: 'Size (bytes)', cell: item => item.size_bytes ?? 0 },
@@ -155,6 +174,8 @@ export default function ObjectStorePage() {
           itemCount={selected.length}
           itemName={selected.length === 1 ? selected[0].name : undefined}
           title="Delete Bucket"
+          requireCheckbox={selected.some(b => (b.object_count ?? 0) > 0)}
+          checkboxLabel="I understand that selected bucket(s) contain objects and deleting will permanently delete all objects stored inside."
           loading={deleting}
           onDismiss={() => setDeleteModal(false)}
           onConfirm={deleteSelected}

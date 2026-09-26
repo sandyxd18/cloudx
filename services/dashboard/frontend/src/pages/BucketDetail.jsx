@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
+import ButtonDropdown from '@cloudscape-design/components/button-dropdown'
 import Container from '@cloudscape-design/components/container'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import FormField from '@cloudscape-design/components/form-field'
@@ -21,6 +22,9 @@ export default function BucketDetailPage() {
   const toast = useToast()
   const [bucket, setBucket] = useState(null)
   const [objects, setObjects] = useState([])
+  const [bucketTypeName, setBucketTypeName] = useState('default')
+  const [networkName, setNetworkName] = useState('')
+  const [networkIp, setNetworkIp] = useState('')
   const [loading, setLoading] = useState(true)
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [fileToUpload, setFileToUpload] = useState(null)
@@ -33,12 +37,32 @@ export default function BucketDetailPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [b, o] = await Promise.all([
+      const [b, o, t, nData, sData] = await Promise.all([
         api.getBucket(name),
         api.getBucketObjects(name),
+        api.getBucketTypes().catch(() => ({ bucket_types: [] })),
+        api.getNetworks().catch(() => ({ items: [] })),
+        api.getSubnets().catch(() => ({ items: [] })),
       ])
       setBucket(b)
       setObjects(o?.objects || o?.items || [])
+
+      const typesList = t?.bucket_types || []
+      const foundType = typesList.find(item => item.id === b.bucket_type_id)
+      setBucketTypeName(b.bucket_type?.name || foundType?.name || b.bucket_type_id || 'default')
+
+      if (b.network_id) {
+        const nets = nData?.items || []
+        const subs = sData?.items || []
+        const matchedNet = nets.find(item => item.id === b.network_id || item.name === b.network_id)
+        const matchedSub = subs.find(item => item.network_id === (matchedNet?.id || b.network_id))
+        setNetworkName(matchedNet?.name || b.network_id)
+        const ip = matchedSub?.gateway_ip || matchedSub?.gateway || (matchedSub?.cidr ? matchedSub.cidr.split('/')[0] : '')
+        setNetworkIp(ip)
+      } else {
+        setNetworkName('')
+        setNetworkIp('')
+      }
     } catch (e) {
       toast(e.message, 'error')
     } finally {
@@ -85,6 +109,9 @@ export default function BucketDetailPage() {
   if (loading && !bucket) return <PageLoading text="Loading bucket details" />
   if (!bucket) return <Box variant="h2">Bucket not found</Box>
 
+  const hostIp = networkIp || window.location.hostname || '127.0.0.1'
+  const endpointUrl = `http://${hostIp}:8080/api/object-store/buckets/${bucket.name}`
+
   return (
     <ContentLayout
       header={
@@ -105,26 +132,49 @@ export default function BucketDetailPage() {
     >
       <SpaceBetween size="l">
         <Container header={<Header variant="h2">Bucket Overview</Header>}>
-          <SpaceBetween size="m" direction="horizontal">
+          <SpaceBetween size="m">
+            <SpaceBetween size="m" direction="horizontal">
+              <Box>
+                <Box variant="awsui-key-label">Name</Box>
+                <Box fontWeight="bold">{bucket.name}</Box>
+              </Box>
+              <Box>
+                <Box variant="awsui-key-label">Visibility</Box>
+                <Box>{bucket.visibility || 'private'}</Box>
+              </Box>
+              <Box>
+                <Box variant="awsui-key-label">Bucket Type</Box>
+                <Box>{bucketTypeName}</Box>
+              </Box>
+              {bucket.network_id && (
+                <Box>
+                  <Box variant="awsui-key-label">Associated Network</Box>
+                  <Box>{networkName || bucket.network_id}</Box>
+                </Box>
+              )}
+              <Box>
+                <Box variant="awsui-key-label">Total Objects</Box>
+                <Box>{bucket.object_count ?? objects.length}</Box>
+              </Box>
+              <Box>
+                <Box variant="awsui-key-label">Total Size</Box>
+                <Box>{bucket.size_bytes ?? 0} bytes</Box>
+              </Box>
+            </SpaceBetween>
             <Box>
-              <Box variant="awsui-key-label">Name</Box>
-              <Box fontWeight="bold">{bucket.name}</Box>
-            </Box>
-            <Box>
-              <Box variant="awsui-key-label">Visibility</Box>
-              <Box>{bucket.visibility || 'private'}</Box>
-            </Box>
-            <Box>
-              <Box variant="awsui-key-label">Bucket Type</Box>
-              <Box>{bucket.bucket_type?.name || bucket.bucket_type_id || 'default'}</Box>
-            </Box>
-            <Box>
-              <Box variant="awsui-key-label">Total Objects</Box>
-              <Box>{bucket.object_count ?? objects.length}</Box>
-            </Box>
-            <Box>
-              <Box variant="awsui-key-label">Total Size</Box>
-              <Box>{bucket.size_bytes ?? 0} bytes</Box>
+              <Box variant="awsui-key-label">Endpoint URL</Box>
+              <SpaceBetween direction="horizontal" size="xs">
+                <Box fontWeight="bold">{endpointUrl}</Box>
+                <Button
+                  variant="inline-icon"
+                  iconName="copy"
+                  onClick={() => {
+                    navigator.clipboard.writeText(endpointUrl)
+                    toast('Endpoint URL copied to clipboard', 'success')
+                  }}
+                  ariaLabel="Copy endpoint URL"
+                />
+              </SpaceBetween>
             </Box>
           </SpaceBetween>
         </Container>

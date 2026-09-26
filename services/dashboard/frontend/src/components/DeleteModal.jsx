@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
+import Checkbox from '@cloudscape-design/components/checkbox'
 import FormField from '@cloudscape-design/components/form-field'
 import Input from '@cloudscape-design/components/input'
 import Modal from '@cloudscape-design/components/modal'
@@ -12,17 +13,24 @@ export default function DeleteModal({
   description,
   itemCount = 1,
   itemName,
+  requireCheckbox = false,
+  checkboxLabel = 'I understand that this action is permanent and will delete this resource and all objects/data contained inside it.',
   loading = false,
   onDismiss,
   onConfirm,
 }) {
   const [confirmText, setConfirmText] = useState('')
+  const [checked, setChecked] = useState(false)
 
   useEffect(() => {
-    if (visible) setConfirmText('')
+    if (visible) {
+      setConfirmText('')
+      setChecked(false)
+    }
   }, [visible])
 
-  const isValid = confirmText.trim().toLowerCase() === 'delete'
+  const textValid = confirmText.trim().toLowerCase() === 'delete'
+  const isValid = textValid && (!requireCheckbox || checked)
 
   const handleConfirm = () => {
     if (!isValid || loading) return
@@ -61,6 +69,14 @@ export default function DeleteModal({
         <Box variant="p">
           {detailText} {description || 'This action cannot be undone.'}
         </Box>
+        {requireCheckbox && (
+          <Checkbox
+            checked={checked}
+            onChange={({ detail }) => setChecked(detail.checked)}
+          >
+            {checkboxLabel}
+          </Checkbox>
+        )}
         <FormField
           label='To confirm deletion, type "delete" below.'
         >
