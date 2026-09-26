@@ -14,10 +14,18 @@ from pydantic import BaseModel, Field
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, inspect, or_, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
+import sys, os
+sys.path.insert(0, "/app")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+
 try:
-    from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+    from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
 except ImportError:
-    from auth_middleware import CurrentUser, AdminUser, OptionalAuth
+    try:
+        from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+    except ImportError:
+        from auth_middleware import CurrentUser, AdminUser, OptionalAuth
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 try:
@@ -1063,12 +1071,12 @@ def allocate_floating_ip(db: Session, network: Network) -> str:
     end_ip = ipaddress.ip_address(end)
     used = {
         ipaddress.ip_address(ip)
-        for ip in db.scalars(select(FloatingIP.floating_ip).where(FloatingIP.external_network_id == network.id)).all()
+        for ip in db.scalars(select(FloatingIP.floating_ip)).all()
         if ip
     }
     used.update(
         ipaddress.ip_address(ip)
-        for ip in db.scalars(select(FloatingIP.floating_ip_address).where(FloatingIP.external_network_id == network.id)).all()
+        for ip in db.scalars(select(FloatingIP.floating_ip_address)).all()
         if ip
     )
     while current <= end_ip:
@@ -2026,7 +2034,9 @@ def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
         raise HTTPException(status_code=400, detail="floating_ip or external_network is required")
     name = payload.name or f"fip-{floating_ip.replace('.', '-')}"
     if get_by_ref(db, FloatingIP, name):
-        raise HTTPException(status_code=409, detail="floating-ip already exists")
+        if payload.name:
+            raise HTTPException(status_code=409, detail="floating-ip already exists")
+        name = f"fip-{floating_ip.replace('.', '-')}-{uuid.uuid4().hex[:4]}"
     port = require_by_ref(db, Port, payload.fixed_port, "port") if payload.fixed_port else None
     fip = FloatingIP(
         name=name,

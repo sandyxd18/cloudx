@@ -147,6 +147,7 @@ export default function ObjectStorePage() {
                     cell: item => item.bucket_type?.name || types.find(t => t.id === item.bucket_type_id)?.name || item.bucket_type_id || 'default',
                   },
                   { id: 'visibility', header: 'Visibility', cell: item => item.visibility },
+                  { id: 'floating_ip', header: 'Floating IP', cell: item => item.floating_ip || '-' },
                   { id: 'objects', header: 'Objects', cell: item => item.object_count ?? 0 },
                   { id: 'size', header: 'Size (bytes)', cell: item => item.size_bytes ?? 0 },
                   { id: 'status', header: 'Status', cell: item => item.status || 'active' },

@@ -127,6 +127,8 @@ services:
     network_mode: host
     volumes:
       - /var/run/openvswitch:/var/run/openvswitch
+      - ./services/networking/app:/app/app
+      - ./services/shared:/app/shared
     depends_on:
       postgres:
         condition: service_healthy

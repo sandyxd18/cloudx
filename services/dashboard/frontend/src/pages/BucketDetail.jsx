@@ -109,7 +109,9 @@ export default function BucketDetailPage() {
   if (loading && !bucket) return <PageLoading text="Loading bucket details" />
   if (!bucket) return <Box variant="h2">Bucket not found</Box>
 
-  const hostIp = networkIp || window.location.hostname || '127.0.0.1'
+  const hostIp = (bucket?.visibility === 'public-read' && bucket?.floating_ip)
+    ? bucket.floating_ip
+    : (networkIp || window.location.hostname || '127.0.0.1')
   const endpointUrl = `http://${hostIp}:8080/api/object-store/buckets/${bucket.name}`
 
   return (
@@ -142,6 +144,12 @@ export default function BucketDetailPage() {
                 <Box variant="awsui-key-label">Visibility</Box>
                 <Box>{bucket.visibility || 'private'}</Box>
               </Box>
+              {bucket.floating_ip && (
+                <Box>
+                  <Box variant="awsui-key-label">Floating IP</Box>
+                  <Box fontWeight="bold">{bucket.floating_ip}</Box>
+                </Box>
+              )}
               <Box>
                 <Box variant="awsui-key-label">Bucket Type</Box>
                 <Box>{bucketTypeName}</Box>
