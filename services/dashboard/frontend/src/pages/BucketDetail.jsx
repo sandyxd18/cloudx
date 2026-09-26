@@ -106,7 +106,7 @@ export default function BucketDetailPage() {
 
   const hostIp = (bucket?.visibility === 'public-read' && bucket?.floating_ip)
     ? bucket.floating_ip
-    : (window.location.hostname || '127.0.0.1')
+    : (bucket?.fixed_ip || window.location.hostname || '127.0.0.1')
   const endpointUrl = `http://${hostIp}:8080/api/object-store/buckets/${bucket.name}`
 
   return (
@@ -139,6 +139,12 @@ export default function BucketDetailPage() {
                 <Box variant="awsui-key-label">Visibility</Box>
                 <Box>{bucket.visibility || 'private'}</Box>
               </Box>
+              {bucket.fixed_ip && (
+                <Box>
+                  <Box variant="awsui-key-label">Tenant IP (DHCP)</Box>
+                  <Box fontWeight="bold">{bucket.fixed_ip}</Box>
+                </Box>
+              )}
               {bucket.floating_ip && (
                 <Box>
                   <Box variant="awsui-key-label">Floating IP</Box>

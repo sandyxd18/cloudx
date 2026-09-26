@@ -91,6 +91,8 @@ class Bucket(Base):
     bucket_type_id:  Mapped[str] = mapped_column(String, ForeignKey("object_store_bucket_types.id"))
     visibility:      Mapped[str] = mapped_column(String, default="private")  # private | public-read
     network_id:      Mapped[str | None] = mapped_column(String, nullable=True)
+    port_id:         Mapped[str | None] = mapped_column(String, nullable=True)
+    fixed_ip:        Mapped[str | None] = mapped_column(String, nullable=True)
     floating_ip_id:  Mapped[str | None] = mapped_column(String, nullable=True)
     floating_ip:     Mapped[str | None] = mapped_column(String, nullable=True)
     status:          Mapped[str] = mapped_column(String, default="active")   # active | error | deleting
@@ -174,6 +176,10 @@ def startup():
         with engine.begin() as conn:
             if "network_id" not in columns:
                 conn.execute(text("ALTER TABLE object_store_buckets ADD COLUMN network_id VARCHAR"))
+            if "port_id" not in columns:
+                conn.execute(text("ALTER TABLE object_store_buckets ADD COLUMN port_id VARCHAR"))
+            if "fixed_ip" not in columns:
+                conn.execute(text("ALTER TABLE object_store_buckets ADD COLUMN fixed_ip VARCHAR"))
             if "floating_ip_id" not in columns:
                 conn.execute(text("ALTER TABLE object_store_buckets ADD COLUMN floating_ip_id VARCHAR"))
             if "floating_ip" not in columns:
@@ -182,7 +188,50 @@ def startup():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _allocate_bucket_fip(b: Bucket, token: str | None = None) -> tuple[str | None, str | None]:
+def _allocate_bucket_port(b: Bucket) -> tuple[str | None, str | None]:
+    """Create a port on the bucket's tenant network to obtain a dedicated fixed IP."""
+    if not b.network_id:
+        return None, None
+    try:
+        from shared.service_client import ServiceClient
+        client = ServiceClient("object_store")
+        res = client.post(
+            f"{NETWORKING_API_URL}/ports",
+            json={
+                "network": b.network_id,
+                "name": f"port-bucket-{b.name}",
+                "device_owner": "object-store:bucket",
+                "device_id": b.id or b.name,
+            }
+        )
+        if res.status_code in (200, 201):
+            data = res.json()
+            port_id = data.get("id")
+            fixed_ips = data.get("fixed_ips", [])
+            fixed_ip = data.get("fixed_ip") or data.get("ip_address") or (fixed_ips[0].get("ip_address") if fixed_ips else None)
+            return port_id, fixed_ip
+        else:
+            log.warning("Failed to allocate port for bucket %s on network %s: %s", b.name, b.network_id, res.text)
+    except Exception as exc:
+        log.warning("Error creating port for bucket %s: %s", b.name, exc)
+    return None, None
+
+
+def _release_bucket_port(port_id: str | None):
+    """Delete the tenant port from networking-api."""
+    if not port_id:
+        return
+    try:
+        from shared.service_client import ServiceClient
+        client = ServiceClient("object_store")
+        res = client.delete(f"{NETWORKING_API_URL}/ports/{port_id}")
+        if res.status_code not in (200, 204):
+            log.warning("Failed to delete port %s: %s", port_id, res.text)
+    except Exception as exc:
+        log.warning("Error deleting port %s: %s", port_id, exc)
+
+
+def _allocate_bucket_fip(b: Bucket) -> tuple[str | None, str | None]:
     """Allocate a floating IP for a public-read bucket via networking-api."""
     try:
         from shared.service_client import ServiceClient
@@ -196,10 +245,12 @@ def _allocate_bucket_fip(b: Bucket, token: str | None = None) -> tuple[str | Non
                     ext_net = n.get("id") or n.get("name")
                     break
         ext_net = ext_net or "public-net"
-        res = client.post(
-            f"{NETWORKING_API_URL}/floating-ips",
-            json={"network": ext_net, "name": f"fip-bucket-{b.name}"}
-        )
+
+        payload = {"network": ext_net, "name": f"fip-bucket-{b.name}"}
+        if b.port_id:
+            payload["fixed_port"] = b.port_id
+
+        res = client.post(f"{NETWORKING_API_URL}/floating-ips", json=payload)
         if res.status_code in (200, 201):
             data = res.json()
             fip_id = data.get("id")
@@ -212,7 +263,7 @@ def _allocate_bucket_fip(b: Bucket, token: str | None = None) -> tuple[str | Non
     return None, None
 
 
-def _release_bucket_fip(fip_id: str | None, token: str | None = None):
+def _release_bucket_fip(fip_id: str | None):
     """Delete a floating IP via networking-api."""
     if not fip_id:
         return
@@ -224,6 +275,7 @@ def _release_bucket_fip(fip_id: str | None, token: str | None = None):
             log.warning("Failed to delete FIP %s: %s", fip_id, res.text)
     except Exception as exc:
         log.warning("Error deleting FIP %s: %s", fip_id, exc)
+
 
 def _get_driver(bucket_type: BucketType):
     """Instantiate the correct storage driver from a bucket_type record."""
@@ -241,6 +293,8 @@ def _bucket_to_dict(b: Bucket, bt: BucketType | None = None) -> dict:
         "bucket_type_id": b.bucket_type_id,
         "visibility": b.visibility,
         "network_id": getattr(b, "network_id", None),
+        "port_id": getattr(b, "port_id", None),
+        "fixed_ip": getattr(b, "fixed_ip", None),
         "floating_ip_id": getattr(b, "floating_ip_id", None),
         "floating_ip": getattr(b, "floating_ip", None),
         "status": b.status,
@@ -358,9 +412,13 @@ def create_bucket(payload: BucketIn, current: CurrentUser, db: DB):
         visibility=payload.visibility,
         network_id=payload.network_id,
     )
+    if payload.network_id:
+        port_id, fixed_ip = _allocate_bucket_port(b)
+        b.port_id = port_id
+        b.fixed_ip = fixed_ip
+
     if payload.visibility == "public-read":
-        token = current.get("token")
-        fip_id, fip_addr = _allocate_bucket_fip(b, token)
+        fip_id, fip_addr = _allocate_bucket_fip(b)
         b.floating_ip_id = fip_id
         b.floating_ip = fip_addr
 
@@ -393,15 +451,14 @@ def update_bucket(name: str, payload: BucketUpdateIn, current: CurrentUser, db: 
     if not b:
         raise HTTPException(status_code=404, detail="bucket not found")
 
-    token = current.get("token")
     if payload.visibility is not None and payload.visibility != b.visibility:
         b.visibility = payload.visibility
         if payload.visibility == "public-read" and not b.floating_ip_id:
-            fip_id, fip_addr = _allocate_bucket_fip(b, token)
+            fip_id, fip_addr = _allocate_bucket_fip(b)
             b.floating_ip_id = fip_id
             b.floating_ip = fip_addr
         elif payload.visibility == "private" and b.floating_ip_id:
-            _release_bucket_fip(b.floating_ip_id, token)
+            _release_bucket_fip(b.floating_ip_id)
             b.floating_ip_id = None
             b.floating_ip = None
 
@@ -417,9 +474,10 @@ def delete_bucket(name: str, current: CurrentUser, db: DB):
     if not b:
         raise HTTPException(status_code=404, detail="bucket not found")
 
-    token = current.get("token")
     if b.floating_ip_id:
-        _release_bucket_fip(b.floating_ip_id, token)
+        _release_bucket_fip(b.floating_ip_id)
+    if b.port_id:
+        _release_bucket_port(b.port_id)
 
     bt = db.query(BucketType).filter_by(id=b.bucket_type_id).first()
     driver = _get_driver(bt)
