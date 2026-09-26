@@ -52,7 +52,7 @@ export default function NetworkDetail() {
   if (!network) return <Alert type="error" header="Network not found">The requested network does not exist or is not visible in this project.</Alert>
 
   const isExternal = !!(network.external || network['router:external'] === 'External')
-  const attachedPorts = ports.filter(p => p.device_id && liveServerIds.has(p.device_id))
+  const attachedPorts = ports.filter(p => !!p.device_id)
 
   return (
     <ContentLayout
@@ -160,10 +160,19 @@ export default function NetworkDetail() {
                       header: 'Attached device',
                       cell: p => {
                         if (!p.device_id) return 'Unbound'
+                        if (p.device_owner?.startsWith('object-store:') || p.device_owner === 'object-store:bucket') {
+                          return <Box fontWeight="bold">Bucket: {p.device_id}</Box>
+                        }
+                        if (p.device_owner?.startsWith('network:')) {
+                          return <Box color="text-body-secondary">{p.device_owner}</Box>
+                        }
                         if (liveServerIds.has(p.device_id)) {
                           return <Link href={`/servers/${p.device_id}`} onFollow={(e) => { e.preventDefault(); navigate(`/servers/${p.device_id}`) }}>{shortId(p.device_id, 12)}</Link>
                         }
-                        return <Box variant="small" color="text-body-secondary">Deleted instance ({shortId(p.device_id, 8)})</Box>
+                        if (p.device_owner?.startsWith('compute:') || p.device_owner === 'compute:nova-like') {
+                          return <Box variant="small" color="text-body-secondary">Deleted instance ({shortId(p.device_id, 8)})</Box>
+                        }
+                        return <Box fontWeight="bold">{shortId(p.device_id, 12)}</Box>
                       },
                     },
                     { id: 'owner', header: 'Device owner', cell: p => p.device_owner || '—' },

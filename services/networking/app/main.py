@@ -662,7 +662,7 @@ def fip_to_os_dict(db: Session, fip: FloatingIP, current: dict | None = None) ->
         "qos_policy_id": None,
         "revision_number": 0,
         "router_id": fip.router_id,
-        "status": fip.status,
+        "status": "ACTIVE" if (fip.port_id or fip.fixed_port_id or fip.fixed_ip_address or fip.server_id) else "DOWN",
         "tags": [],
         "updated_at": _fmt_ts(fip.created_at),
         # Kept for backward compat
@@ -2038,16 +2038,27 @@ def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
             raise HTTPException(status_code=409, detail="floating-ip already exists")
         name = f"fip-{floating_ip.replace('.', '-')}-{uuid.uuid4().hex[:4]}"
     port = require_by_ref(db, Port, payload.fixed_port, "port") if payload.fixed_port else None
+    router = None
+    if port:
+        try:
+            router = find_router_for_fip(db, None)
+            fixed_ip = port.fixed_ip or port.ip_address
+            if router and fixed_ip:
+                ovn(*nat_rule_args(router.name, floating_ip, fixed_ip))
+        except Exception as exc:
+            log.warning("Could not setup OVN NAT for new FIP: %s", exc)
+
     fip = FloatingIP(
         name=name,
         floating_ip=floating_ip,
         floating_ip_address=floating_ip,
-        fixed_ip_address=port.fixed_ip if port else None,
+        fixed_ip_address=(port.fixed_ip or port.ip_address) if port else None,
         fixed_port_id=port.id if port else None,
         port_id=port.id if port else None,
         server_id=port.device_id if port else None,
         external_network_id=external_network.id if external_network else None,
-        status="DOWN",
+        router_id=router.id if router else None,
+        status="ACTIVE" if port else "DOWN",
     )
     db.add(fip)
     db.commit()
