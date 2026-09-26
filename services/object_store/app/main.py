@@ -6,18 +6,17 @@ Manages buckets, objects, and bucket-types for multi-tenant object storage.
 """
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
 import uuid
 from datetime import datetime
-from typing import Annotated, BinaryIO
+from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, Response
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, text, inspect
+from sqlalchemy import DateTime, ForeignKey, Integer, String, create_engine, text, inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 import sys
@@ -26,12 +25,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 try:
-    from shared.auth_middleware import CurrentUser, AdminUser
+    from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
 except ImportError:
     try:
-        from app.auth_middleware import CurrentUser, AdminUser
+        from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
     except ImportError:
-        from auth_middleware import CurrentUser, AdminUser
+        from auth_middleware import CurrentUser, AdminUser, OptionalAuth
 
 try:
     from shared.request_id_middleware import RequestIDMiddleware
@@ -90,11 +89,6 @@ class Bucket(Base):
     project_id:      Mapped[str] = mapped_column(String, index=True)
     bucket_type_id:  Mapped[str] = mapped_column(String, ForeignKey("object_store_bucket_types.id"))
     visibility:      Mapped[str] = mapped_column(String, default="private")  # private | public-read
-    network_id:      Mapped[str | None] = mapped_column(String, nullable=True)
-    port_id:         Mapped[str | None] = mapped_column(String, nullable=True)
-    fixed_ip:        Mapped[str | None] = mapped_column(String, nullable=True)
-    floating_ip_id:  Mapped[str | None] = mapped_column(String, nullable=True)
-    floating_ip:     Mapped[str | None] = mapped_column(String, nullable=True)
     status:          Mapped[str] = mapped_column(String, default="active")   # active | error | deleting
     size_bytes:      Mapped[int] = mapped_column(Integer, default=0)
     object_count:    Mapped[int] = mapped_column(Integer, default=0)
@@ -125,16 +119,10 @@ class BucketIn(BaseModel):
     name: str
     bucket_type_id: str | None = None
     visibility: str = Field(default="private", pattern="^(private|public-read)$")
-    network_id: str | None = None
 
 
 class BucketUpdateIn(BaseModel):
     visibility: str = Field(..., pattern="^(private|public-read)$")
-
-
-class BucketEndpointIn(BaseModel):
-    endpoint_type: str = Field(..., pattern="^(internal|public)$")
-    network_id: str | None = None
 
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
@@ -164,117 +152,51 @@ def get_db():
 DB = Annotated[Session, Depends(get_db)]
 
 
-NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://127.0.0.1:8001")
-
-
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
-    inspector = inspect(engine)
-    if "object_store_buckets" in inspector.get_table_names():
-        columns = {c["name"] for c in inspector.get_columns("object_store_buckets")}
-        with engine.begin() as conn:
-            if "network_id" not in columns:
-                conn.execute(text("ALTER TABLE object_store_buckets ADD COLUMN network_id VARCHAR"))
-            if "port_id" not in columns:
-                conn.execute(text("ALTER TABLE object_store_buckets ADD COLUMN port_id VARCHAR"))
-            if "fixed_ip" not in columns:
-                conn.execute(text("ALTER TABLE object_store_buckets ADD COLUMN fixed_ip VARCHAR"))
-            if "floating_ip_id" not in columns:
-                conn.execute(text("ALTER TABLE object_store_buckets ADD COLUMN floating_ip_id VARCHAR"))
-            if "floating_ip" not in columns:
-                conn.execute(text("ALTER TABLE object_store_buckets ADD COLUMN floating_ip VARCHAR"))
+
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _allocate_bucket_port(b: Bucket) -> tuple[str | None, str | None]:
-    """Create a port on the bucket's tenant network to obtain a dedicated fixed IP."""
-    if not b.network_id:
-        return None, None
-    try:
-        from shared.service_client import ServiceClient
-        client = ServiceClient("object_store")
-        res = client.post(
-            f"{NETWORKING_API_URL}/ports",
-            json={
-                "network": b.network_id,
-                "name": f"port-bucket-{b.name}",
-                "device_owner": "object-store:bucket",
-                "device_id": b.id or b.name,
-            }
-        )
-        if res.status_code in (200, 201):
-            data = res.json()
-            port_id = data.get("id")
-            fixed_ips = data.get("fixed_ips", [])
-            fixed_ip = data.get("fixed_ip") or data.get("ip_address") or (fixed_ips[0].get("ip_address") if fixed_ips else None)
-            return port_id, fixed_ip
-        else:
-            log.warning("Failed to allocate port for bucket %s on network %s: %s", b.name, b.network_id, res.text)
-    except Exception as exc:
-        log.warning("Error creating port for bucket %s: %s", b.name, exc)
-    return None, None
+# Internal networks that are allowed to access private buckets.
+_INTERNAL_CIDRS = [
+    "192.168.12.",   # tenant subnet
+    "172.17.",       # docker internal
+    "127.",          # loopback / inter-service
+    "10.",           # docker bridge variants
+]
 
 
-def _release_bucket_port(port_id: str | None):
-    """Delete the tenant port from networking-api."""
-    if not port_id:
+def _classify_source(request: Request) -> str:
+    """Classify request source as INTERNAL or EXTERNAL based on IP."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        src_ip = forwarded.split(",")[0].strip()
+    else:
+        src_ip = request.client.host if request.client else "127.0.0.1"
+    for prefix in _INTERNAL_CIDRS:
+        if src_ip.startswith(prefix):
+            return "INTERNAL"
+    return "EXTERNAL"
+
+
+def _enforce_network_scope(request: Request, bucket: Bucket, current: dict | None):
+    """Apply S3-parity access control with network scope enforcement.
+    
+    public-read  → allow from any network (auth optional)
+    private + EXTERNAL source → 403 always
+    private + INTERNAL + no auth → 401
+    private + INTERNAL + auth → allow
+    """
+    if bucket.visibility == "public-read":
         return
-    try:
-        from shared.service_client import ServiceClient
-        client = ServiceClient("object_store")
-        res = client.delete(f"{NETWORKING_API_URL}/ports/{port_id}")
-        if res.status_code not in (200, 204):
-            log.warning("Failed to delete port %s: %s", port_id, res.text)
-    except Exception as exc:
-        log.warning("Error deleting port %s: %s", port_id, exc)
-
-
-def _allocate_bucket_fip(b: Bucket) -> tuple[str | None, str | None]:
-    """Allocate a floating IP for a public-read bucket via networking-api."""
-    try:
-        from shared.service_client import ServiceClient
-        client = ServiceClient("object_store")
-        ext_net = None
-        nr = client.get(f"{NETWORKING_API_URL}/networks")
-        if nr.status_code == 200:
-            nets = nr.json().get("items", [])
-            for n in nets:
-                if n.get("external") or n.get("router:external") == "External":
-                    ext_net = n.get("id") or n.get("name")
-                    break
-        ext_net = ext_net or "public-net"
-
-        payload = {"network": ext_net, "name": f"fip-bucket-{b.name}"}
-        if b.port_id:
-            payload["fixed_port"] = b.port_id
-
-        res = client.post(f"{NETWORKING_API_URL}/floating-ips", json=payload)
-        if res.status_code in (200, 201):
-            data = res.json()
-            fip_id = data.get("id")
-            fip_addr = data.get("floating_ip") or data.get("floating_ip_address")
-            return fip_id, fip_addr
-        else:
-            log.warning("Failed to allocate FIP for bucket %s: %s", b.name, res.text)
-    except Exception as exc:
-        log.warning("Error calling networking-api for FIP allocation: %s", exc)
-    return None, None
-
-
-def _release_bucket_fip(fip_id: str | None):
-    """Delete a floating IP via networking-api."""
-    if not fip_id:
-        return
-    try:
-        from shared.service_client import ServiceClient
-        client = ServiceClient("object_store")
-        res = client.delete(f"{NETWORKING_API_URL}/floating-ips/{fip_id}")
-        if res.status_code not in (200, 204):
-            log.warning("Failed to delete FIP %s: %s", fip_id, res.text)
-    except Exception as exc:
-        log.warning("Error deleting FIP %s: %s", fip_id, exc)
+    scope = _classify_source(request)
+    if scope == "EXTERNAL":
+        raise HTTPException(status_code=403, detail="access denied: private bucket not accessible from external network")
+    if not current:
+        raise HTTPException(status_code=401, detail="authentication required: provide X-Auth-Token or access key headers")
 
 
 def _get_driver(bucket_type: BucketType):
@@ -285,6 +207,9 @@ def _get_driver(bucket_type: BucketType):
     return driver_cls(config)
 
 
+GATEWAY_BASE_URL = os.getenv("GATEWAY_BASE_URL", "http://192.168.18.80:8080")
+
+
 def _bucket_to_dict(b: Bucket, bt: BucketType | None = None) -> dict:
     out = {
         "id": b.id,
@@ -292,11 +217,7 @@ def _bucket_to_dict(b: Bucket, bt: BucketType | None = None) -> dict:
         "project_id": b.project_id,
         "bucket_type_id": b.bucket_type_id,
         "visibility": b.visibility,
-        "network_id": getattr(b, "network_id", None),
-        "port_id": getattr(b, "port_id", None),
-        "fixed_ip": getattr(b, "fixed_ip", None),
-        "floating_ip_id": getattr(b, "floating_ip_id", None),
-        "floating_ip": getattr(b, "floating_ip", None),
+        "endpoint_url": f"{GATEWAY_BASE_URL}/storage/{b.name}/",
         "status": b.status,
         "size_bytes": b.size_bytes,
         "object_count": b.object_count,
@@ -410,17 +331,7 @@ def create_bucket(payload: BucketIn, current: CurrentUser, db: DB):
         project_id=project_id,
         bucket_type_id=bt.id,
         visibility=payload.visibility,
-        network_id=payload.network_id,
     )
-    if payload.network_id:
-        port_id, fixed_ip = _allocate_bucket_port(b)
-        b.port_id = port_id
-        b.fixed_ip = fixed_ip
-
-    if payload.visibility == "public-read":
-        fip_id, fip_addr = _allocate_bucket_fip(b)
-        b.floating_ip_id = fip_id
-        b.floating_ip = fip_addr
 
     db.add(b)
     db.commit()
@@ -453,14 +364,6 @@ def update_bucket(name: str, payload: BucketUpdateIn, current: CurrentUser, db: 
 
     if payload.visibility is not None and payload.visibility != b.visibility:
         b.visibility = payload.visibility
-        if payload.visibility == "public-read" and not b.floating_ip_id:
-            fip_id, fip_addr = _allocate_bucket_fip(b)
-            b.floating_ip_id = fip_id
-            b.floating_ip = fip_addr
-        elif payload.visibility == "private" and b.floating_ip_id:
-            _release_bucket_fip(b.floating_ip_id)
-            b.floating_ip_id = None
-            b.floating_ip = None
 
     db.commit()
     bt = db.query(BucketType).filter_by(id=b.bucket_type_id).first()
@@ -473,11 +376,6 @@ def delete_bucket(name: str, current: CurrentUser, db: DB):
     b = db.query(Bucket).filter_by(name=name, project_id=project_id).first()
     if not b:
         raise HTTPException(status_code=404, detail="bucket not found")
-
-    if b.floating_ip_id:
-        _release_bucket_fip(b.floating_ip_id)
-    if b.port_id:
-        _release_bucket_port(b.port_id)
 
     bt = db.query(BucketType).filter_by(id=b.bucket_type_id).first()
     driver = _get_driver(bt)
@@ -508,12 +406,35 @@ def delete_bucket(name: str, current: CurrentUser, db: DB):
 # User: Objects
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.get("/buckets/{name}/objects")
-def list_objects(name: str, prefix: str = "", limit: int = 1000, current: CurrentUser = None, db: DB = None):
-    project_id = current.get("project_id") or current.get("tenant_id") or "default"
-    b = db.query(Bucket).filter_by(name=name, project_id=project_id).first()
-    if not b:
+def _get_bucket_for_read(name: str, current: dict | None, db: DB) -> Bucket:
+    if current:
+        project_id = current.get("project_id") or current.get("tenant_id") or "default"
+        is_admin = current.get("is_admin", False) or current.get("role") == "admin"
+        b = db.query(Bucket).filter_by(name=name, project_id=project_id).first()
+        if b:
+            return b
+        if is_admin:
+            b = db.query(Bucket).filter_by(name=name).first()
+            if b:
+                return b
+        b = db.query(Bucket).filter_by(name=name, visibility="public-read").first()
+        if b:
+            return b
         raise HTTPException(status_code=404, detail="bucket not found")
+    else:
+        b = db.query(Bucket).filter_by(name=name).first()
+        if not b:
+            raise HTTPException(status_code=404, detail="bucket not found")
+        if b.visibility != "public-read":
+            # ponytail: defer auth error — let _enforce_network_scope decide 403 vs 401
+            return b
+        return b
+
+
+@app.get("/buckets/{name}/objects")
+def list_objects(name: str, request: Request, prefix: str = "", limit: int = 1000, current: OptionalAuth = None, db: DB = None):
+    b = _get_bucket_for_read(name, current, db)
+    _enforce_network_scope(request, b, current)
 
     # Prefer DB metadata; fallback to driver list for drift
     db_objs = db.query(ObjectMeta).filter(
@@ -568,11 +489,9 @@ def put_object(name: str, key: str, file: UploadFile, current: CurrentUser, db: 
 
 
 @app.get("/buckets/{name}/objects/{key:path}")
-def get_object(name: str, key: str, current: CurrentUser, db: DB):
-    project_id = current.get("project_id") or current.get("tenant_id") or "default"
-    b = db.query(Bucket).filter_by(name=name, project_id=project_id).first()
-    if not b:
-        raise HTTPException(status_code=404, detail="bucket not found")
+def get_object(name: str, key: str, request: Request, current: OptionalAuth = None, db: DB = None):
+    b = _get_bucket_for_read(name, current, db)
+    _enforce_network_scope(request, b, current)
 
     bt = db.query(BucketType).filter_by(id=b.bucket_type_id).first()
     driver = _get_driver(bt)
@@ -587,7 +506,11 @@ def get_object(name: str, key: str, current: CurrentUser, db: DB):
 
     if isinstance(data, str):
         data = data.encode("utf-8")
-    return Response(content=data, media_type="application/octet-stream")
+
+    obj_meta = db.query(ObjectMeta).filter_by(bucket_id=b.id, key=key).first()
+    media_type = obj_meta.content_type if (obj_meta and obj_meta.content_type) else "application/octet-stream"
+
+    return Response(content=data, media_type=media_type)
 
 
 @app.delete("/buckets/{name}/objects/{key:path}")

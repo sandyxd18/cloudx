@@ -1,8 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
-import ButtonDropdown from '@cloudscape-design/components/button-dropdown'
 import Container from '@cloudscape-design/components/container'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import FormField from '@cloudscape-design/components/form-field'
@@ -13,18 +12,15 @@ import SpaceBetween from '@cloudscape-design/components/space-between'
 import Table from '@cloudscape-design/components/table'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
-import { PageLoading, TableEmpty, shortId } from '../components/common.jsx'
+import { PageLoading, TableEmpty } from '../components/common.jsx'
 import DeleteModal from '../components/DeleteModal.jsx'
 
 export default function BucketDetailPage() {
   const { name } = useParams()
-  const navigate = useNavigate()
   const toast = useToast()
   const [bucket, setBucket] = useState(null)
   const [objects, setObjects] = useState([])
   const [bucketTypeName, setBucketTypeName] = useState('default')
-  const [networkName, setNetworkName] = useState('')
-  const [networkIp, setNetworkIp] = useState('')
   const [loading, setLoading] = useState(true)
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [fileToUpload, setFileToUpload] = useState(null)
@@ -37,12 +33,10 @@ export default function BucketDetailPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [b, o, t, nData, sData] = await Promise.all([
+      const [b, o, t] = await Promise.all([
         api.getBucket(name),
         api.getBucketObjects(name),
         api.getBucketTypes().catch(() => ({ bucket_types: [] })),
-        api.getNetworks().catch(() => ({ items: [] })),
-        api.getSubnets().catch(() => ({ items: [] })),
       ])
       setBucket(b)
       setObjects(o?.objects || o?.items || [])
@@ -50,14 +44,6 @@ export default function BucketDetailPage() {
       const typesList = t?.bucket_types || []
       const foundType = typesList.find(item => item.id === b.bucket_type_id)
       setBucketTypeName(b.bucket_type?.name || foundType?.name || b.bucket_type_id || 'default')
-
-      if (b.network_id) {
-        const nets = nData?.items || []
-        const matchedNet = nets.find(item => item.id === b.network_id || item.name === b.network_id)
-        setNetworkName(matchedNet?.name || b.network_id)
-      } else {
-        setNetworkName('')
-      }
     } catch (e) {
       toast(e.message, 'error')
     } finally {
@@ -104,10 +90,8 @@ export default function BucketDetailPage() {
   if (loading && !bucket) return <PageLoading text="Loading bucket details" />
   if (!bucket) return <Box variant="h2">Bucket not found</Box>
 
-  const hostIp = (bucket?.visibility === 'public-read' && bucket?.floating_ip)
-    ? bucket.floating_ip
-    : (bucket?.fixed_ip || window.location.hostname || '127.0.0.1')
-  const endpointUrl = `http://${hostIp}:8080/api/object-store/buckets/${bucket.name}`
+  const endpointUrl = bucket.endpoint_url
+    || `http://${window.location.hostname}:8080/storage/${bucket.name}/`
 
   return (
     <ContentLayout
@@ -139,28 +123,10 @@ export default function BucketDetailPage() {
                 <Box variant="awsui-key-label">Visibility</Box>
                 <Box>{bucket.visibility || 'private'}</Box>
               </Box>
-              {bucket.fixed_ip && (
-                <Box>
-                  <Box variant="awsui-key-label">Tenant IP (DHCP)</Box>
-                  <Box fontWeight="bold">{bucket.fixed_ip}</Box>
-                </Box>
-              )}
-              {bucket.floating_ip && (
-                <Box>
-                  <Box variant="awsui-key-label">Floating IP</Box>
-                  <Box fontWeight="bold">{bucket.floating_ip}</Box>
-                </Box>
-              )}
               <Box>
                 <Box variant="awsui-key-label">Bucket Type</Box>
                 <Box>{bucketTypeName}</Box>
               </Box>
-              {bucket.network_id && (
-                <Box>
-                  <Box variant="awsui-key-label">Associated Network</Box>
-                  <Box>{networkName || bucket.network_id}</Box>
-                </Box>
-              )}
               <Box>
                 <Box variant="awsui-key-label">Total Objects</Box>
                 <Box>{bucket.object_count ?? objects.length}</Box>
@@ -203,11 +169,11 @@ export default function BucketDetailPage() {
                 <SpaceBetween direction="horizontal" size="xs">
                   <Button
                     variant="link"
-                    iconName="download"
-                    href={`/api/object-store/buckets/${name}/objects/${item.key || item.name}`}
+                    iconName="external"
+                    href={`/storage/${name}/${item.key || item.name}`}
                     target="_blank"
                   >
-                    Download
+                    View / Download
                   </Button>
                   <Button
                     variant="icon"

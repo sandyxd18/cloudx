@@ -740,6 +740,82 @@ async def proxy(path: str, request: Request):
     )
 
 
+@app.get("/storage/{bucket_name}", include_in_schema=False)
+@app.get("/storage/{bucket_name}/", include_in_schema=False)
+async def storage_gateway_list(bucket_name: str, request: Request):
+    """List objects in a bucket via the storage gateway."""
+    target = f"{OBJECT_STORE_API_URL}/buckets/{bucket_name}/objects"
+    qs = str(request.url.query)
+    if qs:
+        target = f"{target}?{qs}"
+
+    fwd_headers = {}
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    fwd_headers["x-forwarded-for"] = client_ip
+
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    if session_id:
+        data = _get_session(session_id)
+        if data and data.get("token"):
+            fwd_headers["x-auth-token"] = data["token"]
+
+    for hdr in ("x-auth-token", "authorization"):
+        val = request.headers.get(hdr)
+        if val and hdr not in fwd_headers:
+            fwd_headers[hdr] = val
+
+    try:
+        resp = await _http_client.get(target, headers=fwd_headers)
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=dict(resp.headers),
+            media_type=resp.headers.get("content-type"),
+        )
+    except Exception as exc:
+        return Response(content=f"storage gateway error: {exc}", status_code=502)
+
+
+@app.get("/storage/{bucket_name}/{key:path}", include_in_schema=False)
+async def storage_gateway(bucket_name: str, key: str, request: Request):
+    """Path-style gateway for object downloads: /storage/<bucket>/<key>.
+    
+    Forwards X-Forwarded-For so object-store-api can enforce network scope.
+    Auth tokens from session cookie are forwarded for private bucket access.
+    """
+    target = f"{OBJECT_STORE_API_URL}/buckets/{bucket_name}/objects/{key}"
+    qs = str(request.url.query)
+    if qs:
+        target = f"{target}?{qs}"
+
+    fwd_headers = {}
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    fwd_headers["x-forwarded-for"] = client_ip
+
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    if session_id:
+        data = _get_session(session_id)
+        if data and data.get("token"):
+            fwd_headers["x-auth-token"] = data["token"]
+
+    for hdr in ("x-auth-token", "authorization", "x-access-key-id", "x-secret-access-key"):
+        val = request.headers.get(hdr)
+        if val and hdr not in fwd_headers:
+            fwd_headers[hdr] = val
+
+    try:
+        resp = await _http_client.get(target, headers=fwd_headers)
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers={k: v for k, v in resp.headers.items()
+                     if k.lower() not in ("transfer-encoding",)},
+            media_type=resp.headers.get("content-type"),
+        )
+    except Exception as exc:
+        return Response(content=f"storage gateway error: {exc}", status_code=502)
+
+
 # ── Serve React SPA ───────────────────────────────────────────────────────────
 
 if STATIC_DIR.exists():
@@ -749,12 +825,8 @@ if STATIC_DIR.exists():
 # priority over the catch-all /{full_path:path} below.
 
 @app.get("/{full_path:path}", include_in_schema=False)
-async def spa_fallback(full_path: str):
-    """Serve index.html for all non-API routes (SPA client-side routing).
-
-    Excludes /xide by virtue of route ordering — /xide routes are registered
-    earlier and are more specific, so FastAPI matches them first.
-    """
+async def spa_fallback(full_path: str, request: Request):
+    """Serve index.html for all non-API routes (SPA client-side routing)."""
     if full_path.startswith("xide-proxy"):
         return Response(content="Not found", status_code=404)
     index = STATIC_DIR / "index.html"
