@@ -51,6 +51,7 @@ export const api = {
   createUser: (b) => request('POST', '/auth/users', b),
   updateUser: (id, b) => request('PUT', `/auth/users/${id}`, b),
   deleteUser: (id) => request('DELETE', `/auth/users/${id}`),
+  getAuditLogs: () => request('GET', '/auth/audit-logs'),
   switchProject: (projectId) => request('POST', '/auth/session/switch-project', { project_id: projectId }),
 
   // Auth — Access Keys
@@ -146,6 +147,8 @@ export const api = {
   // Networking — Security Groups
   getSecurityGroups: () => request('GET', '/networking/security-groups'),
   getSecurityGroup: (id) => request('GET', `/networking/security-groups/${id}`),
+  getSecurityGroupPresets: () => request('GET', '/networking/security-groups/presets'),
+  applySecurityGroupPreset: (id, preset) => request('POST', `/networking/security-groups/${id}/apply-preset`, { preset }),
   createSecurityGroup: (b) => request('POST', '/networking/security-groups', b),
   deleteSecurityGroup: (id) => request('DELETE', `/networking/security-groups/${id}`),
   createSecurityGroupRule: (id, b) => request('POST', `/networking/security-groups/${id}/rules`, b),

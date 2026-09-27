@@ -128,6 +128,7 @@ export default function SecurityGroupDetailPage() {
   const toast = useToast()
   const [sg, setSg] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [presetLoading, setPresetLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -143,6 +144,19 @@ export default function SecurityGroupDetailPage() {
   }, [id, toast])
 
   useEffect(() => { load() }, [load])
+
+  const handleApplyPreset = async (presetKey) => {
+    setPresetLoading(true)
+    try {
+      await api.applySecurityGroupPreset(id, presetKey)
+      toast(`Applied preset '${presetKey}' successfully`, 'success')
+      await load()
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setPresetLoading(false)
+    }
+  }
 
   if (loading) return <PageLoading text="Loading security group" />
   if (!sg) return <Alert type="error" header="Security group not found">The requested security group does not exist or is not visible in this project.</Alert>
@@ -168,7 +182,16 @@ export default function SecurityGroupDetailPage() {
       }
     >
       <SpaceBetween size="l">
-        <Container header={<Header variant="h2">Details</Header>}>
+        <Container header={<Header variant="h2" actions={
+          <SpaceBetween direction="horizontal" size="xs">
+            <Box fontSize="body-s" fontWeight="bold">Apply Preset:</Box>
+            <Button size="small" loading={presetLoading} onClick={() => handleApplyPreset('ssh')}>SSH (22)</Button>
+            <Button size="small" loading={presetLoading} onClick={() => handleApplyPreset('web')}>Web (80/443)</Button>
+            <Button size="small" loading={presetLoading} onClick={() => handleApplyPreset('db')}>DB (3306/5432)</Button>
+            <Button size="small" loading={presetLoading} onClick={() => handleApplyPreset('ping')}>Ping (ICMP)</Button>
+            <Button size="small" loading={presetLoading} onClick={() => handleApplyPreset('all-traffic')}>All Traffic</Button>
+          </SpaceBetween>
+        }>Details</Header>}>
           <KeyValuePairs
             columns={3}
             items={[

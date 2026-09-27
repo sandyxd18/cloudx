@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
+import threading
+import time
 import uuid
+from pathlib import Path
 from datetime import datetime
 from typing import Annotated
 
@@ -133,6 +137,7 @@ class Listener(Base):
     protocol:          Mapped[str] = mapped_column(String)  # TCP | HTTP | HTTPS | UDP
     protocol_port:     Mapped[int] = mapped_column(Integer)
     default_pool_id:   Mapped[str | None] = mapped_column(String, nullable=True)
+    certificate_id:    Mapped[str | None] = mapped_column(String, nullable=True)
     created_at:        Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -175,6 +180,17 @@ class HealthMonitor(Base):
     created_at:  Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class LBCertificate(Base):
+    __tablename__ = "lb_certificates"
+
+    id:               Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    load_balancer_id: Mapped[str] = mapped_column(String, ForeignKey("lb_load_balancers.id"))
+    name:             Mapped[str] = mapped_column(String)
+    certificate_pem:  Mapped[str] = mapped_column(String)
+    private_key_pem:  Mapped[str] = mapped_column(String)
+    created_at:       Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 class LoadBalancerIn(BaseModel):
@@ -188,6 +204,13 @@ class ListenerIn(BaseModel):
     name: str
     protocol: str = Field(..., pattern="^(TCP|UDP|HTTP|HTTPS)$")
     protocol_port: int = Field(..., ge=1, le=65535)
+    certificate_id: str | None = None
+
+
+class CertificateIn(BaseModel):
+    name: str
+    certificate_pem: str
+    private_key_pem: str
 
 
 class PoolMemberIn(BaseModel):
@@ -240,9 +263,74 @@ def get_db():
 DB = Annotated[Session, Depends(get_db)]
 
 
+_health_probe_failures: dict[str, int] = {}
+
+
+def _probe_member(member: Member, hm: HealthMonitor) -> bool:
+    try:
+        if hm.type.upper() in ("PING", "TCP"):
+            with socket.create_connection((member.address, member.protocol_port), timeout=min(hm.timeout, 5)):
+                return True
+        elif hm.type.upper() in ("HTTP", "HTTPS"):
+            proto = "https" if hm.type.upper() == "HTTPS" else "http"
+            url = f"{proto}://{member.address}:{member.protocol_port}{hm.url_path}"
+            resp = requests.get(url, timeout=min(hm.timeout, 5))
+            return resp.status_code < 400
+    except Exception:
+        return False
+    return False
+
+
+def _run_health_monitors():
+    db = SessionLocal()
+    try:
+        monitors = db.query(HealthMonitor).all()
+        for hm in monitors:
+            pool = db.get(Pool, hm.pool_id)
+            if not pool:
+                continue
+            lb = db.get(LoadBalancer, pool.load_balancer_id)
+            if not lb or lb.provisioning_status == "DELETED":
+                continue
+
+            members = db.query(Member).filter_by(pool_id=pool.id).all()
+            status_changed = False
+            for m in members:
+                success = _probe_member(m, hm)
+                if success:
+                    _health_probe_failures[m.id] = 0
+                    if m.operating_status != "ONLINE":
+                        m.operating_status = "ONLINE"
+                        status_changed = True
+                else:
+                    fails = _health_probe_failures.get(m.id, 0) + 1
+                    _health_probe_failures[m.id] = fails
+                    if fails >= hm.max_retries and m.operating_status != "OFFLINE":
+                        m.operating_status = "OFFLINE"
+                        status_changed = True
+
+            if status_changed:
+                db.commit()
+                try:
+                    _apply_lb_state(db, lb)
+                except Exception as exc:
+                    log.warning("Failed to re-apply LB state after health check: %s", exc)
+    except Exception as exc:
+        log.warning("Error running health monitors: %s", exc)
+    finally:
+        db.close()
+
+
+def _health_monitor_loop():
+    while True:
+        time.sleep(5)
+        _run_health_monitors()
+
+
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
+    threading.Thread(target=_health_monitor_loop, daemon=True).start()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -335,7 +423,17 @@ def _lb_to_dict(lb: LoadBalancer) -> dict:
     }
 
 
-def _listener_to_dict(ls: Listener) -> dict:
+def _listener_to_dict(ls: Listener, db: Session | None = None) -> dict:
+    ssl_cert_path = None
+    if ls.certificate_id and db:
+        cert = db.get(LBCertificate, ls.certificate_id)
+        if cert:
+            cert_dir = Path("/tmp/antigravity/certs")
+            cert_dir.mkdir(parents=True, exist_ok=True)
+            cert_file = cert_dir / f"{cert.id}.pem"
+            cert_file.write_text(f"{cert.certificate_pem}\n{cert.private_key_pem}")
+            ssl_cert_path = str(cert_file)
+
     return {
         "id": ls.id,
         "load_balancer_id": ls.load_balancer_id,
@@ -343,6 +441,8 @@ def _listener_to_dict(ls: Listener) -> dict:
         "protocol": ls.protocol,
         "protocol_port": ls.protocol_port,
         "default_pool_id": ls.default_pool_id,
+        "certificate_id": ls.certificate_id,
+        "ssl_cert_path": ssl_cert_path,
         "created_at": ls.created_at.isoformat() if ls.created_at else None,
     }
 
@@ -383,11 +483,11 @@ def _apply_lb_state(db: Session, lb: LoadBalancer):
         if pool:
             members = db.query(Member).filter_by(pool_id=pool.id).all()
             members = [_member_to_dict(m) for m in members]
-        driver.apply_listener(_lb_to_dict(lb), {**_listener_to_dict(ls), "members": members})
+        driver.apply_listener(_lb_to_dict(lb), {**_listener_to_dict(ls, db), "members": members})
         if pool:
             driver.apply_pool(
                 _lb_to_dict(lb),
-                _listener_to_dict(ls),
+                _listener_to_dict(ls, db),
                 _pool_to_dict(pool),
                 members,
             )
@@ -472,6 +572,34 @@ def delete_load_balancer(ref: str, current: CurrentUser, db: DB):
 # Listeners
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@app.post("/load-balancers/{lb_ref}/certificates", status_code=201)
+def upload_certificate(lb_ref: str, payload: CertificateIn, current: CurrentUser, db: DB):
+    project_id = _project_id(current)
+    lb = db.query(LoadBalancer).filter_by(id=lb_ref, project_id=project_id).first()
+    if not lb:
+        raise HTTPException(status_code=404, detail="load balancer not found")
+    cert = LBCertificate(
+        load_balancer_id=lb.id,
+        name=payload.name,
+        certificate_pem=payload.certificate_pem,
+        private_key_pem=payload.private_key_pem,
+    )
+    db.add(cert)
+    db.commit()
+    db.refresh(cert)
+    return {"id": cert.id, "name": cert.name, "created_at": cert.created_at.isoformat()}
+
+
+@app.get("/load-balancers/{lb_ref}/certificates")
+def list_certificates(lb_ref: str, current: CurrentUser, db: DB):
+    project_id = _project_id(current)
+    lb = db.query(LoadBalancer).filter_by(id=lb_ref, project_id=project_id).first()
+    if not lb:
+        raise HTTPException(status_code=404, detail="load balancer not found")
+    certs = db.query(LBCertificate).filter_by(load_balancer_id=lb.id).all()
+    return {"certificates": [{"id": c.id, "name": c.name, "created_at": c.created_at.isoformat()} for c in certs]}
+
+
 @app.post("/load-balancers/{lb_ref}/listeners", status_code=201)
 def create_listener(lb_ref: str, payload: ListenerIn, current: CurrentUser, db: DB):
     project_id = _project_id(current)
@@ -484,17 +612,18 @@ def create_listener(lb_ref: str, payload: ListenerIn, current: CurrentUser, db: 
         name=payload.name,
         protocol=payload.protocol,
         protocol_port=payload.protocol_port,
+        certificate_id=payload.certificate_id,
     )
     db.add(ls)
     db.commit()
 
     try:
         driver = _get_driver(lb)
-        driver.apply_listener(_lb_to_dict(lb), {**_listener_to_dict(ls), "members": []})
+        driver.apply_listener(_lb_to_dict(lb), {**_listener_to_dict(ls, db), "members": []})
     except Exception as exc:
         log.error("Failed to apply listener %s: %s", ls.id, exc)
 
-    return _listener_to_dict(ls)
+    return _listener_to_dict(ls, db)
 
 
 @app.get("/load-balancers/{lb_ref}/listeners")

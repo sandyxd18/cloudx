@@ -14,7 +14,7 @@ from typing import Annotated
 import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -22,9 +22,12 @@ from sqlalchemy import Boolean, DateTime, Integer, String, ForeignKey, create_en
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 try:
-    from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+    from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
 except ImportError:
-    from auth_middleware import CurrentUser, AdminUser, OptionalAuth
+    try:
+        from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+    except ImportError:
+        from auth_middleware import CurrentUser, AdminUser, OptionalAuth
 
 # Import shared modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -45,6 +48,7 @@ IMAGE_API_URL = os.getenv("IMAGE_API_URL", "http://image-api:8000").rstrip("/")
 NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
 BLOCK_STORE_API_URL = os.getenv("BLOCK_STORE_API_URL", "http://block-store-api:8000").rstrip("/")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
+PLACEMENT_API_URL = os.getenv("PLACEMENT_API_URL", "http://placement-api:8000").rstrip("/")
 AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
 AUTH_ADMIN_PASSWORD = os.getenv("AUTH_ADMIN_PASSWORD", "admin123")
 COMPUTE_BACKEND = os.getenv("COMPUTE_BACKEND", "libvirt").lower()
@@ -921,6 +925,34 @@ def delete_server_group(ref: str, current: CurrentUser, db: DB):
     db.commit()
 
 
+def _check_project_quota(project_id: str, requested_vcpus: int, requested_ram_mb: int):
+    """Enforce per-project quota limits against placement usages."""
+    try:
+        quota_resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=_svc_headers(), timeout=5)
+        if quota_resp.status_code == 200:
+            quota = quota_resp.json()
+            usage_resp = requests.get(f"{PLACEMENT_API_URL}/usages?project_id={project_id}", headers=_svc_headers(), timeout=5)
+            usages = usage_resp.json().get("usages", {}) if usage_resp.status_code == 200 else {}
+            curr_instances = usages.get("instances", 0)
+            curr_vcpus = usages.get("VCPU", 0)
+            curr_ram = usages.get("MEMORY_MB", 0)
+
+            max_inst = quota.get("max_instances", 10)
+            max_vcpu = quota.get("max_vcpus", 20)
+            max_ram = quota.get("max_ram_mb", 32768)
+
+            if curr_instances + 1 > max_inst:
+                raise HTTPException(status_code=413, detail=f"Quota exceeded: max_instances ({max_inst}) reached")
+            if curr_vcpus + requested_vcpus > max_vcpu:
+                raise HTTPException(status_code=413, detail=f"Quota exceeded: max_vcpus ({max_vcpu}) reached")
+            if curr_ram + requested_ram_mb > max_ram:
+                raise HTTPException(status_code=413, detail=f"Quota exceeded: max_ram_mb ({max_ram}) reached")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.getLogger("compute-api").warning("Quota check failed/skipped: %s", exc)
+
+
 @app.post("/servers", status_code=201)
 def create_server(payload: ServerIn, current: CurrentUser, db: DB):
     if get_active_server_by_name(db, payload.name):
@@ -933,6 +965,7 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
     keypair = require_keypair(db, keypair_ref) if keypair_ref else None
     flavor = require_flavor(db, payload.flavor)
     ensure_capacity(db, flavor)
+    _check_project_quota(current["project_id"], flavor.vcpus, flavor.ram_mb)
     # Check server group anti-affinity
     sg_id = None
     if payload.server_group:
@@ -1521,8 +1554,24 @@ def remote_console(ref: str, payload: dict, _: CurrentUser, db: DB):
             "url": novnc_url,
             "vnc_port": vnc_info.get("port"),
             "server": server.name,
+            "websocket_url": f"/servers/{ref}/console/ws",
         }
     }
+
+
+@app.websocket("/servers/{ref}/console/ws")
+async def console_websocket(websocket: WebSocket, ref: str):
+    await websocket.accept()
+    await websocket.send_text(f"\r\n--- Connected to CloudX Serial Console for server {ref} ---\r\n")
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data:
+                await websocket.send_text(f"echo: {data}")
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
 
 
 @app.post("/servers/{ref}/shelve")

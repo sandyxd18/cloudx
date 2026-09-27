@@ -177,6 +177,8 @@ class Port(Base):
     device_owner: Mapped[str | None] = mapped_column(String, nullable=True)
     security_group_ids: Mapped[str | None] = mapped_column(String, nullable=True)
     port_security_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    qos_max_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    qos_burst_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
@@ -339,6 +341,14 @@ class PortIn(BaseModel):
     security_group_ids: list[str] = Field(default_factory=list)
     port_security_enabled: bool = True
     dns_name: str | None = None    # optional DNS hostname registered in OVN
+    qos_max_kbps: int | None = None
+    qos_burst_kbps: int | None = None
+
+
+class PortUpdate(BaseModel):
+    name: str | None = None
+    qos_max_kbps: int | None = None
+    qos_burst_kbps: int | None = None
 
 
 class TrunkIn(BaseModel):
@@ -619,6 +629,7 @@ def port_to_os_dict(db: Session, port: Port, current: dict | None = None) -> dic
         "network_id": port.network_id,
         "numa_affinity_policy": None,
         "port_security_enabled": port.port_security_enabled,
+        "qos_policy": {"max_kbps": port.qos_max_kbps, "burst_kbps": port.qos_burst_kbps} if (port.qos_max_kbps or port.qos_burst_kbps) else None,
         "project_id": current.get("project_id") if current else None,
         "propagate_uplink_status": None,
         "resource_request": None,
@@ -1794,6 +1805,8 @@ def create_port(payload: PortIn, current: CurrentUser, db: DB):
         device_owner=payload.device_owner,
         security_group_ids=format_id_list([group.id for group in groups]),
         port_security_enabled=payload.port_security_enabled,
+        qos_max_kbps=payload.qos_max_kbps,
+        qos_burst_kbps=payload.qos_burst_kbps,
     )
     ovn("--may-exist", "lsp-add", network.name, port.name)
     ovn("set", "logical_switch_port", port.name, "external_ids:mini-openstack-lab=true")
@@ -1885,6 +1898,21 @@ def disable_port_security(ref: str, db: DB):
     db.commit()
     db.refresh(port)
     apply_security_groups(db, port)
+    return port_to_dict(db, port)
+
+
+@app.patch("/ports/{ref}")
+@app.put("/ports/{ref}")
+def update_port(ref: str, payload: PortUpdate, _: CurrentUser, db: DB):
+    port = require_by_ref(db, Port, ref, "port")
+    if payload.name is not None:
+        port.name = payload.name
+    if payload.qos_max_kbps is not None:
+        port.qos_max_kbps = payload.qos_max_kbps
+    if payload.qos_burst_kbps is not None:
+        port.qos_burst_kbps = payload.qos_burst_kbps
+    db.commit()
+    db.refresh(port)
     return port_to_dict(db, port)
 
 
@@ -2135,6 +2163,82 @@ def create_security_group(payload: SecurityGroupIn, current: CurrentUser, db: DB
     db.refresh(group)
     apply_security_group_acls(db, group)
     return obj_to_dict(group)
+
+
+PRESET_SECURITY_GROUPS = {
+    "ssh": {
+        "name": "SSH Only",
+        "description": "Allow inbound SSH (port 22) traffic from anywhere",
+        "rules": [
+            {"direction": "ingress", "protocol": "tcp", "port_min": 22, "port_max": 22, "remote_ip_prefix": "0.0.0.0/0"}
+        ],
+    },
+    "web": {
+        "name": "Web Server (HTTP/HTTPS)",
+        "description": "Allow inbound HTTP (80) and HTTPS (443) traffic",
+        "rules": [
+            {"direction": "ingress", "protocol": "tcp", "port_min": 80, "port_max": 80, "remote_ip_prefix": "0.0.0.0/0"},
+            {"direction": "ingress", "protocol": "tcp", "port_min": 443, "port_max": 443, "remote_ip_prefix": "0.0.0.0/0"},
+        ],
+    },
+    "db": {
+        "name": "Database Server (MySQL/PostgreSQL)",
+        "description": "Allow inbound MySQL (3306) and PostgreSQL (5432) traffic",
+        "rules": [
+            {"direction": "ingress", "protocol": "tcp", "port_min": 3306, "port_max": 3306, "remote_ip_prefix": "0.0.0.0/0"},
+            {"direction": "ingress", "protocol": "tcp", "port_min": 5432, "port_max": 5432, "remote_ip_prefix": "0.0.0.0/0"},
+        ],
+    },
+    "ping": {
+        "name": "Ping / ICMP",
+        "description": "Allow inbound ICMP ping requests",
+        "rules": [
+            {"direction": "ingress", "protocol": "icmp", "port_min": None, "port_max": None, "remote_ip_prefix": "0.0.0.0/0"},
+        ],
+    },
+    "all-traffic": {
+        "name": "All Traffic",
+        "description": "Allow all inbound TCP, UDP, and ICMP traffic",
+        "rules": [
+            {"direction": "ingress", "protocol": "any", "port_min": None, "port_max": None, "remote_ip_prefix": "0.0.0.0/0"},
+        ],
+    },
+}
+
+
+@app.get("/security-groups/presets")
+def get_security_group_presets(_: CurrentUser):
+    return {"presets": PRESET_SECURITY_GROUPS}
+
+
+@app.post("/security-groups/{ref}/apply-preset")
+def apply_security_group_preset(ref: str, payload: dict, _: CurrentUser, db: DB):
+    preset_key = payload.get("preset")
+    if not preset_key or preset_key not in PRESET_SECURITY_GROUPS:
+        raise HTTPException(status_code=400, detail=f"Invalid preset key '{preset_key}'. Allowed: {list(PRESET_SECURITY_GROUPS.keys())}")
+
+    group = require_by_ref(db, SecurityGroup, ref, "security-group")
+    preset = PRESET_SECURITY_GROUPS[preset_key]
+    created_rules = []
+
+    for rule_def in preset["rules"]:
+        rule = SecurityGroupRule(
+            security_group_id=group.id,
+            direction=rule_def.get("direction", "ingress"),
+            ethertype="IPv4",
+            protocol=rule_def.get("protocol", "tcp"),
+            port_min=str(rule_def["port_min"]) if rule_def.get("port_min") is not None else None,
+            port_max=str(rule_def.get("port_max", rule_def.get("port_min"))) if rule_def.get("port_min") is not None else None,
+            remote_ip_prefix=rule_def.get("remote_ip_prefix", "0.0.0.0/0"),
+            action="allow",
+        )
+        db.add(rule)
+        created_rules.append(rule)
+
+    group.updated_at = now()
+    db.commit()
+    apply_security_group_acls(db, group)
+    return {"status": "applied", "preset": preset_key, "rules_added": len(created_rules)}
 
 
 @app.get("/security-groups")

@@ -21,6 +21,8 @@ import json
 import logging
 import os
 import sys
+import threading
+import time
 import uuid
 from datetime import datetime
 from typing import Annotated
@@ -29,13 +31,16 @@ import requests
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, inspect, select, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 try:
-    from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+    from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
 except ImportError:
-    from auth_middleware import CurrentUser, AdminUser, OptionalAuth
+    try:
+        from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+    except ImportError:
+        from auth_middleware import CurrentUser, AdminUser, OptionalAuth
 
 # Import shared modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -138,6 +143,17 @@ class Snapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class VolumeSnapshotSchedule(Base):
+    """Scheduled auto-snapshots for volumes."""
+    __tablename__ = "block_store_snapshot_schedules"
+    id:               Mapped[str]           = mapped_column(String, primary_key=True, default=new_id)
+    volume_id:        Mapped[str]           = mapped_column(String, ForeignKey("block_store_volumes.id"))
+    interval_seconds: Mapped[int]           = mapped_column(Integer, default=3600)
+    retention_count:  Mapped[int]           = mapped_column(Integer, default=5)
+    last_run_at:      Mapped[datetime|None] = mapped_column(DateTime, nullable=True)
+    created_at:       Mapped[datetime]      = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class VolumeQuota(Base):
     """Per-project volume quota limits."""
     __tablename__ = "block_store_volume_quotas"
@@ -223,6 +239,11 @@ class SnapshotIn(BaseModel):
     name: str
 
 
+class SnapshotScheduleIn(BaseModel):
+    interval_seconds: int = Field(default=3600, ge=60)
+    retention_count: int = Field(default=5, ge=1)
+
+
 class InternalAttachIn(BaseModel):
     server_id:     str
     target_device: str | None = None
@@ -282,6 +303,39 @@ except Exception:
 
 # ── Startup ────────────────────────────────────────────────────────────────────
 
+def _run_snapshot_schedules():
+    db = SessionLocal()
+    try:
+        schedules = db.query(VolumeSnapshotSchedule).all()
+        for sch in schedules:
+            now_dt = datetime.utcnow()
+            if not sch.last_run_at or (now_dt - sch.last_run_at).total_seconds() >= sch.interval_seconds:
+                vol = db.get(Volume, sch.volume_id)
+                if not vol or vol.status in ("deleting", "error", "deleted"):
+                    continue
+                snap_name = f"auto-snap-{vol.name[:10]}-{uuid.uuid4().hex[:6]}"
+                snap = Snapshot(volume_id=vol.id, name=snap_name, size_gb=vol.size_gb, status="available")
+                db.add(snap)
+                sch.last_run_at = now_dt
+                db.commit()
+
+                snaps = db.query(Snapshot).filter_by(volume_id=vol.id).order_by(Snapshot.created_at.desc()).all()
+                if len(snaps) > sch.retention_count:
+                    for old_snap in snaps[sch.retention_count:]:
+                        db.delete(old_snap)
+                    db.commit()
+    except Exception as exc:
+        log.warning("Error running snapshot schedules: %s", exc)
+    finally:
+        db.close()
+
+
+def _snapshot_schedule_loop():
+    while True:
+        time.sleep(10)
+        _run_snapshot_schedules()
+
+
 @app.on_event("startup")
 def startup():
     global _rpc
@@ -294,6 +348,7 @@ def startup():
     ensure_columns()
     _bootstrap_quotas()
     _rpc = RPCClient(RABBITMQ_URL)
+    threading.Thread(target=_snapshot_schedule_loop, daemon=True).start()
     log.info("Block-store-api ready (RabbitMQ RPC mode)")
     log.info("Drivers: lvm=%s ceph=%s", STORAGE_LVM_DRIVER, STORAGE_CEPH_RBD_DRIVER)
 
@@ -605,6 +660,30 @@ def healthcheck(db: DB):
 
 
 
+def _check_auth_volume_quota(project_id: str, size: int, db: Session):
+    try:
+        quota_resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=_svc_headers(), timeout=5)
+        if quota_resp.status_code == 200:
+            auth_quota = quota_resp.json()
+            max_vol_gb = auth_quota.get("max_volume_gb", 100)
+            current_vols = db.scalars(
+                select(Volume).where(
+                    Volume.project_id == project_id,
+                    Volume.status.not_in(["deleting", "error"]),
+                )
+            ).all()
+            used_gb = sum(v.size_gb for v in current_vols)
+            if used_gb + size > max_vol_gb:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Volume GB quota exceeded: {used_gb + size}/{max_vol_gb} GB limit reached",
+                )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("Auth project volume quota check skipped: %s", exc)
+
+
 # ── Volume CRUD ────────────────────────────────────────────────────────────────
 
 @app.post("/volumes", status_code=201)
@@ -614,6 +693,7 @@ def create_volume(payload: VolumeIn, current: CurrentUser, db: DB):
         raise HTTPException(status_code=400, detail="size_gb is required")
     project_id = current["project_id"]
     # ── Quota validation ───────────────────────────────────────────
+    _check_auth_volume_quota(project_id, size, db)
     quota = db.get(VolumeQuota, project_id)
     if quota:
         current_vols = db.scalars(
@@ -990,6 +1070,58 @@ def detach_volume(ref: str, db: DB):
     db.commit()
     db.refresh(volume)
     return obj_to_dict(volume)
+
+
+# ── Snapshot Schedules ─────────────────────────────────────────────────────────
+
+@app.post("/volumes/{ref}/schedules", status_code=201)
+def create_volume_schedule(ref: str, payload: SnapshotScheduleIn, current: CurrentUser, db: DB):
+    vol = require_volume(db, ref)
+    if vol.project_id != current["project_id"] and current.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    sch = db.query(VolumeSnapshotSchedule).filter_by(volume_id=vol.id).first()
+    if not sch:
+        sch = VolumeSnapshotSchedule(
+            volume_id=vol.id,
+            interval_seconds=payload.interval_seconds,
+            retention_count=payload.retention_count,
+        )
+        db.add(sch)
+    else:
+        sch.interval_seconds = payload.interval_seconds
+        sch.retention_count = payload.retention_count
+    db.commit()
+    db.refresh(sch)
+    return {
+        "id": sch.id,
+        "volume_id": sch.volume_id,
+        "interval_seconds": sch.interval_seconds,
+        "retention_count": sch.retention_count,
+        "last_run_at": sch.last_run_at.isoformat() if sch.last_run_at else None,
+    }
+
+
+@app.get("/volumes/{ref}/schedules")
+def get_volume_schedule(ref: str, current: CurrentUser, db: DB):
+    vol = require_volume(db, ref)
+    sch = db.query(VolumeSnapshotSchedule).filter_by(volume_id=vol.id).first()
+    if not sch:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return {
+        "id": sch.id,
+        "volume_id": sch.volume_id,
+        "interval_seconds": sch.interval_seconds,
+        "retention_count": sch.retention_count,
+        "last_run_at": sch.last_run_at.isoformat() if sch.last_run_at else None,
+    }
+
+
+@app.delete("/schedules/{sch_id}", status_code=204)
+def delete_volume_schedule(sch_id: str, _: CurrentUser, db: DB):
+    sch = db.get(VolumeSnapshotSchedule, sch_id)
+    if sch:
+        db.delete(sch)
+        db.commit()
 
 
 # ── Snapshots ──────────────────────────────────────────────────────────────────

@@ -21,9 +21,15 @@ from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, 
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 try:
-    from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+    from services.shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
 except ImportError:
-    from auth_middleware import CurrentUser, AdminUser, OptionalAuth
+    try:
+        from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+    except ImportError:
+        try:
+            from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+        except ImportError:
+            from auth_middleware import CurrentUser, AdminUser, OptionalAuth
 
 # Import shared modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -680,6 +686,18 @@ def reactivate_image(ref: str, _: CurrentUser, db: DB):
     image.status = "ACTIVE"
     db.commit()
     return obj_to_dict(image)
+
+
+@app.post("/images/{ref}/prefetch")
+def prefetch_image(ref: str, _: CurrentUser, db: DB):
+    image = require_image(db, ref)
+    try:
+        rpc = _get_rpc()
+        if rpc:
+            rpc.cast("compute", "prefetch_image", {"image_id": image.id})
+    except Exception as exc:
+        log.warning("RPC cast prefetch_image failed: %s", exc)
+    return {"status": "prefetching", "image_id": image.id}
 
 
 @app.patch("/images/{ref}")

@@ -23,9 +23,9 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError, jwt
 import bcrypt
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import (
-    Boolean, DateTime, ForeignKey, String, Text,
+    Boolean, DateTime, ForeignKey, Integer, String, Text,
     create_engine, select, UniqueConstraint, text, inspect,
 )
 from sqlalchemy.orm import (
@@ -94,6 +94,17 @@ class Project(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled:     Mapped[bool] = mapped_column(Boolean, default=True)
     created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ProjectQuota(Base):
+    """Quota limits per project."""
+    __tablename__ = "auth_project_quotas"
+    project_id:    Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id", ondelete="CASCADE"), primary_key=True)
+    max_instances: Mapped[int] = mapped_column(Integer, default=10)
+    max_vcpus:     Mapped[int] = mapped_column(Integer, default=20)
+    max_ram_mb:    Mapped[int] = mapped_column(Integer, default=32768)
+    max_volume_gb: Mapped[int] = mapped_column(Integer, default=100)
+    updated_at:    Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class User(Base):
@@ -192,6 +203,20 @@ class ApplicationCredential(Base):
     enabled:     Mapped[bool] = mapped_column(Boolean, default=True)
     created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     __table_args__ = (UniqueConstraint("name", "user_id"),)
+
+
+class AuditLog(Base):
+    """Centralized Audit Logging for resource mutations."""
+    __tablename__ = "auth_audit_logs"
+    id:            Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    user_id:       Mapped[str | None] = mapped_column(String, nullable=True)
+    username:      Mapped[str | None] = mapped_column(String, nullable=True)
+    project_id:    Mapped[str | None] = mapped_column(String, nullable=True)
+    action:        Mapped[str] = mapped_column(String, index=True)
+    resource_type: Mapped[str] = mapped_column(String, index=True)
+    resource_id:   Mapped[str | None] = mapped_column(String, nullable=True)
+    details:       Mapped[str | None] = mapped_column(Text, nullable=True)
+    timestamp:     Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -377,6 +402,13 @@ class ProjectIn(BaseModel):
 class ProjectUpdate(BaseModel):
     description: str | None = None
     enabled: bool | None = None
+
+
+class QuotaUpdate(BaseModel):
+    max_instances: int | None = Field(default=None, ge=0)
+    max_vcpus: int | None = Field(default=None, ge=0)
+    max_ram_mb: int | None = Field(default=None, ge=0)
+    max_volume_gb: int | None = Field(default=None, ge=0)
 
 
 class UserIn(BaseModel):
@@ -761,6 +793,47 @@ def delete_project(ref: str, _: AdminUser, db: DB):
         raise HTTPException(status_code=400, detail="cannot delete admin project")
     db.delete(p)
     db.commit()
+
+
+def _get_or_create_quota(db: Session, project_id: str) -> ProjectQuota:
+    quota = db.get(ProjectQuota, project_id)
+    if not quota:
+        quota = ProjectQuota(project_id=project_id, max_instances=10, max_vcpus=20, max_ram_mb=32768, max_volume_gb=100)
+        db.add(quota)
+        db.commit()
+        db.refresh(quota)
+    return quota
+
+
+@app.get("/projects/{ref}/quota")
+def get_project_quota(ref: str, _: CurrentUser, db: DB):
+    p = _get_project_by_ref(db, ref)
+    q = _get_or_create_quota(db, p.id)
+    return {
+        "project_id": p.id,
+        "max_instances": q.max_instances,
+        "max_vcpus": q.max_vcpus,
+        "max_ram_mb": q.max_ram_mb,
+        "max_volume_gb": q.max_volume_gb,
+    }
+
+
+@app.put("/projects/{ref}/quota")
+def update_project_quota(ref: str, payload: QuotaUpdate, _: AdminUser, db: DB):
+    p = _get_project_by_ref(db, ref)
+    q = _get_or_create_quota(db, p.id)
+    for k, v in payload.model_dump(exclude_none=True).items():
+        setattr(q, k, v)
+    q.updated_at = utcnow()
+    db.commit()
+    db.refresh(q)
+    return {
+        "project_id": p.id,
+        "max_instances": q.max_instances,
+        "max_vcpus": q.max_vcpus,
+        "max_ram_mb": q.max_ram_mb,
+        "max_volume_gb": q.max_volume_gb,
+    }
 
 
 # ── Users ──────────────────────────────────────────────────────────────────────
@@ -1256,6 +1329,78 @@ def check_policy(body: dict, current: CurrentUser):
     target_project = body.get("target_project_id")
     result = policy_enforce(action, current, target_project, raise_on_deny=False)
     return {"action": action, "allowed": result, "role": current.get("role")}
+
+
+# ── Centralized Audit Logging ──────────────────────────────────────────────────
+
+class AuditLogIn(BaseModel):
+    user_id: str | None = None
+    username: str | None = None
+    project_id: str | None = None
+    action: str
+    resource_type: str
+    resource_id: str | None = None
+    details: str | None = None
+
+
+@app.post("/audit-logs", status_code=201)
+def create_audit_log(payload: AuditLogIn, db: DB):
+    log_entry = AuditLog(
+        user_id=payload.user_id,
+        username=payload.username,
+        project_id=payload.project_id,
+        action=payload.action,
+        resource_type=payload.resource_type,
+        resource_id=payload.resource_id,
+        details=payload.details,
+    )
+    db.add(log_entry)
+    db.commit()
+    db.refresh(log_entry)
+    return {
+        "id": log_entry.id,
+        "user_id": log_entry.user_id,
+        "username": log_entry.username,
+        "project_id": log_entry.project_id,
+        "action": log_entry.action,
+        "resource_type": log_entry.resource_type,
+        "resource_id": log_entry.resource_id,
+        "details": log_entry.details,
+        "timestamp": log_entry.timestamp.isoformat() if log_entry.timestamp else None,
+    }
+
+
+@app.get("/audit-logs")
+def list_audit_logs(
+    db: DB,
+    project_id: str | None = None,
+    resource_type: str | None = None,
+    limit: int = 100,
+):
+    query = select(AuditLog).order_by(AuditLog.timestamp.desc())
+    if project_id:
+        query = query.where(AuditLog.project_id == project_id)
+    if resource_type:
+        query = query.where(AuditLog.resource_type == resource_type)
+    query = query.limit(limit)
+
+    rows = db.scalars(query).all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "user_id": r.user_id,
+                "username": r.username,
+                "project_id": r.project_id,
+                "action": r.action,
+                "resource_type": r.resource_type,
+                "resource_id": r.resource_id,
+                "details": r.details,
+                "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            }
+            for r in rows
+        ]
+    }
 
 
 # ── API Version Discovery ──────────────────────────────────────────────────────

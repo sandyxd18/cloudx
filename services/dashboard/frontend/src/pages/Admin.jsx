@@ -232,6 +232,7 @@ export default function AdminPage() {
   const [projects, setProjects] = useState([])
   const [users, setUsers]       = useState([])
   const [keys, setKeys]         = useState([])
+  const [auditLogs, setAuditLogs] = useState([])
   const [loading, setLoading]   = useState(true)
   const [tab, setTab]           = useState('projects')
   const [filter, setFilter]     = useState('')
@@ -244,11 +245,12 @@ export default function AdminPage() {
 
   const load = useCallback(() => {
     setLoading(true)
-    Promise.allSettled([api.getProjects(), api.getUsers(), api.getAccessKeys()])
-      .then(([p, u, k]) => {
+    Promise.allSettled([api.getProjects(), api.getUsers(), api.getAccessKeys(), api.getAuditLogs()])
+      .then(([p, u, k, a]) => {
         if (p.status === 'fulfilled') setProjects(p.value?.items || [])
         if (u.status === 'fulfilled') setUsers(u.value?.items || [])
         if (k.status === 'fulfilled') setKeys(k.value?.items || [])
+        if (a.status === 'fulfilled') setAuditLogs(a.value?.items || [])
       })
       .finally(() => setLoading(false))
   }, [])
@@ -453,6 +455,34 @@ export default function AdminPage() {
                   empty={q ? <TableNoMatch onClear={() => setFilter('')} /> : <TableEmpty title="No access keys" description="Generate an access key to authenticate the CLI without a password." action={<Button variant="primary" onClick={() => setShowKey(true)}>Generate access key</Button>} />}
                 />
               </SpaceBetween>
+            ),
+          },
+          {
+            id: 'audit-logs',
+            label: `Audit logs (${auditLogs.length})`,
+            content: (
+              <Table
+                variant="container"
+                loading={loading}
+                loadingText="Loading audit logs"
+                items={q ? auditLogs.filter(a => a.action?.toLowerCase().includes(q) || a.resource_type?.toLowerCase().includes(q) || a.username?.toLowerCase().includes(q)) : auditLogs}
+                trackBy="id"
+                header={
+                  <Header variant="h2" counter={`(${auditLogs.length})`}>
+                    Central Audit Logs
+                  </Header>
+                }
+                columnDefinitions={[
+                  { id: 'timestamp', header: 'Timestamp', cell: a => fmtDate(a.timestamp), isRowHeader: true },
+                  { id: 'username', header: 'User', cell: a => a.username || a.user_id || 'System' },
+                  { id: 'action', header: 'Action', cell: a => <Badge color="blue">{a.action}</Badge> },
+                  { id: 'resource_type', header: 'Resource type', cell: a => a.resource_type },
+                  { id: 'resource_id', header: 'Resource ID', cell: a => a.resource_id || '—' },
+                  { id: 'details', header: 'Details', cell: a => a.details || '—' },
+                ]}
+                filter={searchFilter('audit logs')}
+                empty={q ? <TableNoMatch onClear={() => setFilter('')} /> : <TableEmpty title="No audit logs recorded" description="Audit events will appear here when resource actions occur." />}
+              />
             ),
           },
         ]}

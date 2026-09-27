@@ -560,7 +560,7 @@ def test_metadata_service_network_data_format():
         "network_id": "network-id",
         "network": {"cidr": "10.10.0.0/24", "gateway_ip": "10.10.0.1", "dns_nameservers": ["1.1.1.1"]},
     })
-    assert payload["links"][0]["id"] == "port-id"
+    assert payload["links"][0]["id"] == "tapport-id"
     assert payload["networks"][0]["netmask"] == "255.255.255.0"
     assert payload["networks"][0]["routes"][0]["gateway"] == "10.10.0.1"
     assert payload["services"] == [{"type": "dns", "address": "1.1.1.1"}]
@@ -697,7 +697,7 @@ def test_compute_worker_health_preflight_mock(monkeypatch):
         returncode = 0
 
     monkeypatch.setattr(main, "run", lambda *args, **kwargs: FakeProc())
-    health = main.preflight()
+    health = main.handle_health({})
     assert health["libvirt_connected"] is True
     assert health["ovs_available"] is True
     assert health["br_int_exists"] is True

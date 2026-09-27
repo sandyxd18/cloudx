@@ -29,7 +29,7 @@ defaults
     option forwardfor
 
 frontend fe_{lb_id}
-    bind {vip}:{listener_port}
+    bind {vip}:{listener_port} {bind_opts}
     default_backend be_{lb_id}_{pool_id}
 
 backend be_{lb_id}_{pool_id}
@@ -115,10 +115,15 @@ class HAProxyL7Driver(LoadBalancerDriver):
         if not member_lines:
             member_lines = "    server placeholder 127.0.0.1:1 check disabled"
 
+        bind_opts = ""
+        if listener.get("protocol") == "HTTPS" and listener.get("ssl_cert_path"):
+            bind_opts = f"ssl crt {listener['ssl_cert_path']}"
+
         cfg = _HAPROXY_CFG_TEMPLATE.format(
             lb_id=lb["id"],
             vip=lb["vip_address"],
             listener_port=listener["protocol_port"],
+            bind_opts=bind_opts,
             pool_id=pool["id"],
             balance=self._balance(pool.get("lb_algorithm")),
             health_path=health_path,

@@ -124,6 +124,9 @@ _EXPECTED_STATUS_FOR_POWER_STATE = {
 }
 
 
+AUTO_RECOVERY = os.getenv("AUTO_RECOVERY_ENABLED", "true").lower() in ("1", "true", "yes")
+
+
 def sync_power_states() -> None:
     """One reconciliation pass: compare libvirt reality against the DB.
 
@@ -157,6 +160,18 @@ def sync_power_states() -> None:
         expected_status = _EXPECTED_STATUS_FOR_POWER_STATE[power_state]
 
         if expected_status != db_status:
+            if AUTO_RECOVERY and db_status == "ACTIVE" and power_state in ("SHUTOFF", "MISSING"):
+                log.warning(
+                    "[auto-recovery] server %s (%s): domain '%s' is %s on hypervisor — attempting auto-restart",
+                    server.get("name"), server.get("id"), domain_name, power_state,
+                )
+                try:
+                    libvirt_driver.start(domain_name)
+                    log.info("[auto-recovery] server %s restarted successfully", server.get("name"))
+                    continue
+                except Exception as exc:
+                    log.error("[auto-recovery] failed to restart server %s: %s", server.get("name"), exc)
+
             log.warning(
                 "[sync] server %s (%s): domain '%s' is %s on hypervisor but DB says %s — correcting to %s",
                 server.get("name"), server.get("id"), domain_name, power_state, db_status, expected_status,
@@ -829,6 +844,21 @@ def handle_unshelve(args: dict) -> None:
         conductor_mark_error(server_id, str(exc))
 
 
+def handle_prefetch_image(args: dict) -> dict:
+    image_ref = args.get("image_id") or args.get("image_ref")
+    if not image_ref:
+        return {"status": "error", "message": "image_id required"}
+    try:
+        from .image_manager import fetch_image_meta, download_image
+        meta = fetch_image_meta(image_ref)
+        path = download_image(meta)
+        log.info("Prefetched image %s to local cache: %s", image_ref, path)
+        return {"status": "cached", "image_id": image_ref, "path": str(path)}
+    except Exception as exc:
+        log.error("Failed to prefetch image %s: %s", image_ref, exc)
+        return {"status": "error", "message": str(exc)}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Handler dispatch table
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -851,6 +881,7 @@ HANDLERS = {
     "set_password":     handle_set_password,
     "shelve":           handle_shelve,
     "unshelve":         handle_unshelve,
+    "prefetch_image":   handle_prefetch_image,
     # Call (sync reply)
     "health":           handle_health,
     "get_logs":         handle_get_logs,

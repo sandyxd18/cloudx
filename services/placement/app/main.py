@@ -16,7 +16,16 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
-from app.auth_middleware import CurrentUser
+try:
+    from services.shared.auth_middleware import CurrentUser, AdminUser
+except ImportError:
+    try:
+        from shared.auth_middleware import CurrentUser, AdminUser
+    except ImportError:
+        try:
+            from app.auth_middleware import CurrentUser, AdminUser
+        except ImportError:
+            from auth_middleware import CurrentUser, AdminUser
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -578,18 +587,22 @@ def delete_allocations(consumer_uuid: str, _: CurrentUser, db: DB):
 @app.get("/usages")
 def get_usages(current: CurrentUser, db: DB, project_id: str | None = None):
     """Get resource usage, optionally filtered by project."""
-    q = select(Allocation)
-    if project_id:
-        q = q.where(Allocation.project_id == project_id)
-    elif current.get("role") != "admin":
-        q = q.where(Allocation.project_id == current["project_id"])
+    target_project = project_id
+    if not target_project or current.get("role") != "admin":
+        target_project = project_id if (current.get("role") == "admin" and project_id) else current["project_id"]
+
+    q = select(Allocation).where(Allocation.project_id == target_project)
 
     allocations = db.scalars(q).all()
     usages: dict[str, int] = {}
+    consumer_ids = set()
     for a in allocations:
         usages[a.resource_class] = usages.get(a.resource_class, 0) + a.used
+        consumer_ids.add(a.consumer_uuid)
 
-    return {"usages": usages, "project_id": project_id or current["project_id"]}
+    usages["instances"] = len(consumer_ids)
+
+    return {"usages": usages, "project_id": target_project}
 
 
 @app.get("/resource_providers/{rp_uuid}/usages")
