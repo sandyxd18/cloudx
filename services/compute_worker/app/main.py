@@ -859,6 +859,53 @@ def handle_prefetch_image(args: dict) -> dict:
         return {"status": "error", "message": str(exc)}
 
 
+def handle_live_migrate(args: dict) -> None:
+    """Live migrate a running VM to another compute node (Fase 6.1)."""
+    server_id = args.get("server_id")
+    target_host = args.get("target_host")
+    log.info("Live migrate request: server=%s target=%s", server_id, target_host)
+    if not server_id or not target_host:
+        conductor_mark_error(server_id or "unknown", "server_id and target_host required for live migration")
+        return
+
+    try:
+        import libvirt
+        conn = libvirt.open(LIBVIRT_URI)
+        if not conn:
+            raise RuntimeError("failed to open libvirt connection")
+
+        dom = None
+        try:
+            dom = conn.lookupByUUIDString(server_id)
+        except Exception:
+            try:
+                dom = conn.lookupByName(f"{VM_NAME_PREFIX}-{server_id[:8]}")
+            except Exception:
+                pass
+
+        if not dom:
+            raise RuntimeError(f"domain for server {server_id} not found")
+
+        # Target URI for migration (shared storage required)
+        target_uri = f"qemu+ssh://{target_host}/system"
+
+        # Perform live migration with persistent and undefine-source flags
+        flags = libvirt.VIR_MIGRATE_LIVE | libvirt.VIR_MIGRATE_PERSIST_DEST | libvirt.VIR_MIGRATE_UNDEFINE_SOURCE
+        new_dom = dom.migrateToURI3(target_uri, flags, None, None)
+
+        if new_dom:
+            log.info("Live migration of server %s to %s succeeded", server_id, target_host)
+            conductor_update_server(server_id, {
+                "status": "ACTIVE",
+                "host": target_host,
+            })
+        else:
+            raise RuntimeError("migration returned None")
+    except Exception as exc:
+        log.exception("Live migration failed for server %s: %s", server_id, exc)
+        conductor_mark_error(server_id, f"live migration failed: {exc}")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Handler dispatch table
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -882,6 +929,7 @@ HANDLERS = {
     "shelve":           handle_shelve,
     "unshelve":         handle_unshelve,
     "prefetch_image":   handle_prefetch_image,
+    "live_migrate_instance": handle_live_migrate,
     # Call (sync reply)
     "health":           handle_health,
     "get_logs":         handle_get_logs,

@@ -39,6 +39,10 @@ DEFAULT_URLS = {
     "placement":     os.getenv("CLOUDX_PLACEMENT_URL",     "http://127.0.0.1:8006"),
     "object-store":  os.getenv("CLOUDX_OBJECT_STORE_URL",  "http://127.0.0.1:8007"),
     "load-balancer": os.getenv("CLOUDX_LOAD_BALANCER_URL", "http://127.0.0.1:8008"),
+    "telemetry":     os.getenv("CLOUDX_TELEMETRY_URL",     "http://127.0.0.1:8010"),
+    "billing":       os.getenv("CLOUDX_BILLING_URL",       "http://127.0.0.1:8011"),
+    "event":         os.getenv("CLOUDX_EVENT_URL",         "http://127.0.0.1:8012"),
+    "orchestration": os.getenv("CLOUDX_ORCHESTRATION_URL", "http://127.0.0.1:8013"),
 }
 
 
@@ -1807,6 +1811,479 @@ def type_create(ctx, name, driver, config, description):
 def type_delete(ctx, ref):
     _api("delete", f"{DEFAULT_URLS['object-store']}/admin/bucket-types/{ref}", ctx.obj["profile"])
     click.echo(f"✓ Bucket type {ref} deleted")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TELEMETRY
+# ═══════════════════════════════════════════════════════════════════════════════
+@cli.group("telemetry")
+@click.pass_context
+def telemetry(ctx):
+    """Observability metrics & Prometheus export"""
+
+@telemetry.command("metric-type-list")
+@click.pass_context
+def telemetry_metric_type_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['telemetry']}/telemetry/metric-types", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["name", "unit", "description", "default_enabled"])
+
+@telemetry.command("metric-list")
+@click.option("--type", "metric_type")
+@click.option("--instance", "instance_id")
+@click.option("--limit", type=int, default=50)
+@click.pass_context
+def telemetry_metric_list(ctx, metric_type, instance_id, limit):
+    params = f"?limit={limit}"
+    if metric_type:  params += f"&metric_type={metric_type}"
+    if instance_id:  params += f"&instance_id={instance_id}"
+    data = _api("get", f"{DEFAULT_URLS['telemetry']}/telemetry/metrics{params}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "instance_id", "metric_type", "value", "unit", "timestamp"])
+
+@telemetry.command("metric-create")
+@click.option("--instance", "instance_id", required=True)
+@click.option("--type", "metric_type", required=True)
+@click.option("--value", type=float, required=True)
+@click.option("--unit", default=None)
+@click.option("--host", default=None)
+@click.pass_context
+def telemetry_metric_create(ctx, instance_id, metric_type, value, unit, host):
+    payload = {"instance_id": instance_id, "metric_type": metric_type, "value": value}
+    if unit: payload["unit"] = unit
+    if host: payload["host"] = host
+    data = _api("post", f"{DEFAULT_URLS['telemetry']}/telemetry/metrics", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+@telemetry.command("stats")
+@click.pass_context
+def telemetry_stats(ctx):
+    data = _api("get", f"{DEFAULT_URLS['telemetry']}/telemetry/stats", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@telemetry.command("server-stats")
+@click.argument("instance_id")
+@click.pass_context
+def telemetry_server_stats(ctx, instance_id):
+    data = _api("get", f"{DEFAULT_URLS['telemetry']}/telemetry/instances/{instance_id}/stats", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@telemetry.command("prometheus")
+@click.pass_context
+def telemetry_prometheus(ctx):
+    """Dump Prometheus exposition format to stdout"""
+    token = _get_token(ctx.obj["profile"])
+    headers = {"X-Auth-Token": token} if token else {}
+    r = requests.get(f"{DEFAULT_URLS['telemetry']}/metrics", headers=headers, timeout=30)
+    if not r.ok:
+        click.echo(f"❌ Prometheus export failed (HTTP {r.status_code}): {r.text}", err=True)
+        sys.exit(1)
+    click.echo(r.text)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BILLING
+# ═══════════════════════════════════════════════════════════════════════════════
+@cli.group("billing")
+@click.pass_context
+def billing(ctx):
+    """Usage rating, invoices, and PDF generation"""
+
+@billing.command("rating-sheet-list")
+@click.pass_context
+def billing_rating_sheet_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['billing']}/billing/rating-sheets", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "resource_type", "unit", "rate_per_unit", "currency", "is_active"])
+
+@billing.command("rating-sheet-create")
+@click.option("--resource-type", required=True)
+@click.option("--unit", default="hour")
+@click.option("--rate-per-unit", type=float, required=True)
+@click.option("--currency", default="IDR")
+@click.option("--description", default=None)
+@click.pass_context
+def billing_rating_sheet_create(ctx, resource_type, unit, rate_per_unit, currency, description):
+    payload = {"resource_type": resource_type, "unit": unit, "rate_per_unit": rate_per_unit,
+               "currency": currency}
+    if description: payload["description"] = description
+    data = _api("post", f"{DEFAULT_URLS['billing']}/billing/rating-sheets", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+@billing.command("usage-list")
+@click.option("--project")
+@click.option("--limit", type=int, default=50)
+@click.pass_context
+def billing_usage_list(ctx, project, limit):
+    params = f"?limit={limit}"
+    if project: params += f"&project_id={project}"
+    data = _api("get", f"{DEFAULT_URLS['billing']}/billing/usage-records{params}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "project_id", "resource_type", "resource_id", "quantity", "unit", "total_cost"])
+
+@billing.command("usage-create")
+@click.option("--project", "project_id", required=True)
+@click.option("--resource-type", required=True)
+@click.option("--resource-id", default=None)
+@click.option("--quantity", type=float, required=True)
+@click.option("--unit", default="hour")
+@click.option("--rate-per-unit", type=float, required=True)
+@click.option("--period-start", required=True)
+@click.option("--period-end", required=True)
+@click.pass_context
+def billing_usage_create(ctx, project_id, resource_type, resource_id, quantity, unit, rate_per_unit, period_start, period_end):
+    payload = {
+        "project_id": project_id,
+        "resource_type": resource_type,
+        "quantity": quantity,
+        "unit": unit,
+        "rate_per_unit": rate_per_unit,
+        "period_start": period_start,
+        "period_end": period_end,
+    }
+    if resource_id: payload["resource_id"] = resource_id
+    data = _api("post", f"{DEFAULT_URLS['billing']}/billing/usage-records", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+@billing.command("invoice-list")
+@click.option("--project")
+@click.option("--status")
+@click.pass_context
+def billing_invoice_list(ctx, project, status):
+    params = "?"
+    if project: params += f"project_id={project}&"
+    if status:  params += f"status={status}&"
+    data = _api("get", f"{DEFAULT_URLS['billing']}/billing/invoices{params}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "invoice_number", "project_id", "status", "subtotal", "tax_amount", "total", "created_at"])
+
+@billing.command("invoice-create")
+@click.option("--project", "project_id")
+@click.option("--period-start")
+@click.option("--period-end")
+@click.option("--notes")
+@click.pass_context
+def billing_invoice_create(ctx, project_id, period_start, period_end, notes):
+    params = "?"
+    if project_id:   params += f"project_id={project_id}&"
+    if period_start: params += f"period_start={period_start}&"
+    if period_end:   params += f"period_end={period_end}&"
+    if notes:        params += f"notes={notes}&"
+    data = _api("post", f"{DEFAULT_URLS['billing']}/billing/invoices{params}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@billing.command("invoice-pdf")
+@click.argument("invoice_id")
+@click.option("--out", default=None, help="Output file path (.pdf or .html)")
+@click.pass_context
+def billing_invoice_pdf(ctx, invoice_id, out):
+    data = _api("post", f"{DEFAULT_URLS['billing']}/billing/invoices/{invoice_id}/pdf", ctx.obj["profile"])
+    if "pdf_base64" in data:
+        import base64
+        out_file = out or f"invoice-{invoice_id}.pdf"
+        with open(out_file, "wb") as f:
+            f.write(base64.b64decode(data["pdf_base64"]))
+        click.echo(f"✓ Invoice PDF saved to {out_file}")
+    elif "html" in data:
+        out_file = out or f"invoice-{invoice_id}.html"
+        with open(out_file, "w") as f:
+            f.write(data["html"])
+        click.echo(f"✓ Invoice HTML saved to {out_file} (WeasyPrint not installed on server)")
+    else:
+        _output(data, ctx.obj["fmt"])
+
+@billing.command("summary")
+@click.argument("project_id", required=False)
+@click.pass_context
+def billing_summary(ctx, project_id):
+    url = f"{DEFAULT_URLS['billing']}/billing/summary"
+    if project_id:
+        url += f"/{project_id}"
+    data = _api("get", url, ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EVENT
+# ═══════════════════════════════════════════════════════════════════════════════
+@cli.group("event")
+@click.pass_context
+def event(ctx):
+    """Event log and webhook subscription management"""
+
+@event.command("emit")
+@click.option("--type", "event_type", required=True)
+@click.option("--resource-type", default="instance")
+@click.option("--resource-id")
+@click.option("--payload", default="{}")
+@click.pass_context
+def event_emit(ctx, event_type, resource_type, resource_id, payload):
+    try:
+        body = json.loads(payload)
+    except Exception as exc:
+        click.echo(f"❌ Invalid JSON payload: {exc}", err=True)
+        sys.exit(1)
+    data = {"event_type": event_type, "resource_type": resource_type, "payload": body}
+    if resource_id: data["resource_id"] = resource_id
+    out = _api("post", f"{DEFAULT_URLS['event']}/events/emit", ctx.obj["profile"], json=data)
+    _output(out, ctx.obj["fmt"])
+
+@event.command("type-list")
+@click.pass_context
+def event_type_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['event']}/events/types", ctx.obj["profile"])
+    items = data.get("event_types", data) if isinstance(data, dict) else data
+    _output(items, ctx.obj["fmt"], ["event_type", "type", "description"])
+
+@event.command("log-list")
+@click.option("--type")
+@click.option("--limit", type=int, default=50)
+@click.pass_context
+def event_log_list(ctx, type, limit):
+    params = f"?limit={limit}"
+    if type: params += f"&event_type={type}"
+    data = _api("get", f"{DEFAULT_URLS['event']}/events/logs{params}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "event_type", "resource_type", "resource_id", "timestamp"])
+
+@event.group("subscription")
+@click.pass_context
+def event_subscription(ctx):
+    """Manage webhook subscriptions"""
+
+@event_subscription.command("create")
+@click.argument("name")
+@click.option("--endpoint-url", required=True)
+@click.option("--event-type", "event_types", multiple=True, required=True)
+@click.option("--secret")
+@click.pass_context
+def event_subscription_create(ctx, name, endpoint_url, event_types, secret):
+    payload = {"name": name, "endpoint_url": endpoint_url, "event_types": list(event_types)}
+    if secret: payload["secret"] = secret
+    data = _api("post", f"{DEFAULT_URLS['event']}/events/subscriptions", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+@event_subscription.command("list")
+@click.pass_context
+def event_subscription_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['event']}/events/subscriptions", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "endpoint_url", "event_types", "is_active"])
+
+@event_subscription.command("show")
+@click.argument("sub_id")
+@click.pass_context
+def event_subscription_show(ctx, sub_id):
+    data = _api("get", f"{DEFAULT_URLS['event']}/events/subscriptions/{sub_id}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@event_subscription.command("delete")
+@click.argument("sub_id")
+@click.pass_context
+def event_subscription_delete(ctx, sub_id):
+    _api("delete", f"{DEFAULT_URLS['event']}/events/subscriptions/{sub_id}", ctx.obj["profile"])
+    click.echo(f"✓ Subscription {sub_id} deleted")
+
+@event.command("delivery-list")
+@click.pass_context
+def event_delivery_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['event']}/events/deliveries", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "subscription_id", "event_id", "status", "response_code", "attempts", "created_at"])
+
+@event.command("delivery-retry")
+@click.argument("delivery_id")
+@click.pass_context
+def event_delivery_retry(ctx, delivery_id):
+    data = _api("post", f"{DEFAULT_URLS['event']}/events/deliveries/{delivery_id}/retry", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ORCHESTRATION / AUTO-SCALING
+# ═══════════════════════════════════════════════════════════════════════════════
+@cli.group("scaling-group")
+@click.pass_context
+def scaling_group(ctx):
+    """Auto-scaling group orchestration"""
+
+@scaling_group.command("list")
+@click.pass_context
+def scaling_group_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['orchestration']}/scaling-groups", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "min_instances", "max_instances", "target_cpu_percent", "status"])
+
+@scaling_group.command("show")
+@click.argument("group_id")
+@click.pass_context
+def scaling_group_show(ctx, group_id):
+    data = _api("get", f"{DEFAULT_URLS['orchestration']}/scaling-groups/{group_id}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@scaling_group.command("create")
+@click.argument("name")
+@click.option("--image", "image_id", required=True)
+@click.option("--flavor", "flavor_id", required=True)
+@click.option("--network", "network_id", required=True)
+@click.option("--subnet", "subnet_id")
+@click.option("--min-instances", type=int, default=1)
+@click.option("--max-instances", type=int, default=5)
+@click.option("--target-cpu", "target_cpu_percent", type=float, default=70.0)
+@click.option("--cooldown", "cooldown_seconds", type=int, default=300)
+@click.option("--scale-in-cooldown", "scale_in_cooldown_seconds", type=int, default=600)
+@click.option("--description", default=None)
+@click.pass_context
+def scaling_group_create(ctx, name, image_id, flavor_id, network_id, subnet_id, min_instances,
+                         max_instances, target_cpu_percent, cooldown_seconds, scale_in_cooldown_seconds, description):
+    payload = {
+        "name": name,
+        "image_id": image_id,
+        "flavor_id": flavor_id,
+        "network_id": network_id,
+        "min_instances": min_instances,
+        "max_instances": max_instances,
+        "target_cpu_percent": target_cpu_percent,
+        "cooldown_seconds": cooldown_seconds,
+        "scale_in_cooldown_seconds": scale_in_cooldown_seconds,
+    }
+    if subnet_id:   payload["subnet_id"] = subnet_id
+    if description: payload["description"] = description
+    data = _api("post", f"{DEFAULT_URLS['orchestration']}/scaling-groups", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+@scaling_group.command("update")
+@click.argument("group_id")
+@click.option("--min-instances", type=int, default=None)
+@click.option("--max-instances", type=int, default=None)
+@click.option("--target-cpu", "target_cpu_percent", type=float, default=None)
+@click.option("--cooldown", "cooldown_seconds", type=int, default=None)
+@click.pass_context
+def scaling_group_update(ctx, group_id, min_instances, max_instances, target_cpu_percent, cooldown_seconds):
+    payload = {}
+    if min_instances is not None:      payload["min_instances"] = min_instances
+    if max_instances is not None:      payload["max_instances"] = max_instances
+    if target_cpu_percent is not None: payload["target_cpu_percent"] = target_cpu_percent
+    if cooldown_seconds is not None:   payload["cooldown_seconds"] = cooldown_seconds
+    if not payload:
+        click.echo("Nothing to update.")
+        return
+    data = _api("patch", f"{DEFAULT_URLS['orchestration']}/scaling-groups/{group_id}", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+@scaling_group.command("delete")
+@click.argument("group_id")
+@click.pass_context
+def scaling_group_delete(ctx, group_id):
+    _api("delete", f"{DEFAULT_URLS['orchestration']}/scaling-groups/{group_id}", ctx.obj["profile"])
+    click.echo(f"✓ Scaling group {group_id} deleted")
+
+@scaling_group.command("scale-out")
+@click.argument("group_id")
+@click.pass_context
+def scaling_group_scale_out(ctx, group_id):
+    data = _api("post", f"{DEFAULT_URLS['orchestration']}/scaling-groups/{group_id}/scale-out", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@scaling_group.command("scale-in")
+@click.argument("group_id")
+@click.pass_context
+def scaling_group_scale_in(ctx, group_id):
+    data = _api("post", f"{DEFAULT_URLS['orchestration']}/scaling-groups/{group_id}/scale-in", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@scaling_group.command("instance-list")
+@click.argument("group_id")
+@click.pass_context
+def scaling_group_instance_list(ctx, group_id):
+    data = _api("get", f"{DEFAULT_URLS['orchestration']}/scaling-groups/{group_id}/instances", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "server_id", "server_name", "status", "created_at"])
+
+@scaling_group.command("history")
+@click.argument("group_id")
+@click.pass_context
+def scaling_group_history(ctx, group_id):
+    data = _api("get", f"{DEFAULT_URLS['orchestration']}/scaling-groups/{group_id}/history", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "action", "reason", "server_id", "avg_cpu_before", "instance_count_after", "created_at"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VPC PEERING & BGP (Networking extensions)
+# ═══════════════════════════════════════════════════════════════════════════════
+@cli.group("vpc-peering")
+@click.pass_context
+def vpc_peering(ctx):
+    """VPC peering between routers"""
+
+@vpc_peering.command("list")
+@click.pass_context
+def vpc_peering_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['network']}/vpc-peerings", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "requester_router_name", "accepter_router_name", "status"])
+
+@vpc_peering.command("create")
+@click.argument("name")
+@click.option("--requester", required=True)
+@click.option("--accepter", required=True)
+@click.pass_context
+def vpc_peering_create(ctx, name, requester, accepter):
+    payload = {"name": name, "accepter_router_id": accepter}
+    data = _api("post", f"{DEFAULT_URLS['network']}/routers/{requester}/peering", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+@vpc_peering.command("show")
+@click.argument("peering_id")
+@click.pass_context
+def vpc_peering_show(ctx, peering_id):
+    data = _api("get", f"{DEFAULT_URLS['network']}/vpc-peerings/{peering_id}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@vpc_peering.command("delete")
+@click.argument("peering_id")
+@click.pass_context
+def vpc_peering_delete(ctx, peering_id):
+    _api("delete", f"{DEFAULT_URLS['network']}/vpc-peerings/{peering_id}", ctx.obj["profile"])
+    click.echo(f"✓ VPC peering {peering_id} deleted")
+
+
+@cli.group("bgp-peer")
+@click.pass_context
+def bgp_peer(ctx):
+    """BGP peer management for VPC routing"""
+
+@bgp_peer.command("list")
+@click.pass_context
+def bgp_peer_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['network']}/bgp-peers", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "router_id", "peer_ip", "local_as", "remote_as", "status"])
+
+@bgp_peer.command("create")
+@click.argument("name")
+@click.option("--router", "router_id", required=True)
+@click.option("--peer-ip", required=True)
+@click.option("--local-as", type=int, required=True)
+@click.option("--remote-as", type=int, required=True)
+@click.option("--auth-password")
+@click.option("--advertised-prefix", "advertised_prefixes", multiple=True)
+@click.pass_context
+def bgp_peer_create(ctx, name, router_id, peer_ip, local_as, remote_as, auth_password, advertised_prefixes):
+    payload = {"name": name, "router_id": router_id, "peer_ip": peer_ip, "local_as": local_as, "remote_as": remote_as}
+    if auth_password: payload["auth_password"] = auth_password
+    if advertised_prefixes: payload["advertised_prefixes"] = list(advertised_prefixes)
+    data = _api("post", f"{DEFAULT_URLS['network']}/bgp-peers", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+@bgp_peer.command("show")
+@click.argument("peer_id")
+@click.pass_context
+def bgp_peer_show(ctx, peer_id):
+    data = _api("get", f"{DEFAULT_URLS['network']}/bgp-peers/{peer_id}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@bgp_peer.command("delete")
+@click.argument("peer_id")
+@click.pass_context
+def bgp_peer_delete(ctx, peer_id):
+    _api("delete", f"{DEFAULT_URLS['network']}/bgp-peers/{peer_id}", ctx.obj["profile"])
+    click.echo(f"✓ BGP peer {peer_id} deleted")
+
+@bgp_peer.command("sync-config")
+@click.argument("peer_id")
+@click.pass_context
+def bgp_peer_sync_config(ctx, peer_id):
+    data = _api("post", f"{DEFAULT_URLS['network']}/bgp-peers/{peer_id}/sync-config", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

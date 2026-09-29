@@ -13,7 +13,7 @@
 
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 try:
@@ -104,6 +104,22 @@ class ResourceProviderAggregate(Base):
     __tablename__ = "placement_rp_aggregates"
     resource_provider_id: Mapped[str] = mapped_column(String, ForeignKey("placement_resource_providers.uuid"), primary_key=True)
     aggregate_uuid:       Mapped[str] = mapped_column(String, primary_key=True)
+
+
+class ComputeNodeHeartbeat(Base):
+    """Heartbeat record from compute nodes for multi-node scheduling."""
+    __tablename__ = "placement_compute_node_heartbeats"
+    resource_provider_id: Mapped[str] = mapped_column(String, ForeignKey("placement_resource_providers.uuid"), primary_key=True)
+    host:              Mapped[str] = mapped_column(String, nullable=False)
+    status:            Mapped[str] = mapped_column(String, default="active")  # active, down, maintenance
+    cpu_percent_used:  Mapped[float | None] = mapped_column(Float, nullable=True)
+    memory_mb_used:    Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_mb_total:   Mapped[int | None] = mapped_column(Integer, nullable=True)
+    disk_gb_used:      Mapped[int | None] = mapped_column(Integer, nullable=True)
+    disk_gb_total:     Mapped[int | None] = mapped_column(Integer, nullable=True)
+    running_vms:       Mapped[int] = mapped_column(Integer, default=0)
+    capabilities:      Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_seen:         Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 # ── DB dep ─────────────────────────────────────────────────────────────────────
@@ -199,6 +215,44 @@ def _bootstrap():
         db.commit()
     finally:
         db.close()
+
+
+# ── Multi-node Compute Scheduling Helpers ─────────────────────────────────────
+
+def _get_active_compute_nodes(db: Session) -> list[ComputeNodeHeartbeat]:
+    """Return compute nodes that have sent heartbeat in the last 60 seconds."""
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=60)
+    return db.scalars(
+        select(ComputeNodeHeartbeat).where(
+            ComputeNodeHeartbeat.status == "active",
+            ComputeNodeHeartbeat.last_seen >= cutoff,
+        )
+    ).all()
+
+
+def _get_node_available_resources(db: Session, rp_id: str) -> dict[str, int]:
+    """Calculate available resources for a compute node."""
+    result = {}
+    inventories = db.scalars(
+        select(Inventory).where(Inventory.resource_provider_id == rp_id)
+    ).all()
+    for inv in inventories:
+        used = _get_used(db, rp_id, inv.resource_class)
+        result[inv.resource_class] = int((inv.total - inv.reserved) * inv.allocation_ratio) - used
+
+    hb = db.scalar(select(ComputeNodeHeartbeat).where(ComputeNodeHeartbeat.resource_provider_id == rp_id))
+    if hb:
+        if "VCPU" not in result:
+            result["VCPU"] = 16
+        if "MEMORY_MB" not in result:
+            result["MEMORY_MB"] = max(0, int(hb.memory_mb_total - hb.memory_mb_used))
+        if "DISK_GB" not in result:
+            result["DISK_GB"] = max(0, int(hb.disk_gb_total - hb.disk_gb_used))
+
+    if not result:
+        result = {"VCPU": 16, "MEMORY_MB": 32768, "DISK_GB": 500}
+
+    return result
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -310,6 +364,93 @@ def list_rps(
 @app.get("/resource_providers/{rp_uuid}")
 def show_rp(rp_uuid: str, _: CurrentUser, db: DB):
     return _rp_to_dict(_get_rp(db, rp_uuid))
+
+
+# ── Compute Node Heartbeat (Fase 6.1 Multi-Node) ──────────────────────────────
+
+class HeartbeatIn(BaseModel):
+    host: str
+    cpu_percent_used: float | None = None
+    memory_mb_used: int | None = None
+    memory_mb_total: int | None = None
+    disk_gb_used: int | None = None
+    disk_gb_total: int | None = None
+    running_vms: int = 0
+    capabilities: dict | None = None
+
+
+@app.post("/resource_providers/{rp_uuid}/heartbeat", status_code=200)
+def heartbeat(rp_uuid: str, payload: HeartbeatIn, _: CurrentUser, db: DB):
+    """Receive heartbeat from a compute node worker."""
+    rp = _get_rp(db, rp_uuid)
+    hb = db.get(ComputeNodeHeartbeat, rp.uuid)
+    now = utcnow()
+    if not hb:
+        hb = ComputeNodeHeartbeat(
+            resource_provider_id=rp.uuid,
+            host=payload.host,
+            status="active",
+        )
+        db.add(hb)
+    
+    hb.host = payload.host
+    hb.cpu_percent_used = payload.cpu_percent_used
+    hb.memory_mb_used = payload.memory_mb_used
+    hb.memory_mb_total = payload.memory_mb_total
+    hb.disk_gb_used = payload.disk_gb_used
+    hb.disk_gb_total = payload.disk_gb_total
+    hb.running_vms = payload.running_vms
+    hb.capabilities = payload.capabilities
+    hb.last_seen = now
+    hb.status = "active"
+    
+    db.commit()
+    return {"status": "ok", "resource_provider_uuid": rp.uuid, "timestamp": now.isoformat()}
+
+
+@app.get("/resource_providers/{rp_uuid}/heartbeat")
+def get_heartbeat(rp_uuid: str, _: CurrentUser, db: DB):
+    """Get last heartbeat for a compute node."""
+    rp = _get_rp(db, rp_uuid)
+    hb = db.get(ComputeNodeHeartbeat, rp.uuid)
+    if not hb:
+        raise HTTPException(status_code=404, detail="heartbeat not found")
+    return {
+        "resource_provider_uuid": rp.uuid,
+        "host": hb.host,
+        "status": hb.status,
+        "cpu_percent_used": hb.cpu_percent_used,
+        "memory_mb_used": hb.memory_mb_used,
+        "memory_mb_total": hb.memory_mb_total,
+        "disk_gb_used": hb.disk_gb_used,
+        "disk_gb_total": hb.disk_gb_total,
+        "running_vms": hb.running_vms,
+        "capabilities": hb.capabilities,
+        "last_seen": hb.last_seen.isoformat() if hb.last_seen else None,
+    }
+
+
+@app.get("/compute_nodes")
+def list_compute_nodes(_: CurrentUser, db: DB):
+    """List all active compute nodes with their current status."""
+    nodes = _get_active_compute_nodes(db)
+    result = []
+    for hb in nodes:
+        rp = db.get(ResourceProvider, hb.resource_provider_id)
+        available = _get_node_available_resources(db, hb.resource_provider_id)
+        result.append({
+            "resource_provider_uuid": hb.resource_provider_id,
+            "name": rp.name if rp else None,
+            "host": hb.host,
+            "status": hb.status,
+            "cpu_percent_used": hb.cpu_percent_used,
+            "memory_mb_used": hb.memory_mb_used,
+            "memory_mb_total": hb.memory_mb_total,
+            "available_resources": available,
+            "running_vms": hb.running_vms,
+            "last_seen": hb.last_seen.isoformat() if hb.last_seen else None,
+        })
+    return {"compute_nodes": result}
 
 
 @app.delete("/resource_providers/{rp_uuid}", status_code=204)
@@ -768,6 +909,91 @@ def get_allocation_candidates(
             for rp_uuid in c["provider_summaries"]
         },
     }
+
+
+# ── Multi-Node Scheduling (Fase 6.1) ─────────────────────────────────────────
+
+class ScheduleRequest(BaseModel):
+    resources: dict[str, int]  # RESOURCE_CLASS: amount
+    strategy: str = "memory"   # memory | cpu | spread | packed
+    required_traits: list[str] | None = None
+    forbidden_traits: list[str] | None = None
+
+
+@app.post("/scheduler/select_destination")
+def select_destination(payload: ScheduleRequest, _: CurrentUser, db: DB):
+    """Select best compute node for a new server based on scheduling strategy."""
+    nodes = _get_active_compute_nodes(db)
+    if not nodes:
+        # Fallback to default RP if no heartbeats registered
+        default_rp = _get_or_create_default_rp(db)
+        return {
+            "selected_host": default_rp.name,
+            "resource_provider_uuid": default_rp.uuid,
+            "reason": "fallback_no_heartbeat",
+        }
+    
+    candidates = []
+    for hb in nodes:
+        rp = db.get(ResourceProvider, hb.resource_provider_id)
+        if not rp:
+            continue
+        
+        # Trait filtering
+        if payload.required_traits or payload.forbidden_traits:
+            rp_traits = {
+                t.trait_name for t in db.scalars(
+                    select(ResourceProviderTrait).where(
+                        ResourceProviderTrait.resource_provider_id == rp.uuid
+                    )
+                ).all()
+            }
+            required = set(payload.required_traits or [])
+            forbidden = set(payload.forbidden_traits or [])
+            if not required.issubset(rp_traits):
+                continue
+            if rp_traits & forbidden:
+                continue
+        
+        available = _get_node_available_resources(db, rp.uuid)
+        can_fit = all(available.get(rc, 0) >= amount for rc, amount in payload.resources.items())
+        if not can_fit:
+            continue
+        
+        candidates.append({
+            "rp": rp,
+            "hb": hb,
+            "available": available,
+        })
+    
+    if not candidates:
+        raise HTTPException(status_code=409, detail="No compute node can satisfy resource request")
+    
+    # Sort by strategy
+    strategy = payload.strategy.lower()
+    if strategy == "memory":
+        candidates.sort(key=lambda c: c["available"].get("MEMORY_MB", 0))
+    elif strategy == "cpu":
+        candidates.sort(key=lambda c: c["available"].get("VCPU", 0))
+    elif strategy == "spread":
+        # Prefer node with fewest running VMs
+        candidates.sort(key=lambda c: c["hb"].running_vms)
+    elif strategy == "packed":
+        # Prefer node with most used resources (fill up first)
+        candidates.sort(key=lambda c: c["hb"].running_vms, reverse=True)
+    else:
+        # Default: memory weighted
+        candidates.sort(key=lambda c: c["available"].get("MEMORY_MB", 0))
+    
+    selected = candidates[0]
+    return {
+        "selected_host": selected["hb"].host,
+        "resource_provider_uuid": selected["rp"].uuid,
+        "available_resources": selected["available"],
+        "running_vms": selected["hb"].running_vms,
+        "strategy": strategy,
+    }
+
 
 # ── Reshaper ──────────────────────────────────────────────────────────────────
 

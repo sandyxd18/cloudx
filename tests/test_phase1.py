@@ -58,10 +58,7 @@ def test_placement_usages_includes_instances(monkeypatch, tmp_path):
     place_main = importlib.reload(place_main)
     place_main.Base.metadata.create_all(bind=place_main.engine)
 
-    try:
-        from shared.auth_middleware import require_auth
-    except ImportError:
-        from services.shared.auth_middleware import require_auth
+    from services.shared.auth_middleware import require_auth
     place_main.app.dependency_overrides[require_auth] = lambda: {"project_id": "proj-1", "role": "admin"}
     client = TestClient(place_main.app)
 

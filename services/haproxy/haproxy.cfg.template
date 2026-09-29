@@ -131,3 +131,47 @@ backend load_balancer_back
     http-check expect status 200
     balance roundrobin
 %%LOAD_BALANCER_SERVERS%%
+
+# ── Telemetry API (Prometheus Metrics) ────────────────────────────────────────
+frontend telemetry_front
+    bind *:${TELEMETRY_PORT}
+    default_backend telemetry_back
+
+backend telemetry_back
+    option httpchk GET /health
+    http-check expect status 200
+    balance roundrobin
+%%TELEMETRY_SERVERS%%
+
+# ── Billing API ───────────────────────────────────────────────────────────────
+frontend billing_front
+    bind *:${BILLING_PORT}
+    default_backend billing_back
+
+backend billing_back
+    option httpchk GET /health
+    http-check expect status 200
+    balance roundrobin
+%%BILLING_SERVERS%%
+
+# ── Event API (Webhook Engine) ────────────────────────────────────────────────
+frontend event_front
+    bind *:${EVENT_PORT}
+    default_backend event_back
+
+backend event_back
+    option httpchk GET /health
+    http-check expect status 200
+    balance roundrobin
+%%EVENT_SERVERS%%
+
+# ── Orchestration API (Auto-Scaling Group) ────────────────────────────────────
+frontend orchestration_front
+    bind *:${ORCHESTRATION_PORT}
+    default_backend orchestration_back
+
+backend orchestration_back
+    option httpchk GET /health
+    http-check expect status 200
+    balance roundrobin
+%%ORCHESTRATION_SERVERS%%

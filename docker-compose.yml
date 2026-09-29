@@ -5,9 +5,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-mini_openstack}
       POSTGRES_USER: ${POSTGRES_USER:-mini}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mini}
+      POSTGRES_MULTIPLE_DATABASES: cloudx_billing,cloudx_events,cloudx_orchestration
     network_mode: host
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./scripts/postgres-init:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mini} -d ${POSTGRES_DB:-mini_openstack}"]
       interval: 5s
@@ -99,6 +101,10 @@ services:
       AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-admin123}
       AUTH_ADMIN_EMAIL: ${AUTH_ADMIN_EMAIL:-admin@cloudx.local}
       AUTH_ADMIN_PROJECT: ${AUTH_ADMIN_PROJECT:-admin}
+      TELEMETRY_API_URL: http://127.0.0.1:8010
+      BILLING_API_URL: http://127.0.0.1:8011
+      EVENT_API_URL: http://127.0.0.1:8012
+      ORCHESTRATION_API_URL: http://127.0.0.1:8013
     network_mode: host
     depends_on:
       postgres:
@@ -469,6 +475,10 @@ services:
       PLACEMENT_API_URL: http://127.0.0.1:8006
       OBJECT_STORE_API_URL: http://127.0.0.1:8007
       LOAD_BALANCER_API_URL: http://127.0.0.1:8008
+      TELEMETRY_API_URL: http://127.0.0.1:8010
+      BILLING_API_URL: http://127.0.0.1:8011
+      EVENT_API_URL: http://127.0.0.1:8012
+      ORCHESTRATION_API_URL: http://127.0.0.1:8013
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://cloudx:cloudx@127.0.0.1:5672/}
       MEMCACHED_URL: 127.0.0.1:11211
       XIDE_WORKSPACE_ROOT: /var/lib/xide-workspaces
@@ -546,6 +556,10 @@ services:
       OBJECT_STORE_PORT: 8007
       LOAD_BALANCER_PORT: 8008
       DASHBOARD_PORT: 8080
+      TELEMETRY_PORT: 8010
+      BILLING_PORT: 8011
+      EVENT_PORT: 8012
+      ORCHESTRATION_PORT: 8013
     depends_on:
       auth-api:
         condition: service_started
@@ -587,6 +601,202 @@ services:
       HAPROXY_STATS_PORT: ${HAPROXY_STATS_PORT:-8404}
     depends_on:
       - haproxy
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # FASE 5: ENTERPRISE OBSERVABILITY & MICROSERVICE BILLING/EVENTS
+  # ═══════════════════════════════════════════════════════════════════════════════
+
+  # ── Telemetry API (Metrics Collection & Prometheus Exporter) ──────────────────
+  telemetry-api:
+    build:
+      context: ./services
+      dockerfile: telemetry/Dockerfile
+      network: host
+    environment:
+      HOST: 127.0.0.1
+      PORT: 8010
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://mini:mini@127.0.0.1:5432/mini_openstack}
+      AUTH_API_URL: http://127.0.0.1:8005
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-cloudx-secret-key-change-in-production-min32chars!}
+      METRICS_RETENTION_DAYS: ${METRICS_RETENTION_DAYS:-7}
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-api:
+        condition: service_started
+
+  # ── Telemetry Worker (libvirt/OVN metrics collector) ──────────────────────────
+  telemetry-worker:
+    build:
+      context: ./services
+      dockerfile: telemetry_worker/Dockerfile
+      network: host
+    privileged: true
+    network_mode: host
+    environment:
+      TELEMETRY_API_URL: http://127.0.0.1:8010
+      COMPUTE_API_URL: http://127.0.0.1:8003
+      AUTH_API_URL: http://127.0.0.1:8005
+      AUTH_ADMIN_USERNAME: ${AUTH_ADMIN_USERNAME:-admin}
+      AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-admin123}
+      SAMPLE_INTERVAL: ${SAMPLE_INTERVAL:-30}
+      LIBVIRT_URI: ${LIBVIRT_URI:-qemu:///system}
+      COMPUTE_HOST: ${COMPUTE_HOST:-single-node}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - /var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock
+      - /var/run/openvswitch:/var/run/openvswitch
+    depends_on:
+      telemetry-api:
+        condition: service_started
+      compute-api:
+        condition: service_started
+
+  # ── Billing API (Resource Usage Billing & Invoicing) ──────────────────────────
+  billing-api:
+    build:
+      context: ./services
+      dockerfile: billing/Dockerfile
+      network: host
+    environment:
+      HOST: 127.0.0.1
+      PORT: 8011
+      BILLING_DATABASE_URL: ${BILLING_DATABASE_URL:-postgresql+psycopg://mini:mini@127.0.0.1:5432/cloudx_billing}
+      AUTH_API_URL: http://127.0.0.1:8005
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-cloudx-secret-key-change-in-production-min32chars!}
+      TELEMETRY_API_URL: http://127.0.0.1:8010
+      COMPUTE_API_URL: http://127.0.0.1:8003
+      BLOCK_STORE_API_URL: http://127.0.0.1:8004
+      NETWORKING_API_URL: http://127.0.0.1:8001
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-api:
+        condition: service_started
+
+  # ── Billing Worker (Usage Aggregation & Invoice Generator) ────────────────────
+  billing-worker:
+    build:
+      context: ./services
+      dockerfile: billing_worker/Dockerfile
+      network: host
+    environment:
+      BILLING_API_URL: http://127.0.0.1:8011
+      TELEMETRY_API_URL: http://127.0.0.1:8010
+      COMPUTE_API_URL: http://127.0.0.1:8003
+      BLOCK_STORE_API_URL: http://127.0.0.1:8004
+      NETWORKING_API_URL: http://127.0.0.1:8001
+      LOAD_BALANCER_API_URL: http://127.0.0.1:8008
+      AUTH_API_URL: http://127.0.0.1:8005
+      AUTH_ADMIN_USERNAME: ${AUTH_ADMIN_USERNAME:-admin}
+      AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-admin123}
+      AGGREGATION_INTERVAL: ${AGGREGATION_INTERVAL:-3600}
+      INVOICE_GENERATION_DAY: ${INVOICE_GENERATION_DAY:-1}
+      CLEANUP_DAYS: ${CLEANUP_DAYS:-90}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    network_mode: host
+    depends_on:
+      billing-api:
+        condition: service_started
+      compute-api:
+        condition: service_started
+      block-store-api:
+        condition: service_started
+
+  # ── Event API (Webhook Notification Engine) ───────────────────────────────────
+  event-api:
+    build:
+      context: ./services
+      dockerfile: event/Dockerfile
+      network: host
+    environment:
+      HOST: 127.0.0.1
+      PORT: 8012
+      EVENT_DATABASE_URL: ${EVENT_DATABASE_URL:-postgresql+psycopg://mini:mini@127.0.0.1:5432/cloudx_events}
+      AUTH_API_URL: http://127.0.0.1:8005
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-cloudx-secret-key-change-in-production-min32chars!}
+      WEBHOOK_TIMEOUT: ${WEBHOOK_TIMEOUT:-10}
+      MAX_RETRY_ATTEMPTS: ${MAX_RETRY_ATTEMPTS:-5}
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-api:
+        condition: service_started
+
+  # ── Event Worker (Webhook Delivery Engine) ────────────────────────────────────
+  event-worker:
+    build:
+      context: ./services
+      dockerfile: event_worker/Dockerfile
+      network: host
+    environment:
+      EVENT_API_URL: http://127.0.0.1:8012
+      AUTH_API_URL: http://127.0.0.1:8005
+      AUTH_ADMIN_USERNAME: ${AUTH_ADMIN_USERNAME:-admin}
+      AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-admin123}
+      POLL_INTERVAL: ${POLL_INTERVAL:-10}
+      WEBHOOK_TIMEOUT: ${WEBHOOK_TIMEOUT:-10}
+      MAX_RETRY_ATTEMPTS: ${MAX_RETRY_ATTEMPTS:-5}
+      BASE_RETRY_DELAY: ${BASE_RETRY_DELAY:-60}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    network_mode: host
+    depends_on:
+      event-api:
+        condition: service_started
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # FASE 6: MULTI-NODE COMPUTE & ADVANCED ORCHESTRATION
+  # ═══════════════════════════════════════════════════════════════════════════════
+
+  # ── Orchestration API (Auto-Scaling Group Engine) ─────────────────────────────
+  orchestration-api:
+    build:
+      context: ./services
+      dockerfile: orchestration/Dockerfile
+      network: host
+    environment:
+      HOST: 127.0.0.1
+      PORT: 8013
+      ORCHESTRATION_DATABASE_URL: ${ORCHESTRATION_DATABASE_URL:-postgresql+psycopg://mini:mini@127.0.0.1:5432/cloudx_orchestration}
+      AUTH_API_URL: http://127.0.0.1:8005
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-cloudx-secret-key-change-in-production-min32chars!}
+      COMPUTE_API_URL: http://127.0.0.1:8003
+      TELEMETRY_API_URL: http://127.0.0.1:8010
+      LOAD_BALANCER_API_URL: http://127.0.0.1:8008
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-api:
+        condition: service_started
+
+  # ── Orchestration Worker (Auto-Scaling Monitor) ───────────────────────────────
+  orchestration-worker:
+    build:
+      context: ./services
+      dockerfile: orchestration_worker/Dockerfile
+      network: host
+    environment:
+      ORCHESTRATION_API_URL: http://127.0.0.1:8013
+      COMPUTE_API_URL: http://127.0.0.1:8003
+      TELEMETRY_API_URL: http://127.0.0.1:8010
+      LOAD_BALANCER_API_URL: http://127.0.0.1:8008
+      AUTH_API_URL: http://127.0.0.1:8005
+      AUTH_ADMIN_USERNAME: ${AUTH_ADMIN_USERNAME:-admin}
+      AUTH_ADMIN_PASSWORD: ${AUTH_ADMIN_PASSWORD:-admin123}
+      MONITOR_INTERVAL: ${MONITOR_INTERVAL:-30}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    network_mode: host
+    depends_on:
+      orchestration-api:
+        condition: service_started
+      compute-api:
+        condition: service_started
+      telemetry-api:
+        condition: service_started
 
   # ── XIDE (Cloud9-style in-browser IDE) ──────────────────────────────────────
   # Single lightweight code-server (VS Code in the browser, MIT license) serving

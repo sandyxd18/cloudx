@@ -49,6 +49,8 @@ Sebelum melakukan instalasi dan testing, pastikan server/node Anda memenuhi spes
 - Floating IP (OVN DNAT/SNAT)
 - Security Groups berbasis OVN Port Group & ACL (ingress/egress rules)
 - Provider network via `br-ex` / OVN localnet
+- **VPC Peering**: peer routers across tenants/projects
+- **BGP peer management**: advertised prefixes, FRR-style config sync
 
 ### Image (Glance-like)
 - Upload/download image OS (qcow2, raw, iso)
@@ -78,6 +80,7 @@ Sebelum melakukan instalasi dan testing, pastikan server/node Anda memenuhi spes
 - Allocation tracking per consumer (server)
 - Usage & quota reporting per project
 - Traits support
+- **Multi-node scheduler**: `allocation_candidates`, `scheduler/select_destination`, compute node heartbeat, live migration candidates
 
 ### Auth (Keystone-like)
 - JWT-based authentication
@@ -90,6 +93,7 @@ Sebelum melakukan instalasi dan testing, pastikan server/node Anda memenuhi spes
 - Unified CLI mirip OpenStack CLI / AWS CLI
 - Autentikasi via credentials file (`~/.cloudx/credentials` + `~/.cloudx/config`)
 - Subcommands: `auth`, `server`, `flavor`, `keypair`, `network`, `subnet`, `router`, `floating-ip`, `security-group`, `image`, `volume`, `snapshot`, `placement`
+- **Phase 5/6 extensions**: `telemetry`, `billing`, `event`, `scaling-group`, `vpc-peering`, `bgp-peer`
 
 ### Dashboard (Web UI)
 - **AWS Management Console-style UI** berbasis **Cloudscape Design System** (`@cloudscape-design/components`)
@@ -122,6 +126,10 @@ Sebelum melakukan instalasi dan testing, pastikan server/node Anda memenuhi spes
 | `block-store-api` | http://localhost:8004 | Cinder-like volume API (RPC publisher, no privileged) |
 | `block-store-worker` | *(AMQP consumer)* | LVM/Ceph storage worker (privileged, no HTTP port) |
 | `placement-api` | http://localhost:8006 | Resource placement & tracking |
+| `telemetry-api` | http://localhost:8010 | Observability metrics & Prometheus export |
+| `billing-api` | http://localhost:8011 | Rating engine, usage metering & invoicing |
+| `event-api` | http://localhost:8012 | Audit log events & webhook delivery engine |
+| `orchestration-api` | http://localhost:8013 | Auto-scaling groups (ASG) orchestration |
 | `metadata-api` | http://localhost:8775 | Nova metadata HTTP API |
 | `metadata-proxy` | http://localhost:8776 | Metadata proxy (169.254.169.254) |
 | **RabbitMQ** | amqp://localhost:5672 | AMQP message broker |
@@ -283,6 +291,62 @@ cloudx server create vm2 --boot-volume <root_volume_id> --flavor tiny --network 
 ```bash
 cloudx placement show                    # usage per project
 cloudx placement provider list           # resource providers
+```
+
+### Telemetry & Observability
+
+```bash
+cloudx telemetry metric-type-list        # List supported metric types
+cloudx telemetry metric-list --type cpu_percent  # Query metric points
+cloudx telemetry stats                   # Summary statistics
+cloudx telemetry prometheus              # Dump Prometheus exposition format
+```
+
+### Billing & Rating
+
+```bash
+cloudx billing rating-sheet-list         # List rating sheets
+cloudx billing rating-sheet-create --resource-type vcpu --rate-per-unit 100
+cloudx billing usage-list                # List usage records
+cloudx billing invoice-list              # List invoices
+cloudx billing invoice-create            # Generate invoice
+cloudx billing invoice-pdf <invoice_id>  # Download invoice PDF/HTML
+cloudx billing summary                   # View billing summary
+```
+
+### Events & Webhooks
+
+```bash
+cloudx event type-list                   # Catalog event types
+cloudx event log-list                    # View audit log events
+cloudx event subscription create "slack" --endpoint-url https://... --event-type instance.created
+cloudx event subscription list
+cloudx event delivery-list               # View webhook delivery logs
+```
+
+### Auto-Scaling Orchestration
+
+```bash
+cloudx scaling-group list
+cloudx scaling-group create my-asg --image <img_id> --flavor <flv_id> --network <net_id>
+cloudx scaling-group scale-out <group_id>
+cloudx scaling-group scale-in <group_id>
+cloudx scaling-group instance-list <group_id>
+cloudx scaling-group history <group_id>
+```
+
+### VPC Peering & BGP Routing
+
+```bash
+# VPC Peering
+cloudx vpc-peering list
+cloudx vpc-peering create peer-1 --requester <router1_id> --accepter <router2_id>
+cloudx vpc-peering delete <peering_id>
+
+# BGP Peers
+cloudx bgp-peer list
+cloudx bgp-peer create my-bgp --router <router_id> --peer-ip 192.168.255.1 --local-as 64513 --remote-as 64512
+cloudx bgp-peer sync-config <bgp_peer_id>
 ```
 
 ---
@@ -521,5 +585,7 @@ Cleanup hanya menarget resource dengan marker project (`cloudx-`, `test-`, `tap-
 - [docs/troubleshooting-metadata.md](docs/troubleshooting-metadata.md)
 - [docs/troubleshooting-security-group.md](docs/troubleshooting-security-group.md)
 - [docs/fase5-production-readiness.md](docs/fase5-production-readiness.md) — multi-node, HA, backup, monitoring, TLS
+- [docs/fase5-telemetry-billing-events.md](docs/fase5-telemetry-billing-events.md) — telemetry metrics, billing rating & invoices, event webhooks
+- [docs/fase6-orchestration-vpc-bgp.md](docs/fase6-orchestration-vpc-bgp.md) — multi-node compute scheduler, auto-scaling groups, VPC peering & BGP
 - [docs/feature-comparison.md](docs/feature-comparison.md) — paritas fitur vs OpenStack asli
 - [docs/roadmap-openstack-parity.md](docs/roadmap-openstack-parity.md) — roadmap pengembangan

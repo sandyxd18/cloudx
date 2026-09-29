@@ -1,4 +1,5 @@
 import ipaddress
+import json
 import logging
 import os
 import secrets
@@ -11,7 +12,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, inspect, or_, select, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, create_engine, inspect, or_, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 import sys, os
@@ -199,6 +200,41 @@ class FloatingIP(Base):
     router_id: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="DOWN")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class VPCPeering(Base):
+    """VPC Peering connection between two routers (Fase 6.3)."""
+    __tablename__ = "networking_vpc_peerings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    requester_router_id: Mapped[str] = mapped_column(String, ForeignKey("networking_routers.id"), nullable=False)
+    accepter_router_id: Mapped[str] = mapped_column(String, ForeignKey("networking_routers.id"), nullable=False)
+    requester_router_name: Mapped[str] = mapped_column(String, nullable=False)
+    accepter_router_name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, default="pending")  # pending, active, rejected, failed
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class BGPPeer(Base):
+    """BGP peer configuration for dynamic gateway (Fase 6.3)."""
+    __tablename__ = "networking_bgp_peers"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    router_id: Mapped[str] = mapped_column(String, ForeignKey("networking_routers.id"), nullable=False)
+    peer_ip: Mapped[str] = mapped_column(String, nullable=False)
+    remote_as: Mapped[int] = mapped_column(Integer, nullable=False)
+    local_as: Mapped[int] = mapped_column(Integer, nullable=False)
+    auth_password: Mapped[str | None] = mapped_column(String, nullable=True)
+    advertised_prefixes: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String, default="down")  # down, established
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
 
 class PortForwarding(Base):
@@ -1751,6 +1787,274 @@ def remove_router_interface(ref: str, subnet_ref: str, _: CurrentUser, db: DB):
     db.delete(iface)
     db.commit()
     return {"status": "deleted", "router": router.name, "subnet": subnet.name, "network": network.name}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VPC Peering (Fase 6.3)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class VPCPeeringIn(BaseModel):
+    name: str
+    accepter_router_id: str
+
+
+class VPCPeeringOut(BaseModel):
+    id: str
+    name: str
+    project_id: str
+    requester_router_id: str
+    accepter_router_id: str
+    requester_router_name: str
+    accepter_router_name: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+@app.post("/routers/{ref}/peering", response_model=VPCPeeringOut, status_code=201)
+def create_vpc_peering(ref: str, payload: VPCPeeringIn, current: CurrentUser, db: DB):
+    """Create a VPC peering between two routers."""
+    requester = require_by_ref(db, Router, ref, "router")
+    accepter = require_by_ref(db, Router, payload.accepter_router_id, "router")
+    project_id = current.get("project_id", current.get("tenant_id", "default"))
+
+    peering = VPCPeering(
+        name=payload.name,
+        project_id=project_id,
+        requester_router_id=requester.id,
+        accepter_router_id=accepter.id,
+        requester_router_name=requester.name,
+        accepter_router_name=accepter.name,
+        status="active",
+    )
+    db.add(peering)
+    db.commit()
+    db.refresh(peering)
+
+    # Create OVN logical switch ports to connect the two routers
+    _apply_peering_ovn(db, peering)
+
+    return peering
+
+
+def _apply_peering_ovn(db: Session, peering: VPCPeering) -> None:
+    """Create OVN patch ports between two peered routers."""
+    req_router = db.get(Router, peering.requester_router_id)
+    acc_router = db.get(Router, peering.accepter_router_id)
+    if not req_router or not acc_router:
+        return
+
+    req_port_name = f"lrp-peer-{peering.id[:8]}-req"
+    acc_port_name = f"lrp-peer-{peering.id[:8]}-acc"
+    req_mac = stable_mac(f"{peering.id}-req")
+    acc_mac = stable_mac(f"{peering.id}-acc")
+
+    # Find a unique transit network
+    transit_network = "100.100.0.0/30"
+    transit_ips = ["100.100.0.1/30", "100.100.0.2/30"]
+
+    # Create router ports on both routers
+    ovn("--may-exist", "lrp-add", req_router.name, req_port_name, req_mac, transit_ips[0])
+    ovn("--may-exist", "lrp-add", acc_router.name, acc_port_name, acc_mac, transit_ips[1])
+
+    # Add static routes for each router's subnets via peer
+    req_ifaces = db.scalars(select(RouterInterface).where(RouterInterface.router_id == req_router.id)).all()
+    for iface in req_ifaces:
+        subnet = db.get(Subnet, iface.subnet_id)
+        if subnet:
+            ovn("--may-exist", "lr-route-add", acc_router.name,
+                subnet.cidr, transit_ips[0].split("/")[0])
+
+    acc_ifaces = db.scalars(select(RouterInterface).where(RouterInterface.router_id == acc_router.id)).all()
+    for iface in acc_ifaces:
+        subnet = db.get(Subnet, iface.subnet_id)
+        if subnet:
+            ovn("--may-exist", "lr-route-add", req_router.name,
+                subnet.cidr, transit_ips[1].split("/")[0])
+
+
+@app.get("/vpc-peerings", response_model=list[VPCPeeringOut])
+def list_vpc_peerings(
+    current: CurrentUser,
+    db: DB,
+    project_id: str | None = None,
+):
+    q = select(VPCPeering)
+    if project_id:
+        q = q.where(VPCPeering.project_id == project_id)
+    return db.execute(q).scalars().all()
+
+
+@app.get("/vpc-peerings/{peering_id}", response_model=VPCPeeringOut)
+def get_vpc_peering(peering_id: str, db: DB):
+    peering = db.get(VPCPeering, peering_id)
+    if not peering:
+        raise HTTPException(status_code=404, detail="VPC peering not found")
+    return peering
+
+
+@app.delete("/vpc-peerings/{peering_id}", status_code=204)
+def delete_vpc_peering(peering_id: str, db: DB):
+    peering = db.get(VPCPeering, peering_id)
+    if not peering:
+        raise HTTPException(status_code=404, detail="VPC peering not found")
+
+    # Remove OVN routes and ports
+    req_router = db.get(Router, peering.requester_router_id)
+    acc_router = db.get(Router, peering.accepter_router_id)
+    if req_router and acc_router:
+        port_prefix = f"lrp-peer-{peering.id[:8]}"
+        # Remove static routes
+        for iface in db.scalars(select(RouterInterface).where(RouterInterface.router_id == req_router.id)).all():
+            subnet = db.get(Subnet, iface.subnet_id)
+            if subnet:
+                ovn("--if-exists", "lr-route-del", acc_router.name, subnet.cidr)
+        for iface in db.scalars(select(RouterInterface).where(RouterInterface.router_id == acc_router.id)).all():
+            subnet = db.get(Subnet, iface.subnet_id)
+            if subnet:
+                ovn("--if-exists", "lr-route-del", req_router.name, subnet.cidr)
+        # Remove peer ports
+        ovn("--if-exists", "lrp-del", f"{port_prefix}-req")
+        ovn("--if-exists", "lrp-del", f"{port_prefix}-acc")
+
+    db.delete(peering)
+    db.commit()
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BGP Dynamic Gateway (Fase 6.3)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BGPPeerIn(BaseModel):
+    name: str
+    router_id: str
+    peer_ip: str
+    remote_as: int
+    local_as: int
+    auth_password: str | None = None
+    advertised_prefixes: list[str] | None = None
+
+
+class BGPPeerOut(BaseModel):
+    id: str
+    project_id: str
+    name: str
+    router_id: str
+    peer_ip: str
+    remote_as: int
+    local_as: int
+    advertised_prefixes: list[str] | None
+    is_active: bool
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+@app.post("/bgp-peers", response_model=BGPPeerOut, status_code=201)
+def create_bgp_peer(payload: BGPPeerIn, current: CurrentUser, db: DB):
+    """Register a BGP peer for dynamic gateway advertisement."""
+    router = require_by_ref(db, Router, payload.router_id, "router")
+    project_id = current.get("project_id", current.get("tenant_id", "default"))
+
+    peer = BGPPeer(
+        project_id=project_id,
+        name=payload.name,
+        router_id=router.id,
+        peer_ip=payload.peer_ip,
+        remote_as=payload.remote_as,
+        local_as=payload.local_as,
+        auth_password=payload.auth_password,
+        advertised_prefixes=json.dumps(payload.advertised_prefixes or []),
+        is_active=True,
+        status="down",
+    )
+    db.add(peer)
+    db.commit()
+    db.refresh(peer)
+    return {
+        "id": peer.id,
+        "project_id": peer.project_id,
+        "name": peer.name,
+        "router_id": peer.router_id,
+        "peer_ip": peer.peer_ip,
+        "remote_as": peer.remote_as,
+        "local_as": peer.local_as,
+        "auth_password": peer.auth_password,
+        "advertised_prefixes": json.loads(peer.advertised_prefixes or "[]"),
+        "is_active": peer.is_active,
+        "status": peer.status,
+        "created_at": peer.created_at,
+        "updated_at": peer.updated_at,
+    }
+
+
+@app.get("/bgp-peers", response_model=list[BGPPeerOut])
+def list_bgp_peers(
+    current: CurrentUser,
+    db: DB,
+    router_id: str | None = None,
+    project_id: str | None = None,
+):
+    q = select(BGPPeer)
+    if router_id:
+        q = q.where(BGPPeer.router_id == router_id)
+    if project_id:
+        q = q.where(BGPPeer.project_id == project_id)
+    peers = db.execute(q).scalars().all()
+    result = []
+    for peer in peers:
+        result.append({
+            **peer.__dict__,
+            "advertised_prefixes": json.loads(peer.advertised_prefixes or "[]"),
+        })
+    return result
+
+
+@app.get("/bgp-peers/{peer_id}", response_model=BGPPeerOut)
+def get_bgp_peer(peer_id: str, db: DB):
+    peer = db.get(BGPPeer, peer_id)
+    if not peer:
+        raise HTTPException(status_code=404, detail="BGP peer not found")
+    return {**peer.__dict__, "advertised_prefixes": json.loads(peer.advertised_prefixes or "[]")}
+
+
+@app.delete("/bgp-peers/{peer_id}", status_code=204)
+def delete_bgp_peer(peer_id: str, db: DB):
+    peer = db.get(BGPPeer, peer_id)
+    if not peer:
+        raise HTTPException(status_code=404, detail="BGP peer not found")
+    db.delete(peer)
+    db.commit()
+    return None
+
+
+@app.post("/bgp-peers/{peer_id}/sync-config")
+def sync_bgp_config(peer_id: str, db: DB):
+    """Generate FRR configuration snippet for a BGP peer."""
+    peer = db.get(BGPPeer, peer_id)
+    if not peer:
+        raise HTTPException(status_code=404, detail="BGP peer not found")
+
+    prefixes = json.loads(peer.advertised_prefixes or "[]")
+    joined_prefixes = "\n".join(["  network " + p for p in prefixes])
+    config = f"""router bgp {peer.local_as}
+ neighbor {peer.peer_ip} remote-as {peer.remote_as}
+{" neighbor " + peer.peer_ip + " password " + peer.auth_password if peer.auth_password else ""}
+ address-family ipv4 unicast
+{joined_prefixes}
+ exit-address-family
+"""
+    return {
+        "peer_id": peer_id,
+        "frr_config": config,
+        "note": "Apply this configuration to the FRR/BGP container manually or via network-ops automation.",
+    }
 
 
 @app.post("/ports", status_code=201)

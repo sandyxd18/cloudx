@@ -734,10 +734,14 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
     if get_volume(db, payload.name):
         raise HTTPException(status_code=409, detail="volume already exists")
 
+    image_ref = payload.image_ref or payload.image_id or payload.image
+    snapshot_ref = payload.snapshot_id or payload.snapshot
+    source_vol_ref = payload.source_volume_id or payload.source_volume
+
     source_count = sum(bool(x) for x in (
-        payload.image_ref or payload.image_id,
-        payload.snapshot_id,
-        payload.source_volume_id,
+        image_ref,
+        snapshot_ref,
+        source_vol_ref,
     ))
     if source_count > 1:
         raise HTTPException(status_code=400, detail="choose only one source: image, snapshot, or source_volume")
@@ -747,7 +751,6 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
     backend = vt.backend
 
     volume_id = new_id()
-    image_ref = payload.image_ref or payload.image_id
     source_type = payload.source_type
     bootable    = payload.bootable
     snapshot_id = None
@@ -757,13 +760,13 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
     if image_ref:
         source_type = "image"
         bootable = True
-    elif payload.snapshot_id:
-        snap = require_snapshot(db, payload.snapshot_id)
+    elif snapshot_ref:
+        snap = require_snapshot(db, snapshot_ref)
         snapshot_id = snap.id
         source_type = "snapshot"
         backend = snap.backend or backend
-    elif payload.source_volume_id:
-        src = require_volume(db, payload.source_volume_id)
+    elif source_vol_ref:
+        src = require_volume(db, source_vol_ref)
         source_volume_id = src.id
         source_type = "volume"
         bootable = src.bootable

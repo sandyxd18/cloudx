@@ -1428,6 +1428,47 @@ def delete_server(ref: str, current: CurrentUser, db: DB, keep_root_volume: bool
     return {"status": "deleting", "id": server.id, "name": original_name}
 
 
+@app.post("/servers/{ref}/live-migrate", status_code=202)
+def live_migrate_server(ref: str, payload: dict, _: CurrentUser, db: DB):
+    """Live migrate a server to a target compute host (Fase 6.1)."""
+    server = require_server(db, ref)
+    target_host = payload.get("target_host")
+    if not target_host:
+        raise HTTPException(status_code=400, detail="target_host is required")
+    if server.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail=f"server must be ACTIVE to live-migrate; current status is {server.status}")
+    
+    server.status = "MIGRATING"
+    db.commit()
+    cast_to_worker("live_migrate_instance", {
+        **server_worker_payload(server),
+        "target_host": target_host,
+    })
+    db.refresh(server)
+    return {"server_id": server.id, "target_host": target_host, "status": "MIGRATING"}
+
+
+@app.get("/servers/{ref}/migration-candidates")
+def list_migration_candidates(ref: str, _: CurrentUser, db: DB):
+    """List possible target hosts for live migration."""
+    server = require_server(db, ref)
+    try:
+        r = requests.get(
+            f"{PLACEMENT_API_URL}/compute_nodes",
+            headers={"Authorization": f"Bearer {_get_svc_token() or ''}"},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            nodes = r.json().get("compute_nodes", [])
+            # Exclude current host
+            current_host = server.host or "single-node"
+            candidates = [n for n in nodes if n.get("host") != current_host]
+            return {"current_host": current_host, "candidates": candidates}
+    except Exception as e:
+        log.warning("Failed to get migration candidates: %s", e)
+    return {"current_host": server.host or "single-node", "candidates": []}
+
+
 @app.post("/servers/{ref}/snapshots", status_code=201)
 def create_server_snapshot(ref: str, payload: ServerSnapshotIn, db: DB):
     server = require_server(db, ref)

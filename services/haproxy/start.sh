@@ -12,6 +12,10 @@ export PLACEMENT_PORT="${PLACEMENT_PORT:-8006}"
 export OBJECT_STORE_PORT="${OBJECT_STORE_PORT:-8007}"
 export LOAD_BALANCER_PORT="${LOAD_BALANCER_PORT:-8008}"
 export DASHBOARD_PORT="${DASHBOARD_PORT:-8080}"
+export TELEMETRY_PORT="${TELEMETRY_PORT:-8010}"
+export BILLING_PORT="${BILLING_PORT:-8011}"
+export EVENT_PORT="${EVENT_PORT:-8012}"
+export ORCHESTRATION_PORT="${ORCHESTRATION_PORT:-8013}"
 
 # Per-service backend host lists (comma-separated). Single controller → 127.0.0.1.
 # Multi-node HA → e.g. AUTH_BACKENDS=10.0.0.11,10.0.0.12,10.0.0.13
@@ -24,6 +28,10 @@ PLACEMENT_BACKENDS="${PLACEMENT_BACKENDS:-127.0.0.1}"
 OBJECT_STORE_BACKENDS="${OBJECT_STORE_BACKENDS:-127.0.0.1}"
 LOAD_BALANCER_BACKENDS="${LOAD_BALANCER_BACKENDS:-127.0.0.1}"
 DASHBOARD_BACKENDS="${DASHBOARD_BACKENDS:-127.0.0.1}"
+TELEMETRY_BACKENDS="${TELEMETRY_BACKENDS:-127.0.0.1}"
+BILLING_BACKENDS="${BILLING_BACKENDS:-127.0.0.1}"
+EVENT_BACKENDS="${EVENT_BACKENDS:-127.0.0.1}"
+ORCHESTRATION_BACKENDS="${ORCHESTRATION_BACKENDS:-127.0.0.1}"
 
 # ── Helper: render "server nodeN <host>:<port> check ..." lines ────────────────
 render_servers() {
@@ -63,6 +71,10 @@ replace_marker "%%PLACEMENT_SERVERS%%"   "$(render_servers "$PLACEMENT_BACKENDS"
 replace_marker "%%OBJECT_STORE_SERVERS%%" "$(render_servers "$OBJECT_STORE_BACKENDS" "$OBJECT_STORE_PORT")"
 replace_marker "%%LOAD_BALANCER_SERVERS%%" "$(render_servers "$LOAD_BALANCER_BACKENDS" "$LOAD_BALANCER_PORT")"
 replace_marker "%%DASHBOARD_SERVERS%%"   "$(render_servers "$DASHBOARD_BACKENDS" "$DASHBOARD_PORT")"
+replace_marker "%%TELEMETRY_SERVERS%%"   "$(render_servers "$TELEMETRY_BACKENDS" "$TELEMETRY_PORT")"
+replace_marker "%%BILLING_SERVERS%%"     "$(render_servers "$BILLING_BACKENDS" "$BILLING_PORT")"
+replace_marker "%%EVENT_SERVERS%%"       "$(render_servers "$EVENT_BACKENDS" "$EVENT_PORT")"
+replace_marker "%%ORCHESTRATION_SERVERS%%" "$(render_servers "$ORCHESTRATION_BACKENDS" "$ORCHESTRATION_PORT")"
 
 mv /etc/haproxy/haproxy.cfg.tmp /etc/haproxy/haproxy.cfg
 
