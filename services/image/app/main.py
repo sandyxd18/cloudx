@@ -1,3 +1,11 @@
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+try:
+    from shared.config import load_service_config
+    load_service_config("image-api")
+except Exception as _cfg_err:
+    pass
+
 import hashlib
 import json
 import logging
@@ -66,15 +74,7 @@ _CACHE_MAX  = int(os.getenv("IMAGE_CACHE_MAX", "200"))
 
 def _cache_get(key: str):
     """Return cached value or None if missing/expired."""
-    entry = _IMAGE_CACHE.get(key)
-    if entry is None:
-        return None
-    value, expire = entry
-    if time.time() > expire:
-        _IMAGE_CACHE.pop(key, None)
-        return None
-    log.debug("Cache HIT: %s", key)
-    return value
+    return None
 
 
 def _cache_set(key: str, value) -> None:

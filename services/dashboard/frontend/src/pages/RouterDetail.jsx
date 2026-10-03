@@ -125,6 +125,16 @@ export default function RouterDetailPage() {
   const extNetInfo = router.external_gateway_info
   const extNetName = extNetInfo?.network_id ? (networks.find(n => n.id === extNetInfo.network_id)?.name || extNetInfo.network_id) : 'None'
 
+  const connectedInterfaces = (router.interfaces_info || router.interfaces || router.subnets || []).map(iface => {
+    const matchedSubnet = subnets.find(s => s.id === iface.subnet_id || s.name === iface.subnet_id || s.id === iface.id)
+    return {
+      id: matchedSubnet?.id || iface.subnet_id || iface.id,
+      name: matchedSubnet?.name || iface.name || iface.subnet_id || 'Interface',
+      cidr: matchedSubnet?.cidr || iface.cidr || '-',
+      gateway_ip: iface.ip_address || matchedSubnet?.gateway_ip || matchedSubnet?.gateway || iface.gateway_ip || '-',
+    }
+  })
+
   return (
     <ContentLayout
       header={
@@ -182,7 +192,7 @@ export default function RouterDetailPage() {
               ),
             },
           ]}
-          items={router.interfaces || router.subnets || []}
+          items={connectedInterfaces}
           empty={<TableEmpty title="No connected interfaces" subtitle="Click Add Interface to connect subnets to this router." />}
           header={<Header variant="h2">Connected Interfaces</Header>}
         />

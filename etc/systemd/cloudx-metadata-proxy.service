@@ -1,0 +1,19 @@
+[Unit]
+Description=CloudX Metadata Proxy Service
+After=network.target cloudx-metadata-api.service
+Wants=cloudx-metadata-api.service
+
+[Service]
+Environment=PYTHONPATH=/opt/cloudx/services
+Environment=METADATA_API_URL=http://192.168.10.10:8775
+Environment=NETWORKING_API_URL=http://192.168.10.10:8001
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/cloudx/services/metadata_proxy
+ExecStart=/opt/cloudx/venv/bin/gunicorn -w 2 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8776 app.main:app
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

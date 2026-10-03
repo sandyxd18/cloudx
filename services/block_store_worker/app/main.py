@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 cloudx block-store-worker — AMQP Consumer (cinder-volume equivalent)
 =====================================================================
@@ -14,7 +15,6 @@ Handlers:
   delete_snapshot  — remove snapshot, delete DB record via conductor
 """
 
-from __future__ import annotations
 
 import logging
 import math

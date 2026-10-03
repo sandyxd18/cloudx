@@ -1,3 +1,12 @@
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+try:
+    from shared.config import load_service_config
+    load_service_config("billing-api")
+except Exception as _cfg_err:
+    pass
+
 """
 cloudx Billing API — Rating, Usage, Invoicing & PDF
 ====================================================
@@ -5,7 +14,6 @@ cloudx Billing API — Rating, Usage, Invoicing & PDF
 Service Fase 5.2: rating sheet, usage records, invoice generation, PDF export.
 """
 
-from __future__ import annotations
 
 import base64
 import logging

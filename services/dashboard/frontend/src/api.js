@@ -5,10 +5,16 @@ const BASE = '/api'
 async function request(method, path, body = null, opts = {}, skipJson = false) {
   const headers = skipJson ? {} : { 'Content-Type': 'application/json' }
 
+  // Inject Bearer token from localStorage for resilience in Incognito/Private Browsing modes
+  const token = localStorage.getItem('cloudx_token')
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
   const config = {
     method,
     headers,
-    credentials: 'same-origin',
+    credentials: 'include',
     ...opts,
   }
   if (body !== null) {
@@ -18,6 +24,7 @@ async function request(method, path, body = null, opts = {}, skipJson = false) {
   const resp = await fetch(`${BASE}${path}`, config)
   if (resp.status === 401) {
     if (!path.startsWith('/auth/session')) {
+      localStorage.removeItem('cloudx_token')
       window.dispatchEvent(new CustomEvent('cloudx:session-expired'))
     }
     let detail = 'Session expired. Please log in again.'
@@ -41,8 +48,20 @@ async function request(method, path, body = null, opts = {}, skipJson = false) {
 
 export const api = {
   // Auth
-  login: (body) => request('POST', '/auth/session/login', body),
-  logout: () => request('POST', '/auth/session/logout'),
+  login: async (body) => {
+    const res = await request('POST', '/auth/session/login', body)
+    if (res?.token) {
+      localStorage.setItem('cloudx_token', res.token)
+    }
+    return res
+  },
+  logout: async () => {
+    try {
+      await request('POST', '/auth/session/logout')
+    } finally {
+      localStorage.removeItem('cloudx_token')
+    }
+  },
   getSessionMe: () => request('GET', '/auth/session/me'),
   getProjects: () => request('GET', '/auth/projects'),
   createProject: (b) => request('POST', '/auth/projects', b),
@@ -310,6 +329,82 @@ export const api = {
       xhr.send(formData)
     })
   },
+
+  // Managed Kubernetes Engine
+  getK8sTemplates: () => request('GET', '/k8s-engine/cluster-templates'),
+  createK8sTemplate: (b) => request('POST', '/k8s-engine/cluster-templates', b),
+  deleteK8sTemplate: (id) => request('DELETE', `/k8s-engine/cluster-templates/${id}`),
+  getK8sClusters: () => request('GET', '/k8s-engine/clusters'),
+  getK8sCluster: (id) => request('GET', `/k8s-engine/clusters/${id}`),
+  createK8sCluster: (b) => request('POST', '/k8s-engine/clusters', b),
+  scaleK8sCluster: (id, b) => request('POST', `/k8s-engine/clusters/${id}/scale`, b),
+  deleteK8sCluster: (id) => request('DELETE', `/k8s-engine/clusters/${id}`),
+  getKubeconfig: (id) => request('GET', `/k8s-engine/clusters/${id}/kubeconfig`),
+
+  // Orchestration & Auto Scaling
+  getScalingGroups: () => request('GET', '/orchestration/scaling-groups'),
+  getScalingGroup: (id) => request('GET', `/orchestration/scaling-groups/${id}`),
+  createScalingGroup: (b) => request('POST', '/orchestration/scaling-groups', b),
+  deleteScalingGroup: (id) => request('DELETE', `/orchestration/scaling-groups/${id}`),
+  scaleOutGroup: (id) => request('POST', `/orchestration/scaling-groups/${id}/scale-out`, {}),
+  scaleInGroup: (id) => request('POST', `/orchestration/scaling-groups/${id}/scale-in`, {}),
+  getScalingGroupInstances: (id) => request('GET', `/orchestration/scaling-groups/${id}/instances`),
+  getScalingGroupHistory: (id) => request('GET', `/orchestration/scaling-groups/${id}/history`),
+
+  // Key Manager / Secrets Vault
+  getSecrets: () => request('GET', '/key-manager/secrets'),
+  getSecret: (id) => request('GET', `/key-manager/secrets/${id}`),
+  createSecret: (b) => request('POST', '/key-manager/secrets', b),
+  deleteSecret: (id) => request('DELETE', `/key-manager/secrets/${id}`),
+  getSecretContainers: () => request('GET', '/key-manager/containers'),
+  createSecretContainer: (b) => request('POST', '/key-manager/containers', b),
+  deleteSecretContainer: (id) => request('DELETE', `/key-manager/containers/${id}`),
+
+  // Advanced Networking — VPC Peering
+  getVpcPeerings: () => request('GET', '/networking/vpc-peerings'),
+  createVpcPeering: (routerId, b) => request('POST', `/networking/routers/${routerId}/peering`, b),
+  deleteVpcPeering: (id) => request('DELETE', `/networking/vpc-peerings/${id}`),
+
+  // Advanced Networking — BGP Peers
+  getBgpPeers: () => request('GET', '/networking/bgp-peers'),
+  createBgpPeer: (b) => request('POST', '/networking/bgp-peers', b),
+  deleteBgpPeer: (id) => request('DELETE', `/networking/bgp-peers/${id}`),
+  syncBgpPeerConfig: (id) => request('POST', `/networking/bgp-peers/${id}/sync-config`, {}),
+
+  // Advanced Networking — VPN Gateways & Policies
+  getVpnSiteConnections: () => request('GET', '/networking/vpn/site-connections'),
+  createVpnSiteConnection: (b) => request('POST', '/networking/vpn/site-connections', b),
+  deleteVpnSiteConnection: (id) => request('DELETE', `/networking/vpn/site-connections/${id}`),
+  getVpnIkePolicies: () => request('GET', '/networking/vpn/ikepolicies'),
+  createVpnIkePolicy: (b) => request('POST', '/networking/vpn/ikepolicies', b),
+  deleteVpnIkePolicy: (id) => request('DELETE', `/networking/vpn/ikepolicies/${id}`),
+  getVpnIpsecPolicies: () => request('GET', '/networking/vpn/ipsecpolicies'),
+  createVpnIpsecPolicy: (b) => request('POST', '/networking/vpn/ipsecpolicies', b),
+  deleteVpnIpsecPolicy: (id) => request('DELETE', `/networking/vpn/ipsecpolicies/${id}`),
+
+  // Telemetry & Metrics
+  getTelemetryMetrics: (instanceId) => request('GET', `/telemetry/metrics${instanceId ? `?instance_id=${instanceId}` : ''}`),
+  getTelemetryStats: () => request('GET', '/telemetry/stats'),
+  getInstanceStats: (instanceId) => request('GET', `/telemetry/instances/${instanceId}/stats`),
+
+  // Billing & Invoices
+  getBillingSummary: (projectId) => request('GET', `/billing/summary${projectId ? `/${projectId}` : ''}`),
+  getRatingSheets: () => request('GET', '/billing/rating-sheets'),
+  createRatingSheet: (b) => request('POST', '/billing/rating-sheets', b),
+  getInvoices: () => request('GET', '/billing/invoices'),
+  getInvoice: (id) => request('GET', `/billing/invoices/${id}`),
+  createInvoice: (b) => request('POST', '/billing/invoices', b),
+  downloadInvoicePdf: (id) => request('POST', `/billing/invoices/${id}/pdf`),
+
+  // Audit Event Logs & Subscriptions
+  getEventLogs: (limit = 100) => request('GET', `/event/events/logs?limit=${limit}`),
+  getEventTypes: () => request('GET', '/event/events/types'),
+  getEventSubscriptions: () => request('GET', '/event/events/subscriptions'),
+  createEventSubscription: (b) => request('POST', '/event/events/subscriptions', b),
+  deleteEventSubscription: (id) => request('DELETE', `/event/events/subscriptions/${id}`),
+
+  // Hypervisors & Compute Nodes
+  getComputeNodes: () => request('GET', '/placement/compute_nodes'),
 }
 
 

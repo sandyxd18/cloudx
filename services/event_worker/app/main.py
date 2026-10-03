@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 cloudx Event Worker — Webhook Delivery Engine
 ==============================================
@@ -11,7 +12,6 @@ Worker service (Fase 5.3) yang berjalan di background untuk:
 Database: cloudx_events
 """
 
-from __future__ import annotations
 
 import hashlib
 import hmac

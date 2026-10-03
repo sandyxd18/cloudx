@@ -16,6 +16,7 @@ import shutil
 import struct
 import sys
 import termios
+import threading
 import uuid
 from pathlib import Path
 
@@ -27,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from pymemcache.client.base import Client as MemcacheClient
+from pymemcache.client.base import PooledClient as MemcacheClient
 
 # Import shared RPC EventConsumer
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -46,20 +47,32 @@ BLOCK_STORE_API_URL= os.getenv("BLOCK_STORE_API_URL","http://block-store-api:800
 PLACEMENT_API_URL  = os.getenv("PLACEMENT_API_URL",  "http://placement-api:8000").rstrip("/")
 OBJECT_STORE_API_URL = os.getenv("OBJECT_STORE_API_URL","http://object-store-api:8000").rstrip("/")
 LOAD_BALANCER_API_URL = os.getenv("LOAD_BALANCER_API_URL","http://load-balancer-api:8000").rstrip("/")
+TELEMETRY_API_URL  = os.getenv("TELEMETRY_API_URL",  "http://telemetry-api:8000").rstrip("/")
+BILLING_API_URL    = os.getenv("BILLING_API_URL",    "http://billing-api:8000").rstrip("/")
+EVENT_API_URL      = os.getenv("EVENT_API_URL",      "http://event-api:8000").rstrip("/")
+ORCHESTRATION_API_URL = os.getenv("ORCHESTRATION_API_URL","http://orchestration-api:8000").rstrip("/")
+KEY_MANAGER_API_URL = os.getenv("KEY_MANAGER_API_URL","http://key-manager-api:8000").rstrip("/")
+K8S_ENGINE_API_URL = os.getenv("K8S_ENGINE_API_URL", "http://k8s-engine-api:8000").rstrip("/")
 RABBITMQ_URL       = os.getenv("RABBITMQ_URL",       "amqp://cloudx:cloudx@rabbitmq:5672/")
 MEMCACHED_URL      = os.getenv("MEMCACHED_URL",      "memcached:11211")
 SESSION_COOKIE_NAME = "cloudx_session"
 
 # Route prefix → backend URL
 _ROUTES: list[tuple[str, str]] = [
-    ("/api/auth",        AUTH_API_URL),
-    ("/api/compute",     COMPUTE_API_URL),
-    ("/api/networking",  NETWORKING_API_URL),
-    ("/api/image",       IMAGE_API_URL),
-    ("/api/block-store", BLOCK_STORE_API_URL),
-    ("/api/placement",   PLACEMENT_API_URL),
-    ("/api/object-store",OBJECT_STORE_API_URL),
-    ("/api/load-balancer",LOAD_BALANCER_API_URL),
+    ("/api/auth",          AUTH_API_URL),
+    ("/api/compute",       COMPUTE_API_URL),
+    ("/api/networking",    NETWORKING_API_URL),
+    ("/api/image",         IMAGE_API_URL),
+    ("/api/block-store",   BLOCK_STORE_API_URL),
+    ("/api/placement",     PLACEMENT_API_URL),
+    ("/api/object-store",  OBJECT_STORE_API_URL),
+    ("/api/load-balancer", LOAD_BALANCER_API_URL),
+    ("/api/telemetry",     TELEMETRY_API_URL),
+    ("/api/billing",       BILLING_API_URL),
+    ("/api/event",         EVENT_API_URL),
+    ("/api/orchestration", ORCHESTRATION_API_URL),
+    ("/api/key-manager",   KEY_MANAGER_API_URL),
+    ("/api/k8s-engine",    K8S_ENGINE_API_URL),
 ]
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -286,7 +299,7 @@ async def startup():
     _event_loop = asyncio.get_event_loop()
 
     host, port = MEMCACHED_URL.split(":") if ":" in MEMCACHED_URL else (MEMCACHED_URL, 11211)
-    _memcached = MemcacheClient((host, int(port)))
+    _memcached = MemcacheClient((host, int(port)), max_pool_size=25, timeout=2.0, connect_timeout=2.0, ignore_exc=True)
     try:
         _memcached.version()
         log.info("Memcached connected at %s", MEMCACHED_URL)
@@ -315,39 +328,52 @@ async def shutdown():
 # ── Session Endpoints & Storage ───────────────────────────────────────────────
 
 _local_sessions: dict[str, dict] = {}
+_session_lock = threading.Lock()
 
 
 def _save_session(session_id: str, session_data: dict) -> None:
-    _local_sessions[session_id] = session_data
+    with _session_lock:
+        _local_sessions[session_id] = session_data
     if _memcached:
         try:
             _memcached.set(f"session:{session_id}", json.dumps(session_data).encode("utf-8"), expire=86400)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Memcached set failed: %s", exc)
 
 
 def _get_session(session_id: str) -> dict | None:
     if not session_id:
         return None
+    with _session_lock:
+        local = _local_sessions.get(session_id)
+        if local:
+            return local
+
     if _memcached:
         try:
             raw = _memcached.get(f"session:{session_id}")
             if raw:
-                return json.loads(raw.decode("utf-8"))
-        except Exception:
-            pass
-    return _local_sessions.get(session_id)
+                data = json.loads(raw.decode("utf-8"))
+                with _session_lock:
+                    _local_sessions[session_id] = data
+                return data
+        except Exception as exc:
+            log.warning("Memcached get failed: %s", exc)
+
+    with _session_lock:
+        return _local_sessions.get(session_id)
 
 
 def _delete_session(session_id: str) -> None:
     if not session_id:
         return
-    _local_sessions.pop(session_id, None)
+    with _session_lock:
+        _local_sessions.pop(session_id, None)
     if _memcached:
         try:
             _memcached.delete(f"session:{session_id}")
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Memcached delete failed: %s", exc)
 
 
 class LoginRequest(BaseModel):
@@ -392,7 +418,12 @@ async def session_login(payload: LoginRequest, response: Response):
         path="/",
         samesite="lax",
     )
-    return {"message": "ok"}
+    return {
+        "message": "ok",
+        "token": token,
+        "user": data.get("user"),
+        "project": data.get("project"),
+    }
 
 
 @app.post("/api/auth/session/logout")
@@ -407,12 +438,32 @@ async def session_logout(request: Request, response: Response):
 @app.get("/api/auth/session/me")
 async def session_me(request: Request):
     session_id = request.cookies.get(SESSION_COOKIE_NAME)
-    if not session_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    data = _get_session(session_id)
+    data = _get_session(session_id) if session_id else None
+
+    # Fallback to Authorization header if cookie is missing (e.g. Incognito mode blocking cookies)
     if not data:
-        raise HTTPException(status_code=401, detail="Session expired")
+        auth = request.headers.get("authorization")
+        if auth and auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+            try:
+                resp = await _http_client.get(
+                    f"{AUTH_API_URL}/auth/tokens/validate",
+                    headers={"authorization": f"Bearer {token}"}
+                )
+                if resp.status_code == 200:
+                    val = resp.json()
+                    return {
+                        "username": val.get("username", ""),
+                        "user_id": val.get("sub") or val.get("user_id", ""),
+                        "role": val.get("role", "member"),
+                        "project_id": val.get("project_id", ""),
+                        "project_name": val.get("project_name", ""),
+                    }
+            except Exception as exc:
+                log.warning("Token validation failed in session_me: %s", exc)
+
+    if not data:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     
     # Extract fields cleanly for frontend context
     user = data.get("user") or {}

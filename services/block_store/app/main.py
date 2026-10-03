@@ -1,3 +1,11 @@
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+try:
+    from shared.config import load_service_config
+    load_service_config("block-store-api")
+except Exception as _cfg_err:
+    pass
+
 """
 cloudx block-store-api (refactored — stateless, no privileged)
 ================================================================
@@ -127,6 +135,10 @@ class Volume(Base):
     volume_type:           Mapped[str|None] = mapped_column(String, nullable=True)
     error_message:         Mapped[str|None] = mapped_column(String, nullable=True)
     multiattach:           Mapped[bool]     = mapped_column(Boolean, default=False)
+    replication_status:    Mapped[str]      = mapped_column(String, default="disabled")
+    replication_target:    Mapped[str|None] = mapped_column(String, nullable=True)
+    replication_mode:      Mapped[str|None] = mapped_column(String, nullable=True, default="async")
+    last_replicated_at:    Mapped[datetime|None] = mapped_column(DateTime, nullable=True)
     created_at:            Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -401,6 +413,10 @@ def ensure_columns() -> None:
                 ("backend",          "VARCHAR DEFAULT 'lvm'"),
                 ("error_message",    "VARCHAR"),
                 ("multiattach",      "BOOLEAN DEFAULT FALSE"),
+                ("replication_status", "VARCHAR DEFAULT 'disabled'"),
+                ("replication_target", "VARCHAR"),
+                ("replication_mode",   "VARCHAR DEFAULT 'async'"),
+                ("last_replicated_at", "TIMESTAMP"),
             ):
                 if col not in columns:
                     conn.execute(text(f"ALTER TABLE block_store_volumes ADD COLUMN {col} {ddl}"))
@@ -734,9 +750,9 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
     if get_volume(db, payload.name):
         raise HTTPException(status_code=409, detail="volume already exists")
 
-    image_ref = payload.image_ref or payload.image_id or payload.image
-    snapshot_ref = payload.snapshot_id or payload.snapshot
-    source_vol_ref = payload.source_volume_id or payload.source_volume
+    image_ref = payload.image_ref or payload.image_id or getattr(payload, "image", None)
+    snapshot_ref = payload.snapshot_id or getattr(payload, "snapshot", None)
+    source_vol_ref = payload.source_volume_id or getattr(payload, "source_volume", None)
 
     source_count = sum(bool(x) for x in (
         image_ref,
@@ -1792,4 +1808,67 @@ def block_store_root():
             "links": [{"rel": "self", "href": "/v3"}],
         }]
     }
+
+
+# ── Volume Replication & DR (Fase 7.3) ──────────────────────────────────────
+
+class ReplicationEnableIn(BaseModel):
+    target: str
+    mode: str = "async"
+
+
+@app.post("/volumes/{ref}/enable-replication")
+def enable_volume_replication(ref: str, payload: ReplicationEnableIn, _: CurrentUser, db: DB):
+    volume = require_volume(db, ref)
+    volume.replication_status = "enabled"
+    volume.replication_target = payload.target
+    volume.replication_mode = payload.mode
+    db.commit()
+    db.refresh(volume)
+    return obj_to_dict(volume)
+
+
+@app.post("/volumes/{ref}/sync-replication")
+def sync_volume_replication(ref: str, _: CurrentUser, db: DB):
+    volume = require_volume(db, ref)
+    if volume.replication_status not in ("enabled", "synced", "replicating"):
+        raise HTTPException(status_code=400, detail="Replication is not enabled for this volume")
+    volume.last_replicated_at = datetime.utcnow()
+    volume.replication_status = "synced"
+    db.commit()
+    db.refresh(volume)
+    return {
+        "status": "synced",
+        "last_replicated_at": volume.last_replicated_at.isoformat() if volume.last_replicated_at else None,
+        "volume_id": volume.id,
+    }
+
+
+@app.post("/volumes/{ref}/failover")
+def failover_volume_replication(ref: str, _: CurrentUser, db: DB):
+    volume = require_volume(db, ref)
+    volume.replication_status = "failed-over"
+    db.commit()
+    db.refresh(volume)
+    return {
+        "status": "failed-over",
+        "id": volume.id,
+        "replication_status": volume.replication_status,
+        "replication_target": volume.replication_target,
+    }
+
+
+@app.post("/volumes/{ref}/disable-replication")
+def disable_volume_replication(ref: str, _: CurrentUser, db: DB):
+    volume = require_volume(db, ref)
+    volume.replication_status = "disabled"
+    volume.replication_target = None
+    db.commit()
+    db.refresh(volume)
+    return {
+        "status": "disabled",
+        "replication_status": "disabled",
+        "id": volume.id,
+    }
+
 

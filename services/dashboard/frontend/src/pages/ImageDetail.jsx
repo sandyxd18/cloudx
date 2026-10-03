@@ -1,14 +1,17 @@
 import { useEffect, useState, useCallback } from 'react'
-import { useNavigate, useParams } from 'react'
-import Box from '@cloudscape-design/components/box'
+import { useNavigate, useParams } from 'react-router-dom'
+import Alert from '@cloudscape-design/components/alert'
+import Badge from '@cloudscape-design/components/badge'
 import Button from '@cloudscape-design/components/button'
 import Container from '@cloudscape-design/components/container'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import Header from '@cloudscape-design/components/header'
+import KeyValuePairs from '@cloudscape-design/components/key-value-pairs'
 import SpaceBetween from '@cloudscape-design/components/space-between'
+import Tabs from '@cloudscape-design/components/tabs'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
-import { PageLoading, ResourceStatus } from '../components/common.jsx'
+import { PageLoading, ResourceStatus, fmtBytes, fmtDate } from '../components/common.jsx'
 import DeleteModal from '../components/DeleteModal.jsx'
 
 export default function ImageDetailPage() {
@@ -47,14 +50,15 @@ export default function ImageDetailPage() {
     }
   }
 
-  if (loading && !image) return <PageLoading text="Loading image details" />
-  if (!image) return <Box variant="h2">Image not found</Box>
+  if (loading) return <PageLoading text="Loading image details" />
+  if (!image) return <Alert type="error" header="Image not found">The requested image does not exist or is not visible.</Alert>
 
   return (
     <ContentLayout
       header={
         <Header
           variant="h1"
+          description={`ID: ${image.id}`}
           actions={
             <SpaceBetween direction="horizontal" size="xs">
               <Button iconName="refresh" onClick={load} ariaLabel="Refresh image" />
@@ -65,46 +69,53 @@ export default function ImageDetailPage() {
             </SpaceBetween>
           }
         >
-          Image: {image.name}
+          {image.name}
         </Header>
       }
     >
-      <Container header={<Header variant="h2">Image Overview</Header>}>
-        <SpaceBetween size="m" direction="horizontal">
-          <Box>
-            <Box variant="awsui-key-label">Name</Box>
-            <Box fontWeight="bold">{image.name}</Box>
-          </Box>
-          <Box>
-            <Box variant="awsui-key-label">ID</Box>
-            <Box>{image.id}</Box>
-          </Box>
-          <Box>
-            <Box variant="awsui-key-label">Status</Box>
-            <ResourceStatus status={image.status || 'ACTIVE'} />
-          </Box>
-          <Box>
-            <Box variant="awsui-key-label">Disk Format</Box>
-            <Box>{image.disk_format || 'qcow2'}</Box>
-          </Box>
-          <Box>
-            <Box variant="awsui-key-label">Container Format</Box>
-            <Box>{image.container_format || 'bare'}</Box>
-          </Box>
-          <Box>
-            <Box variant="awsui-key-label">Size</Box>
-            <Box>{image.size ? `${(image.size / (1024 * 1024)).toFixed(1)} MB` : '-'}</Box>
-          </Box>
-          <Box>
-            <Box variant="awsui-key-label">Min Disk / RAM</Box>
-            <Box>{image.min_disk || 0} GB / {image.min_ram || 0} MB</Box>
-          </Box>
-          <Box>
-            <Box variant="awsui-key-label">Visibility</Box>
-            <Box>{image.visibility || 'public'}</Box>
-          </Box>
-        </SpaceBetween>
-      </Container>
+      <SpaceBetween size="l">
+        <Container header={<Header variant="h2">Image Overview</Header>}>
+          <KeyValuePairs
+            columns={4}
+            items={[
+              { label: 'Name', value: image.name },
+              { label: 'Status', value: <ResourceStatus status={image.status || 'ACTIVE'} /> },
+              { label: 'Visibility', value: <Badge color={image.visibility === 'public' ? 'severity-low' : 'severity-neutral'}>{image.visibility || 'public'}</Badge> },
+              { label: 'Disk Format', value: (image.disk_format || 'qcow2').toUpperCase() },
+            ]}
+          />
+        </Container>
+
+        <Tabs
+          tabs={[
+            {
+              id: 'details',
+              label: 'Details',
+              content: (
+                <Container header={<Header variant="h2">Image Details</Header>}>
+                  <KeyValuePairs
+                    columns={3}
+                    items={[
+                      { label: 'Image ID', value: image.id },
+                      { label: 'Name', value: image.name },
+                      { label: 'Status', value: image.status || 'ACTIVE' },
+                      { label: 'Disk Format', value: image.disk_format || 'qcow2' },
+                      { label: 'Container Format', value: image.container_format || 'bare' },
+                      { label: 'Size', value: image.size ? fmtBytes(image.size) : '—' },
+                      { label: 'Min Disk GB', value: `${image.min_disk_gb || image.min_disk || 0} GB` },
+                      { label: 'Min RAM MB', value: `${image.min_ram || 0} MB` },
+                      { label: 'Checksum (SHA256)', value: image.checksum || '—' },
+                      { label: 'Storage Backend', value: image.storage_backend || 'file' },
+                      { label: 'Project ID', value: image.project_id || '—' },
+                      { label: 'Created At', value: fmtDate(image.created_at) },
+                    ]}
+                  />
+                </Container>
+              ),
+            },
+          ]}
+        />
+      </SpaceBetween>
 
       {deleteModal && (
         <DeleteModal

@@ -1,0 +1,17 @@
+[Unit]
+Description=CloudX Key Manager API Service (Barbican-like)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Environment=PYTHONPATH=/opt/cloudx/services
+Type=simple
+User=cloudx
+Group=cloudx
+WorkingDirectory=/opt/cloudx/services/key_manager
+ExecStart=/opt/cloudx/venv/bin/gunicorn -w 2 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8014 app.main:app
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

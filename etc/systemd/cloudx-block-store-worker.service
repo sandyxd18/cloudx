@@ -1,0 +1,21 @@
+[Unit]
+Description=CloudX Block Store Worker Service (Cinder-Volume equivalent)
+After=network.target postgresql.service rabbitmq-server.service
+Wants=postgresql.service rabbitmq-server.service
+
+[Service]
+Environment=PYTHONPATH=/opt/cloudx/services
+Environment=STORAGE_LVM_DRIVER=true
+Environment=LVM_VG_NAME=vg-cloudx
+Environment=IMAGE_API_URL=http://192.168.10.10:8002
+Environment=RABBITMQ_URL=amqp://mini:mini@192.168.10.10:5672/
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/cloudx/services/block_store_worker
+ExecStart=/opt/cloudx/venv/bin/python3 -m app.main
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

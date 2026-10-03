@@ -1,4 +1,4 @@
-.PHONY: up up-minio up-ha up-monitoring up-backup generate-certs down logs ps reset install-cli test test-real-vm test-floating-ip test-metadata test-security-group test-volume-boot test-multi-network \
+.PHONY: up up-minio up-ha up-monitoring up-backup generate-certs down logs ps reset install-cli package test test-real-vm test-floating-ip test-metadata test-security-group test-volume-boot test-multi-network \
         cleanup-network cleanup-compute cleanup-storage cleanup-all \
         node-bootstrap dashboard-dev
 
@@ -71,6 +71,11 @@ cleanup-storage:
 
 cleanup-all:
 	./scripts/cleanup-all.sh
+
+# ── Release packaging ────────────────────────────────────────────────────────
+# Generates a standalone release tarball under dist/ (with pre-built frontend)
+package:
+	./scripts/build-tarball.sh
 
 # ── CLI install ───────────────────────────────────────────────────────────────
 # Installs the unified 'cloudx' command to ~/.local/bin

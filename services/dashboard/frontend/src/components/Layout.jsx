@@ -20,18 +20,25 @@ import { useXShell } from './XShellContext.jsx'
 
 // ── Navigation model ─────────────────────────────────────────────────────────
 const NAV_ITEMS = [
-  { type: 'link', text: 'Dashboard', href: '/' },
-  { type: 'divider' },
   {
     type: 'section',
     text: 'Compute',
     defaultExpanded: true,
     items: [
-      { type: 'link', text: 'Instances',     href: '/servers' },
-      { type: 'link', text: 'Images',        href: '/images' },
-      { type: 'link', text: 'Key pairs',     href: '/keypairs' },
-      { type: 'link', text: 'Server groups', href: '/server-groups' },
-      { type: 'link', text: 'XIDE',          href: '/xide' },
+      { type: 'link', text: 'Instances',      href: '/servers' },
+      { type: 'link', text: 'Images',         href: '/images' },
+      { type: 'link', text: 'Key pairs',      href: '/keypairs' },
+      { type: 'link', text: 'Server groups',  href: '/server-groups' },
+      { type: 'link', text: 'Scaling groups', href: '/scaling-groups' },
+      { type: 'link', text: 'XIDE',           href: '/xide' },
+    ],
+  },
+  {
+    type: 'section',
+    text: 'Containers',
+    defaultExpanded: true,
+    items: [
+      { type: 'link', text: 'Kubernetes Engine', href: '/k8s-engine' },
     ],
   },
   {
@@ -39,8 +46,8 @@ const NAV_ITEMS = [
     text: 'Storage',
     defaultExpanded: true,
     items: [
-      { type: 'link', text: 'Volumes',    href: '/volumes' },
-      { type: 'link', text: 'Snapshots',  href: '/snapshots' },
+      { type: 'link', text: 'Volumes',      href: '/volumes' },
+      { type: 'link', text: 'Snapshots',    href: '/snapshots' },
       { type: 'link', text: 'Object Store', href: '/object-store' },
     ],
   },
@@ -54,7 +61,28 @@ const NAV_ITEMS = [
       { type: 'link', text: 'Security groups', href: '/security-groups' },
       { type: 'link', text: 'Floating IPs',    href: '/floating-ips' },
       { type: 'link', text: 'Load Balancers',  href: '/load-balancers' },
+      { type: 'link', text: 'VPC Peering',     href: '/vpc-peering' },
+      { type: 'link', text: 'VPN Gateways',    href: '/vpn-gateways' },
+      { type: 'link', text: 'BGP Peers',       href: '/bgp-peers' },
       { type: 'link', text: 'Topology',        href: '/topology' },
+    ],
+  },
+  {
+    type: 'section',
+    text: 'Security',
+    defaultExpanded: true,
+    items: [
+      { type: 'link', text: 'Key Manager (Vault)', href: '/secrets' },
+    ],
+  },
+  {
+    type: 'section',
+    text: 'Observability & Cost',
+    defaultExpanded: true,
+    items: [
+      { type: 'link', text: 'Telemetry & Metrics', href: '/telemetry' },
+      { type: 'link', text: 'Usage & Billing',     href: '/billing' },
+      { type: 'link', text: 'Audit Event Logs',    href: '/event-logs' },
     ],
   },
   { type: 'divider' },
@@ -65,8 +93,10 @@ const NAV_ITEMS = [
     items: [
       { type: 'link', text: 'Projects & users', href: '/admin' },
       { type: 'link', text: 'Roles',            href: '/roles' },
+      { type: 'link', text: 'Hypervisors',      href: '/hypervisors' },
       { type: 'link', text: 'Flavors',          href: '/flavors' },
       { type: 'link', text: 'Volume types',     href: '/volume-types' },
+      { type: 'link', text: 'Bucket types',     href: '/bucket-types' },
     ],
   },
 ]
@@ -83,12 +113,23 @@ const CRUMBS = {
   '/keypairs/import':  [{ text: 'Compute', href: '/servers' }, { text: 'Key pairs', href: '/keypairs' }, { text: 'Import key pair', href: '/keypairs/import' }],
   '/server-groups':        [{ text: 'Compute', href: '/servers' }, { text: 'Server groups', href: '/server-groups' }],
   '/server-groups/create': [{ text: 'Compute', href: '/servers' }, { text: 'Server groups', href: '/server-groups' }, { text: 'Create server group', href: '/server-groups/create' }],
+  '/scaling-groups':       [{ text: 'Compute', href: '/servers' }, { text: 'Scaling groups', href: '/scaling-groups' }],
+  '/k8s-engine':           [{ text: 'Containers', href: '/k8s-engine' }, { text: 'Kubernetes Engine', href: '/k8s-engine' }],
+  '/secrets':              [{ text: 'Security', href: '/secrets' }, { text: 'Key Manager (Vault)', href: '/secrets' }],
+  '/vpc-peering':          [{ text: 'Networking', href: '/networks' }, { text: 'VPC Peering', href: '/vpc-peering' }],
+  '/vpn-gateways':         [{ text: 'Networking', href: '/networks' }, { text: 'VPN Gateways', href: '/vpn-gateways' }],
+  '/bgp-peers':            [{ text: 'Networking', href: '/networks' }, { text: 'BGP Peers', href: '/bgp-peers' }],
+  '/telemetry':            [{ text: 'Observability & Cost', href: '/telemetry' }, { text: 'Telemetry & Metrics', href: '/telemetry' }],
+  '/billing':              [{ text: 'Observability & Cost', href: '/billing' }, { text: 'Usage & Billing', href: '/billing' }],
+  '/event-logs':           [{ text: 'Observability & Cost', href: '/event-logs' }, { text: 'Audit Event Logs', href: '/event-logs' }],
+  '/hypervisors':          [{ text: 'Administration', href: '/admin' }, { text: 'Hypervisors', href: '/hypervisors' }],
   '/volumes':          [{ text: 'Storage', href: '/volumes' }, { text: 'Volumes', href: '/volumes' }],
   '/volumes/create':   [{ text: 'Storage', href: '/volumes' }, { text: 'Volumes', href: '/volumes' }, { text: 'Create volume', href: '/volumes/create' }],
   '/snapshots':        [{ text: 'Storage', href: '/volumes' }, { text: 'Snapshots', href: '/snapshots' }],
   '/snapshots/create': [{ text: 'Storage', href: '/volumes' }, { text: 'Snapshots', href: '/snapshots' }, { text: 'Create snapshot', href: '/snapshots/create' }],
-  '/volume-types':        [{ text: 'Storage', href: '/volumes' }, { text: 'Volume types', href: '/volume-types' }],
-  '/volume-types/create': [{ text: 'Storage', href: '/volumes' }, { text: 'Volume types', href: '/volume-types' }, { text: 'Create volume type', href: '/volume-types/create' }],
+  '/volume-types':        [{ text: 'Administration', href: '/admin' }, { text: 'Volume types', href: '/volume-types' }],
+  '/volume-types/create': [{ text: 'Administration', href: '/admin' }, { text: 'Volume types', href: '/volume-types' }, { text: 'Create volume type', href: '/volume-types/create' }],
+  '/bucket-types':        [{ text: 'Administration', href: '/admin' }, { text: 'Bucket types', href: '/bucket-types' }],
   '/object-store':     [{ text: 'Storage', href: '/volumes' }, { text: 'Object Store', href: '/object-store' }],
   '/networks':         [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }],
   '/networks/create':  [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }, { text: 'Create network', href: '/networks/create' }],
@@ -287,7 +328,7 @@ export default function Layout() {
         onNavigationChange={({ detail }) => setNavOpen(detail.open)}
         navigation={
           <SideNavigation
-            header={{ href: '/', text: 'Private cloud' }}
+            header={{ href: '/', text: 'Dashboard' }}
             activeHref={activeHref}
             items={NAV_ITEMS}
             onFollow={handleFollow}

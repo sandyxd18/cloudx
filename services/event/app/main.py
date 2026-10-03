@@ -1,3 +1,12 @@
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+try:
+    from shared.config import load_service_config
+    load_service_config("event-api")
+except Exception as _cfg_err:
+    pass
+
 """
 cloudx Event & Webhook API — Central Event Bus & Notification Engine
 ===================================================================
@@ -5,7 +14,6 @@ cloudx Event & Webhook API — Central Event Bus & Notification Engine
 Service Fase 5.3: menangkap event audit/system dan mengirim webhook.
 """
 
-from __future__ import annotations
 
 import logging
 import os

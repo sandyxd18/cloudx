@@ -5,7 +5,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-mini_openstack}
       POSTGRES_USER: ${POSTGRES_USER:-mini}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mini}
-      POSTGRES_MULTIPLE_DATABASES: cloudx_billing,cloudx_events,cloudx_orchestration
+      POSTGRES_MULTIPLE_DATABASES: cloudx_billing,cloudx_events,cloudx_orchestration,cloudx_key_manager,cloudx_k8s_engine
     network_mode: host
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -820,6 +820,52 @@ services:
       - xide-workspaces:/home/coder
     depends_on:
       - dashboard
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # FASE 7: ENTERPRISE DR, SECRET MANAGEMENT & IPSEC VPN
+  # ═══════════════════════════════════════════════════════════════════════════════
+
+  # ── Key Manager API (Barbican-like Secret Management) ─────────────────────────
+  key-manager-api:
+    build:
+      context: ./services
+      dockerfile: key_manager/Dockerfile
+      network: host
+    environment:
+      HOST: 127.0.0.1
+      PORT: 8014
+      KEY_MANAGER_DATABASE_URL: ${KEY_MANAGER_DATABASE_URL:-postgresql+psycopg://mini:mini@127.0.0.1:5432/cloudx_key_manager}
+      KEY_MANAGER_MASTER_KEY: ${KEY_MANAGER_MASTER_KEY:-cloudx-master-secret-key-32bytes!}
+      AUTH_API_URL: http://127.0.0.1:8005
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-cloudx-secret-key-change-in-production-min32chars!}
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-api:
+        condition: service_started
+
+  # ═══════════════════════════════════════════════════════════════════════════════
+  # FASE 8: CLOUD-NATIVE ENGINE & MANAGED KUBERNETES INTEGRATION
+  # ═══════════════════════════════════════════════════════════════════════════════
+
+  # ── Kubernetes Engine API (Magnum/COE-like Managed Kubernetes) ───────────────
+  k8s-engine-api:
+    build:
+      context: ./services
+      dockerfile: k8s_engine/Dockerfile
+      network: host
+    environment:
+      HOST: 127.0.0.1
+      PORT: 8015
+      DATABASE_URL: ${K8S_ENGINE_DATABASE_URL:-postgresql+psycopg2://mini:mini@127.0.0.1:5432/cloudx_k8s_engine}
+      AUTH_API_URL: http://127.0.0.1:8005
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-api:
+        condition: service_started
 
 volumes:
   postgres-data:

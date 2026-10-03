@@ -5,8 +5,10 @@ import Container from '@cloudscape-design/components/container'
 import FormField from '@cloudscape-design/components/form-field'
 import Header from '@cloudscape-design/components/header'
 import Input from '@cloudscape-design/components/input'
+import Multiselect from '@cloudscape-design/components/multiselect'
 import Select from '@cloudscape-design/components/select'
 import SpaceBetween from '@cloudscape-design/components/space-between'
+import Textarea from '@cloudscape-design/components/textarea'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import FormPage from '../components/FormPage.jsx'
@@ -19,36 +21,58 @@ export default function ServerLaunchPage() {
   const navigate = useNavigate()
   const toast = useToast()
   const [form, setForm] = useState({ name: '', flavor: null, image: null, keypair: null, network: null })
+  const [count, setCount]           = useState('1')
   const [rootSizeGb, setRootSizeGb] = useState(String(DEFAULT_ROOT_GB))
   const [volumeType, setVolumeType] = useState(null)
+  const [selectedSecGroups, setSelectedSecGroups] = useState([])
+  const [selectedServerGroup, setSelectedServerGroup] = useState(null)
+  const [userData, setUserData]     = useState('')
   const [flavors, setFlavors]       = useState([])
   const [images, setImages]         = useState([])
   const [keypairs, setKeypairs]     = useState([])
   const [networks, setNetworks]     = useState([])
   const [volTypes, setVolTypes]     = useState([])
+  const [secGroups, setSecGroups]   = useState([])
+  const [serverGroups, setServerGroups] = useState([])
   const [loading, setLoading]       = useState(false)
   const [error, setError]           = useState('')
 
   useEffect(() => {
-    Promise.allSettled([api.getFlavors(), api.getImages(), api.getKeypairs(), api.getNetworks(), api.getVolumeTypes()])
-      .then(([f, im, k, n, vt]) => {
-        if (f.status === 'fulfilled')  setFlavors(f.value?.items || [])
-        if (im.status === 'fulfilled') setImages((im.value?.items || []).filter(i => i.status === 'ACTIVE'))
-        if (k.status === 'fulfilled')  setKeypairs(k.value?.items || [])
-        if (n.status === 'fulfilled') {
-          const allNets = n.value?.items || []
-          const tenantNets = allNets.filter(net => !net.external && net['router:external'] !== 'External')
-          setNetworks(tenantNets)
-          if (tenantNets.length) {
-            setForm(f => ({ ...f, network: { value: tenantNets[0].name, label: tenantNets[0].name } }))
-          }
+    Promise.allSettled([
+      api.getFlavors(),
+      api.getImages(),
+      api.getKeypairs(),
+      api.getNetworks(),
+      api.getVolumeTypes(),
+      api.getSecurityGroups(),
+      api.getServerGroups(),
+    ]).then(([f, im, k, n, vt, sg, srvg]) => {
+      if (f.status === 'fulfilled')  setFlavors(f.value?.items || [])
+      if (im.status === 'fulfilled') setImages((im.value?.items || []).filter(i => i.status === 'ACTIVE'))
+      if (k.status === 'fulfilled')  setKeypairs(k.value?.items || [])
+      if (n.status === 'fulfilled') {
+        const allNets = n.value?.items || []
+        const tenantNets = allNets.filter(net => !net.external && net['router:external'] !== 'External')
+        setNetworks(tenantNets)
+        if (tenantNets.length) {
+          setForm(f => ({ ...f, network: { value: tenantNets[0].name, label: tenantNets[0].name } }))
         }
-        if (vt.status === 'fulfilled') {
-          const types = vt.value?.items || []
-          setVolTypes(types)
-          if (types.length) setVolumeType({ value: types[0].name, label: types[0].name })
-        }
-      })
+      }
+      if (vt.status === 'fulfilled') {
+        const types = vt.value?.items || []
+        setVolTypes(types)
+        if (types.length) setVolumeType({ value: types[0].name, label: types[0].name })
+      }
+      if (sg.status === 'fulfilled') {
+        const sgs = sg.value?.items || []
+        setSecGroups(sgs)
+        const defSg = sgs.find(s => s.name === 'default')
+        if (defSg) setSelectedSecGroups([{ value: defSg.name, label: defSg.name }])
+      }
+      if (srvg.status === 'fulfilled') {
+        setServerGroups(srvg.value?.items || [])
+      }
+    })
   }, [])
 
   const back = () => navigate('/servers')
@@ -58,22 +82,38 @@ export default function ServerLaunchPage() {
       setError('Name, flavor, image, and network are required.')
       return
     }
+    const numInstances = parseInt(count, 10) || 1
+    if (numInstances < 1) {
+      setError('Instance count must be at least 1.')
+      return
+    }
     if (rootSizeGb !== '' && Number(rootSizeGb) < 1) {
       setError('Root volume size must be at least 1 GiB.')
       return
     }
     setLoading(true); setError('')
     try {
-      await api.createServer({
-        name: form.name,
+      const payloadBase = {
         flavor: form.flavor.value,
         image: form.image.value,
         network: form.network.value,
         key_name: form.keypair?.value || undefined,
         volume_size: rootSizeGb !== '' ? Number(rootSizeGb) : DEFAULT_ROOT_GB,
         volume_type: volumeType?.value || undefined,
-      })
-      toast('Instance launch started', 'success')
+        security_groups: selectedSecGroups.map(s => s.value),
+        server_group: selectedServerGroup?.value || undefined,
+        user_data: userData.trim() || undefined,
+      }
+
+      if (numInstances === 1) {
+        await api.createServer({ ...payloadBase, name: form.name.trim() })
+      } else {
+        for (let i = 1; i <= numInstances; i++) {
+          await api.createServer({ ...payloadBase, name: `${form.name.trim()}-${i}` })
+        }
+      }
+
+      toast(`${numInstances} instance(s) launch started`, 'success')
       back()
     } catch (e) {
       setError(e.message)
@@ -93,16 +133,28 @@ export default function ServerLaunchPage() {
       onCancel={back}
       onSubmit={submit}
     >
-      <Container header={<Header variant="h2">Name and tags</Header>}>
-        <FormField label="Instance name" description="Must be unique within the project.">
-          <Input
-            value={form.name}
-            onChange={({ detail }) => setForm(f => ({ ...f, name: detail.value }))}
-            placeholder="my-instance"
-            controlId="server-name"
-            autoFocus
-          />
-        </FormField>
+      <Container header={<Header variant="h2">Name and count</Header>}>
+        <SpaceBetween size="l">
+          <FormField label="Instance name" description="Base name for the instance(s).">
+            <Input
+              value={form.name}
+              onChange={({ detail }) => setForm(f => ({ ...f, name: detail.value }))}
+              placeholder="my-instance"
+              controlId="server-name"
+              autoFocus
+            />
+          </FormField>
+          <FormField label="Instance count" description="Number of instances to create (default 1).">
+            <Input
+              value={count}
+              onChange={({ detail }) => setCount(detail.value)}
+              type="number"
+              inputMode="numeric"
+              placeholder="1"
+              controlId="server-count"
+            />
+          </FormField>
+        </SpaceBetween>
       </Container>
 
       <Container header={<Header variant="h2">Application and OS image</Header>}>
@@ -137,18 +189,43 @@ export default function ServerLaunchPage() {
         </FormField>
       </Container>
 
-      <Container header={<Header variant="h2">Key pair</Header>}>
-        <FormField label="Key pair" description="Optional — injected via cloud-init for SSH access.">
-          <Select
-            selectedOption={form.keypair}
-            onChange={({ detail }) => setForm(f => ({ ...f, keypair: detail.selectedOption }))}
-            options={keypairs.map(k => ({ value: k.name, label: k.name }))}
-            placeholder="Search for a key pair"
-            empty="No key pairs"
-            filteringType="auto"
-            controlId="server-keypair"
-          />
-        </FormField>
+      <Container header={<Header variant="h2">Key pair & Groups</Header>}>
+        <SpaceBetween size="l">
+          <FormField label="Key pair" description="Optional — injected via cloud-init for SSH access.">
+            <Select
+              selectedOption={form.keypair}
+              onChange={({ detail }) => setForm(f => ({ ...f, keypair: detail.selectedOption }))}
+              options={keypairs.map(k => ({ value: k.name, label: k.name }))}
+              placeholder="Search for a key pair"
+              empty="No key pairs"
+              filteringType="auto"
+              controlId="server-keypair"
+            />
+          </FormField>
+
+          <FormField label="Security groups" description="Traffic control rules for instance network ports.">
+            <Multiselect
+              selectedOptions={selectedSecGroups}
+              onChange={({ detail }) => setSelectedSecGroups(detail.selectedOptions)}
+              options={secGroups.map(s => ({ value: s.name, label: s.name, description: s.description || undefined }))}
+              placeholder="Select security groups"
+              empty="No security groups"
+              controlId="server-secgroups"
+            />
+          </FormField>
+
+          <FormField label="Server group" description="Optional — affinity or anti-affinity policy group.">
+            <Select
+              selectedOption={selectedServerGroup}
+              onChange={({ detail }) => setSelectedServerGroup(detail.selectedOption)}
+              options={serverGroups.map(sg => ({ value: sg.name, label: sg.name, description: sg.policy }))}
+              placeholder="Select a server group (optional)"
+              empty="No server groups"
+              filteringType="auto"
+              controlId="server-servergroup"
+            />
+          </FormField>
+        </SpaceBetween>
       </Container>
 
       <Container header={<Header variant="h2">Network settings</Header>}>
@@ -201,6 +278,18 @@ export default function ServerLaunchPage() {
             </FormField>
           )}
         </SpaceBetween>
+      </Container>
+
+      <Container header={<Header variant="h2">Advanced options (User script)</Header>}>
+        <FormField label="User script (user_data)" description="Custom shell script or cloud-config passed to cloud-init during instance initialization.">
+          <Textarea
+            value={userData}
+            onChange={({ detail }) => setUserData(detail.value)}
+            placeholder="#!/bin/bash&#10;echo 'Hello World' > /tmp/hello.txt"
+            rows={5}
+            controlId="server-user-data"
+          />
+        </FormField>
       </Container>
     </FormPage>
   )

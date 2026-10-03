@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 cloudx Telemetry Worker — Metrics Collector
 ============================================
@@ -11,7 +12,6 @@ Tables:
   telemetry_metrics — time-series metrics
 """
 
-from __future__ import annotations
 
 import json
 import logging

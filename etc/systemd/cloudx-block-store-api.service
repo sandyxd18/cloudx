@@ -1,0 +1,23 @@
+[Unit]
+Description=CloudX Block Store API Service (Cinder-like)
+After=network.target postgresql.service rabbitmq-server.service
+Wants=postgresql.service rabbitmq-server.service
+
+[Service]
+Environment=PYTHONPATH=/opt/cloudx/services
+Environment=STORAGE_LVM_DRIVER=true
+Environment=LVM_VG_NAME=vg-cloudx
+Environment=AUTH_API_URL=http://192.168.10.10:8005
+Environment=COMPUTE_API_URL=http://192.168.10.10:8003
+Environment=IMAGE_API_URL=http://192.168.10.10:8002
+Environment=RABBITMQ_URL=amqp://mini:mini@192.168.10.10:5672/
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/cloudx/services/block_store
+ExecStart=/opt/cloudx/venv/bin/gunicorn -w 2 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8004 app.main:app
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

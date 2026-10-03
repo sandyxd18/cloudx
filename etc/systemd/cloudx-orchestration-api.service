@@ -1,0 +1,17 @@
+[Unit]
+Description=CloudX Orchestration API Service (Heat-like)
+After=network.target postgresql.service rabbitmq-server.service
+Wants=postgresql.service rabbitmq-server.service
+
+[Service]
+Environment=PYTHONPATH=/opt/cloudx/services
+Type=simple
+User=cloudx
+Group=cloudx
+WorkingDirectory=/opt/cloudx/services/orchestration
+ExecStart=/opt/cloudx/venv/bin/gunicorn -w 2 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8013 app.main:app
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

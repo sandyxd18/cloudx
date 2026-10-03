@@ -115,69 +115,39 @@ export default function ObjectStorePage() {
         </Header>
       }
     >
-      <Tabs
-        activeTabId={activeTab}
-        onChange={({ detail }) => setActiveTab(detail.activeTabId)}
-        tabs={[
+      <Table
+        variant="full-page"
+        stickyHeader
+        selectionType="multi"
+        selectedItems={selected}
+        onSelectionChange={({ detail }) => setSelected(detail.selectedItems)}
+        trackBy="name"
+        columnDefinitions={[
           {
-            id: 'buckets',
-            label: 'Buckets',
-            content: (
-              <Table
-                variant="full-page"
-                stickyHeader
-                selectionType="multi"
-                selectedItems={selected}
-                onSelectionChange={({ detail }) => setSelected(detail.selectedItems)}
-                trackBy="name"
-                columnDefinitions={[
-                  {
-                    id: 'name',
-                    header: 'Name',
-                    cell: item => (
-                      <Link href={`/object-store/buckets/${item.name}`} onFollow={(e) => { e.preventDefault(); navigate(`/object-store/buckets/${item.name}`) }}>
-                        {item.name}
-                      </Link>
-                    ),
-                    sortingField: 'name',
-                  },
-                  {
-                    id: 'type',
-                    header: 'Bucket Type',
-                    cell: item => item.bucket_type?.name || types.find(t => t.id === item.bucket_type_id)?.name || item.bucket_type_id || 'default',
-                  },
-                  { id: 'visibility', header: 'Visibility', cell: item => item.visibility },
-                  { id: 'objects', header: 'Objects', cell: item => item.object_count ?? 0 },
-                  { id: 'size', header: 'Size (bytes)', cell: item => item.size_bytes ?? 0 },
-                  { id: 'status', header: 'Status', cell: item => item.status || 'active' },
-                ]}
-                items={buckets}
-                loading={loading}
-                loadingText="Loading buckets"
-                empty={<TableEmpty title="No buckets" subtitle="Create a bucket to get started." />}
-                header={<Header variant="h2">Buckets</Header>}
-              />
+            id: 'name',
+            header: 'Name',
+            cell: item => (
+              <Link href={`/object-store/buckets/${item.name}`} onFollow={(e) => { e.preventDefault(); navigate(`/object-store/buckets/${item.name}`) }}>
+                {item.name}
+              </Link>
             ),
+            sortingField: 'name',
           },
           {
-            id: 'types',
-            label: 'Bucket Types',
-            content: (
-              <Table
-                columnDefinitions={[
-                  { id: 'name', header: 'Name', cell: item => item.name },
-                  { id: 'driver', header: 'Driver', cell: item => item.driver },
-                  { id: 'description', header: 'Description', cell: item => item.description || '-' },
-                ]}
-                items={types}
-                loading={loading}
-                loadingText="Loading bucket types"
-                empty={<TableEmpty title="No bucket types" subtitle="Admin can register storage backends here." />}
-                header={<Header variant="h2">Bucket Types (Admin)</Header>}
-              />
-            ),
+            id: 'type',
+            header: 'Bucket Type',
+            cell: item => item.bucket_type?.name || types.find(t => t.id === item.bucket_type_id)?.name || item.bucket_type_id || 'default',
           },
+          { id: 'visibility', header: 'Visibility', cell: item => item.visibility },
+          { id: 'objects', header: 'Objects', cell: item => item.object_count ?? 0 },
+          { id: 'size', header: 'Size (bytes)', cell: item => item.size_bytes ?? 0 },
+          { id: 'status', header: 'Status', cell: item => item.status || 'active' },
         ]}
+        items={buckets}
+        loading={loading}
+        loadingText="Loading buckets"
+        empty={<TableEmpty title="No buckets" subtitle="Create a bucket to get started." />}
+        header={<Header variant="h2">Buckets</Header>}
       />
       {deleteModal && (
         <DeleteModal

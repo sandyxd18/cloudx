@@ -15,3 +15,5 @@ services/dashboard/frontend/dist/
 services/dashboard/app/static/
 # Generated internal TLS material — never commit private keys
 services/certs/out/
+dist/
+build/

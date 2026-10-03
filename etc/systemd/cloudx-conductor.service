@@ -1,0 +1,19 @@
+[Unit]
+Description=CloudX Conductor Service (Nova-Conductor DB Proxy)
+After=network.target postgresql.service rabbitmq-server.service
+Wants=postgresql.service rabbitmq-server.service
+
+[Service]
+Environment=PYTHONPATH=/opt/cloudx/services
+Environment=DATABASE_URL=postgresql+psycopg://mini:mini@127.0.0.1:5432/mini_openstack
+Environment=RABBITMQ_URL=amqp://mini:mini@192.168.10.10:5672/
+Type=simple
+User=cloudx
+Group=cloudx
+WorkingDirectory=/opt/cloudx/services/conductor
+ExecStart=/opt/cloudx/venv/bin/python3 -m app.main
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

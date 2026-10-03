@@ -1,3 +1,11 @@
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+try:
+    from shared.config import load_service_config
+    load_service_config("placement-api")
+except Exception as _cfg_err:
+    pass
+
 # Placement API — OpenStack-like resource placement and tracking for cloudx.
 #
 # Tracks:
@@ -304,18 +312,14 @@ def healthcheck(db: DB):
 
 
 # ── Resource Providers ─────────────────────────────────────────────────────────
-@app.post("/resource_providers", status_code=201)
-def create_rp(payload: RPIn, _: CurrentUser, db: DB):
+@app.post("/internal/resource_providers", status_code=201)
+def create_rp_internal(payload: RPIn, db: DB):
     if db.scalar(select(ResourceProvider).where(ResourceProvider.name == payload.name)):
         raise HTTPException(status_code=409, detail="resource provider already exists")
-    # Validate parent_provider_id if provided
     if payload.parent_provider_id:
-        parent = db.get(ResourceProvider, payload.parent_provider_id)
-        if not parent:
-            parent = db.scalar(select(ResourceProvider).where(ResourceProvider.name == payload.parent_provider_id))
+        parent = db.get(ResourceProvider, payload.parent_provider_id) or db.scalar(select(ResourceProvider).where(ResourceProvider.name == payload.parent_provider_id))
         if not parent:
             raise HTTPException(status_code=400, detail=f"parent_provider_id '{payload.parent_provider_id}' not found")
-        # Normalize to UUID
         payload = RPIn(name=payload.name, parent_provider_id=parent.uuid)
     rp = ResourceProvider(**payload.model_dump())
     db.add(rp)
@@ -324,26 +328,20 @@ def create_rp(payload: RPIn, _: CurrentUser, db: DB):
     return _rp_to_dict(rp)
 
 
-@app.get("/resource_providers")
-def list_rps(
-    _: CurrentUser,
+@app.get("/internal/resource_providers")
+def list_rps_internal(
     db: DB,
-    in_tree: str | None = None,        # root RP UUID/name — return all RPs in the same tree
-    name: str | None = None,           # exact name filter
-    parent_provider_id: str | None = None,  # direct children only
+    in_tree: str | None = None,
+    name: str | None = None,
+    parent_provider_id: str | None = None,
 ):
     q = select(ResourceProvider)
     if in_tree:
-        # Find the root UUID
-        root = db.get(ResourceProvider, in_tree) or db.scalar(
-            select(ResourceProvider).where(ResourceProvider.name == in_tree)
-        )
+        root = db.get(ResourceProvider, in_tree) or db.scalar(select(ResourceProvider).where(ResourceProvider.name == in_tree))
         if not root:
             raise HTTPException(status_code=404, detail=f"resource provider tree root '{in_tree}' not found")
-        # Collect all UUIDs in the tree (root + children at any depth)
         all_rps = db.scalars(select(ResourceProvider)).all()
         tree_uuids = {root.uuid}
-        # BFS to find all descendants
         changed = True
         while changed:
             changed = False
@@ -351,7 +349,6 @@ def list_rps(
                 if rp.parent_provider_id in tree_uuids and rp.uuid not in tree_uuids:
                     tree_uuids.add(rp.uuid)
                     changed = True
-        from sqlalchemy import or_
         q = q.where(ResourceProvider.uuid.in_(tree_uuids))
     if name:
         q = q.where(ResourceProvider.name == name)
@@ -359,6 +356,22 @@ def list_rps(
         q = q.where(ResourceProvider.parent_provider_id == parent_provider_id)
     rps = db.scalars(q).all()
     return {"resource_providers": [_rp_to_dict(r) for r in rps]}
+
+
+@app.post("/resource_providers", status_code=201)
+def create_rp(payload: RPIn, _: CurrentUser, db: DB):
+    return create_rp_internal(payload, db)
+
+
+@app.get("/resource_providers")
+def list_rps(
+    _: CurrentUser,
+    db: DB,
+    in_tree: str | None = None,
+    name: str | None = None,
+    parent_provider_id: str | None = None,
+):
+    return list_rps_internal(db, in_tree, name, parent_provider_id)
 
 
 @app.get("/resource_providers/{rp_uuid}")

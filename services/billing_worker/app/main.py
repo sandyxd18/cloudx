@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 cloudx Billing Worker — Usage Aggregation & Invoice Generator
 ===============================================================
@@ -11,7 +12,6 @@ Worker service (Fase 5.2) yang berjalan di background untuk:
 Database: cloudx_billing (terisolasi dari service lain)
 """
 
-from __future__ import annotations
 
 import logging
 import os

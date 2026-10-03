@@ -1,3 +1,12 @@
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+try:
+    from shared.config import load_service_config
+    load_service_config("load-balancer-api")
+except Exception as _cfg_err:
+    pass
+
 """
 cloudx Load Balancer API (Octavia-like)
 ========================================
@@ -9,7 +18,6 @@ Supports:
 Pools can target a Server Group (compute_server_groups); members are synced
 automatically from active instances in that group.
 """
-from __future__ import annotations
 
 import logging
 import os

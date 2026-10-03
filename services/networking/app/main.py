@@ -1,3 +1,11 @@
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+try:
+    from shared.config import load_service_config
+    load_service_config("networking-api")
+except Exception as _cfg_err:
+    pass
+
 import ipaddress
 import json
 import logging
@@ -235,6 +243,53 @@ class BGPPeer(Base):
     status: Mapped[str] = mapped_column(String, default="down")  # down, established
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class IKEPolicy(Base):
+    """VPNaaS IKE Policy (Fase 7.2)."""
+    __tablename__ = "networking_ike_policies"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: f"ike-{uuid.uuid4().hex[:12]}")
+    name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    auth_algorithm: Mapped[str] = mapped_column(String(32), default="sha256")
+    encryption_algorithm: Mapped[str] = mapped_column(String(32), default="aes-256")
+    phase1_negotiation_mode: Mapped[str] = mapped_column(String(32), default="main")
+    pfs: Mapped[str] = mapped_column(String(32), default="group14")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class IPsecPolicy(Base):
+    """VPNaaS IPsec Policy (Fase 7.2)."""
+    __tablename__ = "networking_ipsec_policies"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: f"ipsec-{uuid.uuid4().hex[:12]}")
+    name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    auth_algorithm: Mapped[str] = mapped_column(String(32), default="sha256")
+    encryption_algorithm: Mapped[str] = mapped_column(String(32), default="aes-256")
+    pfs: Mapped[str] = mapped_column(String(32), default="group14")
+    transform_protocol: Mapped[str] = mapped_column(String(32), default="esp")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class VPNSiteConnection(Base):
+    """VPNaaS IPsec Site-to-Site Connection (Fase 7.2)."""
+    __tablename__ = "networking_vpn_site_connections"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: f"vpn-{uuid.uuid4().hex[:12]}")
+    name: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    router_id: Mapped[str] = mapped_column(String, ForeignKey("networking_routers.id"), nullable=False)
+    peer_address: Mapped[str] = mapped_column(String, nullable=False)
+    peer_id: Mapped[str] = mapped_column(String, nullable=False)
+    peer_cidrs_json: Mapped[str] = mapped_column(Text, default="[]")
+    psk: Mapped[str] = mapped_column(String, nullable=False)
+    ikepolicy_id: Mapped[str] = mapped_column(String, ForeignKey("networking_ike_policies.id"), nullable=False)
+    ipsecpolicy_id: Mapped[str] = mapped_column(String, ForeignKey("networking_ipsec_policies.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    admin_state_up: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
 class PortForwarding(Base):
@@ -2054,6 +2109,289 @@ def sync_bgp_config(peer_id: str, db: DB):
         "peer_id": peer_id,
         "frr_config": config,
         "note": "Apply this configuration to the FRR/BGP container manually or via network-ops automation.",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VPNAAS — IPSEC SITE-TO-SITE VPN (Fase 7.2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class IKEPolicyIn(BaseModel):
+    name: str
+    auth_algorithm: str = "sha256"
+    encryption_algorithm: str = "aes-256"
+    phase1_negotiation_mode: str = "main"
+    pfs: str = "group14"
+
+
+class IKEPolicyOut(BaseModel):
+    id: str
+    name: str
+    project_id: str
+    auth_algorithm: str
+    encryption_algorithm: str
+    phase1_negotiation_mode: str
+    pfs: str
+    created_at: datetime
+
+
+class IPsecPolicyIn(BaseModel):
+    name: str
+    auth_algorithm: str = "sha256"
+    encryption_algorithm: str = "aes-256"
+    pfs: str = "group14"
+    transform_protocol: str = "esp"
+
+
+class IPsecPolicyOut(BaseModel):
+    id: str
+    name: str
+    project_id: str
+    auth_algorithm: str
+    encryption_algorithm: str
+    pfs: str
+    transform_protocol: str
+    created_at: datetime
+
+
+class VPNSiteConnectionIn(BaseModel):
+    name: str
+    router_id: str
+    peer_address: str
+    peer_id: str
+    peer_cidrs: list[str]
+    psk: str
+    ikepolicy_id: str
+    ipsecpolicy_id: str
+    admin_state_up: bool = True
+
+
+class VPNSiteConnectionOut(BaseModel):
+    id: str
+    name: str
+    project_id: str
+    router_id: str
+    peer_address: str
+    peer_id: str
+    peer_cidrs: list[str]
+    ikepolicy_id: str
+    ipsecpolicy_id: str
+    status: str
+    admin_state_up: bool
+    created_at: datetime
+
+
+@app.post("/vpn/ikepolicies", response_model=IKEPolicyOut, status_code=201)
+def create_ike_policy(payload: IKEPolicyIn, current: CurrentUser, db: DB):
+    project_id = current.get("project_id", current.get("tenant_id", "default"))
+    ike = IKEPolicy(
+        name=payload.name,
+        project_id=project_id,
+        auth_algorithm=payload.auth_algorithm,
+        encryption_algorithm=payload.encryption_algorithm,
+        phase1_negotiation_mode=payload.phase1_negotiation_mode,
+        pfs=payload.pfs,
+    )
+    db.add(ike)
+    db.commit()
+    db.refresh(ike)
+    return ike
+
+
+@app.get("/vpn/ikepolicies", response_model=list[IKEPolicyOut])
+def list_ike_policies(current: CurrentUser, db: DB):
+    project_id = current.get("project_id", current.get("tenant_id", "default"))
+    q = select(IKEPolicy)
+    if current.get("role") != "admin":
+        q = q.where(IKEPolicy.project_id == project_id)
+    return db.scalars(q).all()
+
+
+@app.get("/vpn/ikepolicies/{policy_id}", response_model=IKEPolicyOut)
+def get_ike_policy(policy_id: str, db: DB):
+    ike = db.get(IKEPolicy, policy_id)
+    if not ike:
+        raise HTTPException(status_code=404, detail="IKE policy not found")
+    return ike
+
+
+@app.delete("/vpn/ikepolicies/{policy_id}", status_code=204)
+def delete_ike_policy(policy_id: str, db: DB):
+    ike = db.get(IKEPolicy, policy_id)
+    if not ike:
+        raise HTTPException(status_code=404, detail="IKE policy not found")
+    db.delete(ike)
+    db.commit()
+
+
+@app.post("/vpn/ipsecpolicies", response_model=IPsecPolicyOut, status_code=201)
+def create_ipsec_policy(payload: IPsecPolicyIn, current: CurrentUser, db: DB):
+    project_id = current.get("project_id", current.get("tenant_id", "default"))
+    ipsec = IPsecPolicy(
+        name=payload.name,
+        project_id=project_id,
+        auth_algorithm=payload.auth_algorithm,
+        encryption_algorithm=payload.encryption_algorithm,
+        pfs=payload.pfs,
+        transform_protocol=payload.transform_protocol,
+    )
+    db.add(ipsec)
+    db.commit()
+    db.refresh(ipsec)
+    return ipsec
+
+
+@app.get("/vpn/ipsecpolicies", response_model=list[IPsecPolicyOut])
+def list_ipsec_policies(current: CurrentUser, db: DB):
+    project_id = current.get("project_id", current.get("tenant_id", "default"))
+    q = select(IPsecPolicy)
+    if current.get("role") != "admin":
+        q = q.where(IPsecPolicy.project_id == project_id)
+    return db.scalars(q).all()
+
+
+@app.get("/vpn/ipsecpolicies/{policy_id}", response_model=IPsecPolicyOut)
+def get_ipsec_policy(policy_id: str, db: DB):
+    ipsec = db.get(IPsecPolicy, policy_id)
+    if not ipsec:
+        raise HTTPException(status_code=404, detail="IPsec policy not found")
+    return ipsec
+
+
+@app.delete("/vpn/ipsecpolicies/{policy_id}", status_code=204)
+def delete_ipsec_policy(policy_id: str, db: DB):
+    ipsec = db.get(IPsecPolicy, policy_id)
+    if not ipsec:
+        raise HTTPException(status_code=404, detail="IPsec policy not found")
+    db.delete(ipsec)
+    db.commit()
+
+
+@app.post("/vpn/site-connections", response_model=VPNSiteConnectionOut, status_code=201)
+def create_vpn_site_connection(payload: VPNSiteConnectionIn, current: CurrentUser, db: DB):
+    project_id = current.get("project_id", current.get("tenant_id", "default"))
+    router = require_by_ref(db, Router, payload.router_id, "router")
+    ike = db.get(IKEPolicy, payload.ikepolicy_id)
+    if not ike:
+        raise HTTPException(status_code=404, detail="IKE policy not found")
+    ipsec = db.get(IPsecPolicy, payload.ipsecpolicy_id)
+    if not ipsec:
+        raise HTTPException(status_code=404, detail="IPsec policy not found")
+
+    conn = VPNSiteConnection(
+        name=payload.name,
+        project_id=project_id,
+        router_id=router.id,
+        peer_address=payload.peer_address,
+        peer_id=payload.peer_id,
+        peer_cidrs_json=json.dumps(payload.peer_cidrs),
+        psk=payload.psk,
+        ikepolicy_id=ike.id,
+        ipsecpolicy_id=ipsec.id,
+        admin_state_up=payload.admin_state_up,
+        status="ACTIVE",
+    )
+    db.add(conn)
+    db.commit()
+    db.refresh(conn)
+    return {
+        "id": conn.id,
+        "name": conn.name,
+        "project_id": conn.project_id,
+        "router_id": conn.router_id,
+        "peer_address": conn.peer_address,
+        "peer_id": conn.peer_id,
+        "peer_cidrs": json.loads(conn.peer_cidrs_json),
+        "ikepolicy_id": conn.ikepolicy_id,
+        "ipsecpolicy_id": conn.ipsecpolicy_id,
+        "status": conn.status,
+        "admin_state_up": conn.admin_state_up,
+        "created_at": conn.created_at,
+    }
+
+
+@app.get("/vpn/site-connections", response_model=list[VPNSiteConnectionOut])
+def list_vpn_site_connections(current: CurrentUser, db: DB):
+    project_id = current.get("project_id", current.get("tenant_id", "default"))
+    q = select(VPNSiteConnection)
+    if current.get("role") != "admin":
+        q = q.where(VPNSiteConnection.project_id == project_id)
+    conns = db.scalars(q).all()
+    return [
+        {
+            "id": c.id,
+            "name": c.name,
+            "project_id": c.project_id,
+            "router_id": c.router_id,
+            "peer_address": c.peer_address,
+            "peer_id": c.peer_id,
+            "peer_cidrs": json.loads(c.peer_cidrs_json),
+            "ikepolicy_id": c.ikepolicy_id,
+            "ipsecpolicy_id": c.ipsecpolicy_id,
+            "status": c.status,
+            "admin_state_up": c.admin_state_up,
+            "created_at": c.created_at,
+        }
+        for c in conns
+    ]
+
+
+@app.get("/vpn/site-connections/{conn_id}", response_model=VPNSiteConnectionOut)
+def get_vpn_site_connection(conn_id: str, db: DB):
+    conn = db.get(VPNSiteConnection, conn_id)
+    if not conn:
+        raise HTTPException(status_code=404, detail="VPN site connection not found")
+    return {
+        "id": conn.id,
+        "name": conn.name,
+        "project_id": conn.project_id,
+        "router_id": conn.router_id,
+        "peer_address": conn.peer_address,
+        "peer_id": conn.peer_id,
+        "peer_cidrs": json.loads(conn.peer_cidrs_json),
+        "ikepolicy_id": conn.ikepolicy_id,
+        "ipsecpolicy_id": conn.ipsecpolicy_id,
+        "status": conn.status,
+        "admin_state_up": conn.admin_state_up,
+        "created_at": conn.created_at,
+    }
+
+
+@app.delete("/vpn/site-connections/{conn_id}", status_code=204)
+def delete_vpn_site_connection(conn_id: str, db: DB):
+    conn = db.get(VPNSiteConnection, conn_id)
+    if not conn:
+        raise HTTPException(status_code=404, detail="VPN site connection not found")
+    db.delete(conn)
+    db.commit()
+
+
+@app.post("/vpn/site-connections/{conn_id}/config")
+def generate_vpn_config(conn_id: str, db: DB):
+    conn = db.get(VPNSiteConnection, conn_id)
+    if not conn:
+        raise HTTPException(status_code=404, detail="VPN site connection not found")
+    ike = db.get(IKEPolicy, conn.ikepolicy_id)
+    ipsec = db.get(IPsecPolicy, conn.ipsecpolicy_id)
+    cidrs = ", ".join(json.loads(conn.peer_cidrs_json))
+
+    ipsec_conf = f"""conn {conn.name}
+    authby=secret
+    auto=start
+    keyexchange=ikev2
+    left=%defaultroute
+    right={conn.peer_address}
+    rightid={conn.peer_id}
+    rightsubnets={cidrs}
+    ike={ike.encryption_algorithm if ike else 'aes256'}-{ike.auth_algorithm if ike else 'sha256'}-{ike.pfs if ike else 'modp2048'}
+    esp={ipsec.encryption_algorithm if ipsec else 'aes256'}-{ipsec.auth_algorithm if ipsec else 'sha256'}
+"""
+    ipsec_secrets = f": PSK \"{conn.psk}\"\n"
+    return {
+        "connection_id": conn.id,
+        "ipsec_conf": ipsec_conf,
+        "ipsec_secrets": ipsec_secrets,
+        "status": conn.status,
     }
 
 

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 cloudx Orchestration Worker — Auto-Scaling Group Monitor
 =========================================================
@@ -11,7 +12,6 @@ Worker service (Fase 6.2) yang berjalan di background untuk:
 Database: cloudx_orchestration
 """
 
-from __future__ import annotations
 
 import logging
 import os

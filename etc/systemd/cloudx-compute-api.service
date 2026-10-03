@@ -1,0 +1,24 @@
+[Unit]
+Description=CloudX Compute API Service (Nova-like)
+After=network.target postgresql.service rabbitmq-server.service
+Wants=postgresql.service rabbitmq-server.service
+
+[Service]
+Environment=PYTHONPATH=/opt/cloudx/services
+Environment=AUTH_API_URL=http://192.168.10.10:8005
+Environment=COMPUTE_API_URL=http://192.168.10.10:8003
+Environment=NETWORKING_API_URL=http://192.168.10.10:8001
+Environment=IMAGE_API_URL=http://192.168.10.10:8002
+Environment=BLOCK_STORE_API_URL=http://192.168.10.10:8004
+Environment=PLACEMENT_API_URL=http://192.168.10.10:8006
+Environment=RABBITMQ_URL=amqp://mini:mini@192.168.10.10:5672/
+Type=simple
+User=cloudx
+Group=cloudx
+WorkingDirectory=/opt/cloudx/services/compute
+ExecStart=/opt/cloudx/venv/bin/gunicorn -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8003 app.main:app
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

@@ -12,6 +12,7 @@ import CopyToClipboard from '@cloudscape-design/components/copy-to-clipboard'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import { TableEmpty, TableNoMatch, counterText } from '../components/common.jsx'
+import DeleteModal from '../components/DeleteModal.jsx'
 
 export default function KeypairsPage() {
   const navigate = useNavigate()
@@ -20,6 +21,8 @@ export default function KeypairsPage() {
   const [loading, setLoading]   = useState(true)
   const [filter, setFilter]     = useState('')
   const [selected, setSelected] = useState([])
+  const [deleteModal, setDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -31,12 +34,14 @@ export default function KeypairsPage() {
 
   useEffect(() => { load() }, [load])
 
-  const deleteSelected = async () => {
+  const handleConfirmDelete = async () => {
     if (!selected.length) return
-    if (!confirm(`Delete ${selected.length} key pair(s)?`)) return
+    setDeleting(true)
     for (const k of selected) {
       try { await api.deleteKeypair(k.name) } catch { /* continue */ }
     }
+    setDeleting(false)
+    setDeleteModal(false)
     setSelected([])
     toast(`${selected.length} key pair(s) deleted`, 'success')
     load()
@@ -62,7 +67,7 @@ export default function KeypairsPage() {
                 ]}
                 onItemClick={({ detail }) => {
                   if (detail.id === 'import') navigate('/keypairs/import')
-                  else if (detail.id === 'delete') deleteSelected()
+                  else if (detail.id === 'delete') setDeleteModal(true)
                 }}
               >
                 Actions
@@ -119,11 +124,27 @@ export default function KeypairsPage() {
             ? <TableNoMatch onClear={() => setFilter('')} />
             : <TableEmpty
                 title="No key pairs"
-                description="Create or import an SSH key pair to enable password-less access to your instances."
-                action={<Button variant="primary" onClick={() => navigate('/keypairs/create')}>Create key pair</Button>}
+                subtitle="Create or import an SSH key pair to access your instances."
+                action={
+                  <Button onClick={() => navigate('/keypairs/create')}>
+                    Create key pair
+                  </Button>
+                }
               />
         }
       />
+
+      {deleteModal && (
+        <DeleteModal
+          visible
+          itemCount={selected.length}
+          itemName={selected.length === 1 ? selected[0].name : undefined}
+          title="Delete Key Pair"
+          loading={deleting}
+          onDismiss={() => setDeleteModal(false)}
+          onConfirm={handleConfirmDelete}
+        />
+      )}
     </ContentLayout>
   )
 }

@@ -108,8 +108,13 @@ function buildGraph({ networks, subnets, routers, servers, floatingIPs }) {
     if (r.external_network_id) {
       links.push({ source: 'rtr-' + r.id, target: 'net-' + r.external_network_id, type: 'gateway' })
     }
+    const rtrSubnetIds = new Set([
+      ...(r.subnet_ids || []),
+      ...(r.interfaces_info || []).map(i => i.subnet_id).filter(Boolean),
+      ...(r.interfaces || []).map(i => i.subnet_id || i.id).filter(Boolean)
+    ])
     subnets
-      .filter(s => s.router_id === r.id || r.subnet_ids?.includes(s.id))
+      .filter(s => s.router_id === r.id || rtrSubnetIds.has(s.id))
       .forEach(s => links.push({ source: 'rtr-' + r.id, target: 'net-' + s.network_id, type: 'interface' }))
   })
 

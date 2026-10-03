@@ -3,7 +3,7 @@ set -euo pipefail
 
 IMG_PATH="/var/lib/vg-cloudx.img"
 VG_NAME="vg-cloudx"
-SIZE_MB=10240
+SIZE_MB=30720
 
 echo "═══ CloudX LVM Storage Bootstrap & Persistence ═══"
 

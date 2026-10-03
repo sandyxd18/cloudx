@@ -43,6 +43,8 @@ DEFAULT_URLS = {
     "billing":       os.getenv("CLOUDX_BILLING_URL",       "http://127.0.0.1:8011"),
     "event":         os.getenv("CLOUDX_EVENT_URL",         "http://127.0.0.1:8012"),
     "orchestration": os.getenv("CLOUDX_ORCHESTRATION_URL", "http://127.0.0.1:8013"),
+    "key-manager":   os.getenv("CLOUDX_KEY_MANAGER_URL",   "http://127.0.0.1:8014"),
+    "k8s-engine":   os.getenv("CLOUDX_K8S_ENGINE_URL",   "http://127.0.0.1:8015"),
 }
 
 
@@ -1493,6 +1495,92 @@ def snapshot_delete(ctx, ref):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# VOLUME BACKUP (Cinder backup to object storage)
+# ═══════════════════════════════════════════════════════════════════════════════
+@cli.group("backup")
+@click.pass_context
+def volume_backup(ctx):
+    """Manage full volume backups to object storage"""
+
+@volume_backup.command("list")
+@click.pass_context
+def volume_backup_list(ctx):
+    """List all volume backups"""
+    data = _api("get", f"{DEFAULT_URLS['volume']}/backups", ctx.obj["profile"])
+    _output(data.get("items", []), ctx.obj["fmt"], ["id", "name", "volume_id", "size_gb", "status"])
+
+@volume_backup.command("show")
+@click.argument("ref")
+@click.pass_context
+def volume_backup_show(ctx, ref):
+    """Show details of a volume backup"""
+    data = _api("get", f"{DEFAULT_URLS['volume']}/backups/{ref}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@volume_backup.command("create")
+@click.argument("volume_ref")
+@click.option("--name", default=None, help="Backup name")
+@click.option("--description", default=None, help="Backup description")
+@click.pass_context
+def volume_backup_create(ctx, volume_ref, name, description):
+    """Create a backup of a volume to object storage"""
+    payload = {}
+    if name: payload["name"] = name
+    if description: payload["description"] = description
+    data = _api("post", f"{DEFAULT_URLS['volume']}/volumes/{volume_ref}/backup", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+@volume_backup.command("restore")
+@click.argument("backup_id")
+@click.option("--name", default=None, help="Name for the restored volume")
+@click.pass_context
+def volume_backup_restore(ctx, backup_id, name):
+    """Restore a backup into a new volume"""
+    payload = {}
+    if name: payload["name"] = name
+    data = _api("post", f"{DEFAULT_URLS['volume']}/backups/{backup_id}/restore", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+@volume_backup.command("delete")
+@click.argument("backup_id")
+@click.pass_context
+def volume_backup_delete(ctx, backup_id):
+    """Delete a volume backup"""
+    _api("delete", f"{DEFAULT_URLS['volume']}/backups/{backup_id}", ctx.obj["profile"])
+    click.echo(f"✓ Backup {backup_id} deletion requested")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HYPERVISOR (Compute nodes & physical host status)
+# ═══════════════════════════════════════════════════════════════════════════════
+@cli.group("hypervisor")
+@click.pass_context
+def hypervisor(ctx):
+    """Manage and inspect hypervisors and compute nodes"""
+
+@hypervisor.command("list")
+@click.pass_context
+def hypervisor_list(ctx):
+    """List all compute hypervisor nodes"""
+    data = _api("get", f"{DEFAULT_URLS['placement']}/compute_nodes", ctx.obj["profile"])
+    nodes = data.get("compute_nodes", [])
+    _output(nodes, ctx.obj["fmt"], ["host", "name", "status", "running_vms", "cpu_percent_used", "memory_mb_used", "memory_mb_total"])
+
+@hypervisor.command("show")
+@click.argument("host")
+@click.pass_context
+def hypervisor_show(ctx, host):
+    """Show details of a specific hypervisor compute node"""
+    data = _api("get", f"{DEFAULT_URLS['placement']}/compute_nodes", ctx.obj["profile"])
+    nodes = data.get("compute_nodes", [])
+    target = next((n for n in nodes if n.get("host") == host or n.get("name") == host or n.get("resource_provider_uuid") == host), None)
+    if not target:
+        click.echo(f"❌ Hypervisor node '{host}' not found", err=True)
+        ctx.exit(1)
+    _output(target, ctx.obj["fmt"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # PLACEMENT
 # ═══════════════════════════════════════════════════════════════════════════════
 @cli.group()
@@ -2198,6 +2286,35 @@ def scaling_group_history(ctx, group_id):
     _output(data, ctx.obj["fmt"], ["id", "action", "reason", "server_id", "avg_cpu_before", "instance_count_after", "created_at"])
 
 
+@cli.group("stack")
+@click.pass_context
+def stack_group(ctx):
+    """Orchestration stack and resource management"""
+
+@stack_group.command("list")
+@click.pass_context
+def stack_list(ctx):
+    """List orchestration stacks / auto-scaling groups"""
+    data = _api("get", f"{DEFAULT_URLS['orchestration']}/scaling-groups", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "min_instances", "max_instances", "status"])
+
+@stack_group.command("show")
+@click.argument("ref")
+@click.pass_context
+def stack_show(ctx, ref):
+    """Show details of an orchestration stack"""
+    data = _api("get", f"{DEFAULT_URLS['orchestration']}/scaling-groups/{ref}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@stack_group.command("delete")
+@click.argument("ref")
+@click.pass_context
+def stack_delete(ctx, ref):
+    """Delete an orchestration stack"""
+    _api("delete", f"{DEFAULT_URLS['orchestration']}/scaling-groups/{ref}", ctx.obj["profile"])
+    click.echo(f"✓ Orchestration stack {ref} deleted")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # VPC PEERING & BGP (Networking extensions)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2284,6 +2401,375 @@ def bgp_peer_delete(ctx, peer_id):
 def bgp_peer_sync_config(ctx, peer_id):
     data = _api("post", f"{DEFAULT_URLS['network']}/bgp-peers/{peer_id}/sync-config", ctx.obj["profile"])
     _output(data, ctx.obj["fmt"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# KEY MANAGER / SECRETS
+# ═══════════════════════════════════════════════════════════════════════════════
+@cli.group("secret")
+@click.pass_context
+def secret(ctx):
+    """Manage encrypted secrets (LUKS keys, certificates, passphrases)"""
+
+@secret.command("list")
+@click.pass_context
+def secret_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['key-manager']}/secrets", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "secret_type", "algorithm", "bit_length", "project_id"])
+
+@secret.command("create")
+@click.argument("name")
+@click.option("--payload", required=True, help="Secret payload content / passphrase")
+@click.option("--type", "secret_type", default="symmetric", help="symmetric, passphrase, certificate, rsa, opaque")
+@click.option("--algorithm", default="aes")
+@click.option("--bit-length", type=int, default=256)
+@click.pass_context
+def secret_create(ctx, name, payload, secret_type, algorithm, bit_length):
+    body = {
+        "name": name,
+        "payload": payload,
+        "secret_type": secret_type,
+        "algorithm": algorithm,
+        "bit_length": bit_length
+    }
+    data = _api("post", f"{DEFAULT_URLS['key-manager']}/secrets", ctx.obj["profile"], json=body)
+    _output(data, ctx.obj["fmt"])
+
+@secret.command("show")
+@click.argument("secret_id")
+@click.pass_context
+def secret_show(ctx, secret_id):
+    data = _api("get", f"{DEFAULT_URLS['key-manager']}/secrets/{secret_id}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@secret.command("delete")
+@click.argument("secret_id")
+@click.pass_context
+def secret_delete(ctx, secret_id):
+    _api("delete", f"{DEFAULT_URLS['key-manager']}/secrets/{secret_id}", ctx.obj["profile"])
+    click.echo(f"✓ Secret {secret_id} deleted")
+
+
+@cli.group("secret-container")
+@click.pass_context
+def secret_container(ctx):
+    """Manage secret containers (bundles of secrets)"""
+
+@secret_container.command("list")
+@click.pass_context
+def secret_container_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['key-manager']}/containers", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "container_type", "secret_refs", "project_id"])
+
+@secret_container.command("create")
+@click.argument("name")
+@click.option("--type", "container_type", default="generic")
+@click.option("--secret", "secret_refs", multiple=True)
+@click.pass_context
+def secret_container_create(ctx, name, container_type, secret_refs):
+    body = {
+        "name": name,
+        "container_type": container_type,
+        "secret_refs": list(secret_refs)
+    }
+    data = _api("post", f"{DEFAULT_URLS['key-manager']}/containers", ctx.obj["profile"], json=body)
+    _output(data, ctx.obj["fmt"])
+
+@secret_container.command("show")
+@click.argument("container_id")
+@click.pass_context
+def secret_container_show(ctx, container_id):
+    data = _api("get", f"{DEFAULT_URLS['key-manager']}/containers/{container_id}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@secret_container.command("delete")
+@click.argument("container_id")
+@click.pass_context
+def secret_container_delete(ctx, container_id):
+    _api("delete", f"{DEFAULT_URLS['key-manager']}/containers/{container_id}", ctx.obj["profile"])
+    click.echo(f"✓ Secret container {container_id} deleted")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VPNAAS (IPsec VPN)
+# ═══════════════════════════════════════════════════════════════════════════════
+@cli.group("vpn")
+@click.pass_context
+def vpn(ctx):
+    """IPsec Site-to-Site VPN management"""
+
+@vpn.group("ikepolicy")
+@click.pass_context
+def vpn_ikepolicy(ctx):
+    """IKE Policy management"""
+
+@vpn_ikepolicy.command("list")
+@click.pass_context
+def vpn_ikepolicy_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['network']}/vpn/ikepolicies", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "auth_algorithm", "encryption_algorithm", "phase1_negotiation_mode", "pfs"])
+
+@vpn_ikepolicy.command("create")
+@click.argument("name")
+@click.option("--auth-algo", default="sha256")
+@click.option("--enc-algo", default="aes-256")
+@click.option("--pfs", default="group14")
+@click.pass_context
+def vpn_ikepolicy_create(ctx, name, auth_algo, enc_algo, pfs):
+    body = {"name": name, "auth_algorithm": auth_algo, "encryption_algorithm": enc_algo, "pfs": pfs}
+    data = _api("post", f"{DEFAULT_URLS['network']}/vpn/ikepolicies", ctx.obj["profile"], json=body)
+    _output(data, ctx.obj["fmt"])
+
+@vpn_ikepolicy.command("delete")
+@click.argument("policy_id")
+@click.pass_context
+def vpn_ikepolicy_delete(ctx, policy_id):
+    _api("delete", f"{DEFAULT_URLS['network']}/vpn/ikepolicies/{policy_id}", ctx.obj["profile"])
+    click.echo(f"✓ IKE Policy {policy_id} deleted")
+
+
+@vpn.group("ipsecpolicy")
+@click.pass_context
+def vpn_ipsecpolicy(ctx):
+    """IPsec Policy management"""
+
+@vpn_ipsecpolicy.command("list")
+@click.pass_context
+def vpn_ipsecpolicy_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['network']}/vpn/ipsecpolicies", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "auth_algorithm", "encryption_algorithm", "pfs", "transform_protocol"])
+
+@vpn_ipsecpolicy.command("create")
+@click.argument("name")
+@click.option("--auth-algo", default="sha256")
+@click.option("--enc-algo", default="aes-256")
+@click.option("--pfs", default="group14")
+@click.pass_context
+def vpn_ipsecpolicy_create(ctx, name, auth_algo, enc_algo, pfs):
+    body = {"name": name, "auth_algorithm": auth_algo, "encryption_algorithm": enc_algo, "pfs": pfs}
+    data = _api("post", f"{DEFAULT_URLS['network']}/vpn/ipsecpolicies", ctx.obj["profile"], json=body)
+    _output(data, ctx.obj["fmt"])
+
+@vpn_ipsecpolicy.command("delete")
+@click.argument("policy_id")
+@click.pass_context
+def vpn_ipsecpolicy_delete(ctx, policy_id):
+    _api("delete", f"{DEFAULT_URLS['network']}/vpn/ipsecpolicies/{policy_id}", ctx.obj["profile"])
+    click.echo(f"✓ IPsec Policy {policy_id} deleted")
+
+
+@vpn.group("connection")
+@click.pass_context
+def vpn_connection(ctx):
+    """VPN Site Connection management"""
+
+@vpn_connection.command("list")
+@click.pass_context
+def vpn_connection_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['network']}/vpn/site-connections", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "router_id", "peer_address", "peer_cidrs", "status"])
+
+@vpn_connection.command("create")
+@click.argument("name")
+@click.option("--router", "router_id", required=True)
+@click.option("--peer-address", required=True)
+@click.option("--peer-id", required=True)
+@click.option("--peer-cidr", "peer_cidrs", multiple=True, required=True)
+@click.option("--psk", required=True)
+@click.option("--ikepolicy", "ikepolicy_id", required=True)
+@click.option("--ipsecpolicy", "ipsecpolicy_id", required=True)
+@click.pass_context
+def vpn_connection_create(ctx, name, router_id, peer_address, peer_id, peer_cidrs, psk, ikepolicy_id, ipsecpolicy_id):
+    body = {
+        "name": name,
+        "router_id": router_id,
+        "peer_address": peer_address,
+        "peer_id": peer_id,
+        "peer_cidrs": list(peer_cidrs),
+        "psk": psk,
+        "ikepolicy_id": ikepolicy_id,
+        "ipsecpolicy_id": ipsecpolicy_id,
+    }
+    data = _api("post", f"{DEFAULT_URLS['network']}/vpn/site-connections", ctx.obj["profile"], json=body)
+    _output(data, ctx.obj["fmt"])
+
+@vpn_connection.command("show")
+@click.argument("conn_id")
+@click.pass_context
+def vpn_connection_show(ctx, conn_id):
+    data = _api("get", f"{DEFAULT_URLS['network']}/vpn/site-connections/{conn_id}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@vpn_connection.command("delete")
+@click.argument("conn_id")
+@click.pass_context
+def vpn_connection_delete(ctx, conn_id):
+    _api("delete", f"{DEFAULT_URLS['network']}/vpn/site-connections/{conn_id}", ctx.obj["profile"])
+    click.echo(f"✓ VPN site connection {conn_id} deleted")
+
+@vpn_connection.command("config")
+@click.argument("conn_id")
+@click.pass_context
+def vpn_connection_config(ctx, conn_id):
+    data = _api("post", f"{DEFAULT_URLS['network']}/vpn/site-connections/{conn_id}/config", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+
+# ── Managed Kubernetes Engine Commands ─────────────────────────────────────────
+
+@cli.group("k8s-template")
+@click.pass_context
+def k8s_template(ctx):
+    """Manage Kubernetes Cluster Templates"""
+
+@k8s_template.command("list")
+@click.pass_context
+def k8s_template_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['k8s-engine']}/cluster-templates", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "k8s_version", "master_flavor", "worker_flavor", "image_id"])
+
+@k8s_template.command("create")
+@click.argument("name")
+@click.option("--image", "image_id", required=True, help="Image ID for k8s nodes")
+@click.option("--k8s-version", default="v1.30.2+k3s1")
+@click.option("--master-flavor", default="m1.medium")
+@click.option("--worker-flavor", default="m1.small")
+@click.option("--network-driver", default="ovn")
+@click.option("--volume-driver", default="cloudx-csi")
+@click.pass_context
+def k8s_template_create(ctx, name, image_id, k8s_version, master_flavor, worker_flavor, network_driver, volume_driver):
+    body = {
+        "name": name,
+        "image_id": image_id,
+        "k8s_version": k8s_version,
+        "master_flavor": master_flavor,
+        "worker_flavor": worker_flavor,
+        "network_driver": network_driver,
+        "volume_driver": volume_driver
+    }
+    data = _api("post", f"{DEFAULT_URLS['k8s-engine']}/cluster-templates", ctx.obj["profile"], json=body)
+    _output(data, ctx.obj["fmt"])
+
+@k8s_template.command("show")
+@click.argument("template_id")
+@click.pass_context
+def k8s_template_show(ctx, template_id):
+    data = _api("get", f"{DEFAULT_URLS['k8s-engine']}/cluster-templates/{template_id}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@k8s_template.command("delete")
+@click.argument("template_id")
+@click.pass_context
+def k8s_template_delete(ctx, template_id):
+    _api("delete", f"{DEFAULT_URLS['k8s-engine']}/cluster-templates/{template_id}", ctx.obj["profile"])
+    click.echo(f"✓ Cluster Template {template_id} deleted")
+
+
+@cli.group("cluster")
+@click.pass_context
+def k8s_cluster(ctx):
+    """Manage Kubernetes Clusters"""
+
+@k8s_cluster.command("list")
+@click.pass_context
+def k8s_cluster_list(ctx):
+    data = _api("get", f"{DEFAULT_URLS['k8s-engine']}/clusters", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "template_id", "master_count", "worker_count", "status"])
+
+@k8s_cluster.command("create")
+@click.argument("name")
+@click.option("--template", "template_id", required=True, help="Cluster Template ID")
+@click.option("--network", "network_id", required=True, help="Network ID")
+@click.option("--masters", "master_count", default=1, type=int)
+@click.option("--workers", "worker_count", default=2, type=int)
+@click.pass_context
+def k8s_cluster_create(ctx, name, template_id, network_id, master_count, worker_count):
+    body = {
+        "name": name,
+        "template_id": template_id,
+        "network_id": network_id,
+        "master_count": master_count,
+        "worker_count": worker_count
+    }
+    data = _api("post", f"{DEFAULT_URLS['k8s-engine']}/clusters", ctx.obj["profile"], json=body)
+    _output(data, ctx.obj["fmt"])
+
+@k8s_cluster.command("show")
+@click.argument("cluster_id")
+@click.pass_context
+def k8s_cluster_show(ctx, cluster_id):
+    data = _api("get", f"{DEFAULT_URLS['k8s-engine']}/clusters/{cluster_id}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+@k8s_cluster.command("scale")
+@click.argument("cluster_id")
+@click.option("--workers", "worker_count", required=True, type=int)
+@click.pass_context
+def k8s_cluster_scale(ctx, cluster_id, worker_count):
+    body = {"worker_count": worker_count}
+    data = _api("post", f"{DEFAULT_URLS['k8s-engine']}/clusters/{cluster_id}/scale", ctx.obj["profile"], json=body)
+    _output(data, ctx.obj["fmt"])
+
+@k8s_cluster.command("kubeconfig")
+@click.argument("cluster_id")
+@click.pass_context
+def k8s_cluster_kubeconfig(ctx, cluster_id):
+    data = _api("get", f"{DEFAULT_URLS['k8s-engine']}/clusters/{cluster_id}/kubeconfig", ctx.obj["profile"])
+    click.echo(data.get("kubeconfig", ""))
+
+@k8s_cluster.command("delete")
+@click.argument("cluster_id")
+@click.pass_context
+def k8s_cluster_delete(ctx, cluster_id):
+    _api("delete", f"{DEFAULT_URLS['k8s-engine']}/clusters/{cluster_id}", ctx.obj["profile"])
+    click.echo(f"✓ Kubernetes Cluster {cluster_id} deleted")
+
+
+# ── Systemd Service Management Commands ────────────────────────────────────────
+
+@cli.group("service")
+@click.pass_context
+def cloudx_service(ctx):
+    """Manage CloudX systemd services & daemon lifecycle"""
+
+@cloudx_service.command("list")
+@click.pass_context
+def cloudx_service_list(ctx):
+    """List all installed CloudX systemd services"""
+    res = os.system("systemctl list-units 'cloudx-*' --no-pager")
+    if res != 0:
+        click.echo("Systemd services list unavailable or not running on Linux systemd host.")
+
+@cloudx_service.command("status")
+@click.argument("service_name", required=False)
+@click.pass_context
+def cloudx_service_status(ctx, service_name):
+    """Check status of a specific service or all CloudX services"""
+    target = f"cloudx-{service_name}" if service_name and not service_name.startswith("cloudx-") else (service_name or "cloudx-*")
+    os.system(f"systemctl status {target} --no-pager")
+
+@cloudx_service.command("restart")
+@click.argument("service_name")
+@click.pass_context
+def cloudx_service_restart(ctx, service_name):
+    """Restart a CloudX systemd service"""
+    target = f"cloudx-{service_name}" if not service_name.startswith("cloudx-") else service_name
+    res = os.system(f"sudo systemctl restart {target}")
+    if res == 0:
+        click.echo(f"✓ Service {target} restarted")
+    else:
+        click.echo(f"❌ Failed to restart {target}")
+
+@cloudx_service.command("logs")
+@click.argument("service_name")
+@click.option("--follow", "-f", is_flag=True, help="Follow journal output")
+@click.option("--lines", "-n", default=50, help="Number of journal lines to show")
+@click.pass_context
+def cloudx_service_logs(ctx, service_name, follow, lines):
+    """View journalctl logs for a CloudX service"""
+    target = f"cloudx-{service_name}" if not service_name.startswith("cloudx-") else service_name
+    flags = "-f" if follow else f"-n {lines}"
+    os.system(f"journalctl -u {target} {flags} --no-pager")
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

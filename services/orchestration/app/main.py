@@ -1,3 +1,12 @@
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+try:
+    from shared.config import load_service_config
+    load_service_config("orchestration-api")
+except Exception as _cfg_err:
+    pass
+
 """
 cloudx Orchestration API — Auto-Scaling Group Engine
 ======================================================
@@ -10,7 +19,6 @@ Microservice independen (Fase 6.2) untuk mengelola Auto-Scaling Group:
 Database: cloudx_orchestration
 """
 
-from __future__ import annotations
 
 import logging
 import os

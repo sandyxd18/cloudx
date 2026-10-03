@@ -1,3 +1,12 @@
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+try:
+    from shared.config import load_service_config
+    load_service_config("telemetry-api")
+except Exception as _cfg_err:
+    pass
+
 """
 cloudx Telemetry API — Metrics Collection & Prometheus Exporter
 ================================================================
@@ -5,7 +14,6 @@ cloudx Telemetry API — Metrics Collection & Prometheus Exporter
 Service Fase 5.1: mengumpulkan dan mengekspos metrik real-time per VM/tenant.
 """
 
-from __future__ import annotations
 
 import logging
 import os

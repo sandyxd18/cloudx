@@ -1,0 +1,10 @@
+[DEFAULT]
+host = 127.0.0.1
+port = 8010
+log_level = info
+
+[database]
+url = postgresql+psycopg2://mini:mini@127.0.0.1:5432/mini_openstack
+
+[service_urls]
+auth_url = http://127.0.0.1:8005

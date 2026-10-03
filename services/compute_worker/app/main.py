@@ -1,3 +1,12 @@
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+try:
+    from shared.config import load_service_config
+    load_service_config("compute-worker")
+except Exception as _cfg_err:
+    pass
+
 """
 cloudx Compute Worker — AMQP Consumer (nova-compute equivalent)
 ================================================================
@@ -17,7 +26,6 @@ RPC handlers (crash, OOM, host reboot, `virsh destroy`, ...). See
 ``sync_power_states`` for the reconciliation rules.
 """
 
-from __future__ import annotations
 
 import logging
 import os
@@ -41,7 +49,22 @@ from pathlib import Path  # noqa: E402
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@rabbitmq:5672/")
 LOG_LEVEL    = os.getenv("LOG_LEVEL", "INFO")
-COMPUTE_HOST = os.getenv("COMPUTE_HOST", "single-node")
+COMPUTE_HOST = os.getenv("COMPUTE_HOST", os.getenv("NODE_NAME", "cloudx-compute-01"))
+PLACEMENT_API_URL = os.getenv("PLACEMENT_API_URL", "http://192.168.10.10:8006")
+
+def placement_registration_loop() -> None:
+    """Background daemon loop — registers compute node in Placement API."""
+    log.info("[placement] node registration loop started (host=%s)", COMPUTE_HOST)
+    url = f"{PLACEMENT_API_URL.rstrip('/')}/internal/resource_providers"
+    while True:
+        try:
+            r = requests.post(url, json={"name": COMPUTE_HOST}, timeout=5)
+            if r.status_code in (200, 201, 409):
+                log.info("[placement] node '%s' registered in Placement API", COMPUTE_HOST)
+                break
+        except Exception as exc:
+            log.debug("[placement] registration retry for '%s': %s", COMPUTE_HOST, exc)
+        time.sleep(10)
 SYNC_POWER_STATE_INTERVAL = int(os.getenv("SYNC_POWER_STATE_INTERVAL", "30"))
 
 # Instance monitoring (EC2-style "Monitoring" tab): sample every 10s, keep 24h.
@@ -416,7 +439,7 @@ def wait_for_volume_ready(
                 vol = resp.json()
                 status = vol.get("status", "")
                 path = vol.get("path", "")
-                if status == "available" and path:
+                if status == "available":
                     log.info("Volume %s is ready at %s", volume_id, path)
                     return vol
                 if status == "error":
@@ -971,6 +994,7 @@ def main():
 
     threading.Thread(target=sync_power_states_loop, daemon=True).start()
     threading.Thread(target=collect_metrics_loop, daemon=True).start()
+    threading.Thread(target=placement_registration_loop, daemon=True).start()
 
     consumer = RPCConsumer(
         queue_name="compute",

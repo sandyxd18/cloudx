@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 cloudx Image Worker — AMQP Consumer (glance-import equivalent)
 ==============================================================
@@ -8,7 +9,6 @@ Handles asynchronous image import tasks dispatched by the image-api.
 Supported handlers:
   - import_image_task: Download image from URL → store locally / in MinIO → mark task/image ACTIVE
 """
-from __future__ import annotations
 
 import hashlib
 import logging

@@ -1,0 +1,17 @@
+[DEFAULT]
+host = 127.0.0.1
+port = 8004
+log_level = info
+
+[database]
+url = postgresql+psycopg2://mini:mini@127.0.0.1:5432/mini_openstack
+
+[transport]
+rabbitmq_url = amqp://mini:mini@127.0.0.1:5672/
+
+[storage]
+lvm_driver = true
+lvm_vg = vg-cloudx
+
+[service_urls]
+auth_url = http://127.0.0.1:8005

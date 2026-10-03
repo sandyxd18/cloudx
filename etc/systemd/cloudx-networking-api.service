@@ -1,0 +1,17 @@
+[Unit]
+Description=CloudX Networking API Service (Neutron-like)
+After=network.target postgresql.service ovn-central.service
+Wants=postgresql.service ovn-central.service
+
+[Service]
+Environment=PYTHONPATH=/opt/cloudx/services
+Type=simple
+User=cloudx
+Group=cloudx
+WorkingDirectory=/opt/cloudx/services/networking
+ExecStart=/opt/cloudx/venv/bin/gunicorn -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8001 app.main:app
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

@@ -122,14 +122,10 @@ def domain_xml(
     ET.SubElement(iface, "target", dev=tap_name, managed="no")
     ET.SubElement(iface, "model", type="virtio")
 
-    # Serial console — explicit target agar virsh console selalu bisa terhubung
-    # CirrOS dan Ubuntu cloud image mengirim output ke ttyS0 (port 0) secara default
+    # Serial console — target type="serial" port 0 agar virsh console terhubung ke ttyS0
     instance_dir = Path(seed_iso).parent
     console_log_path = instance_dir / "console.log"
 
-    serial = ET.SubElement(devices, "serial", type="pty")
-    ET.SubElement(serial, "target", type="isa-serial", port="0")
-    
     console = ET.SubElement(devices, "console", type="pty")
     ET.SubElement(console, "target", type="serial", port="0")
     ET.SubElement(console, "log", file=str(console_log_path), append="on")

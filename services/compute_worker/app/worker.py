@@ -64,7 +64,15 @@ def spawn_server(server_id: str, payload: dict) -> dict:
         disk_path = Path(root_volume["path"])
         if not disk_path.exists():
             raise RuntimeError(f"root volume path does not exist: {disk_path}")
-        seed_iso = cloudinit.create_config_drive(instance_dir, server_id, server_name, payload.get("public_key_snapshot"), port, payload.get("user_data"))
+        seed_iso = cloudinit.create_config_drive(
+            instance_dir,
+            server_id,
+            server_name,
+            payload.get("public_key_snapshot"),
+            port,
+            payload.get("user_data"),
+            payload.get("keypair_name"),
+        )
         console_log = instance_dir / "console.log"
         console_log.touch(exist_ok=True)
         console_log.chmod(0o666)

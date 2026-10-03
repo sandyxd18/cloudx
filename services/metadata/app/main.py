@@ -255,16 +255,19 @@ def ec2_block_device_mapping(version: str):
 
 
 @app.get("/{version}/meta-data/public-keys/", response_class=PlainTextResponse)
+@app.get("/{version}/public-keys/", response_class=PlainTextResponse)
 def ec2_public_keys(version: str, request: Request, instance_id: str | None = None, port_id: str | None = None, fixed_ip: str | None = None):
     return public_keys_index(lookup_metadata(request, instance_id, port_id, fixed_ip))
 
 
 @app.get("/{version}/meta-data/public-keys/0/", response_class=PlainTextResponse)
+@app.get("/{version}/public-keys/0/", response_class=PlainTextResponse)
 def ec2_public_key_zero(version: str, request: Request, instance_id: str | None = None, port_id: str | None = None, fixed_ip: str | None = None):
     return public_key_zero_index(lookup_metadata(request, instance_id, port_id, fixed_ip))
 
 
 @app.get("/{version}/meta-data/public-keys/0/openssh-key", response_class=PlainTextResponse)
+@app.get("/{version}/public-keys/0/openssh-key", response_class=PlainTextResponse)
 def ec2_openssh_key(version: str, request: Request, instance_id: str | None = None, port_id: str | None = None, fixed_ip: str | None = None):
     return first_public_key(lookup_metadata(request, instance_id, port_id, fixed_ip))
 

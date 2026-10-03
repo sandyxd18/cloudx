@@ -120,14 +120,25 @@ export function fmtBytes(bytes) {
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`
 }
 
+function parseUtcDate(dt) {
+  if (!dt) return null
+  if (typeof dt === 'string' && !dt.endsWith('Z') && !dt.includes('+')) {
+    return new Date(dt + 'Z')
+  }
+  return new Date(dt)
+}
+
 export function fmtDate(dt) {
-  if (!dt) return '—'
-  return new Date(dt).toLocaleString()
+  const d = parseUtcDate(dt)
+  if (!d || isNaN(d.getTime())) return '—'
+  return d.toLocaleString()
 }
 
 export function timeAgo(dt) {
-  if (!dt) return '—'
-  const diff = Math.floor((Date.now() - new Date(dt).getTime()) / 1000)
+  const d = parseUtcDate(dt)
+  if (!d || isNaN(d.getTime())) return '—'
+  const diff = Math.floor((Date.now() - d.getTime()) / 1000)
+  if (diff <= 0) return 'just now'
   if (diff < 60) return `${diff}s ago`
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`

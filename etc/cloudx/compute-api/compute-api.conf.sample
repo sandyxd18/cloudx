@@ -1,0 +1,18 @@
+[DEFAULT]
+host = 127.0.0.1
+port = 8003
+log_level = info
+workers = 4
+
+[database]
+url = postgresql+psycopg2://mini:mini@127.0.0.1:5432/mini_openstack
+
+[transport]
+rabbitmq_url = amqp://mini:mini@127.0.0.1:5672/
+
+[service_urls]
+auth_url = http://127.0.0.1:8005
+placement_url = http://127.0.0.1:8006
+networking_url = http://127.0.0.1:8001
+block_store_url = http://127.0.0.1:8004
+image_url = http://127.0.0.1:8002

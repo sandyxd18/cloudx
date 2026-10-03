@@ -45,6 +45,17 @@ import LoadBalancersPage from './pages/LoadBalancers.jsx'
 import LoadBalancerCreatePage from './pages/LoadBalancerCreate.jsx'
 import LoadBalancerDetailPage from './pages/LoadBalancerDetail.jsx'
 import VolumeTypeCreatePage from './pages/VolumeTypeCreate.jsx'
+import BucketTypesPage from './pages/BucketTypes.jsx'
+import K8sEnginePage from './pages/K8sEngine.jsx'
+import ScalingGroupsPage from './pages/ScalingGroups.jsx'
+import SecretsPage from './pages/Secrets.jsx'
+import VpcPeeringPage from './pages/VpcPeering.jsx'
+import VpnGatewaysPage from './pages/VpnGateways.jsx'
+import BgpPeersPage from './pages/BgpPeers.jsx'
+import TelemetryPage from './pages/Telemetry.jsx'
+import BillingPage from './pages/Billing.jsx'
+import EventLogsPage from './pages/EventLogs.jsx'
+import HypervisorsPage from './pages/Hypervisors.jsx'
 import ServerGroupsPage from './pages/ServerGroups.jsx'
 import ServerGroupCreatePage from './pages/ServerGroupCreate.jsx'
 import ServerGroupDetailPage from './pages/ServerGroupDetail.jsx'
@@ -117,6 +128,16 @@ function AppRoutes() {
           <Route path="server-groups" element={<ServerGroupsPage />} />
           <Route path="server-groups/create" element={<ServerGroupCreatePage />} />
           <Route path="server-groups/:id" element={<ServerGroupDetailPage />} />
+          <Route path="scaling-groups" element={<ScalingGroupsPage />} />
+          <Route path="k8s-engine" element={<K8sEnginePage />} />
+          <Route path="secrets" element={<SecretsPage />} />
+          <Route path="vpc-peering" element={<VpcPeeringPage />} />
+          <Route path="vpn-gateways" element={<VpnGatewaysPage />} />
+          <Route path="bgp-peers" element={<BgpPeersPage />} />
+          <Route path="telemetry" element={<TelemetryPage />} />
+          <Route path="billing" element={<BillingPage />} />
+          <Route path="event-logs" element={<EventLogsPage />} />
+          <Route path="hypervisors" element={<HypervisorsPage />} />
           <Route path="networks" element={<NetworksPage />} />
           <Route path="networks/create" element={<NetworkCreatePage />} />
           <Route path="networks/:id" element={<NetworkDetailPage />} />
@@ -138,6 +159,7 @@ function AppRoutes() {
           <Route path="volumes/:id" element={<VolumeDetailPage />} />
           <Route path="volume-types" element={<VolumeTypesPage />} />
           <Route path="volume-types/create" element={<VolumeTypeCreatePage />} />
+          <Route path="bucket-types" element={<BucketTypesPage />} />
           <Route path="snapshots" element={<SnapshotsPage />} />
           <Route path="snapshots/create" element={<SnapshotCreatePage />} />
           <Route path="snapshots/:id" element={<SnapshotDetailPage />} />

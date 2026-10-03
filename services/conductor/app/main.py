@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 cloudx Conductor — nova-conductor equivalent
 ==============================================
@@ -30,7 +31,6 @@ Block Storage:
 - ``mark_snapshot_error``  — set status=error on a snapshot
 """
 
-from __future__ import annotations
 
 import logging
 import os

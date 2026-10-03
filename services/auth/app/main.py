@@ -1,3 +1,11 @@
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+try:
+    from shared.config import load_service_config
+    load_service_config("auth-api")
+except Exception as _cfg_err:
+    pass
+
 # Auth service – Keystone-like identity, authentication, and access control for cloudx.
 #
 # Provides:

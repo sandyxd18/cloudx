@@ -1,10 +1,18 @@
+from __future__ import annotations
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+try:
+    from shared.config import load_service_config
+    load_service_config("object-store-api")
+except Exception as _cfg_err:
+    pass
+
 """
 cloudx Object Store API (swift/s3-compatible)
 ==============================================
 
 Manages buckets, objects, and bucket-types for multi-tenant object storage.
 """
-from __future__ import annotations
 
 import json
 import logging

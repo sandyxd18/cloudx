@@ -1,0 +1,16 @@
+[DEFAULT]
+host = 127.0.0.1
+port = 8013
+log_level = info
+
+[database]
+url = postgresql+psycopg2://mini:mini@127.0.0.1:5432/cloudx_orchestration
+
+[transport]
+rabbitmq_url = amqp://mini:mini@127.0.0.1:5672/
+
+[service_urls]
+auth_url = http://127.0.0.1:8005
+telemetry_url = http://127.0.0.1:8010
+compute_url = http://127.0.0.1:8003
+load_balancer_url = http://127.0.0.1:8008
