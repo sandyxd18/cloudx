@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -74,7 +75,8 @@ def test_block_store_cli_new_help(command):
 
 def test_network_create_help_has_no_provider_nic_options():
     script = Path(__file__).resolve().parents[2] / "cli" / "networking"
-    result = subprocess.run([sys.executable, str(script), "network", "create", "-h"], text=True, capture_output=True, timeout=10)
+    result = subprocess.run([sys.executable, str(script), "network", "create", "-h"], text=True, capture_output=True, timeout=10,
+                            env={**{k: v for k, v in os.environ.items() if k != "GITHUB_ACTIONS"}, "TERMINAL_WIDTH": "200", "NO_COLOR": "1"})
     assert result.returncode == 0, result.stderr
     assert "--external" in result.stdout
     assert "--provider-bridge" not in result.stdout
