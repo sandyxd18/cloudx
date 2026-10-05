@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import threading
 import time
 
@@ -30,6 +31,12 @@ from .drivers import lvm, ceph  # noqa: E402
 log = logging.getLogger("block-store-reconciler")
 
 RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL_SECONDS", "60"))
+# LVM objects live on one node: a worker may only judge the ones it owns
+BLOCK_STORE_HOST = os.getenv("BLOCK_STORE_HOST") or socket.gethostname()
+
+
+def _owned_by_other_node(record: dict) -> bool:
+    return record.get("backend", "lvm").lower() == "lvm" and record.get("host") not in (None, "", BLOCK_STORE_HOST)
 
 # ── Statuses we are allowed to correct (same pattern as compute_worker) ───────
 _RECONCILE_MANAGED_VOLUME_STATUSES = {
@@ -118,6 +125,8 @@ def reconcile_volumes(rpc_client) -> None:
         db_status = vol.get("status", "").lower()
         if db_status not in _RECONCILE_MANAGED_VOLUME_STATUSES:
             continue  # skip transient / handler-owned statuses
+        if _owned_by_other_node(vol):
+            continue  # another node's LV: its own worker reconciles it
 
         physical_exists = _backend_exists_for_volume(vol)
         if physical_exists is None:
@@ -176,6 +185,8 @@ def reconcile_snapshots(rpc_client) -> None:
     for snap in snaps:
         db_status = snap.get("status", "").lower()
         if db_status not in ("available", "error", "deleting"):
+            continue
+        if _owned_by_other_node(snap):
             continue
 
         physical_exists = _backend_exists_for_snapshot(snap)

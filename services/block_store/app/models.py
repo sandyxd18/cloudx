@@ -43,6 +43,8 @@ class Volume(Base):
     attached_to_server_id: Mapped[str|None] = mapped_column(String, nullable=True)
     path:                  Mapped[str]      = mapped_column(String, default="")
     backend:               Mapped[str|None] = mapped_column(String, nullable=True, default="lvm")
+    # Storage node that owns the LV (NULL = host-independent backend or a volume created before multi-node LVM)
+    host:                  Mapped[str|None] = mapped_column(String, nullable=True)
     bootable:              Mapped[bool]     = mapped_column(Boolean, default=False)
     image_id:              Mapped[str|None] = mapped_column(String, nullable=True)
     snapshot_id:           Mapped[str|None] = mapped_column(String, nullable=True)

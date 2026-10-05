@@ -148,6 +148,9 @@ def create_cgsnapshot(payload: CGSnapshotIn, current: CurrentUser, db: DB):
     volume_ids = json.loads(cg.volume_ids or "[]")
     if not volume_ids:
         raise HTTPException(status_code=400, detail="Consistency group has no volumes")
+    hosts = {v.host for v in db.scalars(select(Volume).where(Volume.id.in_(volume_ids)))}
+    if len(hosts) > 1:
+        raise HTTPException(status_code=409, detail="consistency group volumes live on different storage nodes")
 
     cgs = CGSnapshot(
         name=payload.name,
@@ -178,6 +181,7 @@ def create_cgsnapshot(payload: CGSnapshotIn, current: CurrentUser, db: DB):
         "cgsnapshot_id":      cgs.id,
         "consistency_group_id": cg.id,
         "volumes":            volumes_info,
+        "host":               next(iter(hosts), None),
     })
     log.info("CGSnapshot %s dispatched for group %s (%d volumes)", cgs.id, cg.id, len(volumes_info))
     return _cgs_to_dict(cgs)

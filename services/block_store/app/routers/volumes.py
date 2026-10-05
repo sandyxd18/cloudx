@@ -79,6 +79,7 @@ def get_volume_internal(ref: str, db: DB):
         "path":     volume.path,
         "bootable": volume.bootable,
         "backend":  volume.backend,
+        "host":     volume.host,
         "target_device": volume.target_device,
         "error_message": volume.error_message,
     }
@@ -231,6 +232,7 @@ def attach_volume(ref: str, payload: AttachIn, db: DB):
                 "volume_name": volume.name,
                 "path":        volume.path,
                 "backend":     volume.backend or "lvm",
+                "host":        volume.host,
                 "target_dev":  target_device,
             },
             timeout=60,
@@ -265,6 +267,7 @@ def detach_volume(ref: str, db: DB):
                 "volume_name": volume.name,
                 "path":        volume.path,
                 "backend":     volume.backend or "lvm",
+                "host":        volume.host,
                 "target_dev":  volume.target_device,
             },
             timeout=60,

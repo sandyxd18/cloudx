@@ -317,7 +317,7 @@ def handle_list_all_volumes(_args: dict) -> dict:
     with SessionLocal() as db:
         rows = db.execute(
             text(
-                "SELECT id, name, status, backend, path, size_gb, "
+                "SELECT id, name, status, backend, host, path, size_gb, "
                 "attached_to_server_id, target_device, project_id "
                 "FROM block_store_volumes"
             ),
@@ -330,8 +330,8 @@ def handle_list_all_snapshots(_args: dict) -> dict:
     with SessionLocal() as db:
         rows = db.execute(
             text(
-                "SELECT id, name, status, backend, path, size_gb, volume_id "
-                "FROM block_store_snapshots"
+                "SELECT s.id, s.name, s.status, s.backend, s.path, s.size_gb, s.volume_id, v.host "
+                "FROM block_store_snapshots s LEFT JOIN block_store_volumes v ON v.id = s.volume_id"
             ),
         ).mappings().all()
     return {"snapshots": [dict(row) for row in rows]}

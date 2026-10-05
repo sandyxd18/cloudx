@@ -8,6 +8,7 @@ from ..lookups import require_volume
 from ..models import Volume, VolumeBackup, new_id
 from ..schemas import BackupIn, RestoreIn
 from ..serializers import obj_to_dict
+from ..service import pick_lvm_host
 
 router = APIRouter()
 
@@ -100,6 +101,7 @@ def restore_backup(backup_id: str, payload: RestoreIn, current: CurrentUser, db:
         size_gb=b.size_gb,
         status="creating",
         backend=b.backend,
+        host=pick_lvm_host(db) if b.backend == "lvm" else None,
         volume_type=payload.volume_type,
         project_id=current.get("project_id"),
     )

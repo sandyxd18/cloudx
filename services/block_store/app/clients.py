@@ -1,6 +1,6 @@
 import requests
 from fastapi import HTTPException
-from shared.rpc import RPCClient
+from shared.rpc import RPCClient, host_queue
 from sqlalchemy import text
 
 from shared.service_client import ServiceClient
@@ -42,10 +42,27 @@ def get_server(ref: str) -> dict:
 
 # ── RPC helpers ────────────────────────────────────────────────────────────────
 
+def worker_host(payload: dict) -> str | None:
+    """Storage node that owns the volume/snapshot a message is about (None = any worker)."""
+    from .models import Snapshot, Volume
+
+    if payload.get("host"):
+        return payload["host"]
+    with SessionLocal() as db:
+        volume_id = payload.get("volume_id")
+        if not volume_id and payload.get("snapshot_id"):
+            snapshot = db.get(Snapshot, payload["snapshot_id"])
+            volume_id = snapshot.volume_id if snapshot else None
+        volume = db.get(Volume, volume_id) if volume_id else None
+    return volume.host if volume else None
+
+
 def cast_to_worker(method: str, payload: dict) -> None:
-    """Fire-and-forget to block-store-worker via RabbitMQ."""
-    _rpc.cast("block-store", method, payload)
-    log.info("CAST block-store.%s for %s", method, payload.get("volume_id") or payload.get("snapshot_id", "?"))
+    """Fire-and-forget to the block-store-worker that owns the volume (any worker if it has no host)."""
+    host = worker_host(payload)
+    _rpc.cast(host_queue("block-store", host), method, payload)
+    log.info("CAST block-store.%s for %s (host=%s)", method,
+             payload.get("volume_id") or payload.get("snapshot_id", "?"), host or "any")
 
 
 def start_rpc(url: str) -> None:

@@ -18,6 +18,7 @@ Handlers:
 
 import logging
 import os
+import socket
 import sys
 import tempfile
 import time
@@ -28,9 +29,9 @@ import requests
 
 # Append parent so shared/ is importable
 from shared.proc import run  # noqa: E402
-from shared.rpc import RPCClient, RPCConsumer  # noqa: E402
+from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
-from .drivers import lvm, ceph, nfs  # noqa: E402
+from .drivers import lvm, ceph, nfs, iscsi  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -45,6 +46,11 @@ LVM_VG_NAME  = os.getenv("LVM_VG_NAME", "")
 LVM_PV_NAME  = os.getenv("LVM_PV_NAME", "")
 CEPH_POOL    = os.getenv("CEPH_POOL", "")
 CEPH_CONF    = os.getenv("CEPH_CONF", "/etc/ceph/ceph.conf")
+
+# Name of this storage node. The API addresses volumes to it (volume.host, BLOCK_STORE_LVM_HOSTS).
+BLOCK_STORE_HOST = os.getenv("BLOCK_STORE_HOST") or socket.gethostname()
+# Export LVM volumes over iSCSI so VMs on other nodes can attach them (needs targetcli-fb, see drivers/iscsi.py)
+ISCSI_EXPORT = os.getenv("ISCSI_EXPORT", "false").lower() == "true"
 
 # ── Volume backup → object storage (MinIO/S3) ──────────────────────────────────
 MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000").rstrip("/")
@@ -292,6 +298,8 @@ def handle_delete_volume(args: dict) -> None:
     log.info("Deleting volume %s (%s)", volume_id, backend)
     try:
         if backend == "lvm":
+            if ISCSI_EXPORT:
+                iscsi.remove(lv)  # an exported LV is busy until its target is gone
             lvm.delete(lv)
         elif backend == "ceph":
             ceph.delete(lv)
@@ -681,7 +689,29 @@ def handle_delete_backup(args: dict) -> None:
 # Handler dispatch table
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def handle_export_volume(args: dict) -> dict:
+    """RPC call from a compute-worker: let its iSCSI initiator log in to the volume. Returns the connection info."""
+    if not ISCSI_EXPORT:
+        raise RuntimeError("iSCSI export is not enabled on this storage node (ISCSI_EXPORT=true)")
+    lv = _lv_name(args["volume_id"])
+    info = iscsi.export(lv, lvm.device_path(lv), args["initiator_iqn"])
+    log.info("Exported %s to %s", lv, args["initiator_iqn"])
+    return info
+
+
+def handle_unexport_volume(args: dict) -> dict:
+    """RPC call from a compute-worker that logged out: revoke its access."""
+    if not ISCSI_EXPORT:
+        return {}
+    lv = _lv_name(args["volume_id"])
+    iscsi.unexport(lv, args["initiator_iqn"])
+    log.info("Unexported %s from %s", lv, args["initiator_iqn"])
+    return {}
+
+
 HANDLERS = {
+    "export_volume":    handle_export_volume,
+    "unexport_volume":  handle_unexport_volume,
     "create_volume":    handle_create_volume,
     "delete_volume":    handle_delete_volume,
     "extend_volume":    handle_extend_volume,
@@ -729,6 +759,7 @@ def main():
     log.info("  RabbitMQ: %s", RABBITMQ_URL.split("@")[-1])
     log.info("  LVM:  %s  VG=%s", STORAGE_LVM_DRIVER, LVM_VG_NAME)
     log.info("  Ceph: %s  Pool=%s", STORAGE_CEPH_RBD_DRIVER, CEPH_POOL)
+    log.info("  Host: %s  iSCSI export: %s", BLOCK_STORE_HOST, ISCSI_EXPORT)
     log.info("=" * 60)
 
     # Initialize storage backends (LVM VG, etc.).
@@ -757,8 +788,11 @@ def main():
     from .reconciler import start_reconcile_thread  # noqa: E402
     start_reconcile_thread(_rpc)
 
+    # Own queue for what is addressed to this node (its LVM volumes) + the shared queue for the rest
+    # (volumes without a host, backups in object storage).
     consumer = RPCConsumer(
-        queue_name="block-store",
+        queue_name=host_queue("block-store", BLOCK_STORE_HOST),
+        extra_queues=("block-store",),
         handlers=HANDLERS,
         rabbitmq_url=RABBITMQ_URL,
     )

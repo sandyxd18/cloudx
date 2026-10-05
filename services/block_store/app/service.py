@@ -1,11 +1,11 @@
 import requests
 from fastapi import HTTPException
 from shared.auth_middleware import CurrentUser
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import clients
-from .config import AUTH_API_URL, COMPUTE_API_URL, IMAGE_API_URL, log
+from .config import AUTH_API_URL, COMPUTE_API_URL, IMAGE_API_URL, LVM_HOSTS, log
 from .db import DB
 from .lookups import (
     _resolve_volume_type,
@@ -44,6 +44,19 @@ def _check_auth_volume_quota(project_id: str, size: int, db: Session):
         log.warning("Auth project volume quota check skipped: %s", exc)
 
 
+def pick_lvm_host(db: Session, hosts: list[str] | None = None) -> str | None:
+    """Storage node with the least allocated GB among the configured LVM hosts (None if none are configured)."""
+    hosts = LVM_HOSTS if hosts is None else hosts
+    if not hosts:
+        return None
+    used = dict(db.execute(
+        select(Volume.host, func.coalesce(func.sum(Volume.size_gb), 0))
+        .where(Volume.host.in_(hosts), Volume.status != "deleting")
+        .group_by(Volume.host)
+    ).all())
+    return min(hosts, key=lambda h: used.get(h, 0))  # min() keeps the first host on ties
+
+
 def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: str | None = None, multiattach: bool = False) -> dict:
     if get_volume(db, payload.name):
         raise HTTPException(status_code=409, detail="volume already exists")
@@ -63,6 +76,7 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
     vt = _resolve_volume_type(db, payload.volume_type)
     _validate_backend(vt)
     backend = vt.backend
+    host = None  # storage node (LVM only); clones and snapshot restores must stay on the source's node
 
     volume_id = new_id()
     source_type = payload.source_type
@@ -79,14 +93,20 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
         snapshot_id = snap.id
         source_type = "snapshot"
         backend = snap.backend or backend
+        source = db.get(Volume, snap.volume_id)
+        host = source.host if source else None
     elif source_vol_ref:
         src = require_volume(db, source_vol_ref)
         source_volume_id = src.id
         source_type = "volume"
         bootable = src.bootable
         backend = src.backend or backend
+        host = src.host
     else:
         source_type = source_type or "blank"
+
+    if backend == "lvm" and not (snapshot_ref or source_vol_ref):
+        host = pick_lvm_host(db)
 
     # Create DB record immediately with status='creating'
     volume = Volume(
@@ -96,6 +116,7 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
         status="creating",
         path="",                          # worker fills this in
         backend=backend,
+        host=host,
         bootable=bootable,
         image_id=image_ref or None,
         snapshot_id=snapshot_id,

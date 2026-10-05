@@ -33,6 +33,12 @@ def scalar(url, sql):
 def columns(url, table):
     return {c["name"] for c in inspect(create_engine(url)).get_columns(table)}
 
+def head_revision(svc):
+    """Newest revision of a service, from the file names (<service>_NNNN_<slug>.py)."""
+    names = sorted(p.name for p in (ROOT / svc / "migrations" / "versions").glob(f"{svc}_[0-9][0-9][0-9][0-9]_*.py"))
+    return names[-1][: len(svc) + 5]
+
+
 @pytest.mark.parametrize("svc", SERVICES)
 def test_baseline_matches_models(svc, tmp_path):
     """A freshly migrated database has exactly the tables, columns, indexes and keys the models declare."""
@@ -42,7 +48,7 @@ def test_baseline_matches_models(svc, tmp_path):
     with engine.connect() as conn:
         ctx = MigrationContext.configure(conn, opts={"version_table": version_table(svc), "compare_type": True})
         assert compare_metadata(ctx, models_metadata(svc)) == []
-        assert conn.execute(text(f"SELECT version_num FROM {version_table(svc)}")).scalar() == f"{svc}_0001"
+        assert conn.execute(text(f"SELECT version_num FROM {version_table(svc)}")).scalar() == head_revision(svc)
 
 @pytest.mark.parametrize("svc", SERVICES)
 def test_upgrade_adopts_database_created_by_old_create_all(svc, tmp_path):
@@ -136,3 +142,14 @@ def test_default_data_seeding_is_idempotent(svc, table, tmp_path, monkeypatch):
     first = scalar(url, f"SELECT count(*) FROM {table}")
     mod.init_db()  # restart against a populated database
     assert first > 0 and scalar(url, f"SELECT count(*) FROM {table}") == first
+
+def test_block_store_0002_adds_volume_host_without_touching_rows(tmp_path):
+    url = sqlite_url(tmp_path)
+    upgrade("block_store", url, ROOT, "block_store_0001")
+    run(url, "INSERT INTO block_store_volumes (id, name, size_gb, status, path, bootable, multiattach, replication_status, created_at) "
+             "VALUES ('v1', 'vol1', 1, 'available', '/dev/vg/v1', 0, 0, 'disabled', '2026-10-05 00:00:00')")
+    assert "host" not in columns(url, "block_store_volumes")
+    upgrade("block_store", url, ROOT)
+    assert "host" in columns(url, "block_store_volumes")
+    assert scalar(url, "SELECT host FROM block_store_volumes WHERE id = 'v1'") is None  # old volumes keep the shared queue
+    assert scalar(url, "SELECT path FROM block_store_volumes WHERE id = 'v1'") == "/dev/vg/v1"

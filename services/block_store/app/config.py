@@ -13,3 +13,6 @@ STORAGE_CEPH_RBD_DRIVER = os.getenv("STORAGE_CEPH_RBD_DRIVER", "false").lower() 
 STORAGE_NFS_DRIVER      = os.getenv("STORAGE_NFS_DRIVER", "true").lower() == "true"
 LVM_VG_NAME  = os.getenv("LVM_VG_NAME", "")
 CEPH_POOL    = os.getenv("CEPH_POOL", "")
+# Storage nodes that hold LVM volumes, as named by BLOCK_STORE_HOST on each block-store-worker
+# (comma separated). Empty = single shared queue, as before multi-node LVM.
+LVM_HOSTS = [h.strip() for h in os.getenv("BLOCK_STORE_LVM_HOSTS", "").split(",") if h.strip()]

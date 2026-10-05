@@ -12,6 +12,9 @@ rabbitmq_url = amqp://cloudx:cloudx@127.0.0.1:5672/
 [storage]
 lvm_driver = true
 lvm_vg = vg-cloudx
+# LVM volumes live on one node each. With several storage nodes, list them (the BLOCK_STORE_HOST of each
+# block-store-worker) and new volumes go to the node with the least allocated space.
+# block_store_lvm_hosts = cloudx-compute-01,cloudx-storage-01
 
 [service_urls]
 auth_url = http://127.0.0.1:8005
