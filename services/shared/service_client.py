@@ -23,7 +23,7 @@ log = logging.getLogger("cloudx-service-client")
 
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
-AUTH_ADMIN_PASSWORD = os.getenv("AUTH_ADMIN_PASSWORD", "admin123")
+AUTH_ADMIN_PASSWORD = os.environ["AUTH_ADMIN_PASSWORD"]
 
 
 class ServiceClient:

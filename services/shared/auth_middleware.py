@@ -18,15 +18,17 @@ Authentication methods (checked in order):
   3. X-Access-Key-Id + X-Secret-Access-Key  →  calls auth-api to exchange for token
 """
 
+import logging
 import os
 from typing import Annotated
 
 import requests
 from fastapi import Depends, HTTPException, Request
 from jose import JWTError, jwt
+log = logging.getLogger("cloudx-auth")
 
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000")
-SECRET_KEY   = os.getenv("AUTH_SECRET_KEY", "cloudx-secret-key-change-in-production-min32chars!")
+SECRET_KEY   = os.environ["AUTH_SECRET_KEY"]
 ALGORITHM    = "HS256"
 
 _OPEN_PATHS = {"/health", "/metrics", "/openapi.json", "/docs", "/redoc"}
@@ -56,8 +58,8 @@ def _exchange_access_key(request: Request) -> str | None:
         )
         if resp.status_code == 201:
             return resp.json().get("token")
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("access-key exchange with auth-api failed: %s", exc)
     return None
 
 

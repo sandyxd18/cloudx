@@ -36,7 +36,7 @@ import pika.exceptions
 
 log = logging.getLogger("cloudx.rpc")
 
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@rabbitmq:5672/")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
 EXCHANGE     = "cloudx"                # default topic exchange
 EVENT_EXCHANGE = "cloudx.events"       # fanout exchange for live events
 
@@ -82,7 +82,7 @@ class RPCClient:
         try:
             if self._connection and not self._connection.is_closed:
                 self._connection.close()
-        except Exception:
+        except Exception:  # best-effort: closing a stale connection; we reconnect right after
             pass
         self._connection = None
         self._channel = None
@@ -228,7 +228,7 @@ class RPCClient:
             if self._connection and not self._connection.is_closed:
                 try:
                     self._connection.close()
-                except Exception:
+                except Exception:  # best-effort: closing on shutdown
                     pass
             self._connection = None
             self._channel = None
