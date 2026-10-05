@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloudx-shared"
+version = "0.7.0"
+description = "CloudX shared library (config, auth middleware, RPC) imported by every service as `shared`"
+requires-python = ">=3.10"
+
+[project.scripts]
+cloudx-db-migrate = "shared.migrate:main"
+
+[tool.setuptools]
+packages = ["shared"]

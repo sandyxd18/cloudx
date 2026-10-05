@@ -153,3 +153,14 @@ def test_block_store_0002_adds_volume_host_without_touching_rows(tmp_path):
     assert "host" in columns(url, "block_store_volumes")
     assert scalar(url, "SELECT host FROM block_store_volumes WHERE id = 'v1'") is None  # old volumes keep the shared queue
     assert scalar(url, "SELECT path FROM block_store_volumes WHERE id = 'v1'") == "/dev/vg/v1"
+
+
+def test_services_pyproject_defines_the_installable_shared_package():
+    """`pip install services/` (installers, release tarball) needs this file: it once shipped empty."""
+    import tomllib
+
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert data["project"]["name"] == "cloudx-shared"
+    assert data["tool"]["setuptools"]["packages"] == ["shared"]
+    assert data["project"]["scripts"]["cloudx-db-migrate"] == "shared.migrate:main"
+    assert data["project"]["version"] == (ROOT.parent / "VERSION").read_text().strip()
