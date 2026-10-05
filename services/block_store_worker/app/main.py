@@ -211,7 +211,7 @@ def handle_create_volume(args: dict) -> None:
     source_volume_id = args.get("source_volume_id")
     source_path    = args.get("source_path")        # device path of source volume
     bootable       = args.get("bootable", False)
-    image_api_url  = args.get("_image_api_url", IMAGE_API_URL)
+    image_api_url  = (os.environ.get("IMAGE_API_URL") or args.get("_image_api_url") or IMAGE_API_URL).rstrip("/")  # own env wins: the API sends its own (loopback) address
     lvm_type       = args.get("lvm_type", "default")  # default | thin
     max_iops       = args.get("max_iops")           # QoS: from volume type
     max_throughput = args.get("max_throughput")     # QoS: from volume type (MB/s)

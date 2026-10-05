@@ -35,7 +35,7 @@ import requests
 from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
 from . import libvirt_driver, volume_manager, worker  # noqa: E402
-from .config import COMPUTE_HOST, LIBVIRT_URI, OVS_BRIDGE, IMAGE_API_URL, BLOCK_STORE_API_URL, VM_NAME_PREFIX  # noqa: E402
+from .config import COMPUTE_HOST, LIBVIRT_URI, NETWORKING_API_URL, OVS_BRIDGE, IMAGE_API_URL, BLOCK_STORE_API_URL, VM_NAME_PREFIX, endpoint  # noqa: E402
 from shared.proc import CommandError, succeeds
 from .utils import run, tool_available  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -500,7 +500,7 @@ def handle_build_instance(args: dict) -> None:
     """Spawn a new VM via libvirt. Orchestrates full build flow."""
     server_id = args.get("id")
     root_volume_id = args.get("_root_volume_id")
-    block_store_url = args.get("_block_store_url", BLOCK_STORE_API_URL)
+    block_store_url = endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL", BLOCK_STORE_API_URL)
     try:
         # ── Wait for root volume to be ready (async creation race condition) ──
         # block-store-worker creates the LV asynchronously via RabbitMQ.
@@ -556,8 +556,8 @@ def handle_delete_instance(args: dict) -> None:
     root_volume_id = args.get("_root_volume_id")
     port_id = args.get("_port_id")
     extra_port_ids = args.get("_extra_port_ids", "")
-    block_store_url = args.get("_block_store_url", BLOCK_STORE_API_URL)
-    networking_url = args.get("_networking_url", "http://localhost:8001")
+    block_store_url = endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL", BLOCK_STORE_API_URL)
+    networking_url = endpoint(args, "_networking_url", "NETWORKING_API_URL", NETWORKING_API_URL)
 
     try:
         # 1. Destroy libvirt domain
@@ -761,8 +761,8 @@ def handle_shelve(args: dict) -> None:
     """
     server_id = args.get("id")
     root_volume_id = args.get("root_volume_id") or args.get("_root_volume_id")
-    image_api_url = args.get("_image_api_url", IMAGE_API_URL)
-    block_store_url = args.get("_block_store_url", BLOCK_STORE_API_URL)
+    image_api_url = endpoint(args, "_image_api_url", "IMAGE_API_URL", IMAGE_API_URL)
+    block_store_url = endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL", BLOCK_STORE_API_URL)
 
     try:
         # Stop VM
@@ -834,13 +834,13 @@ def handle_unshelve(args: dict) -> None:
     server_id = args.get("id")
     shelved_image_id = args.get("shelved_image_id")
     root_volume_id = args.get("root_volume_id") or args.get("_root_volume_id") or args.get("root_volume", {}).get("id")
-    image_api_url = args.get("_image_api_url", IMAGE_API_URL)
+    image_api_url = endpoint(args, "_image_api_url", "IMAGE_API_URL", IMAGE_API_URL)
 
     try:
         # If we have a shelved image, restore it
         if shelved_image_id and root_volume_id:
             try:
-                bsu = _probe_block_store_url(args.get("_block_store_url", BLOCK_STORE_API_URL))
+                bsu = _probe_block_store_url(endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL", BLOCK_STORE_API_URL))
                 vol_resp = requests.get(f"{bsu}/internal/volumes/{root_volume_id}", timeout=10)
                 if vol_resp.status_code == 200:
                     vol = vol_resp.json()
