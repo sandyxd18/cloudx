@@ -47,7 +47,7 @@ echo " Provider Interface : ${PROVIDER_IF}"
 echo "======================================================================"
 
 if [[ $EUID -ne 0 ]]; then
-    echo "❌ Error: Script ini harus dijalankan dengan privileges root / sudo." >&2
+    echo "❌ Error: this script must be run as root / with sudo." >&2
     exit 1
 fi
 
@@ -123,8 +123,19 @@ NETWORKING_API_URL=http://${CONTROLLER_IP}:8001
 COMPUTE_API_URL=http://${CONTROLLER_IP}:8003
 EOF
 
+# The compute worker names itself after this node (placement provider, server.host, its own RPC queue). Two compute
+# nodes must never share a name, so it is set per node here instead of relying on the default.
+mkdir -p /etc/systemd/system/cloudx-compute-worker.service.d
+cat <<EOF > /etc/systemd/system/cloudx-compute-worker.service.d/node.conf
+[Service]
+Environment=COMPUTE_HOST=${NODE_NAME}
+Environment=NODE_NAME=${NODE_NAME}
+EOF
+systemctl daemon-reload
+
 echo ""
-echo "✓ Compute Node Setup Complete!"
+echo "✓ Compute Node Setup Complete! (COMPUTE_HOST=${NODE_NAME})"
 echo "Next Steps:"
-echo "1. Run Docker Compose Worker: docker compose -f docker-compose.compute-node.yml up -d"
-echo "2. Or install Systemd service: sudo ./scripts/install-systemd.sh"
+echo "1. Install the CloudX services: sudo ./scripts/install-systemd.sh (see SETUP.md, section 4.4)"
+echo "2. Start the worker: sudo systemctl enable --now cloudx-compute-worker cloudx-metadata-proxy"
+echo "3. To serve LVM volumes from this node too: sudo ./scripts/prepare-lvm-node.sh --help"

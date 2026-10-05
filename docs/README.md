@@ -14,6 +14,7 @@ Start with `../README.md` (overview) and `../SETUP.md` (installation). The docum
 | `systemd-deployment-guide.md` | Native systemd and the `/etc/cloudx/` configuration |
 | `multi-node-deployment.md` | Multi-node deployment and how to test it |
 | `single-node-lab.md` | Scope of the single-node lab |
+| `two-node-lvm-lab.md` | Lab where compute and storage nodes both run VMs and serve LVM volumes (iSCSI between nodes) |
 | `user-guide-cli.md` | `cloudx` CLI guide |
 | `cleanup.md`, `troubleshooting*.md` | Resource cleanup and troubleshooting |
 | `../services/migrations/README.md` | Database migrations (Alembic), `make migrate` |

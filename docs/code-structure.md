@@ -43,6 +43,15 @@ Rules to keep in mind:
 - The other services (image, placement, billing, and so on) are still a single `main.py`; the same pattern applies if
   they are split later.
 
+## Host-addressed RPC (multi-node)
+
+`shared.rpc.host_queue(service, host)` gives the routing key of one node (`compute.<host>`, `block-store.<host>`; just
+`service` when the host is unknown). Workers consume their own queue plus the shared one; the APIs address a message to
+`server.host` / `volume.host` (`compute.clients.worker_queue`, `block_store.clients.worker_host`). Per-node settings
+(`COMPUTE_HOST`, `BLOCK_STORE_HOST`) live in a systemd drop-in, not in the shared `cloudx.env`. LVM volumes are
+local to their node and reach other nodes over iSCSI (`block_store_worker/drivers/iscsi.py` exports,
+`compute_worker/iscsi.py` logs in); see `two-node-lvm-lab.md`.
+
 ## Database schema
 
 Only Alembic creates or alters tables; services refuse to start if the schema has not been migrated. See
