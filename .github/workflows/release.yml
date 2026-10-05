@@ -1,0 +1,55 @@
+name: release
+
+# Pushing a tag like v0.7.0 runs the tests, builds the release tarball and publishes a GitHub release.
+# The release body is docs/releases/<tag>.md (falls back to generated notes when that file does not exist).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag must match VERSION
+        run: test "v$(tr -d '[:space:]' < VERSION)" = "${GITHUB_REF_NAME}"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check services cli tests --select F401,F811,F821 --exclude "node_modules,migrations/versions"
+      - run: pytest -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: services/dashboard/frontend/package-lock.json
+      - name: Install dashboard dependencies
+        run: npm ci
+        working-directory: services/dashboard/frontend
+
+      - name: Build release tarball
+        run: ./scripts/build-tarball.sh
+
+      - name: Release notes
+        id: notes
+        run: |
+          if [ -f "docs/releases/${GITHUB_REF_NAME}.md" ]; then echo "file=docs/releases/${GITHUB_REF_NAME}.md" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: CloudX ${{ github.ref_name }}
+          body_path: ${{ steps.notes.outputs.file }}
+          generate_release_notes: ${{ steps.notes.outputs.file == '' }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/cloudx-[0-9]*.tar.gz
+            dist/cloudx-[0-9]*.tar.gz.sha256

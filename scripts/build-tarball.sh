@@ -57,9 +57,8 @@ mkdir -p "${DIST_DIR}"
 # 3. Copy services (excluding frontend source code, node_modules, and git files)
 echo "===> Copying backend microservices..."
 mkdir -p "${STAGING_DIR}/services"
-cp -r "${SCRIPT_DIR}/services/"* "${STAGING_DIR}/services/"
-# Exclude raw frontend directory from release package
-rm -rf "${STAGING_DIR}/services/dashboard/frontend"
+# (tar instead of cp -r: skips the frontend sources and node_modules instead of copying them just to delete them)
+(cd "${SCRIPT_DIR}/services" && tar cf - --exclude=./dashboard/frontend --exclude=__pycache__ --exclude='*.egg-info' .)     | (cd "${STAGING_DIR}/services" && tar xf -)
 
 # 4. Copy CLI tool
 echo "===> Copying CloudX CLI..."
@@ -102,6 +101,12 @@ tar -czf "${TARBALL_PATH}" -C "${STAGING_DIR}" .
 
 # Generate sha256 checksum
 (cd "${DIST_DIR}" && sha256sum "${TARBALL_NAME}" > "${TARBALL_NAME}.sha256")
+
+# Copy artifacts to /opt/cloudx/dist if directory exists
+if [[ -d "/opt/cloudx" ]]; then
+    mkdir -p "/opt/cloudx/dist"
+    cp -P "${DIST_DIR}"/* "/opt/cloudx/dist/" 2>/dev/null || true
+fi
 
 # 10. Output summary
 TAR_SIZE="$(du -h "${TARBALL_PATH}" | awk '{print $1}')"
