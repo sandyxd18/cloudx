@@ -14,7 +14,7 @@ set -euo pipefail
 PGHOST="${PGHOST:-127.0.0.1}"
 PGPORT="${PGPORT:-5432}"
 PGUSER="${POSTGRES_USER:-mini}"
-PGDATABASE="${POSTGRES_DB:-mini_openstack}"
+PGDATABASE="${POSTGRES_DB:-cloudx}"
 export PGPASSWORD="${POSTGRES_PASSWORD:-mini}"
 
 BUCKET="${BACKUP_BUCKET:-cloudx-backups}"
