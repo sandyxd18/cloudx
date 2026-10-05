@@ -18,16 +18,16 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import threading
 import time
 
 import requests
+from shared.proc import run
 
 log = logging.getLogger("network-reconciler")
 
 RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL_SECONDS", "60"))
-OVN_NB_DB = os.getenv("OVN_NB_DB", "tcp:ovn-nb-db:6641")
+OVN_NB_DB = os.getenv("OVN_NB_DB", "tcp:127.0.0.1:6641")
 NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://127.0.0.1:8001")
 
 
@@ -36,7 +36,7 @@ def _ovn_find(table: str, columns: str = "_uuid,name") -> list[dict]:
     try:
         cmd = ["ovn-nbctl", f"--db={OVN_NB_DB}", "--timeout=8",
                "--format=json", f"--columns={columns}", "find", table]
-        proc = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
+        proc = run(cmd, check=False, timeout=15)
         if proc.returncode != 0:
             log.warning("ovn-nbctl find %s failed: %s", table, proc.stderr.strip())
             return []
@@ -49,15 +49,19 @@ def _ovn_find(table: str, columns: str = "_uuid,name") -> list[dict]:
         return []
 
 
-def _ovn_exists(table: str, name: str) -> bool:
-    """Check if an OVN object by name exists."""
+def _ovn_exists(table: str, name: str) -> bool | None:
+    """True/False if the OVN object does/doesn't exist; None if OVN could not be queried (never 'missing')."""
     try:
         cmd = ["ovn-nbctl", f"--db={OVN_NB_DB}", "--timeout=8",
                "--format=list", "--columns=name", "find", table, f'name="{name}"']
-        proc = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
-        return proc.returncode == 0 and name in proc.stdout
-    except Exception:
-        return False
+        proc = run(cmd, check=False, timeout=15)
+    except Exception as exc:
+        log.warning("ovn-nbctl find %s %s failed: %s", table, name, exc)
+        return None
+    if proc.returncode != 0:
+        log.warning("ovn-nbctl find %s %s failed: %s", table, name, proc.stderr.strip())
+        return None
+    return name in proc.stdout
 
 
 def _patch_network_status(network_id: str, status: str) -> None:
@@ -173,6 +177,8 @@ def reconcile_networks() -> None:
             continue
 
         ovn_exists = _ovn_exists("Logical_Switch", net_name)
+        if ovn_exists is None:
+            continue  # OVN not queryable this pass; do not touch the record
 
         if not ovn_exists and db_status == "ACTIVE":
             log.warning(
@@ -227,6 +233,8 @@ def reconcile_subnets() -> None:
 
         # Check if DHCP_Options UUID exists in OVN
         ovn_exists = _ovn_exists("DHCP_Options", dhcp_uuid)
+        if ovn_exists is None:
+            continue  # OVN not queryable this pass; do not touch the record
 
         if not ovn_exists and db_status == "ACTIVE":
             log.warning(
@@ -280,6 +288,8 @@ def reconcile_routers() -> None:
             continue
 
         ovn_exists = _ovn_exists("Logical_Router", router_name)
+        if ovn_exists is None:
+            continue  # OVN not queryable this pass; do not touch the record
 
         if not ovn_exists and db_status == "ACTIVE":
             log.warning(
