@@ -9,7 +9,7 @@ import typer
 
 API = os.getenv("IMAGE_API_URL", "http://localhost:8002").rstrip("/")
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-app = typer.Typer(help="CLI for mini OpenStack lab image-api. Example: image upload ubuntu --file ./ubuntu.qcow2 --disk-format qcow2", context_settings=CONTEXT_SETTINGS)
+app = typer.Typer(help="CLI for CloudX image-api. Example: image upload ubuntu --file ./ubuntu.qcow2 --disk-format qcow2", context_settings=CONTEXT_SETTINGS)
 
 
 def emit(data):

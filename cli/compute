@@ -11,12 +11,12 @@ import typer
 
 API = os.getenv("COMPUTE_API_URL", "http://localhost:8003").rstrip("/")
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-app = typer.Typer(help="CLI for mini OpenStack lab compute-api. Example: compute server create vm1 --image ubuntu --flavor small --network private-net", context_settings=CONTEXT_SETTINGS)
-server_app = typer.Typer(help="Manage Nova-like libvirt servers.", context_settings=CONTEXT_SETTINGS)
+app = typer.Typer(help="CLI for CloudX compute-api. Example: compute server create vm1 --image ubuntu --flavor small --network private-net", context_settings=CONTEXT_SETTINGS)
+server_app = typer.Typer(help="Manage compute virtual servers.", context_settings=CONTEXT_SETTINGS)
 server_snapshot_app = typer.Typer(help="Manage server snapshots.", context_settings=CONTEXT_SETTINGS)
 user_data_app = typer.Typer(help="Manage server cloud-init user-data.", context_settings=CONTEXT_SETTINGS)
 flavor_app = typer.Typer(help="Manage compute flavors.", context_settings=CONTEXT_SETTINGS)
-keypair_app = typer.Typer(help="Manage Nova-like keypairs.", context_settings=CONTEXT_SETTINGS)
+keypair_app = typer.Typer(help="Manage compute SSH keypairs.", context_settings=CONTEXT_SETTINGS)
 host_app = typer.Typer(help="Inspect compute host readiness.", context_settings=CONTEXT_SETTINGS)
 
 

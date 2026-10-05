@@ -8,9 +8,9 @@ import typer
 
 API = os.getenv("BLOCK_STORE_API_URL", "http://localhost:8004").rstrip("/")
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-app = typer.Typer(help="CLI for mini OpenStack lab block-store-api. Example: block-store volume create vol1 --size 10", context_settings=CONTEXT_SETTINGS)
-volume_app = typer.Typer(help="Manage Cinder-like volumes.", context_settings=CONTEXT_SETTINGS)
-snapshot_app = typer.Typer(help="Manage Cinder-like volume snapshots.", context_settings=CONTEXT_SETTINGS)
+app = typer.Typer(help="CLI for CloudX block-store-api. Example: block-store volume create vol1 --size 10", context_settings=CONTEXT_SETTINGS)
+volume_app = typer.Typer(help="Manage block storage volumes.", context_settings=CONTEXT_SETTINGS)
+snapshot_app = typer.Typer(help="Manage volume snapshots.", context_settings=CONTEXT_SETTINGS)
 
 
 def emit(data):

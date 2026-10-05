@@ -9,8 +9,8 @@ import typer
 API = os.getenv("NETWORKING_API_URL", "http://localhost:8001").rstrip("/")
 COMPUTE_API = os.getenv("COMPUTE_API_URL", "http://localhost:8003").rstrip("/")
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
-app = typer.Typer(help="CLI for mini OpenStack lab networking-api. Example: networking network create private-net", context_settings=CONTEXT_SETTINGS)
-network_app = typer.Typer(help="Manage Neutron-like networks.", context_settings=CONTEXT_SETTINGS)
+app = typer.Typer(help="CLI for CloudX networking-api. Example: networking network create private-net", context_settings=CONTEXT_SETTINGS)
+network_app = typer.Typer(help="Manage virtual networks.", context_settings=CONTEXT_SETTINGS)
 subnet_app = typer.Typer(help="Manage subnets and gateway metadata.", context_settings=CONTEXT_SETTINGS)
 router_app = typer.Typer(help="Manage OVN logical routers.", context_settings=CONTEXT_SETTINGS)
 port_app = typer.Typer(help="Manage logical switch ports.", context_settings=CONTEXT_SETTINGS)
