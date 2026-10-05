@@ -1,0 +1,158 @@
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+# ── ORM ────────────────────────────────────────────────────────────────────────
+class Base(DeclarativeBase):
+    pass
+
+
+def new_id() -> str:
+    return str(uuid.uuid4())
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+class Project(Base):
+    __tablename__ = "auth_projects"
+    id:          Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:        Mapped[str] = mapped_column(String, unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled:     Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ProjectQuota(Base):
+    """Quota limits per project."""
+    __tablename__ = "auth_project_quotas"
+    project_id:    Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id", ondelete="CASCADE"), primary_key=True)
+    max_instances: Mapped[int] = mapped_column(Integer, default=10)
+    max_vcpus:     Mapped[int] = mapped_column(Integer, default=20)
+    max_ram_mb:    Mapped[int] = mapped_column(Integer, default=32768)
+    max_volume_gb: Mapped[int] = mapped_column(Integer, default=100)
+    updated_at:    Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class User(Base):
+    __tablename__ = "auth_users"
+    id:            Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    username:      Mapped[str] = mapped_column(String, unique=True, index=True)
+    email:         Mapped[str] = mapped_column(String, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String)
+    project_id:    Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id"))
+    role:          Mapped[str] = mapped_column(String, default="member")   # admin | member
+    enabled:       Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at:    Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Group(Base):
+    __tablename__ = "auth_groups"
+    id:          Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:        Mapped[str] = mapped_column(String, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    project_id:  Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id"))
+    created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("name", "project_id"),)
+
+
+class GroupMember(Base):
+    __tablename__ = "auth_group_members"
+    group_id: Mapped[str] = mapped_column(String, ForeignKey("auth_groups.id"), primary_key=True)
+    user_id:  Mapped[str] = mapped_column(String, ForeignKey("auth_users.id"),  primary_key=True)
+
+
+class RevokedToken(Base):
+    """Store revoked JTIs so logout works before expiry."""
+    __tablename__ = "auth_revoked_tokens"
+    jti:        Mapped[str] = mapped_column(String, primary_key=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class ServiceCatalogEntry(Base):
+    """Registered service (e.g. compute, image, network)."""
+    __tablename__ = "auth_services"
+    id:           Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:         Mapped[str] = mapped_column(String, unique=True, index=True)
+    type:         Mapped[str] = mapped_column(String)           # compute | image | network | …
+    description:  Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled:      Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at:   Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ServiceEndpoint(Base):
+    """Endpoint URL for a registered service."""
+    __tablename__ = "auth_service_endpoints"
+    id:           Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    service_id:   Mapped[str] = mapped_column(String, ForeignKey("auth_services.id", ondelete="CASCADE"))
+    interface:    Mapped[str] = mapped_column(String, default="public")  # public | internal | admin
+    region:       Mapped[str] = mapped_column(String, default="RegionOne")
+    url:          Mapped[str] = mapped_column(String)
+    enabled:      Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at:   Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AccessKey(Base):
+    __tablename__ = "auth_access_keys"
+    id:              Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    access_key_id:   Mapped[str] = mapped_column(String, unique=True, index=True)
+    secret_key_hash: Mapped[str] = mapped_column(String)
+    user_id:         Mapped[str] = mapped_column(String, ForeignKey("auth_users.id"))
+    project_id:      Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id"))
+    name:            Mapped[str] = mapped_column(String, default="default")
+    enabled:         Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at:      Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Domain(Base):
+    """CloudX Identity Domain (top-level organizational unit)."""
+    __tablename__ = "auth_domains"
+    id:          Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:        Mapped[str] = mapped_column(String, unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled:     Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class ApplicationCredential(Base):
+    """Application Credentials — pre-scoped tokens for automation/CI."""
+    __tablename__ = "auth_application_credentials"
+    id:          Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    name:        Mapped[str] = mapped_column(String, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_id:     Mapped[str] = mapped_column(String, ForeignKey("auth_users.id"))
+    project_id:  Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id"))
+    # Roles that this credential can exercise (comma-separated list, e.g. "member,reader")
+    roles:       Mapped[str] = mapped_column(String, default="member")
+    secret_hash: Mapped[str] = mapped_column(String)     # bcrypt of the plaintext secret
+    expires_at:  Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    enabled:     Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("name", "user_id"),)
+
+
+class AuditLog(Base):
+    """Centralized Audit Logging for resource mutations."""
+    __tablename__ = "auth_audit_logs"
+    id:            Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    user_id:       Mapped[str | None] = mapped_column(String, nullable=True)
+    username:      Mapped[str | None] = mapped_column(String, nullable=True)
+    project_id:    Mapped[str | None] = mapped_column(String, nullable=True)
+    action:        Mapped[str] = mapped_column(String, index=True)
+    resource_type: Mapped[str] = mapped_column(String, index=True)
+    resource_id:   Mapped[str | None] = mapped_column(String, nullable=True)
+    details:       Mapped[str | None] = mapped_column(Text, nullable=True)
+    timestamp:     Mapped[datetime] = mapped_column(DateTime, default=utcnow)

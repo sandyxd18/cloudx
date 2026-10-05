@@ -1,0 +1,133 @@
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException, Request
+from sqlalchemy import select
+
+from ..config import TOKEN_EXPIRE_H
+from ..db import DB
+from ..deps import CurrentUser
+from ..models import AccessKey, Group, GroupMember, Project, RevokedToken, User
+from ..schemas import LoginIn, SwitchProjectIn
+from ..serializers import _project_to_dict, _user_to_dict
+from ..tokens import _build_catalog, _create_token, _verify_password
+
+router = APIRouter()
+
+
+# ── Auth / Tokens ──────────────────────────────────────────────────────────────
+@router.post("/auth/tokens", status_code=201)
+def login(payload: LoginIn, db: DB):
+    """Authenticate with username + password, return JWT token."""
+    user = db.scalar(select(User).where(User.username == payload.username))
+    if not user or not _verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    if not user.enabled:
+        raise HTTPException(status_code=403, detail="user disabled")
+
+    target_project_id = user.project_id
+    if payload.project:
+        req_proj = db.get(Project, payload.project) or db.scalar(
+            select(Project).where(Project.name == payload.project)
+        )
+        if not req_proj or not req_proj.enabled:
+            raise HTTPException(status_code=404, detail="project not found or disabled")
+        if user.role != "admin" and user.project_id != req_proj.id:
+            group_pids = db.scalars(
+                select(Group.project_id)
+                .join(GroupMember, Group.id == GroupMember.group_id)
+                .where(GroupMember.user_id == user.id)
+            ).all()
+            if req_proj.id not in group_pids:
+                raise HTTPException(status_code=403, detail="you are not a member of that project")
+        target_project_id = req_proj.id
+
+    proj = db.get(Project, target_project_id)
+    if not proj or not proj.enabled:
+        raise HTTPException(status_code=403, detail="project disabled")
+
+    orig_project = user.project_id
+    user.project_id = target_project_id
+    token = _create_token(user, project_name=proj.name)
+    user.project_id = orig_project
+
+    return {
+        "token": token,
+        "expires_in": TOKEN_EXPIRE_H * 3600,
+        "user":    _user_to_dict(user),
+        "project": _project_to_dict(proj),
+        "catalog": _build_catalog(db),
+    }
+
+
+@router.post("/auth/tokens/access-key", status_code=201)
+def login_with_access_key(
+    request: Request,
+    db: DB,
+):
+    """Authenticate with access_key_id + secret_access_key, return JWT token."""
+    key_id  = request.headers.get("X-Access-Key-Id", "")
+    secret  = request.headers.get("X-Secret-Access-Key", "")
+    if not key_id or not secret:
+        raise HTTPException(status_code=400, detail="X-Access-Key-Id and X-Secret-Access-Key headers required")
+    ak = db.scalar(select(AccessKey).where(AccessKey.access_key_id == key_id))
+    if not ak or not ak.enabled:
+        raise HTTPException(status_code=401, detail="invalid access key")
+    if not _verify_password(secret, ak.secret_key_hash):
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    user = db.get(User, ak.user_id)
+    if not user or not user.enabled:
+        raise HTTPException(status_code=403, detail="user disabled")
+    token = _create_token(user)
+    return {"token": token, "expires_in": TOKEN_EXPIRE_H * 3600}
+
+
+@router.get("/auth/tokens/validate")
+def validate_token(current: CurrentUser):
+    """Internal: validate a token and return its claims."""
+    return current
+
+
+@router.delete("/auth/tokens/current", status_code=204)
+def logout(current: CurrentUser, db: DB):
+    """Revoke the current token (logout)."""
+    jti = current.get("jti", "")
+    exp_ts = current.get("exp", 0)
+    exp_dt = datetime.fromtimestamp(exp_ts, tz=timezone.utc).replace(tzinfo=None)
+    if jti:
+        db.merge(RevokedToken(jti=jti, expires_at=exp_dt))
+        db.commit()
+
+
+@router.post("/session/switch-project")
+def switch_project(payload: SwitchProjectIn, current: CurrentUser, db: DB):
+    """Re-issue a token for a different project (user must be a member or admin)."""
+    user = db.get(User, current["sub"])
+    if not user:
+        raise HTTPException(status_code=404, detail="user not found")
+    proj = db.get(Project, payload.project_id) or db.scalar(
+        select(Project).where(Project.name == payload.project_id)
+    )
+    if not proj or not proj.enabled:
+        raise HTTPException(status_code=404, detail="project not found or disabled")
+    # Admin can switch to any project; regular users can only switch to their assigned projects
+    if current.get("role") != "admin":
+        allowed = {user.project_id} if user.project_id else set()
+        group_pids = db.scalars(
+            select(Group.project_id)
+            .join(GroupMember, Group.id == GroupMember.group_id)
+            .where(GroupMember.user_id == user.id)
+        ).all()
+        allowed.update(group_pids)
+        if proj.id not in allowed:
+            raise HTTPException(status_code=403, detail="you are not a member of that project")
+    # Temporarily set the user's active project for token generation
+    orig_project = user.project_id
+    user.project_id = proj.id
+    token = _create_token(user, project_name=proj.name)
+    user.project_id = orig_project  # don't persist the change
+    return {
+        "token": token,
+        "expires_in": TOKEN_EXPIRE_H * 3600,
+        "user": _user_to_dict(user),
+        "project": _project_to_dict(proj),
+    }
