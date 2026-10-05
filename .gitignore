@@ -17,3 +17,7 @@ services/dashboard/app/static/
 services/certs/out/
 dist/
 build/
+
+# Local assistant tooling
+.claude/
+.mcp.json
