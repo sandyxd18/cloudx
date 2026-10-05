@@ -1,11 +1,8 @@
 import os
-import sys
-import pytest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from services.shared.config import load_service_config
+
 
 def test_load_service_config_from_file(tmp_path: Path, monkeypatch):
     conf_dir = tmp_path / "etc" / "cloudx" / "compute-api"
