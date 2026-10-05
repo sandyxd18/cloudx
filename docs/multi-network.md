@@ -1,8 +1,8 @@
 # Multi-Network VM
 
-Multi-network fase ini memakai port yang sudah dibuat di networking-api. Compute-worker membuat tap tambahan, bind ke OVS dengan `iface-id` logical port, lalu hotplug interface ke libvirt.
+The multi-network phase uses ports that were already created in networking-api. Compute-worker creates an extra tap, binds it to OVS with the logical port's `iface-id`, and then hotplugs the interface into libvirt.
 
-Contoh:
+Example:
 
 ```bash
 networking network create net2
@@ -13,4 +13,4 @@ compute server show vm1
 compute server remove-port vm1 vm1-net2
 ```
 
-Primary port tetap berada pada `port_id`; port tambahan disimpan di `extra_port_ids`.
+The primary port stays in `port_id`; extra ports are stored in `extra_port_ids`.

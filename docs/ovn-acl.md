@@ -1,12 +1,12 @@
 # OVN ACL Mapping
 
-Nama OVN port group dibuat dari ID security group dan disanitasi oleh networking-api. Endpoint debug menampilkan nama aktual:
+The OVN port group name is derived from the security group ID and sanitised by networking-api. The debug endpoint shows the actual name:
 
 ```bash
 networking security-group ovn-show web
 ```
 
-Contoh translasi ingress TCP 22:
+Example translation of ingress TCP 22:
 
 ```text
 direction: to-lport
@@ -15,7 +15,7 @@ match: outport == @<port-group> && ip4 && tcp && tcp.dst == 22 && ip4.src == 0.0
 action: allow-related
 ```
 
-Contoh egress allow all IPv4:
+Example of egress allow-all IPv4:
 
 ```text
 direction: from-lport
@@ -24,7 +24,7 @@ match: inport == @<port-group> && ip4 && ip4.dst == 0.0.0.0/0
 action: allow-related
 ```
 
-Default ingress drop selalu ditambahkan pada port group:
+A default ingress drop is always added to the port group:
 
 ```text
 direction: to-lport
@@ -33,4 +33,4 @@ match: outport == @<port-group> && ip4
 action: drop
 ```
 
-Implementasi ini belum mencakup seluruh fitur Networking security group, tetapi sudah memakai primitive OVN yang sama: Port Group dan ACL.
+This implementation does not yet cover every Networking security group feature, but it already uses the same OVN primitives: Port Group and ACL.

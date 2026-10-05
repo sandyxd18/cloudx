@@ -1,6 +1,6 @@
 # Security Group OVN ACL
 
-Dokumentasi security group sekarang dipisah menjadi:
+The security group documentation is now split into:
 
 - [security-group.md](security-group.md)
 - [ovn-acl.md](ovn-acl.md)

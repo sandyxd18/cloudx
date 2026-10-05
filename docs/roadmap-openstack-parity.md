@@ -1,45 +1,45 @@
-# 🗺️ Roadmap Menuju Paritas CloudX Base Services
+# 🗺️ Roadmap to CloudX Base Services Parity
 
-> **Dokumen ini** menganalisis kondisi **CloudX** saat ini dan merinci pekerjaan yang perlu dilakukan
-> untuk mencapai kemiripan yang lebih tinggi dengan tujuh base service CloudX:
-> **Compute, Networking, Block Storage, Image, Identity, Placement, dan CloudX Dashboard**.
+> **This document** analyses the current state of **CloudX** and details the work needed
+> to reach higher similarity with the seven CloudX base services:
+> **Compute, Networking, Block Storage, Image, Identity, Placement, and the CloudX Dashboard**.
 >
-> Analisis berdasarkan kode aktual di `services/`, dokumentasi di `docs/feature-comparison.md`,
-> dan perbandingan dengan perilaku CloudX asli.
+> The analysis is based on the actual code in `services/`, the documentation in `docs/feature-comparison.md`,
+> and a comparison with the behaviour of the real CloudX.
 >
-> **Skor awal (Juni 2026):**
+> **Initial score (June 2026):**
 > Identity ~65% · Compute ~80% · Networking ~65% · Image ~70% · Block Storage ~75% · Placement ~70% · CloudX Dashboard ~55%
 >
-> **✅ Skor setelah Fase 1–4 (Akhir Agustus 2026):**
+> **✅ Score after Phases 1–4 (end of August 2026):**
 > Identity ~93% · Compute ~94% · Networking ~88% · Image ~90% · Block Storage ~93% · Placement ~92% · CloudX Dashboard ~85%
 
 ---
 
-## 📋 Daftar Isi
+## 📋 Table of Contents
 
-1. [Ringkasan Eksekutif](#1-ringkasan-eksekutif)
-2. [Identity — auth-api](#2-identity--auth-api-saat-ini-65)
-3. [Compute — compute-api + compute-worker](#3-compute--compute-api--compute-worker-saat-ini-80)
-4. [Networking — networking-api](#4-networking--networking-api-saat-ini-65)
-5. [Image — image-api](#5-image--image-api-saat-ini-70)
-6. [Block Storage — block-store-api + block-store-worker](#6-block-store--block-store-api--block-store-worker-saat-ini-75)
-7. [Placement — placement-api](#7-placement--placement-api-saat-ini-70)
-8. [CloudX Dashboard — dashboard](#8-dashboard--dashboard-saat-ini-55)
-9. [Infrastruktur Cross-Cutting](#9-infrastruktur-cross-cutting)
-10. [Prioritas dan Estimasi Upaya](#10-prioritas-dan-estimasi-upaya)
-11. [Arsitektur Target](#11-arsitektur-target)
+1. [Executive Summary](#1-executive-summary)
+2. [Identity — auth-api](#2-identity--auth-api-currently-65)
+3. [Compute — compute-api + compute-worker](#3-compute--compute-api--compute-worker-currently-80)
+4. [Networking — networking-api](#4-networking--networking-api-currently-65)
+5. [Image — image-api](#5-image--image-api-currently-70)
+6. [Block Storage — block-store-api + block-store-worker](#6-block-storage--block-store-api--block-store-worker-currently-75)
+7. [Placement — placement-api](#7-placement--placement-api-currently-70)
+8. [CloudX Dashboard — dashboard](#8-cloudx-dashboard--dashboard-currently-55)
+9. [Cross-Cutting Infrastructure](#9-cross-cutting-infrastructure)
+10. [Priorities and Effort Estimates](#10-priorities-and-effort-estimates)
+11. [Target Architecture](#11-target-architecture)
 
 ---
 
-## 1. Ringkasan Eksekutif
+## 1. Executive Summary
 
-CloudX adalah implementasi private cloud berbasis Docker Compose yang sudah sangat matang untuk
-konteks lab single-node. Implementasi saat ini sudah menggunakan backend **nyata**:
-libvirt/QEMU/KVM, OVN/OVS, LVM, Ceph RBD, MinIO — bukan mock atau simulator.
+CloudX is a Docker Compose-based private cloud implementation that is already very mature for
+a single-node lab context. The current implementation already uses **real** backends:
+libvirt/QEMU/KVM, OVN/OVS, LVM, Ceph RBD, MinIO — not mocks or simulators.
 
-### Kondisi Saat Ini vs Target
+### Current State vs Target
 
-| Service | Awal | Setelah F1–F4 | Target | Gap Tersisa (Fase 5+) |
+| Service | Initial | After P1–P4 | Target | Remaining Gap (Phase 5+) |
 |---|:---:|:---:|:---:|---|
 | Identity (`auth-api`) | ~65% | **~93%** | ~95% | High Availability, Fernet token |
 | Compute (`compute-api`) | ~80% | **~94%** | ~95% | Live Migration (multi-node), HA |
@@ -49,69 +49,69 @@ libvirt/QEMU/KVM, OVN/OVS, LVM, Ceph RBD, MinIO — bukan mock atau simulator.
 | Placement (`placement-api`) | ~70% | **~92%** | ~93% | Full scheduler integration (multi-node) |
 | CloudX Dashboard (`dashboard`) | ~55% | **~85%** | ~90% | Heat UI, Octavia UI |
 
-### Apa yang Sudah Sangat Baik (Tidak Perlu Diubah)
+### What Is Already Very Good (No Changes Needed)
 
-- ✅ RabbitMQ AMQP-based async operations (mirip oslo.messaging)
-- ✅ Conductor pattern (workers tidak akses DB langsung)
-- ✅ Real VM via libvirt/QEMU/KVM dengan boot-from-volume
-- ✅ OVN/OVS full integration dengan floating IP, security group ACL
+- ✅ RabbitMQ AMQP-based async operations (similar to oslo.messaging)
+- ✅ Conductor pattern (workers do not access the DB directly)
+- ✅ Real VMs via libvirt/QEMU/KVM with boot-from-volume
+- ✅ Full OVN/OVS integration with floating IPs and security group ACLs
 - ✅ LVM + Ceph dual-backend storage
-- ✅ WebSocket live events ke dashboard
-- ✅ JWT auth dengan project scoping
+- ✅ WebSocket live events to the dashboard
+- ✅ JWT auth with project scoping
 - ✅ Metadata API (EC2 + CloudX format, ~92%)
-- ✅ CLI `cloudx` yang fungsional
+- ✅ A functional `cloudx` CLI
 
 ---
 
-## 2. Identity — `auth-api` (Saat ini: ~65%)
+## 2. Identity — `auth-api` (Currently: ~65%)
 
-### Kondisi Kode Saat Ini
+### Current State of the Code
 
-File utama: `services/auth/app/main.py`
+Main file: `services/auth/app/main.py`
 
-Sudah ada: JWT token, project/user/group CRUD, role assignment (admin/member/reader),
-access key AWS-style, bootstrap admin otomatis.
+Already present: JWT tokens, project/user/group CRUD, role assignment (admin/member/reader),
+AWS-style access keys, automatic admin bootstrap.
 
-### Gap yang Perlu Dikerjakan
+### Gaps to Address
 
-#### 🔴 Prioritas Tinggi
+#### 🔴 High Priority
 
 **1. Service Catalog**
 
-CloudX Identity memiliki endpoint discovery — setelah login, client mendapat
-daftar URL semua service per region. Ini dibutuhkan agar client CloudX SDK/CLI
-standar bisa auto-discover endpoint.
+CloudX Identity has endpoint discovery — after login, the client receives
+the list of URLs of all services per region. This is needed so that standard CloudX SDK/CLI
+clients can auto-discover endpoints.
 
 ```
-Endpoint yang perlu ditambah:
+Endpoints to add:
 GET  /v3/services              — list registered services
-POST /v3/services              — register service
+POST /v3/services              — register a service
 GET  /v3/endpoints             — list endpoints per service
-POST /v3/endpoints             — register endpoint (internal/public/admin)
-GET  /v3/auth/catalog          — embedded dalam token response
+POST /v3/endpoints             — register an endpoint (internal/public/admin)
+GET  /v3/auth/catalog          — embedded in the token response
 ```
 
-**Pekerjaan:**
-- Tambah tabel `services` dan `endpoints` di DB
-- Tambah field `catalog` dalam response `POST /auth/tokens`
-- Bootstrap: auto-register semua cloudx services ke catalog saat startup
-- Format token response harus sesuai Identity v3: `token.catalog[]`
+**Work:**
+- Add `services` and `endpoints` tables to the DB
+- Add a `catalog` field to the `POST /auth/tokens` response
+- Bootstrap: auto-register all cloudx services in the catalog at startup
+- The token response format must match Identity v3: `token.catalog[]`
 
 ---
 
 **2. Multi-Scope Token (Domain & System Scope)**
 
-CloudX mendukung token dengan scope: `project`, `domain`, `system`.
-Saat ini cloudx hanya mendukung `project` scope.
+CloudX supports tokens with these scopes: `project`, `domain`, `system`.
+Currently cloudx only supports the `project` scope.
 
 ```python
-# Request body Identity v3 standar:
+# Standard Identity v3 request body:
 {
   "auth": {
     "identity": { ... },
     "scope": {
-      "project": {"id": "..."},   # sudah ada
-      # BELUM ADA:
+      "project": {"id": "..."},   # already present
+      # NOT YET PRESENT:
       "domain": {"id": "..."},
       "system": {"all": true}
     }
@@ -119,60 +119,60 @@ Saat ini cloudx hanya mendukung `project` scope.
 }
 ```
 
-**Pekerjaan:**
-- Extend JWT payload dengan field `scope_type` (project/domain/system)
-- Tambah validasi scope di `auth_middleware.py`
-- Domain scope diperlukan untuk operasi admin lintas-project
+**Work:**
+- Extend the JWT payload with a `scope_type` field (project/domain/system)
+- Add scope validation in `auth_middleware.py`
+- Domain scope is needed for cross-project admin operations
 
 ---
 
-**3. oslo.policy-style RBAC** ✅ (Selesai di Fase 3)
+**3. oslo.policy-style RBAC** ✅ (Done in Phase 3)
 
-Saat ini role check dilakukan manual (`if token.role != "admin"`).
-CloudX asli menggunakan file `policy.yaml` yang bisa dikonfigurasi per-rule.
+Currently role checks are done manually (`if token.role != "admin"`).
+The real CloudX uses a `policy.yaml` file that can be configured per rule.
 
 ```yaml
-# Contoh policy.yaml (oslo.policy format)
+# Example policy.yaml (oslo.policy format)
 "identity:create_user": "rule:admin_required"
 "identity:list_users": "rule:admin_or_owner"
-"identity:get_project": ""  # semua authenticated
+"identity:get_project": ""  # any authenticated user
 ```
 
-**Pekerjaan:**
-- Implementasi policy engine sederhana yang baca dari `policy.yaml`
-- Ganti hardcoded `is_admin` checks dengan `policy.enforce(rule, target, credentials)`
-- Setiap service perlu file `policy.yaml` masing-masing
+**Work:**
+- Implement a simple policy engine that reads from `policy.yaml`
+- Replace hardcoded `is_admin` checks with `policy.enforce(rule, target, credentials)`
+- Each service needs its own `policy.yaml` file
 
 ---
 
-#### 🟡 Prioritas Menengah
+#### 🟡 Medium Priority
 
 **4. Domain Management**
 
 ```
-POST /v3/domains          — buat domain
+POST /v3/domains          — create a domain
 GET  /v3/domains          — list domains
-PATCH /v3/domains/{id}    — update domain
-DELETE /v3/domains/{id}   — delete domain
+PATCH /v3/domains/{id}    — update a domain
+DELETE /v3/domains/{id}   — delete a domain
 ```
 
-CloudX mendukung hierarki: Domain → Project → User.
-Saat ini cloudx flat (satu domain implisit).
+CloudX supports the hierarchy: Domain → Project → User.
+Currently cloudx is flat (one implicit domain).
 
-**Pekerjaan:**
-- Tambah tabel `domains` di DB
-- Extend tabel `projects` dan `users` dengan `domain_id` FK
-- Implementasi endpoint domain CRUD
-- Default domain `default` dibuat saat bootstrap
+**Work:**
+- Add a `domains` table to the DB
+- Extend the `projects` and `users` tables with a `domain_id` FK
+- Implement the domain CRUD endpoints
+- A `default` domain is created at bootstrap
 
 ---
 
 **5. Application Credentials**
 
-Mirip access key yang sudah ada, tapi dengan format Identity v3:
-- Terikat ke user spesifik (bukan project-global)
-- Bisa punya `roles` terbatas
-- Secret tidak bisa diambil ulang setelah dibuat
+Similar to the existing access keys, but in the Identity v3 format:
+- Bound to a specific user (not project-global)
+- Can have limited `roles`
+- The secret cannot be retrieved again after creation
 
 ```
 POST /v3/users/{user_id}/application_credentials
@@ -182,60 +182,60 @@ DELETE /v3/users/{user_id}/application_credentials/{id}
 
 ---
 
-#### 🟢 Prioritas Rendah / Out of Scope Lab
+#### 🟢 Low Priority / Out of Lab Scope
 
-- **Federation / SAML / OAuth2** — Kompleks, di luar scope lab
-- **Multi-factor Authentication** — Tidak relevan untuk lab lokal
-- **Fernet Token** — JWT sudah cukup fungsional
-- **Trust (delegate token)** — Advanced, di luar scope
+- **Federation / SAML / OAuth2** — Complex, outside the lab scope
+- **Multi-factor Authentication** — Not relevant for a local lab
+- **Fernet Token** — JWT is functional enough
+- **Trust (delegated token)** — Advanced, outside scope
 
-### Estimasi Upaya Identity
+### Identity Effort Estimate
 
-| Pekerjaan | Kompleksitas | Upaya |
+| Work | Complexity | Effort |
 |---|:---:|---|
-| Service Catalog | Sedang | 2–3 hari |
-| Multi-scope token | Rendah | 1 hari |
-| oslo.policy RBAC | Tinggi | 3–5 hari |
-| Domain management | Sedang | 2–3 hari |
-| Application credentials | Rendah | 1 hari |
+| Service Catalog | Medium | 2–3 days |
+| Multi-scope token | Low | 1 day |
+| oslo.policy RBAC | High | 3–5 days |
+| Domain management | Medium | 2–3 days |
+| Application credentials | Low | 1 day |
 
-**Target setelah semua dikerjakan: ~90%**
+**Target after everything is done: ~90%**
 
 ---
 
-## 3. Compute — `compute-api` + `compute-worker` (Saat ini: ~80%)
+## 3. Compute — `compute-api` + `compute-worker` (Currently: ~80%)
 
-### Kondisi Kode Saat Ini
+### Current State of the Code
 
-File utama: `services/compute/app/main.py` (~49KB)
+Main file: `services/compute/app/main.py` (~49KB)
 Worker: `services/compute_worker/app/main.py`
 
-Ini adalah service paling matang. Sudah ada: full server lifecycle, pause/resume,
+This is the most mature service. Already present: the full server lifecycle, pause/resume,
 suspend/unsuspend, resize, rebuild, rescue, server groups, keypair, flavor,
 multi-NIC, volume attach/detach, console log, password injection.
 
-### Gap yang Perlu Dikerjakan
+### Gaps to Address
 
-#### 🔴 Prioritas Tinggi
+#### 🔴 High Priority
 
 **1. noVNC / SPICE Console Proxy**
 
-Ini salah satu fitur paling visibel yang hilang. VNC port libvirt sudah ada
-(terlihat di `NOVNC_BASE_URL` env var), tapi belum ada proxy ke browser.
+This is one of the most visible missing features. The libvirt VNC port already exists
+(visible in the `NOVNC_BASE_URL` env var), but there is no proxy to the browser yet.
 
 ```
-Alur noVNC:
+noVNC flow:
 Browser -> noVNC JS client -> WebSocket proxy -> libvirt VNC port
 
-Komponen yang perlu ditambah:
-- websockify container (atau implementasi native Python)
+Components to add:
+- websockify container (or a native Python implementation)
 - Endpoint: GET /servers/{ref}/console-url -> {type: "novnc", url: "..."}
-- noVNC HTML UI embed di dashboard
+- noVNC HTML UI embedded in the dashboard
 ```
 
-**Pekerjaan di compute-worker:**
+**Work in compute-worker:**
 ```python
-# Tambah metode RPC:
+# Add an RPC method:
 def get_vnc_port(server_id) -> int:
     domain = conn.lookupByName(vm_name)
     xml = ET.fromstring(domain.XMLDesc())
@@ -243,182 +243,182 @@ def get_vnc_port(server_id) -> int:
     return int(port)
 ```
 
-**Pekerjaan infrastruktur:**
-- Tambah container `novnc-proxy` di `docker-compose.yml` (image: websockify)
-- Konfigurasi port mapping: host `6080` → libvirt VNC ports
+**Infrastructure work:**
+- Add a `novnc-proxy` container to `docker-compose.yml` (image: websockify)
+- Port mapping configuration: host `6080` → libvirt VNC ports
 
 ---
 
 **2. Resize Confirm / Revert**
 
-Saat ini resize langsung dieksekusi (live hotplug vCPU + RAM).
-CloudX asli memiliki dua langkah: VERIFY_RESIZE → confirm atau revert.
+Currently resize is executed immediately (live vCPU + RAM hotplug).
+The real CloudX has two steps: VERIFY_RESIZE → confirm or revert.
 
 ```
-Alur CloudX Compute resize:
+CloudX Compute resize flow:
 POST /servers/{id}/resize         -> status: VERIFY_RESIZE
-POST /servers/{id}/confirmResize  -> size berubah permanen
-POST /servers/{id}/revertResize   -> rollback ke flavor lama
+POST /servers/{id}/confirmResize  -> the size changes permanently
+POST /servers/{id}/revertResize   -> roll back to the old flavor
 ```
 
-**Pekerjaan:**
-- Simpan `original_flavor_snapshot` saat resize dimulai
-- Status server: `RESIZE` → `VERIFY_RESIZE`
-- Endpoint baru: `POST /servers/{id}/confirmResize` dan `/revertResize`
-- Worker: hotplug vCPU/RAM saat `confirm`, rollback saat `revert`
+**Work:**
+- Save an `original_flavor_snapshot` when the resize starts
+- Server status: `RESIZE` → `VERIFY_RESIZE`
+- New endpoints: `POST /servers/{id}/confirmResize` and `/revertResize`
+- Worker: hotplug vCPU/RAM on `confirm`, roll back on `revert`
 
 ---
 
 **3. Shelve / Unshelve**
 
-Shelve adalah "hibernate ke object storage" — VM di-snapshot ke image,
-kemudian instance dihentikan dan resource (vCPU, RAM) dibebaskan.
-Berbeda dengan suspend yang menyimpan state ke disk tapi tetap pakai resource.
+Shelve is "hibernate to object storage" — the VM is snapshotted to an image,
+then the instance is stopped and its resources (vCPU, RAM) are released.
+Unlike suspend, which saves the state to disk but keeps using resources.
 
 ```
 POST /servers/{id}/shelve
-  -> buat snapshot image dari VM saat ini
-  -> stop VM
-  -> hapus libvirt domain (bebaskan resource)
+  -> create a snapshot image of the current VM
+  -> stop the VM
+  -> delete the libvirt domain (release resources)
   -> status: SHELVED_OFFLOADED
 
 POST /servers/{id}/unshelve
-  -> buat VM baru dari snapshot image
-  -> hapus snapshot image sementara
+  -> create a new VM from the snapshot image
+  -> delete the temporary snapshot image
   -> status: ACTIVE
 ```
 
-**Pekerjaan:**
-- Endpoint `POST /servers/{id}/shelve` dan `/unshelve`
-- Worker perlu bisa membuat snapshot dan restore dari snapshot
-- Perlu integrasi dengan image-api untuk menyimpan shelved image
+**Work:**
+- Endpoints `POST /servers/{id}/shelve` and `/unshelve`
+- The worker must be able to create snapshots and restore from a snapshot
+- Needs integration with image-api to store the shelved image
 
 ---
 
 **4. Lock / Unlock Server**
 
-Fitur sederhana yang mencegah accidental modification.
+A simple feature that prevents accidental modification.
 
 ```python
-POST /servers/{id}/lock    # tandai server sebagai locked
-POST /servers/{id}/unlock  # lepas lock
+POST /servers/{id}/lock    # mark the server as locked
+POST /servers/{id}/unlock  # release the lock
 
-# Semua operasi modifikasi harus cek:
+# Every modifying operation must check:
 if server.locked and not is_admin:
     raise HTTPException(403, "Server is locked")
 ```
 
-**Pekerjaan:**
-- Tambah kolom `locked` (boolean) dan `locked_by` di tabel `servers`
-- Endpoint `POST /servers/{id}/lock` dan `POST /servers/{id}/unlock`
-- Guard semua action endpoint dengan cek lock status
+**Work:**
+- Add `locked` (boolean) and `locked_by` columns to the `servers` table
+- Endpoints `POST /servers/{id}/lock` and `POST /servers/{id}/unlock`
+- Guard all action endpoints with a lock status check
 
 ---
 
 **5. Server Tags**
 
-Simple tagging untuk server.
+Simple tagging for servers.
 
 ```
 GET    /servers/{id}/tags        — list tags
 PUT    /servers/{id}/tags        — replace all tags
-PUT    /servers/{id}/tags/{tag}  — add tag
-DELETE /servers/{id}/tags/{tag}  — delete tag
+PUT    /servers/{id}/tags/{tag}  — add a tag
+DELETE /servers/{id}/tags/{tag}  — delete a tag
 ```
 
-**Pekerjaan:**
-- Tambah tabel `server_tags` (server_id, tag) di DB
-- Implementasi 4 endpoint di atas
-- Tambah filter `?tags=` di `GET /servers`
+**Work:**
+- Add a `server_tags` table (server_id, tag) to the DB
+- Implement the 4 endpoints above
+- Add a `?tags=` filter to `GET /servers`
 
 ---
 
-#### 🟡 Prioritas Menengah
+#### 🟡 Medium Priority
 
 **6. Aggregates & Availability Zones**
 
-Diperlukan jika ingin simulasi multi-node di masa depan.
+Needed if multi-node simulation is wanted in the future.
 
 ```
-POST /os-aggregates              — buat aggregate
+POST /os-aggregates              — create an aggregate
 GET  /os-aggregates              — list aggregates
-POST /os-aggregates/{id}/action  — add/remove host
+POST /os-aggregates/{id}/action  — add/remove a host
 ```
 
-**Pekerjaan:**
-- Tambah tabel `aggregates` dan `aggregate_hosts`
-- Availability zone otomatis dari aggregate
+**Work:**
+- Add `aggregates` and `aggregate_hosts` tables
+- Availability zone derived automatically from the aggregate
 - Default AZ: `compute`
 
 ---
 
-#### 🟢 Prioritas Rendah
+#### 🟢 Low Priority
 
-- **Ephemeral Disk** — Sengaja dikecualikan (volume-first architecture)
-- **Live Migration** — Single-node, tidak relevan
-- **Config drive vfat** — ISO9660 sudah cukup
-- **Trigger Crash Dump** — Tidak relevan lab
+- **Ephemeral Disk** — Deliberately excluded (volume-first architecture)
+- **Live Migration** — Single-node, not relevant
+- **vfat config drive** — ISO9660 is enough
+- **Trigger Crash Dump** — Not relevant for the lab
 
-### Estimasi Upaya Compute
+### Compute Effort Estimate
 
-| Pekerjaan | Kompleksitas | Upaya |
+| Work | Complexity | Effort |
 |---|:---:|---|
-| noVNC proxy | Tinggi | 3–5 hari |
-| Resize confirm/revert | Sedang | 2 hari |
-| Shelve/unshelve | Sedang | 2–3 hari |
-| Lock/unlock | Rendah | 0.5 hari |
-| Server tags | Rendah | 1 hari |
-| Aggregates/AZ | Sedang | 2–3 hari |
+| noVNC proxy | High | 3–5 days |
+| Resize confirm/revert | Medium | 2 days |
+| Shelve/unshelve | Medium | 2–3 days |
+| Lock/unlock | Low | 0.5 day |
+| Server tags | Low | 1 day |
+| Aggregates/AZ | Medium | 2–3 days |
 
-**Target setelah dikerjakan: ~92%**
+**Target after completion: ~92%**
 
 ---
 
-## 4. Networking — `networking-api` (Saat ini: ~65%)
+## 4. Networking — `networking-api` (Currently: ~65%)
 
-### Kondisi Kode Saat Ini
+### Current State of the Code
 
-File utama: `services/networking/app/main.py` (~71KB — terbesar di proyek)
+Main file: `services/networking/app/main.py` (~71KB — the largest in the project)
 
-Sudah ada: network, subnet, router, floating IP, security group, port, OVN integration penuh,
+Already present: network, subnet, router, floating IP, security group, port, full OVN integration,
 provider network via localnet, ARP proxy.
 
-### Gap yang Perlu Dikerjakan
+### Gaps to Address
 
-#### 🔴 Prioritas Tinggi
+#### 🔴 High Priority
 
 **1. QoS (Quality of Service)**
 
-CloudX Networking mendukung bandwidth limiting per port via QoS policy.
-OVN sudah mendukung mekanisme ini melalui tabel `QoS` di NB DB.
+CloudX Networking supports per-port bandwidth limiting via a QoS policy.
+OVN already supports this mechanism through the `QoS` table in the NB DB.
 
 ```
-Endpoint yang perlu ditambah:
-POST /qos/policies                              — buat QoS policy
+Endpoints to add:
+POST /qos/policies                              — create a QoS policy
 GET  /qos/policies                              — list
 PATCH /qos/policies/{id}                        — update
 DELETE /qos/policies/{id}                       — delete
-POST /qos/policies/{id}/bandwidth_limit_rules   — tambah rule
+POST /qos/policies/{id}/bandwidth_limit_rules   — add a rule
 
-# Terapkan ke port:
+# Apply to a port:
 PATCH /ports/{id}  {"qos_policy_id": "..."}
 ```
 
-**Pekerjaan di OVN:**
+**Work in OVN:**
 ```python
-# OVN NB DB: set QoS rule
+# OVN NB DB: set a QoS rule
 ovn_nbctl("qos-add", ls_name, "from-lport", "100",
           f"inport == {port_id}", "rate=10000", "burst=20000")
 ```
 
 ---
 
-**2. IPv6 Support** ✅ (Selesai di Fase 3)
+**2. IPv6 Support** ✅ (Done in Phase 3)
 
-Saat ini hanya IPv4. CloudX mendukung dual-stack dan IPv6-only subnets.
+Currently IPv4 only. CloudX supports dual-stack and IPv6-only subnets.
 
 ```python
-# Subnet create dengan IPv6:
+# Subnet create with IPv6:
 POST /subnets {
   "ip_version": 6,
   "cidr": "fd00::/64",
@@ -427,56 +427,56 @@ POST /subnets {
 }
 ```
 
-**Pekerjaan:**
-- Extend IPAM untuk mendukung IPv6 CIDR
-- OVN DHCPv6 options: `SET_DHCPV6_STATEFUL_OPT` atau SLAAC via RA
-- Validasi `ip_version` 4 vs 6 di semua endpoint subnet
-- Dual-stack port allocation (satu port dengan IPv4 + IPv6)
+**Work:**
+- Extend IPAM to support IPv6 CIDRs
+- OVN DHCPv6 options: `SET_DHCPV6_STATEFUL_OPT` or SLAAC via RA
+- Validate `ip_version` 4 vs 6 in all subnet endpoints
+- Dual-stack port allocation (one port with IPv4 + IPv6)
 
 ---
 
 **3. Shared Networks (Cross-Project)**
 
-CloudX mendukung network yang bisa di-share antar project.
-Berguna untuk provider network yang diakses semua project.
+CloudX supports networks that can be shared between projects.
+Useful for provider networks that every project accesses.
 
 ```python
-# Create shared network:
+# Create a shared network:
 POST /networks {"shared": true}
-# Policy: shared network visible ke semua project saat GET /networks
+# Policy: a shared network is visible to all projects on GET /networks
 ```
 
-**Pekerjaan:**
-- Tambah kolom `shared` di tabel `networks`
-- Query `GET /networks` harus return network milik project ATAU `shared=true`
-- Validasi akses saat create port di shared network
+**Work:**
+- Add a `shared` column to the `networks` table
+- The `GET /networks` query must return networks owned by the project OR `shared=true`
+- Validate access when creating a port on a shared network
 
 ---
 
 **4. Subnet Pools**
 
-Pool of subnets yang bisa dialokasikan dari prefix besar.
+A pool of subnets that can be allocated from a large prefix.
 
 ```
-POST /subnetpools      — buat pool (misal: 10.0.0.0/8)
+POST /subnetpools      — create a pool (e.g. 10.0.0.0/8)
 GET  /subnetpools      — list pools
 
-# Saat create subnet:
+# When creating a subnet:
 POST /subnets {"subnetpool_id": "...", "prefixlen": 24}
-# -> auto-allocate 10.x.y.0/24 dari pool
+# -> auto-allocate 10.x.y.0/24 from the pool
 ```
 
-**Pekerjaan:**
-- Tabel baru: `subnet_pools` (prefix, min_prefixlen, max_prefixlen, default_prefixlen)
-- IPAM allocator yang tarik dari pool secara otomatis
-- Validasi overlap antar alokasi
+**Work:**
+- New table: `subnet_pools` (prefix, min_prefixlen, max_prefixlen, default_prefixlen)
+- An IPAM allocator that draws from the pool automatically
+- Validate overlap between allocations
 
 ---
 
-**5. Port Forwarding (DNAT per-port)** ✅ (Selesai di Fase 3)
+**5. Port Forwarding (per-port DNAT)** ✅ (Done in Phase 3)
 
-Berbeda dari floating IP (yang memetakan satu IP publik ke satu VM).
-Port forwarding memetakan `public_ip:port` → `vm_ip:port`.
+Different from a floating IP (which maps one public IP to one VM).
+Port forwarding maps `public_ip:port` → `vm_ip:port`.
 
 ```
 POST /floatingips/{id}/port_forwardings {
@@ -487,9 +487,9 @@ POST /floatingips/{id}/port_forwardings {
 }
 ```
 
-**Pekerjaan di OVN:**
+**Work in OVN:**
 ```python
-# DNAT rule untuk port forwarding
+# DNAT rule for port forwarding
 ovn_nbctl("lr-nat-add", router_name, "dnat",
           f"{fip}:{ext_port}", f"{internal_ip}:{int_port}",
           protocol="tcp")
@@ -497,11 +497,11 @@ ovn_nbctl("lr-nat-add", router_name, "dnat",
 
 ---
 
-#### 🟡 Prioritas Menengah
+#### 🟡 Medium Priority
 
 **6. Trunk Ports (VLAN-in-VLAN)**
 
-Diperlukan untuk NFV dan nested VM scenarios.
+Needed for NFV and nested VM scenarios.
 
 ```
 POST /trunks {
@@ -512,61 +512,61 @@ POST /trunks {
 }
 ```
 
-OVN sudah mendukung trunk via `parent_port`, perlu wrap API.
+OVN already supports trunks via `parent_port`; the API only needs to be wrapped.
 
 ---
 
-**7. DNS Integration (Tanpa Designate)**
+**7. DNS Integration (Without Designate)**
 
-Implementasi DNS internal sederhana tanpa Designate penuh:
+A simple internal DNS implementation without the full Designate:
 
-**Pekerjaan minimal:**
-- Tambah kolom `dns_domain` di network
-- Tambah kolom `dns_name` di port
-- OVN mendukung DNS via tabel `DNS` di NB DB
+**Minimal work:**
+- Add a `dns_domain` column to network
+- Add a `dns_name` column to port
+- OVN supports DNS via the `DNS` table in the NB DB
 
 ---
 
-#### 🟢 Prioritas Rendah
+#### 🟢 Low Priority
 
-- **Address Scopes** — Advanced routing, di luar scope lab
+- **Address Scopes** — Advanced routing, outside the lab scope
 - **BGP Dynamic Routing** — Out of scope
 - **VPN as a Service** — Out of scope
-- **FWaaS** — Security group sudah cukup
-- **Load Balancer (Octavia)** — Kompleksitas sangat tinggi
+- **FWaaS** — Security groups are enough
+- **Load Balancer (Octavia)** — Very high complexity
 
-### Estimasi Upaya Networking
+### Networking Effort Estimate
 
-| Pekerjaan | Kompleksitas | Upaya |
+| Work | Complexity | Effort |
 |---|:---:|---|
-| QoS policies | Sedang | 2–3 hari |
-| IPv6 support | Tinggi | 4–6 hari |
-| Shared networks | Rendah | 1 hari |
-| Subnet pools | Sedang | 2–3 hari |
-| Port forwarding | Sedang | 2 hari |
-| Trunk ports | Tinggi | 3–4 hari |
-| DNS integration | Rendah | 1–2 hari |
+| QoS policies | Medium | 2–3 days |
+| IPv6 support | High | 4–6 days |
+| Shared networks | Low | 1 day |
+| Subnet pools | Medium | 2–3 days |
+| Port forwarding | Medium | 2 days |
+| Trunk ports | High | 3–4 days |
+| DNS integration | Low | 1–2 days |
 
-**Target setelah dikerjakan: ~82%**
+**Target after completion: ~82%**
 
 ---
 
-## 5. Image — `image-api` (Saat ini: ~70%)
+## 5. Image — `image-api` (Currently: ~70%)
 
-### Kondisi Kode Saat Ini
+### Current State of the Code
 
-File utama: `services/image/app/main.py` (~15KB)
+Main file: `services/image/app/main.py` (~15KB)
 
-Sudah ada: upload/download, list/show/delete, deactivate/reactivate,
-visibility public/private, backend file + MinIO.
+Already present: upload/download, list/show/delete, deactivate/reactivate,
+public/private visibility, file + MinIO backends.
 
-### Gap yang Perlu Dikerjakan
+### Gaps to Address
 
-#### 🔴 Prioritas Tinggi
+#### 🔴 High Priority
 
-**1. Image Members (Sharing antar Project)**
+**1. Image Members (Sharing Between Projects)**
 
-Image mendukung berbagi image private ke project lain secara eksplisit.
+Images support explicitly sharing a private image with other projects.
 
 ```
 POST /images/{id}/members {"member": "target_project_id"}  -> status: "pending"
@@ -575,34 +575,34 @@ GET  /images/{id}/members     — list members
 DELETE /images/{id}/members/{id}
 ```
 
-**Pekerjaan:**
-- Tabel baru: `image_members` (image_id, member_id, status)
-- Endpoint CRUD image members
-- Query `GET /images` harus include image yang diterima oleh project saat ini
+**Work:**
+- New table: `image_members` (image_id, member_id, status)
+- Image member CRUD endpoints
+- The `GET /images` query must include images accepted by the current project
 - Status workflow: pending → accepted/rejected
 
 ---
 
 **2. Image Tags**
 
-Metadata sederhana berupa list of strings.
+Simple metadata in the form of a list of strings.
 
 ```python
-POST /images/{id}/tags/{tag}    — tambah tag
-DELETE /images/{id}/tags/{tag}  — hapus tag
+POST /images/{id}/tags/{tag}    — add a tag
+DELETE /images/{id}/tags/{tag}  — remove a tag
 GET /images?tag=linux           — filter by tag
 ```
 
-**Pekerjaan:**
-- Tambah kolom `tags` (JSON array) di `images`
-- Endpoint `POST/DELETE /images/{id}/tags/{tag}`
-- Filter `?tag=` di endpoint list
+**Work:**
+- Add a `tags` column (JSON array) to `images`
+- Endpoints `POST/DELETE /images/{id}/tags/{tag}`
+- A `?tag=` filter on the list endpoint
 
 ---
 
-**3. Task-based Import (Async dari URL)**
+**3. Task-based Import (Async from a URL)**
 
-Saat ini upload synchronous. Image asli punya task API untuk import async dari URL.
+Currently upload is synchronous. The real Image service has a task API for async import from a URL.
 
 ```
 POST /v2/tasks {
@@ -618,173 +618,173 @@ POST /v2/tasks {
 GET /v2/tasks/{id}  -> {"status": "pending"|"processing"|"success"|"failure"}
 ```
 
-**Pekerjaan:**
-- Tabel baru: `image_tasks`
-- Background worker menggunakan pola RabbitMQ cast yang sudah ada
-- Endpoint `POST /v2/tasks` dan `GET /v2/tasks/{id}`
+**Work:**
+- New table: `image_tasks`
+- Background worker using the existing RabbitMQ cast pattern
+- Endpoints `POST /v2/tasks` and `GET /v2/tasks/{id}`
 
 ---
 
 **4. Pagination & Advanced Filtering**
 
-Saat ini filter hanya dasar (name, visibility).
+Currently filters are basic (name, visibility).
 
 ```
 GET /images?sort=name:asc&limit=20&marker=<last_id>
 GET /images?status=active&disk_format=qcow2&min_disk=10&max_disk=100
 ```
 
-**Pekerjaan:**
-- Tambah parameter `limit`, `marker`, `sort` di `GET /images`
-- Tambah filter: `status`, `disk_format`, `container_format`, `min_disk`, `max_disk`, `min_ram`
+**Work:**
+- Add `limit`, `marker`, `sort` parameters to `GET /images`
+- Add filters: `status`, `disk_format`, `container_format`, `min_disk`, `max_disk`, `min_ram`
 
 ---
 
-**5. Image Caching (di image-api layer)**
+**5. Image Caching (at the image-api layer)**
 
-Saat ini caching hanya di compute-worker.
+Currently caching only exists in compute-worker.
 
-**Pekerjaan:**
-- Implementasi cache layer dengan TTL di image-api
-- Cache metadata di Redis (opsional)
+**Work:**
+- Implement a cache layer with a TTL in image-api
+- Cache metadata in Redis (optional)
 
 ---
 
-#### 🟡 Prioritas Menengah
+#### 🟡 Medium Priority
 
 **6. Image Signing & Verification**
 
-Versi sederhana tanpa Barbican penuh:
-- Tandatangani image hash dengan private key
-- Simpan signature di image properties
-- Verify saat compute-worker download image
+A simple version without the full Barbican:
+- Sign the image hash with a private key
+- Store the signature in the image properties
+- Verify when compute-worker downloads the image
 
 ---
 
-#### 🟢 Prioritas Rendah
+#### 🟢 Low Priority
 
-- **Multi-store backend (Ceph, Swift, HTTP)** — File + MinIO sudah cukup
-- **Image encryption** — Memerlukan Barbican, out of scope
+- **Multi-store backend (Ceph, Swift, HTTP)** — File + MinIO is enough
+- **Image encryption** — Requires Barbican, out of scope
 
-### Estimasi Upaya Image
+### Image Effort Estimate
 
-| Pekerjaan | Kompleksitas | Upaya |
+| Work | Complexity | Effort |
 |---|:---:|---|
-| Image members | Sedang | 2 hari |
-| Image tags | Rendah | 0.5 hari |
-| Task-based import | Sedang | 2–3 hari |
-| Pagination & filtering | Rendah | 1 hari |
-| Image caching | Sedang | 1–2 hari |
-| Image signing | Tinggi | 3 hari |
+| Image members | Medium | 2 days |
+| Image tags | Low | 0.5 day |
+| Task-based import | Medium | 2–3 days |
+| Pagination & filtering | Low | 1 day |
+| Image caching | Medium | 1–2 days |
+| Image signing | High | 3 days |
 
-**Target setelah dikerjakan: ~88%**
+**Target after completion: ~88%**
 
 ---
 
-## 6. Block Storage — `block-store-api` + `block-store-worker` (Saat ini: ~75%)
+## 6. Block Storage — `block-store-api` + `block-store-worker` (Currently: ~75%)
 
-### Kondisi Kode Saat Ini
+### Current State of the Code
 
-File API: `services/block_store/app/main.py` (~36KB)
+API file: `services/block_store/app/main.py` (~36KB)
 Worker: `services/block_store_worker/`
 Drivers: `services/block_store_worker/app/drivers/`
 
-Sudah ada: volume CRUD, attach/detach, extend, snapshot, backup, volume types,
+Already present: volume CRUD, attach/detach, extend, snapshot, backup, volume types,
 LVM + Ceph dual backend, boot-from-volume, transfer.
 
-### Gap yang Perlu Dikerjakan
+### Gaps to Address
 
-#### 🔴 Prioritas Tinggi
+#### 🔴 High Priority
 
 **1. Quota Management per Project**
 
-Block Storage mendukung quota (max volumes, max snapshots, max GB) per project.
-Saat ini tidak ada batasan apapun.
+Block Storage supports quotas (max volumes, max snapshots, max GB) per project.
+Currently there are no limits at all.
 
 ```
-GET  /os-quota-sets/{project_id}         — tampilkan quota
-PUT  /os-quota-sets/{project_id}         — set quota (admin)
-DELETE /os-quota-sets/{project_id}       — reset ke default
+GET  /os-quota-sets/{project_id}         — show the quota
+PUT  /os-quota-sets/{project_id}         — set the quota (admin)
+DELETE /os-quota-sets/{project_id}       — reset to the default
 GET  /os-quota-sets/{project_id}/detail  — usage + limit
 
-# Default quotas (Block Storage default):
+# Default quotas (Block Storage defaults):
 volumes: 10
 snapshots: 10
 gigabytes: 1000
 ```
 
-**Pekerjaan:**
-- Tabel baru: `volume_quotas` (project_id, resource, hard_limit)
-- Tabel baru: `quota_usages` (project_id, resource, in_use, reserved)
-- Middleware yang cek quota sebelum create volume/snapshot
-- Endpoint CRUD quota sets
+**Work:**
+- New table: `volume_quotas` (project_id, resource, hard_limit)
+- New table: `quota_usages` (project_id, resource, in_use, reserved)
+- Middleware that checks the quota before creating a volume/snapshot
+- Quota set CRUD endpoints
 
 ---
 
-**2. LVM Thin Provisioning** ✅ (Selesai di Fase 3)
+**2. LVM Thin Provisioning** ✅ (Done in Phase 3)
 
-Saat ini hanya LVM thick (alokasi penuh langsung).
-Thin provisioning hemat space — alokasi space hanya saat data ditulis.
+Currently only thick LVM (full allocation up front).
+Thin provisioning saves space — space is allocated only when data is written.
 
 ```bash
-# Saat ini (thick):
+# Currently (thick):
 lvcreate -L 10G -n volume-id vg-cloudx
 
 # Thin provisioning:
-# 1. Buat thin pool (sekali):
+# 1. Create a thin pool (once):
 lvcreate -L 100G --thinpool thinpool vg-cloudx
-# 2. Buat thin LV dari pool:
+# 2. Create a thin LV from the pool:
 lvcreate -V 10G --thin -n volume-id vg-cloudx/thinpool
-# Keuntungan: 100G pool bisa berisi 200G+ thin volumes (over-provisioning)
+# Benefit: a 100G pool can hold 200G+ of thin volumes (over-provisioning)
 ```
 
-**Pekerjaan:**
-- Tambah opsi `lvm_type: thin|thick` di volume type
-- Driver LVM: implementasi thin pool management
-- Deteksi dan inisialisasi thin pool saat startup
+**Work:**
+- Add a `lvm_type: thin|thick` option to the volume type
+- LVM driver: implement thin pool management
+- Detect and initialise the thin pool at startup
 
 ---
 
-**3. Volume Quota Enforcement dengan Reserved State**
+**3. Volume Quota Enforcement with Reserved State**
 
-Saat volume sedang dibuat (status `creating`), quota harus sudah di-reserved
-agar tidak ada race condition.
+While a volume is being created (status `creating`), the quota must already be reserved
+so there is no race condition.
 
 ```python
-# Alur yang benar:
+# The correct flow:
 def create_volume(project_id, size):
     if usage + size > hard_limit:
         raise QuotaExceeded()
     reserve_quota(project_id, "gigabytes", size)  # atomic reserve
     rpc.cast("block-store-worker", "create_volume", {...})
-    # Worker: commit atau rollback reservation saat selesai/error
+    # Worker: commit or roll back the reservation when done/on error
 ```
 
 ---
 
-**4. Multi-Attach Volume** ✅ (Selesai di Fase 3)
+**4. Multi-Attach Volume** ✅ (Done in Phase 3)
 
-Block Storage mendukung volume yang di-attach ke lebih dari satu server sekaligus
-(khusus untuk volume type yang support multi-attach, biasanya dengan Ceph).
+Block Storage supports a volume attached to more than one server at the same time
+(only for volume types that support multi-attach, usually with Ceph).
 
 ```python
 POST /volumes {"multiattach": true, ...}
 
-# Attach ke server kedua meskipun sudah attach ke server pertama
+# Attach to a second server even though it is already attached to the first
 POST /volumes/{id}/attach {"server_id": "server2_id", "mountpoint": "/dev/vdb"}
 ```
 
-**Pekerjaan:**
-- Tambah kolom `multiattach` di tabel volumes
-- Ubah constraint attach: jika `multiattach=true`, izinkan lebih dari satu attachment
-- Ceph RBD sudah mendukung multi-reader
+**Work:**
+- Add a `multiattach` column to the volumes table
+- Change the attach constraint: if `multiattach=true`, allow more than one attachment
+- Ceph RBD already supports multi-reader
 
 ---
 
 **5. QoS Enforcement (cgroups / blkio)**
 
-Saat ini `max_iops` dan `max_throughput` di volume type hanya informational.
-Block Storage asli enforce via storage backend.
+Currently `max_iops` and `max_throughput` in the volume type are informational only.
+The real Block Storage enforces them through the storage backend.
 
 ```bash
 # Ceph RBD throttle:
@@ -795,78 +795,78 @@ rbd config image set pool/image-id rbd_qos_bps_limit 104857600
 # /sys/fs/cgroup/blkio/blkio.throttle.read_iops_device
 ```
 
-**Pekerjaan:**
-- Driver Ceph: set `rbd_qos_iops_limit` dan `rbd_qos_bps_limit` via `rbd config`
-- Driver LVM: implementasi blkio rate limiting saat attach
+**Work:**
+- Ceph driver: set `rbd_qos_iops_limit` and `rbd_qos_bps_limit` via `rbd config`
+- LVM driver: implement blkio rate limiting on attach
 
 ---
 
-#### 🟡 Prioritas Menengah
+#### 🟡 Medium Priority
 
-**6. Volume Migration (antar backend)**
+**6. Volume Migration (between backends)**
 
-Pindah volume dari LVM ke Ceph atau sebaliknya.
+Move a volume from LVM to Ceph or the other way round.
 
 ```
 POST /volumes/{id}/action {"os-migrate_volume": {"host": "ceph-backend"}}
 ```
 
-**Pekerjaan:**
-- `qemu-img convert` antara LVM block device dan Ceph RBD
-- Atomic swap: hapus volume lama setelah copy selesai
+**Work:**
+- `qemu-img convert` between an LVM block device and Ceph RBD
+- Atomic swap: delete the old volume after the copy finishes
 
 ---
 
 **7. Consistency Groups**
 
-Grup volume yang snapshot-nya diambil secara atomik bersama.
-Berguna untuk database backup.
+A group of volumes whose snapshots are taken atomically together.
+Useful for database backups.
 
 ```
-POST /consistencygroups   — buat group
-POST /cgsnapshots         — snapshot semua volume dalam group sekaligus
+POST /consistencygroups   — create a group
+POST /cgsnapshots         — snapshot all volumes in the group at once
 ```
 
 ---
 
-#### 🟢 Prioritas Rendah
+#### 🟢 Low Priority
 
-- **Volume Encryption** — Memerlukan Barbican
-- **Volume Replication** — Diperlukan HA, di luar scope single-node
-- **iSCSI / NFS / FC backend** — Hanya LVM + Ceph sudah cukup untuk lab
+- **Volume Encryption** — Requires Barbican
+- **Volume Replication** — Needed for HA, outside the single-node scope
+- **iSCSI / NFS / FC backend** — LVM + Ceph only is enough for the lab
 
-### Estimasi Upaya Block Storage
+### Block Storage Effort Estimate
 
-| Pekerjaan | Kompleksitas | Upaya |
+| Work | Complexity | Effort |
 |---|:---:|---|
-| Quota management | Sedang | 2–3 hari |
-| LVM thin provisioning | Tinggi | 3–4 hari |
-| Quota enforcement (reserved) | Sedang | 1–2 hari |
-| Multi-attach volume | Sedang | 2 hari |
-| QoS enforcement | Tinggi | 3–5 hari |
-| Volume migration | Sedang | 2–3 hari |
+| Quota management | Medium | 2–3 days |
+| LVM thin provisioning | High | 3–4 days |
+| Quota enforcement (reserved) | Medium | 1–2 days |
+| Multi-attach volume | Medium | 2 days |
+| QoS enforcement | High | 3–5 days |
+| Volume migration | Medium | 2–3 days |
 
-**Target setelah dikerjakan: ~88%**
+**Target after completion: ~88%**
 
 ---
 
-## 7. Placement — `placement-api` (Saat ini: ~70%)
+## 7. Placement — `placement-api` (Currently: ~70%)
 
-### Kondisi Kode Saat Ini
+### Current State of the Code
 
-File utama: `services/placement/app/main.py` (~16KB)
+Main file: `services/placement/app/main.py` (~16KB)
 
-Sudah ada: resource providers, inventory (VCPU/MEMORY_MB/DISK_GB),
+Already present: resource providers, inventory (VCPU/MEMORY_MB/DISK_GB),
 traits, allocations, usages.
 
-### Gap yang Perlu Dikerjakan
+### Gaps to Address
 
-#### 🔴 Prioritas Tinggi
+#### 🔴 High Priority
 
 **1. Allocation Candidates**
 
-Ini adalah fitur paling penting yang hilang — Compute scheduler menggunakannya
-untuk menemukan host yang memenuhi syarat.
+This is the most important missing feature — the Compute scheduler uses it
+to find hosts that meet the requirements.
 
 ```
 GET /allocation_candidates?resources=VCPU:2,MEMORY_MB:2048,DISK_GB:20
@@ -892,18 +892,18 @@ Response:
 }
 ```
 
-**Pekerjaan:**
-- Query: cari provider yang punya capacity >= requested resources
-- Hitung available = `total * allocation_ratio - reserved - used`
-- Return filtered list dengan summaries
+**Work:**
+- Query: find providers whose capacity >= the requested resources
+- Compute available = `total * allocation_ratio - reserved - used`
+- Return a filtered list with summaries
 - Filter by traits (required/forbidden)
 
 ---
 
-**2. Nested Resource Providers** ✅ (Selesai di Fase 3)
+**2. Nested Resource Providers** ✅ (Done in Phase 3)
 
-Hierarki provider: Node → NUMA node → CPU set.
-Diperlukan untuk NUMA-aware scheduling dan SR-IOV.
+Provider hierarchy: Node → NUMA node → CPU set.
+Needed for NUMA-aware scheduling and SR-IOV.
 
 ```
 Resource Provider Tree:
@@ -914,8 +914,8 @@ compute-host (root)
     └── CPU 8-15
 ```
 
-**Pekerjaan:**
-- Tambah kolom `parent_provider_uuid` di `resource_providers`
+**Work:**
+- Add a `parent_provider_uuid` column to `resource_providers`
 - API: `GET /resource_providers?in_tree={root_uuid}`
 - `GET /resource_providers/{uuid}/aggregates`
 
@@ -923,8 +923,8 @@ compute-host (root)
 
 **3. API Microversions**
 
-CloudX Placement menggunakan microversioning untuk evolusi API
-tanpa breaking change.
+CloudX Placement uses microversioning to evolve the API
+without breaking changes.
 
 ```
 # Request header:
@@ -935,17 +935,17 @@ CloudX-API-Version: placement 1.36
 x-openstack-request-id: req-...
 ```
 
-**Pekerjaan:**
-- Middleware yang parse `CloudX-API-Version: placement X.Y`
-- Mapping versi ke feature flags
-- Header `x-openstack-request-id` di semua response
+**Work:**
+- Middleware that parses `CloudX-API-Version: placement X.Y`
+- Mapping from version to feature flags
+- An `x-openstack-request-id` header on all responses
 
 ---
 
 **4. Reshaper (Atomic Inventory + Allocation Update)**
 
-Untuk update inventory dan allocation secara atomik.
-Diperlukan saat resize atau live migration.
+For updating inventory and allocations atomically.
+Needed during resize or live migration.
 
 ```
 POST /reshaper {
@@ -954,25 +954,25 @@ POST /reshaper {
 }
 ```
 
-**Pekerjaan:**
+**Work:**
 - Endpoint `POST /reshaper`
-- Wrapped dalam satu database transaction
+- Wrapped in a single database transaction
 
 ---
 
 **5. Custom Resource Classes**
 
-Selain VCPU/MEMORY_MB/DISK_GB, CloudX mendukung custom resource class
-(FPGA, GPU, VGPU, SRIOV_NET_VF, dll.)
+Besides VCPU/MEMORY_MB/DISK_GB, CloudX supports custom resource classes
+(FPGA, GPU, VGPU, SRIOV_NET_VF, and so on).
 
 ```
-PUT /resource_classes/CUSTOM_GPU_A100  — buat custom resource class
-GET /resource_classes                  — list semua (standard + custom)
+PUT /resource_classes/CUSTOM_GPU_A100  — create a custom resource class
+GET /resource_classes                  — list all (standard + custom)
 ```
 
 ---
 
-#### 🟡 Prioritas Menengah
+#### 🟡 Medium Priority
 
 **6. Aggregate Association**
 
@@ -990,47 +990,47 @@ GET /allocation_candidates?required=COMPUTE_VOLUME_EXTEND
 
 ---
 
-#### 🟢 Prioritas Rendah
+#### 🟢 Low Priority
 
-- **Full scheduler integration** — Relevan hanya di multi-node
+- **Full scheduler integration** — Only relevant in multi-node
 
-### Estimasi Upaya Placement
+### Placement Effort Estimate
 
-| Pekerjaan | Kompleksitas | Upaya |
+| Work | Complexity | Effort |
 |---|:---:|---|
-| Allocation candidates | Sedang | 2–3 hari |
-| Nested resource providers | Tinggi | 3–4 hari |
-| API microversions | Rendah | 1 hari |
-| Reshaper | Sedang | 1–2 hari |
-| Custom resource classes | Rendah | 1 hari |
-| Aggregate association | Rendah | 1 hari |
+| Allocation candidates | Medium | 2–3 days |
+| Nested resource providers | High | 3–4 days |
+| API microversions | Low | 1 day |
+| Reshaper | Medium | 1–2 days |
+| Custom resource classes | Low | 1 day |
+| Aggregate association | Low | 1 day |
 
-**Target setelah dikerjakan: ~88%**
+**Target after completion: ~88%**
 
 ---
 
-## 8. CloudX Dashboard — `dashboard` (Saat ini: ~55%)
+## 8. CloudX Dashboard — `dashboard` (Currently: ~55%)
 
-### Kondisi Kode Saat Ini
+### Current State of the Code
 
 Frontend: `services/dashboard/frontend/src/`
 
-Pages yang sudah ada: Admin, Flavors, FloatingIPs, Images, Keypairs, Login,
+Existing pages: Admin, Flavors, FloatingIPs, Images, Keypairs, Login,
 Networks, Overview, Routers, SecurityGroups, ServerGroups, Servers,
 Snapshots, VolumeTypes, Volumes
 
-Stack: React + Vite + dark theme premium
+Stack: React + Vite + premium dark theme
 
-### Gap yang Perlu Dikerjakan
+### Gaps to Address
 
-#### 🔴 Prioritas Tinggi
+#### 🔴 High Priority
 
 **1. noVNC Console (In-Browser)**
 
-Fitur paling dicari dari web dashboard. Memerlukan noVNC proxy (dibahas di bagian Compute).
+The most requested feature of a web dashboard. Requires the noVNC proxy (covered in the Compute section).
 
 ```jsx
-// Di Servers.jsx, saat klik tombol "Console":
+// In Servers.jsx, when the "Console" button is clicked:
 const ConsoleModal = ({ server }) => {
   const consoleUrl = await api.getConsoleUrl(server.id, "novnc");
   return (
@@ -1042,16 +1042,16 @@ const ConsoleModal = ({ server }) => {
 };
 ```
 
-**Pekerjaan:**
-- Integrasi noVNC JS library ke frontend
-- Modal/page baru untuk console view
-- Token-based security untuk WebSocket connection
+**Work:**
+- Integrate the noVNC JS library into the frontend
+- A new modal/page for the console view
+- Token-based security for the WebSocket connection
 
 ---
 
 **2. Live Log Streaming**
 
-Saat ini log adalah snapshot (fetch sekali). Perlu auto-refresh.
+Currently the log is a snapshot (fetched once). It needs auto-refresh.
 
 ```jsx
 const LogViewer = ({ serverId }) => {
@@ -1064,16 +1064,16 @@ const LogViewer = ({ serverId }) => {
 };
 ```
 
-**Pekerjaan:**
-- Komponen `LogViewer` dengan auto-refresh setiap 2 detik
-- Gunakan WebSocket existing untuk push update ketika status berubah
-- Scroll-to-bottom otomatis
+**Work:**
+- A `LogViewer` component with a 2-second auto-refresh
+- Use the existing WebSocket to push updates when the status changes
+- Automatic scroll-to-bottom
 
 ---
 
 **3. Network Topology View**
 
-Visualisasi graph: Server ↔ Port ↔ Network ↔ Router ↔ Floating IP.
+Graph visualisation: Server ↔ Port ↔ Network ↔ Router ↔ Floating IP.
 
 ```jsx
 import ReactFlow from 'reactflow';
@@ -1084,17 +1084,17 @@ const TopologyPage = () => {
 };
 ```
 
-**Pekerjaan:**
-- Install library: `react-flow-renderer` atau `cytoscape.js`
-- Halaman baru: `Topology.jsx`
-- Build graph dari API data (networks, routers, servers, floating IPs)
-- Klik node → show detail panel
+**Work:**
+- Install a library: `react-flow-renderer` or `cytoscape.js`
+- New page: `Topology.jsx`
+- Build the graph from API data (networks, routers, servers, floating IPs)
+- Click a node → show a detail panel
 
 ---
 
 **4. Image Upload via UI (Drag & Drop)**
 
-Saat ini tidak ada upload image dari dashboard.
+Currently there is no image upload from the dashboard.
 
 ```jsx
 const ImageUploadModal = () => {
@@ -1112,17 +1112,17 @@ const ImageUploadModal = () => {
 };
 ```
 
-**Pekerjaan:**
-- Gunakan `react-dropzone` untuk drag & drop
-- Progress bar upload dengan `XMLHttpRequest` (mendukung `onprogress`)
-- Preview metadata sebelum upload (format, size, checksum)
+**Work:**
+- Use `react-dropzone` for drag & drop
+- An upload progress bar with `XMLHttpRequest` (supports `onprogress`)
+- Metadata preview before upload (format, size, checksum)
 
 ---
 
 **5. Project Selector (Live Switch)**
 
-Saat ini login hanya untuk satu project per session.
-CloudX Dashboard memiliki project switcher di header.
+Currently a login is for a single project per session.
+The CloudX Dashboard has a project switcher in the header.
 
 ```jsx
 const ProjectSelector = () => {
@@ -1135,16 +1135,16 @@ const ProjectSelector = () => {
 };
 ```
 
-**Pekerjaan:**
-- Endpoint `POST /auth/tokens` dengan `scope.project` baru
-- Store token baru di context
-- Re-fetch semua resource setelah switch
+**Work:**
+- Endpoint `POST /auth/tokens` with a new `scope.project`
+- Store the new token in the context
+- Re-fetch all resources after the switch
 
 ---
 
 **6. Quota Usage Display**
 
-Dashboard overview harus menampilkan usage vs quota.
+The dashboard overview must show usage vs quota.
 
 ```jsx
 const QuotaWidget = ({ resource }) => (
@@ -1158,18 +1158,18 @@ const QuotaWidget = ({ resource }) => (
 );
 ```
 
-**Pekerjaan:**
-- Endpoint placement `GET /usages` sudah ada — expose ke dashboard
-- Tambah quota endpoint di Block Storage dan Identity
-- Widget baru di halaman Overview
+**Work:**
+- The placement `GET /usages` endpoint already exists — expose it to the dashboard
+- Add a quota endpoint to Block Storage and Identity
+- A new widget on the Overview page
 
 ---
 
-#### 🟡 Prioritas Menengah
+#### 🟡 Medium Priority
 
 **7. Identity: Roles Management**
 
-Halaman admin untuk manage role assignments per user per project.
+An admin page to manage role assignments per user per project.
 
 ```
 Admin -> Users -> alice -> Roles -> [admin, member, reader] (checkboxes)
@@ -1180,7 +1180,7 @@ Admin -> Projects -> myproject -> Members -> [alice:admin, bob:member]
 
 **8. API Access Panel**
 
-Tampilkan credentials dan endpoint URLs untuk setiap service.
+Show credentials and endpoint URLs for each service.
 
 ```
 Service Catalog:
@@ -1196,59 +1196,59 @@ Access Keys:
 
 **9. Resource Detail Pages**
 
-Saat ini banyak resource hanya tampil di list tanpa halaman detail.
-Perlu: Server detail page, Volume detail page, Network detail page.
+Currently many resources only appear in a list without a detail page.
+Needed: Server detail page, Volume detail page, Network detail page.
 
 ---
 
-#### 🟢 Prioritas Rendah
+#### 🟢 Low Priority
 
-- **Object Storage UI (Swift/MinIO)** — Out of scope base services
-- **Heat / Orchestration UI** — Service belum diimplementasikan
+- **Object Storage UI (Swift/MinIO)** — Outside the base services scope
+- **Heat / Orchestration UI** — The service is not implemented yet
 
-### Estimasi Upaya CloudX Dashboard
+### CloudX Dashboard Effort Estimate
 
-| Pekerjaan | Kompleksitas | Upaya |
+| Work | Complexity | Effort |
 |---|:---:|---|
-| noVNC console | Tinggi | 3–5 hari |
-| Live log streaming | Rendah | 1 hari |
-| Network topology view | Tinggi | 3–5 hari |
-| Image upload via UI | Sedang | 2 hari |
-| Project selector | Sedang | 1–2 hari |
-| Quota usage display | Rendah | 1 hari |
-| Roles management | Sedang | 2 hari |
-| API access panel | Rendah | 1 hari |
+| noVNC console | High | 3–5 days |
+| Live log streaming | Low | 1 day |
+| Network topology view | High | 3–5 days |
+| Image upload via UI | Medium | 2 days |
+| Project selector | Medium | 1–2 days |
+| Quota usage display | Low | 1 day |
+| Roles management | Medium | 2 days |
+| API access panel | Low | 1 day |
 
-**Target setelah dikerjakan: ~82%**
+**Target after completion: ~82%**
 
 ---
 
-## 9. Infrastruktur Cross-Cutting
+## 9. Cross-Cutting Infrastructure
 
-Beberapa pekerjaan lintas service yang perlu dikerjakan bersamaan.
+Several cross-service pieces of work that need to be done together.
 
-### 9.1 API Versioning ✅ (Selesai di Fase 3)
+### 9.1 API Versioning ✅ (Done in Phase 3)
 
-CloudX semua service menggunakan versioning: `/v2/`, `/v3/`, microversions.
-Saat ini cloudx tidak punya prefix versi.
+In CloudX all services use versioning: `/v2/`, `/v3/`, microversions.
+Currently cloudx has no version prefix.
 
 ```
-Saat ini:    GET /servers
+Currently:    GET /servers
 CloudX:   GET /v2.1/servers  (Compute)
              GET /v3/tokens     (Identity)
              GET /v2/images     (Image)
 ```
 
-**Pekerjaan:**
-- Tambah prefix versi di setiap service router
-- Header `X-CloudX-Request-Id` di setiap response
-- Endpoint `GET /` (version discovery)
+**Work:**
+- Add a version prefix to every service router
+- An `X-CloudX-Request-Id` header on every response
+- A `GET /` endpoint (version discovery)
 
 ---
 
 ### 9.2 Request ID Tracing
 
-CloudX meng-generate `x-openstack-request-id` di setiap request.
+CloudX generates an `x-openstack-request-id` for every request.
 
 ```python
 @app.middleware("http")
@@ -1259,16 +1259,16 @@ async def add_request_id(request: Request, call_next):
     return response
 ```
 
-**Pekerjaan:**
-- Tambah middleware ke semua service
-- Propagate request ID dalam RPC calls antar service
+**Work:**
+- Add the middleware to all services
+- Propagate the request ID in RPC calls between services
 
 ---
 
-### 9.3 Quota System Terpusat
+### 9.3 Centralised Quota System
 
-Daripada tiap service punya quota sendiri, lebih baik punya satu sistem quota
-yang konsisten (mirip `oslo.quota`).
+Instead of each service having its own quota, it is better to have one consistent
+quota system (similar to `oslo.quota`).
 
 ```python
 # services/shared/quota.py:
@@ -1282,22 +1282,22 @@ class QuotaEngine:
 
 ### 9.4 Pagination Standard
 
-Semua service harus pakai pagination format yang konsisten.
+All services must use a consistent pagination format.
 
 ```
 GET /servers?limit=20&marker=<last_server_id>
-# response + "next" link jika ada halaman berikutnya
+# response + a "next" link if there is a next page
 ```
 
 ---
 
 ### 9.5 Event Notification Standard
 
-Saat ini hanya compute dan block-store yang punya event notifications.
-Semua service harus bisa publish events standar.
+Currently only compute and block-store have event notifications.
+All services must be able to publish standard events.
 
 ```python
-# Event types standar CloudX:
+# Standard CloudX event types:
 "compute.instance.create.start"
 "compute.instance.create.end"
 "volume.create.start"
@@ -1309,7 +1309,7 @@ Semua service harus bisa publish events standar.
 
 ### 9.6 Health Check Standard
 
-Semua service harus implementasi health check endpoint yang seragam.
+All services must implement a uniform health check endpoint.
 
 ```
 GET /healthcheck -> {"status": "up", "checks": {"db": "ok", "rabbitmq": "ok"}}
@@ -1317,13 +1317,13 @@ GET /healthcheck -> {"status": "up", "checks": {"db": "ok", "rabbitmq": "ok"}}
 
 ---
 
-## 10. Prioritas dan Estimasi Upaya
+## 10. Priorities and Effort Estimates
 
-### Matriks Dampak vs Upaya
+### Impact vs Effort Matrix
 
 ```
-Dampak Tinggi ──────────────────────────────────────────────
-                   | Quick Wins (Upaya Rendah) | Big Bets (Upaya Tinggi) |
+High Impact ────────────────────────────────────────────────
+                   | Quick Wins (Low Effort)   | Big Bets (High Effort)  |
                    |---------------------------|-------------------------|
                    | Server tags               | noVNC console           |
                    | Lock/unlock server        | IPv6 support            |
@@ -1331,41 +1331,41 @@ Dampak Tinggi ──────────────────────
                    | Shared networks           | QoS enforcement         |
                    | Service catalog           | Network topology UI     |
 ───────────────────|---------------------------|-------------------------|
-Dampak Rendah      | API microversions         | Volume migration        |
+Low Impact         | API microversions         | Volume migration        |
                    | Request ID tracing        | Volume replication      |
                    | Health check standard     | Consistency groups      |
                    | Pagination standard       | BGP routing             |
-                   Upaya Rendah                     Upaya Tinggi
+                   Low Effort                       High Effort
 ```
 
 ---
 
-### ✅ Fase 1 — Quick Wins *(Selesai)*
+### ✅ Phase 1 — Quick Wins *(Done)*
 
-| # | Pekerjaan | Service | Status |
+| # | Work | Service | Status |
 |---|---|---|:---:|
 | 1 | Server tags | Compute | ✅ |
 | 2 | Lock/unlock server | Compute | ✅ |
 | 3 | Image tags | Image | ✅ |
 | 4 | Image members (sharing) | Image | ✅ |
 | 5 | Shared networks | Networking | ✅ |
-| 6 | Quota management basic | Block Storage | ✅ |
-| 7 | Pagination standard semua service | Cross-cutting | ✅ |
+| 6 | Basic quota management | Block Storage | ✅ |
+| 7 | Pagination standard for all services | Cross-cutting | ✅ |
 | 8 | Request ID tracing | Cross-cutting | ✅ |
 | 9 | Service catalog | Identity | ✅ |
-| 10 | Quota display di dashboard | CloudX Dashboard | ✅ |
-| 11 | Live log streaming di dashboard | CloudX Dashboard | ✅ |
+| 10 | Quota display in the dashboard | CloudX Dashboard | ✅ |
+| 11 | Live log streaming in the dashboard | CloudX Dashboard | ✅ |
 | 12 | Image upload via UI | CloudX Dashboard | ✅ |
 | 13 | Project selector | CloudX Dashboard | ✅ |
 
-**Skor setelah Fase 1:**
+**Score after Phase 1:**
 Identity ~75% · Compute ~84% · Networking ~68% · Image ~80% · Block Storage ~80% · CloudX Dashboard ~68%
 
 ---
 
-### ✅ Fase 2 — Core Features *(Selesai)*
+### ✅ Phase 2 — Core Features *(Done)*
 
-| # | Pekerjaan | Service | Status |
+| # | Work | Service | Status |
 |---|---|---|:---:|
 | 1 | noVNC proxy + console UI | Compute + CloudX Dashboard | ✅ |
 | 2 | Allocation candidates | Placement | ✅ |
@@ -1379,127 +1379,127 @@ Identity ~75% · Compute ~84% · Networking ~68% · Image ~80% · Block Storage 
 | 10 | API microversions | Placement | ✅ |
 | 11 | Reshaper endpoint | Placement | ✅ |
 
-**Skor setelah Fase 2:**
+**Score after Phase 2:**
 Identity ~82% · Compute ~90% · Networking ~78% · Image ~86% · Block Storage ~82% · Placement ~85% · CloudX Dashboard ~78%
 
 ---
 
-### ✅ Fase 3 — Polish *(Selesai)*
+### ✅ Phase 3 — Polish *(Done)*
 
-| # | Pekerjaan | Service | Status |
+| # | Work | Service | Status |
 |---|---|---|:---:|
 | 1 | IPv6 support (SLAAC, DHCPv6 stateful/stateless) | Networking | ✅ |
 | 2 | LVM thin provisioning (`lvm_type=thin`, auto thin pool) | Block Storage | ✅ |
 | 3 | Multi-attach volume (`multiattach=true`) | Block Storage | ✅ |
 | 4 | Central oslo.policy RBAC (`shared/policy.py`) | Identity | ✅ |
-| 5 | Port forwarding DNAT per-port | Networking | ✅ |
+| 5 | Per-port DNAT port forwarding | Networking | ✅ |
 | 6 | Nested resource providers + Aggregates | Placement | ✅ |
-| 7 | API version discovery (`GET /`, `GET /v2.1`, dll.) | Cross-cutting | ✅ |
+| 7 | API version discovery (`GET /`, `GET /v2.1`, and so on) | Cross-cutting | ✅ |
 
-**Skor setelah Fase 3:**
+**Score after Phase 3:**
 Identity ~87% · Compute ~90% · Networking ~82% · Image ~84% · Block Storage ~88% · Placement ~88% · CloudX Dashboard ~70%
 
 ---
 
-### ✅ Fase 4 — Advanced Integration (Selesai)
+### ✅ Phase 4 — Advanced Integration (Done)
 
-Fase ini berfokus pada fitur-fitur lanjutan yang meningkatkan paritas secara signifikan,
-terutama di sisi **CloudX Dashboard**, **integrasi antar-service**, dan **hardening** sistem yang sudah ada.
+This phase focuses on advanced features that raise parity significantly,
+mainly on the **CloudX Dashboard**, **cross-service integration**, and **hardening** of the existing system.
 
-#### 🔴 Prioritas Tinggi
+#### 🔴 High Priority
 
-| # | Pekerjaan | Service | Status | Catatan |
+| # | Work | Service | Status | Notes |
 |---|---|---|:---:|---|
-| 1 | **noVNC Console (In-Browser)** | Compute + CloudX Dashboard | ✅ | Websockify container, token auth WebSocket |
-| 2 | **Network Topology View** | CloudX Dashboard | ✅ | React Flow / Cytoscape.js, klik node → detail |
+| 1 | **noVNC Console (In-Browser)** | Compute + CloudX Dashboard | ✅ | Websockify container, WebSocket token auth |
+| 2 | **Network Topology View** | CloudX Dashboard | ✅ | React Flow / Cytoscape.js, click a node → detail |
 | 3 | **Application Credentials** | Identity | ✅ | `/v3/users/{id}/application_credentials`, scoped roles |
-| 4 | **Multi-Scope Token** (domain/system scope) | Identity | ✅ | Extend JWT dengan `scope_type` field |
+| 4 | **Multi-Scope Token** (domain/system scope) | Identity | ✅ | Extend the JWT with a `scope_type` field |
 | 5 | **Ceph QoS Enforcement** | Block Store Worker | ✅ | `rbd config image set rbd_qos_iops_limit` |
-| 6 | **Quota Reserved State** (atomic reserve) | Block Storage | ✅ | Reserve sebelum create, rollback jika error |
+| 6 | **Quota Reserved State** (atomic reserve) | Block Storage | ✅ | Reserve before create, roll back on error |
 | 7 | **Custom Resource Classes** | Placement | ✅ | `PUT /resource_classes/CUSTOM_GPU_A100` |
-| 8 | **Forbidden Traits Filter** di allocation_candidates | Placement | ✅ | `?required=X&forbidden=Y` query params |
-| 9 | **Identity: Roles Management UI** | CloudX Dashboard | ✅ | Halaman admin manage role assignments |
-| 10 | **API Access Panel** | CloudX Dashboard | ✅ | Tampilkan endpoint catalog + access keys |
+| 8 | **Forbidden Traits Filter** in allocation_candidates | Placement | ✅ | `?required=X&forbidden=Y` query params |
+| 9 | **Identity: Roles Management UI** | CloudX Dashboard | ✅ | Admin page to manage role assignments |
+| 10 | **API Access Panel** | CloudX Dashboard | ✅ | Shows the endpoint catalog + access keys |
 
-#### 🟡 Prioritas Menengah
+#### 🟡 Medium Priority
 
-| # | Pekerjaan | Service | Status | Catatan |
+| # | Work | Service | Status | Notes |
 |---|---|---|:---:|---|
-| 11 | **Trunk Ports** (VLAN-in-VLAN) | Networking | ✅ | OVN parent_port, wrapping API |
-| 12 | **DNS Integration** (OVN internal DNS) | Networking | ✅ | Kolom `dns_name` port, tabel `DNS` di OVN NB |
-| 13 | **Dual-Stack Port** (IPv4 + IPv6 sekaligus) | Networking | ✅ | `fixed_ips` array dengan dua entry |
-| 14 | **Image Signing & Verification** | Image + Compute | ✅ | Hash signature di properties, verify saat download |
+| 11 | **Trunk Ports** (VLAN-in-VLAN) | Networking | ✅ | OVN parent_port, API wrapping |
+| 12 | **DNS Integration** (OVN internal DNS) | Networking | ✅ | Port `dns_name` column, `DNS` table in the OVN NB |
+| 13 | **Dual-Stack Port** (IPv4 + IPv6 at once) | Networking | ✅ | `fixed_ips` array with two entries |
+| 14 | **Image Signing & Verification** | Image + Compute | ✅ | Hash signature in properties, verified on download |
 | 15 | **Image Advanced Filtering** | Image | ✅ | `?min_disk=`, `?disk_format=`, `?sort=` |
-| 16 | **Volume Migration** (LVM ↔ Ceph) | Block Storage | ✅ | `qemu-img convert`, atomic swap setelah copy |
-| 17 | **Aggregates & AZ** (Compute) | Compute | ✅ | `/os-aggregates`, AZ otomatis dari aggregate |
+| 16 | **Volume Migration** (LVM ↔ Ceph) | Block Storage | ✅ | `qemu-img convert`, atomic swap after the copy |
+| 17 | **Aggregates & AZ** (Compute) | Compute | ✅ | `/os-aggregates`, AZ derived automatically from the aggregate |
 | 18 | **Resource Detail Pages** | CloudX Dashboard | ✅ | Server detail, Volume detail, Network detail pages |
-| 19 | **Enforce policy.py di setiap endpoint** | Cross-cutting | ✅ | Integrasi `policy.enforce()` per action |
-| 20 | **Centralized Quota System** (`shared/quota.py`) | Cross-cutting | ✅ | oslo.quota-inspired, atomic reserve/commit/rollback |
+| 19 | **Enforce policy.py on every endpoint** | Cross-cutting | ✅ | Integrate `policy.enforce()` per action |
+| 20 | **Centralised Quota System** (`shared/quota.py`) | Cross-cutting | ✅ | oslo.quota-inspired, atomic reserve/commit/rollback |
 
-#### 🟢 Prioritas Rendah
+#### 🟢 Low Priority
 
-| # | Pekerjaan | Service | Status | Catatan |
+| # | Work | Service | Status | Notes |
 |---|---|---|:---:|---|
-| 21 | Consistency Groups | Block Storage | ✅ | Atomic snapshot grup volume |
-| 22 | Image Caching (TTL) | Image | ✅ | Cache metadata, opsional Redis |
+| 21 | Consistency Groups | Block Storage | ✅ | Atomic volume group snapshot |
+| 22 | Image Caching (TTL) | Image | ✅ | Metadata cache, optional Redis |
 | 23 | Health Check Standard | Cross-cutting | ✅ | `GET /healthcheck` → `{db: ok, rabbitmq: ok}` |
-| 24 | Event Notification Standard | Cross-cutting | ✅ | `compute.instance.create.start/end` di semua service |
+| 24 | Event Notification Standard | Cross-cutting | ✅ | `compute.instance.create.start/end` in all services |
 
-**Target skor setelah Fase 4:**
+**Target score after Phase 4:**
 Identity ~93% · Compute ~94% · Networking ~88% · Image ~90% · Block Storage ~93% · Placement ~92% · CloudX Dashboard ~85%
 
 ---
 
-### Total Estimasi Keseluruhan
+### Overall Estimate
 
-| Fase | Durasi | Jumlah Item | Status |
+| Phase | Duration | Item count | Status |
 |---|:---:|:---:|:---:|
-| ✅ Fase 1 — Quick Wins | 2–3 minggu | 13 item | **Selesai** |
-| ✅ Fase 2 — Core Features | 3–5 minggu | 11 item | **Selesai** |
-| ✅ Fase 3 — Polish | 2–4 minggu | 7 item | **Selesai** |
-| ✅ Fase 4 — Advanced Integration | 4–6 minggu | 24 item | **Selesai** |
-| 🚀 Fase 5 — Production Readiness | 4–6 minggu | 10 item | **Berikutnya** |
-| **Total (F1–F5)** | **15–24 minggu** | **65 item** | — |
+| ✅ Phase 1 — Quick Wins | 2–3 weeks | 13 items | **Done** |
+| ✅ Phase 2 — Core Features | 3–5 weeks | 11 items | **Done** |
+| ✅ Phase 3 — Polish | 2–4 weeks | 7 items | **Done** |
+| ✅ Phase 4 — Advanced Integration | 4–6 weeks | 24 items | **Done** |
+| 🚀 Phase 5 — Production Readiness | 4–6 weeks | 10 items | **Next** |
+| **Total (P1–P5)** | **15–24 weeks** | **65 items** | — |
 
 ---
 
-### 🚀 Fase 5 — Production Readiness & Day-2 Operations (Estimasi: 4–6 minggu)
+### 🚀 Phase 5 — Production Readiness & Day-2 Operations (Estimate: 4–6 weeks)
 
-Setelah semua layanan inti (base services) mencapai tingkat paritas yang tinggi dengan CloudX, fokus beralih ke stabilitas operasional, skalabilitas, dan hardening agar CloudX siap untuk environment pseudo-production atau lab yang lebih serius.
+After all core services (base services) reach a high level of parity with CloudX, the focus shifts to operational stability, scalability, and hardening so that CloudX is ready for a pseudo-production or more serious lab environment.
 
-#### 🔴 Prioritas Tinggi
-| # | Pekerjaan | Area | Upaya | Catatan |
+#### 🔴 High Priority
+| # | Work | Area | Effort | Notes |
 |---|---|---|:---:|---|
-| 1 | **High Availability (HA) API Services** | Infrastruktur | 3-5 hari | ✅ HAProxy multi-backend round-robin, RabbitMQ 3-node cluster (`docker-compose.ha.yml`). |
-| 2 | **Database Replication & Backup** | Infrastruktur | 4-5 hari | ✅ PostgreSQL primary+standby streaming replication, cron backup 23:00 Asia/Jakarta ke MinIO. |
-| 3 | **Centralized Logging & Telemetry** | Cross-cutting | 5-7 hari | ✅ Prometheus (retention 15d) + Grafana + exporters + `/metrics` per service. |
+| 1 | **High Availability (HA) API Services** | Infrastructure | 3-5 days | ✅ HAProxy multi-backend round-robin, RabbitMQ 3-node cluster (`docker-compose.ha.yml`). |
+| 2 | **Database Replication & Backup** | Infrastructure | 4-5 days | ✅ PostgreSQL primary+standby streaming replication, 23:00 Asia/Jakarta cron backup to MinIO. |
+| 3 | **Centralised Logging & Telemetry** | Cross-cutting | 5-7 days | ✅ Prometheus (15d retention) + Grafana + exporters + `/metrics` per service. |
 
-#### 🟡 Prioritas Menengah
-| # | Pekerjaan | Area | Upaya | Catatan |
+#### 🟡 Medium Priority
+| # | Work | Area | Effort | Notes |
 |---|---|---|:---:|---|
-| 4 | **Zero-Downtime Migrations** | Infrastruktur | 3-4 hari | ✅ Alembic scaffold (`services/migrations/`), baseline + additive-first rules. |
-| 5 | **CI/CD & Automated Testing** | Infrastruktur | 5 hari | ⏭️ Ditunda (belum direncanakan user). |
-| 6 | **Security Hardening (TLS/SSL)** | Cross-cutting | 3-4 hari | ✅ Internal PKI (`services/certs/generate-certs.sh`), TLS antar-service internal saja. |
-| 7 | **Volume Backups to Object Storage** | Block Storage | 3-4 hari | ✅ `POST /volumes/{id}/backup` + worker export → MinIO, restore ke volume baru. |
+| 4 | **Zero-Downtime Migrations** | Infrastructure | 3-4 days | ✅ Alembic scaffold (`services/migrations/`), baseline + additive-first rules. |
+| 5 | **CI/CD & Automated Testing** | Infrastructure | 5 days | ⏭️ Deferred (not yet planned by the user). |
+| 6 | **Security Hardening (TLS/SSL)** | Cross-cutting | 3-4 days | ✅ Internal PKI (`services/certs/generate-certs.sh`), internal service-to-service TLS only. |
+| 7 | **Volume Backups to Object Storage** | Block Storage | 3-4 days | ✅ `POST /volumes/{id}/backup` + worker export → MinIO, restore into a new volume. |
 
-#### 🟢 Prioritas Rendah (Ekspansi Ekosistem)
-| # | Pekerjaan | Area | Upaya | Catatan |
+#### 🟢 Low Priority (Ecosystem Expansion)
+| # | Work | Area | Effort | Notes |
 |---|---|---|:---:|---|
-| 8 | **Heat (Orchestration)** | Service Baru | 7-10 hari | ⏭️ Ditunda ke fase berikutnya. |
-| 9 | **Octavia (Load Balancer)** | Service Baru | 10-14 hari | ⏭️ Ditunda ke fase berikutnya. |
-| 10| **Magnum (Container Service)** | Service Baru | 10-14 hari | ⏭️ Ditunda ke fase berikutnya. |
+| 8 | **Heat (Orchestration)** | New Service | 7-10 days | ⏭️ Deferred to a later phase. |
+| 9 | **Octavia (Load Balancer)** | New Service | 10-14 days | ⏭️ Deferred to a later phase. |
+| 10| **Magnum (Container Service)** | New Service | 10-14 days | ⏭️ Deferred to a later phase. |
 
-**Catatan:** Multi-node deployment adaptif (Control Plane / Compute / Storage / Gateway)
-diimplementasikan via compose overlays terpisah, tetap kompatibel dengan mode single-node.
-Detail operasional: `docs/fase5-production-readiness.md`.
+**Note:** Adaptive multi-node deployment (Control Plane / Compute / Storage / Gateway)
+was implemented through separate compose overlays, and remains compatible with single-node mode.
+Operational details: `docs/fase5-production-readiness.md`.
 
-**Target akhir Fase 5:** CloudX bukan lagi sekadar lab API, melainkan sistem Cloud mandiri yang resilient, secure, dan terobservasi.
+**End goal of Phase 5:** CloudX is no longer just an API lab, but a self-contained cloud system that is resilient, secure, and observable.
 
 ---
 
-## 11. Arsitektur Target
+## 11. Target Architecture
 
-### Tambahan Komponen yang Dibutuhkan
+### Additional Components Needed
 
 ```
                           ┌─────────────────────────────┐
@@ -1520,7 +1520,7 @@ Detail operasional: `docs/fase5-production-readiness.md`.
          │               │    │  + VNC port RPC │      │   + QoS table   │
          │               │    └─────────────────┘      └─────────────────┘
          │               │
-         │          ┌────▼────────────┐    <-- BARU
+         │          ┌────▼────────────┐    <-- NEW
          │          │  novnc-proxy    │  :6080
          │          │  (websockify)   │
          │          └─────────────────┘
@@ -1532,7 +1532,7 @@ Detail operasional: `docs/fase5-production-readiness.md`.
   │  + signing  │   │  + Ceph QoS      │   │  + custom RC         │
   └─────────────┘   └──────────────────┘   └──────────────────────┘
 
-  PostgreSQL — tabel yang sudah ada (Fase 1–3) ✅:
+  PostgreSQL — tables that already exist (Phases 1–3) ✅:
     services, endpoints (service catalog)
     domains (domain management)
     server_tags, image_members, image_tasks
@@ -1540,7 +1540,7 @@ Detail operasional: `docs/fase5-production-readiness.md`.
     subnet_pools, qos_policies, qos_rules
     image_tags, placement_rp_aggregates
 
-  PostgreSQL — tabel baru (Fase 4):
+  PostgreSQL — new tables (Phase 4):
     application_credentials (Identity)
     os_aggregates, aggregate_hosts (Compute)
     networking_trunks, networking_trunk_subports (Networking)
@@ -1548,23 +1548,23 @@ Detail operasional: `docs/fase5-production-readiness.md`.
     quota_reservations (Cross-cutting)
 ```
 
-### Tabel Database — Status
+### Database Tables — Status
 
-#### ✅ Sudah Diimplementasikan (Fase 1–3)
+#### ✅ Already Implemented (Phases 1–3)
 
-| Tabel | Service | Tujuan |
+| Table | Service | Purpose |
 |---|---|---|
 | `auth_services` | Identity | Service catalog entries |
 | `auth_endpoints` | Identity | Endpoint per service per region |
 | `auth_domains` | Identity | Domain hierarchy |
 | `compute_server_tags` | Compute | Server tagging |
-| `image_members` | Image | Image sharing antar project |
+| `image_members` | Image | Image sharing between projects |
 | `image_tasks` | Image | Async import tasks |
 | `block_store_volume_quotas` | Block Storage | Hard limit per project |
 | `networking_subnet_pools` | Networking | Subnet address pool |
 | `networking_qos_policies` | Networking | QoS policy definitions |
 | `networking_qos_rules` | Networking | Bandwidth limit rules |
-| `networking_port_forwardings` | Networking | DNAT per-port forwarding |
+| `networking_port_forwardings` | Networking | Per-port DNAT forwarding |
 | `placement_rp_aggregates` | Placement | RP → aggregate association |
 | `auth_application_credentials` | Identity | Application credentials |
 | `compute_aggregates` | Compute | Host aggregate definitions |
@@ -1576,48 +1576,48 @@ Detail operasional: `docs/fase5-production-readiness.md`.
 | `block_store_consistency_groups` | Block Storage | Consistency Groups metadata |
 | `block_store_cgsnapshots` | Block Storage | Consistency Group Snapshots |
 
-#### 🚀 Diperlukan di Fase 5 (Opsional / Ekstensi)
+#### 🚀 Needed in Phase 5 (Optional / Extensions)
 
-| Tabel | Service | Tujuan |
+| Table | Service | Purpose |
 |---|---|---|
-| `block-store_backups` | Block Storage | Metadata backup volume ke MinIO |
-| `heat_stacks` | Heat | Menyimpan status stack orkestrasi |
-| `octavia_loadbalancers` | Octavia | Metadata load balancer |
+| `block-store_backups` | Block Storage | Volume backup metadata for MinIO |
+| `heat_stacks` | Heat | Stores orchestration stack state |
+| `octavia_loadbalancers` | Octavia | Load balancer metadata |
 
 ---
 
-## 📌 Catatan Penting
+## 📌 Important Notes
 
-> **Catatan 1 — Scope Lab**
-> Beberapa fitur **sengaja tidak dikerjakan** karena di luar scope lab single-node:
+> **Note 1 — Lab Scope**
+> Some features are **deliberately not implemented** because they are outside the single-node lab scope:
 > Live migration, Evacuation, Multi-node scheduling, FWaaS, VPNaaS, LBaaS (Octavia),
 > Barbican, Designate, Swift, Heat.
 
-> **Catatan 2 — Backend Sudah Nyata**
-> CloudX sudah menggunakan backend nyata (libvirt, OVN, LVM, Ceph).
-> Mayoritas pekerjaan tersisa adalah di **API layer** dan **UI**, bukan di backend.
+> **Note 2 — The Backends Are Already Real**
+> CloudX already uses real backends (libvirt, OVN, LVM, Ceph).
+> Most of the remaining work is in the **API layer** and the **UI**, not in the backend.
 
-> **Catatan 3 — Kompatibilitas CloudX Client**
-> Untuk bisa dipakai dengan `openstack` CLI atau CloudX SDK standar,
-> prioritas utama adalah:
-> 1. Service catalog di Identity (client auto-discover endpoints)
+> **Note 3 — CloudX Client Compatibility**
+> To be usable with the `openstack` CLI or the standard CloudX SDK,
+> the main priorities are:
+> 1. A service catalog in Identity (clients auto-discover endpoints)
 > 2. API prefix versioning (`/v2/`, `/v3/`)
-> 3. Response format yang sesuai Identity v3 token format
+> 3. A response format that matches the Identity v3 token format
 
 ---
 
 ## 📊 Progress Tracker
 
-| Fase | Item Total | Selesai | Progress |
+| Phase | Total Items | Done | Progress |
 |---|:---:|:---:|:---:|
-| Fase 1 — Quick Wins | 13 | 13 | ████████████ 100% |
-| Fase 2 — Core Features | 11 | 11 | ████████████ 100% |
-| Fase 3 — Polish | 7 | 7 | ████████████ 100% |
-| Fase 4 — Advanced Integration | 24 | 24 | ████████████ 100% |
-| Fase 5 — Production Readiness | 10 | 7 | ████████░░░░ 70% |
-| **Keseluruhan** | **65** | **62** | **███████████░ 95%** |
+| Phase 1 — Quick Wins | 13 | 13 | ████████████ 100% |
+| Phase 2 — Core Features | 11 | 11 | ████████████ 100% |
+| Phase 3 — Polish | 7 | 7 | ████████████ 100% |
+| Phase 4 — Advanced Integration | 24 | 24 | ████████████ 100% |
+| Phase 5 — Production Readiness | 10 | 7 | ████████░░░░ 70% |
+| **Overall** | **65** | **62** | **███████████░ 95%** |
 
 ---
 
-*Dokumen ini dibuat berdasarkan analisis kode di `services/`, `docs/feature-comparison.md`, dan `README.md`.*
-*Terakhir diperbarui: Akhir Agustus 2026 — Fase 4 selesai, Fase 5 (Production Readiness) direncanakan.*
+*This document was written from an analysis of the code in `services/`, `docs/feature-comparison.md`, and `README.md`.*
+*Last updated: End of August 2026 — Phase 4 done, Phase 5 (Production Readiness) planned.*

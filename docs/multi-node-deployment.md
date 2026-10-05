@@ -1,12 +1,12 @@
-# 📖 Panduan Deployment & Pengetesan Multi-Node (2 VirtualBox VMs)
+# 📖 Multi-Node Deployment & Testing Guide (2 VirtualBox VMs)
 
-Dokumen ini memberikan panduan langkah demi langkah untuk menginstalasi, mengonfigurasi, dan menguji platform **CloudX** dalam arsitektur **Multi-Node Terpisah** (1 Control Plane Node + 1 Compute Worker Node) di atas lingkungan simulasi **VirtualBox**.
+This document is a step-by-step guide to installing, configuring, and testing the **CloudX** platform in a **separated multi-node** architecture (1 control plane node + 1 compute worker node) on a **VirtualBox** simulation environment.
 
 ---
 
-## 🏗️ 1. Arsitektur Multi-Node (2 Virtual Machines)
+## 🏗️ 1. Multi-Node Architecture (2 Virtual Machines)
 
-Dalam deployment multi-node, tugas API & Database dipisahkan secara fisik dari pemrosesan workload virtual machine (hypervisor):
+In a multi-node deployment, the API & database duties are physically separated from the virtual machine workload processing (the hypervisor):
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -46,58 +46,53 @@ Dalam deployment multi-node, tugas API & Database dipisahkan secara fisik dari p
 
 ---
 
-## 🌐 2. Konfigurasi VirtualBox Network Adapters
+## 🌐 2. VirtualBox Network Adapter Configuration
 
-Sebelum menyalakan VM di VirtualBox, atur Network Adapters sesuai tabel berikut:
+Before powering on the VMs in VirtualBox, set the network adapters as in the following table:
 
-Subnet Host-Only Network VirtualBox (`vboxnet0`): **`192.168.10.0/24`**
+VirtualBox Host-Only Network subnet (`vboxnet0`): **`192.168.10.0/24`**
 
 ### **VM 1: Control Plane Node (`cloudx-control-plane`)**
 - **Adapter 1**: **Host-Only Network** (`vboxnet0`)
-  - **IP Address**: `192.168.10.10`
-  - **Fungsi**: Management & REST API Network (PostgreSQL `:5432`, RabbitMQ `:5672`, OVN Central DBs `:6641`/`:6642`, REST APIs `:8000`-`:8015`, Web Dashboard `:8080`).
+  - **IP address**: `192.168.10.10`
+  - **Purpose**: Management & REST API network (PostgreSQL `:5432`, RabbitMQ `:5672`, OVN Central DBs `:6641`/`:6642`, REST APIs `:8000`-`:8015`, Web Dashboard `:8080`).
 - **Adapter 2**: **NAT**
-  - **Fungsi**: Akses Internet OS Host VM 1 untuk update paket (`apt update`).
+  - **Purpose**: Internet access for the VM 1 host OS for package updates (`apt update`).
 
 ### **VM 2: Compute Worker Node (`cloudx-compute-01`)**
 - **Adapter 1**: **Host-Only Network** (`vboxnet0`)
-  - **IP Address**: `192.168.10.11`
-  - **Fungsi**: Management & **OVN Data Plane Overlay Network** (Jalur OVN Geneve Tunnel antar-node dan komunikasi RPC `compute-worker` ke Control Plane).
+  - **IP address**: `192.168.10.11`
+  - **Purpose**: Management & **OVN data plane overlay network** (OVN Geneve tunnel between nodes and `compute-worker` RPC to the control plane).
 - **Adapter 2**: **Bridged Adapter**
-  - **Promiscuous Mode**: **Allow All** *(Set di VirtualBox Settings -> Network -> Advanced)*
-  - **Fungsi**: Diikat ke Open vSwitch bridge `br-ex` sebagai Provider Interface (`PROVIDER_INTERFACE`) untuk alokasi Floating IP & routing keluar Guest VM.
+  - **Promiscuous mode**: **Allow All** *(set in VirtualBox Settings -> Network -> Advanced)*
+  - **Purpose**: Bound to the Open vSwitch bridge `br-ex` as the provider interface (`PROVIDER_INTERFACE`) for floating IP allocation & outbound routing of guest VMs.
 - **Adapter 3**: **NAT**
-  - **Fungsi**: **Sumber Internet Utama Host OS VM 2** (`apt update`, download OS base image).
+  - **Purpose**: **Main internet source for the VM 2 host OS** (`apt update`, downloading base OS images).
 
 ---
 
-## 🛠️ 3. Langkah-Langkah Deployment
+## 🛠️ 3. Deployment Steps
 
-### **Langkah 1: Setup Control Plane Node (VM 1)**
+### **Step 1: Set up the Control Plane Node (VM 1)**
 
-1. Cloning repositori CloudX di VM 1:
+1. Clone the CloudX repository on VM 1:
    ```bash
    git clone https://github.com/your-org/cloudx.git
    cd cloudx
    ```
 
-2. Pastikan service infrastruktur mengikat IP `0.0.0.0` / `192.168.10.10`:
+2. Make sure the infrastructure services bind to `0.0.0.0` / `192.168.10.10`:
    - Postgres: `/etc/postgresql/.../main/postgresql.conf` -> `listen_addresses = '*'`
    - RabbitMQ: `/etc/rabbitmq/rabbitmq.conf` -> `listeners.tcp.default = 5672`
-   - OVN Central DB: `ovn-nbctl set-connection ptcp:6641:0.0.0.0` dan `ovn-sbctl set-connection ptcp:6642:0.0.0.0`
+   - OVN Central DB: `ovn-nbctl set-connection ptcp:6641:0.0.0.0` and `ovn-sbctl set-connection ptcp:6642:0.0.0.0`
 
-3. Jalankan Control Plane API Services:
-   - **Opsi Docker Compose**:
-     ```bash
-     docker compose -f docker-compose.control-plane.yml up -d
-     ```
-   - **Opsi Native Systemd**:
-     ```bash
-     sudo ./scripts/install-systemd.sh
-     sudo systemctl enable --now cloudx-*
-     ```
+3. Start the control plane API services (native systemd):
+   ```bash
+   sudo ./scripts/install-systemd.sh
+   sudo systemctl enable --now cloudx-*
+   ```
 
-4. Verifikasi status Control Plane di VM 1:
+4. Verify the control plane status on VM 1:
    ```bash
    curl http://192.168.10.10:8005/health
    curl http://192.168.10.10:8003/health
@@ -105,43 +100,38 @@ Subnet Host-Only Network VirtualBox (`vboxnet0`): **`192.168.10.0/24`**
 
 ---
 
-### **Langkah 2: Setup Compute Worker Node (VM 2)**
+### **Step 2: Set up the Compute Worker Node (VM 2)**
 
-> **Secret bersama.** `/etc/cloudx/cloudx.env` (berisi `AUTH_SECRET_KEY`, `AUTH_ADMIN_PASSWORD`, `KEY_MANAGER_MASTER_KEY`) dibuat otomatis oleh `install-systemd.sh` di control plane. Salin file yang sama ke setiap node lain (path sama, mode `640`) **sebelum** menjalankan installer di node tersebut. Secret yang berbeda antar node membuat verifikasi token dan login service gagal.
+> **Shared secrets.** `/etc/cloudx/cloudx.env` (containing `AUTH_SECRET_KEY`, `AUTH_ADMIN_PASSWORD`, `KEY_MANAGER_MASTER_KEY`) is created automatically by `install-systemd.sh` on the control plane. Copy the same file to every other node (same path, mode `640`) **before** running the installer there. Different secrets across nodes make token verification and service login fail.
 
-1. Cloning repositori CloudX di VM 2:
+1. Clone the CloudX repository on VM 2:
    ```bash
    git clone https://github.com/your-org/cloudx.git
    cd cloudx
    ```
 
-2. Jalankan script setup Compute Node otomatis:
+2. Run the automatic compute node setup script:
    ```bash
    sudo CONTROLLER_IP=192.168.10.10 NODE_IP=192.168.10.11 PROVIDER_IF=enp0s8 ./scripts/setup-compute-node.sh
    ```
 
-3. Jalankan Worker Daemons (`compute-worker` & `block-store-worker`):
-   - **Opsi Docker Compose**:
-     ```bash
-     docker compose -f docker-compose.compute-node.yml up -d
-     ```
-   - **Opsi Native Systemd**:
-     ```bash
-     sudo systemctl enable --now cloudx-compute-worker
-     ```
+3. Start the worker daemons (`compute-worker`):
+   ```bash
+   sudo systemctl enable --now cloudx-compute-worker
+   ```
 
 ---
 
-## 📊 4. Verifikasi & Testing Multi-Node
+## 📊 4. Multi-Node Verification & Testing
 
-### **1. Memeriksa Heartbeat Worker di Placement API**
-Jalankan perintah ini di VM 1 (Control Plane) atau dari Host laptop:
+### **1. Check the worker heartbeat in the Placement API**
+Run this on VM 1 (control plane) or from the host laptop:
 
 ```bash
 cloudx placement provider list
 ```
 
-**Hasil yang Diharapkan**:
+**Expected result**:
 ```text
 +-------------------+--------------------------------------+
 | Name              | UUID                                 |
@@ -152,23 +142,23 @@ cloudx placement provider list
 
 ---
 
-### **2. Memeriksa Status Tunnel OVN Geneve**
-Jalankan perintah ini di VM 1 atau VM 2:
+### **2. Check the OVN Geneve tunnel status**
+Run this on VM 1 or VM 2:
 
 ```bash
 sudo ovn-sbctl show
 ```
 
-**Hasil yang Diharapkan**:
-Terdapat entri `Chassis` untuk `cloudx-compute-01` dengan `encap ip "192.168.10.11"`.
+**Expected result**:
+There is a `Chassis` entry for `cloudx-compute-01` with `encap ip "192.168.10.11"`.
 
 ---
 
-### **3. Pengujian E2E Otomatis (`scripts/test-multinode-vm.py`)**
-Jalankan script pengujian multi-node dari VM 1 atau VM 2:
+### **3. Automated E2E test (`scripts/test-multinode-vm.py`)**
+Run the multi-node test script from VM 1 or VM 2:
 
 ```bash
 python3 scripts/test-multinode-vm.py --controller 192.168.10.10 --worker-node cloudx-compute-01
 ```
 
-Script ini akan memverifikasi kesehatan seluruh REST API Control Plane, pendaftaran node di Placement API, serta konektivitas OVN chassis tunnel.
+This script verifies the health of all control plane REST APIs, node registration in the Placement API, and the OVN chassis tunnel connectivity.

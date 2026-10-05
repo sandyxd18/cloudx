@@ -1,6 +1,6 @@
 # Troubleshooting Security Group
 
-Cek translasi security group ke OVN:
+Check the translation of a security group into OVN:
 
 ```bash
 networking security-group show web
@@ -8,16 +8,16 @@ networking security-group ovn-show web
 networking port ovn-show <port-id>
 ```
 
-Cek langsung di OVN NB DB:
+Check directly in the OVN NB DB:
 
 ```bash
 docker compose exec networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 list port_group
 docker compose exec networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --type=port-group acl-list <port-group>
 ```
 
-Jika SSH atau ping tertutup, pastikan rule ingress ada dan port masih menjadi member port group. Jika `port_security_enabled=false`, security group tidak diterapkan ke port tersebut.
+If SSH or ping is blocked, make sure the ingress rule exists and the port is still a member of the port group. If `port_security_enabled=false`, the security group is not applied to that port.
 
-Cleanup orphan port group/ACL milik lab:
+Clean up orphan port groups/ACLs left by the lab:
 
 ```bash
 scripts/cleanup-network.sh --dry-run

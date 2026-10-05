@@ -1,6 +1,6 @@
 # Placement Lite
 
-Placement-lite bukan CloudX Placement penuh. Ini hanya inventory single-node untuk mencegah create server saat kapasitas jelas tidak cukup.
+Placement-lite is not the full CloudX Placement. It is only a single-node inventory that prevents creating a server when capacity is clearly insufficient.
 
 Command:
 
@@ -8,7 +8,7 @@ Command:
 compute host show
 ```
 
-Output berisi:
+The output contains:
 
 - `total_vcpu`, `used_vcpu`, `free_vcpu`
 - `total_ram_mb`, `used_ram_mb`, `free_ram_mb`
@@ -22,4 +22,4 @@ PLACEMENT_TOTAL_RAM_MB=16384
 PLACEMENT_TOTAL_DISK_GB=200
 ```
 
-Jika flavor melebihi kapasitas bebas, compute-api mengembalikan error `Insufficient resources`. Tidak ada scheduler multi-node.
+If a flavor exceeds the free capacity, compute-api returns an `Insufficient resources` error. There is no multi-node scheduler.

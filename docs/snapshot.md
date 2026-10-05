@@ -1,12 +1,12 @@
 # Snapshot & Backup
 
-CloudX mendukung dua bentuk proteksi data: **Volume Snapshot** (COW di storage backend) dan **Volume Backup** (ekspor penuh ke object storage MinIO/S3).
+CloudX supports two forms of data protection: **Volume Snapshot** (COW on the storage backend) and **Volume Backup** (a full export to MinIO/S3 object storage).
 
 ## Volume Snapshot (Backend-Level)
 
-Volume snapshot diproses secara native pada storage backend:
-- **LVM Backend**: LVM COW (Copy-On-Write) snapshot di `/dev/VG/snap-xxx`.
-- **Ceph Backend**: Ceph RBD snapshot di `rbd:pool/image@snap-xxx`.
+Volume snapshots are handled natively by the storage backend:
+- **LVM backend**: LVM COW (copy-on-write) snapshot at `/dev/VG/snap-xxx`.
+- **Ceph backend**: Ceph RBD snapshot at `rbd:pool/image@snap-xxx`.
 
 ```bash
 cloudx snapshot list
@@ -14,16 +14,16 @@ cloudx volume snapshot vol1 --name snap1
 cloudx volume create vol2 --size 10 --snapshot snap1
 ```
 
-## Volume Backup (Object Storage MinIO)
+## Volume Backup (MinIO Object Storage)
 
-Di Fase 5, CloudX mengimplementasikan Block storage volume backup:
-- Meng-export volume penuh (`qemu-img` / `rbd export`) dan me-upload file mentah ke MinIO bucket `cloudx-backups`.
-- Bertahan meskipun node storage fisik mengalami kegagalan total.
+In Phase 5, CloudX implements block storage volume backup:
+- It exports the full volume (`qemu-img` / `rbd export`) and uploads the raw file to the MinIO bucket `cloudx-backups`.
+- It survives even a total failure of the physical storage node.
 
 ```bash
 cloudx volume backup vol1 --name backup-20260831
 cloudx backup list
-cloudx backup restore <backup_id>    # restore ke volume baru
+cloudx backup restore <backup_id>    # restore into a new volume
 ```
 
 ## Server Snapshot
@@ -33,10 +33,10 @@ cloudx server snapshot vm1 --name snap-vm1
 cloudx image show snap-vm1
 ```
 
-Flow server snapshot:
+Server snapshot flow:
 
 ```text
 VM -> Root Volume Snapshot -> Image API (Image)
 ```
 
-Image hasil snapshot dapat digunakan kembali untuk membuat VM baru.
+The resulting snapshot image can be reused to create new VMs.

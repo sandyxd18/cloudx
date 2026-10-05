@@ -1,19 +1,19 @@
 # Security Group
 
-Security group di lab ini meniru model Networking/OVN secara sederhana:
+Security groups in this lab imitate the Networking/OVN model in a simple way:
 
-- SecurityGroup menjadi OVN Port Group.
-- SecurityGroupRule menjadi OVN ACL pada port group.
-- Port menjadi member port group saat `port_security_enabled=true`.
+- A SecurityGroup becomes an OVN Port Group.
+- A SecurityGroupRule becomes an OVN ACL on the port group.
+- A port becomes a member of the port group when `port_security_enabled=true`.
 
-Default security group dibuat saat networking-api startup. Env berikut mengatur usability default lab:
+The default security group is created when networking-api starts. The following env settings control the lab's default usability:
 
 ```env
 DEFAULT_SECURITY_GROUP_ALLOW_SSH=true
 DEFAULT_SECURITY_GROUP_ALLOW_ICMP=true
 ```
 
-Jika port dibuat tanpa security group, `default` dipakai otomatis. Ingress default di-drop, egress IPv4 default di-allow. Rule allow memakai `allow-related` untuk stateful behavior OVN.
+If a port is created without a security group, `default` is used automatically. Ingress is dropped by default and IPv4 egress is allowed by default. Allow rules use `allow-related` for OVN's stateful behaviour.
 
 Workflow:
 
@@ -33,4 +33,4 @@ networking port security-enable <port-id>
 networking port ovn-show <port-id>
 ```
 
-`port security-disable` hanya untuk lab/admin/debug. Saat disabled, port dilepas dari OVN port group security group.
+`port security-disable` is only for lab/admin/debug use. When it is disabled, the port is removed from the security group's OVN port group.

@@ -1,30 +1,30 @@
 # CloudX — Private Cloud Platform
 
-**CloudX** adalah platform private cloud modular dan adaptif berbasis Linux native (Systemd) dengan arsitektur enterprise cloud modern. Menggunakan **libvirt + QEMU/KVM** untuk virtualisasi, **OVN/Open vSwitch** untuk software-defined networking, **RabbitMQ** untuk messaging asinkron antar-komponen, serta dilengkapi **CloudX CLI** dan **Web Dashboard** interaktif berbasis AWS Cloudscape Design System.
+**CloudX** is a modular, adaptive private cloud platform built on native Linux (systemd) with a modern enterprise cloud architecture. It uses **libvirt + QEMU/KVM** for virtualization, **OVN/Open vSwitch** for software-defined networking, and **RabbitMQ** for asynchronous messaging between components. It ships with the **CloudX CLI** and an interactive **Web Dashboard** built on the AWS Cloudscape Design System.
 
 ---
 
-## 🏛️ Arsitektur & Layanan Inti
+## 🏛️ Architecture & Core Services
 
-CloudX terdiri dari microservices terdistribusi yang dapat berjalan dalam mode All-in-One maupun Multi-Node (Control Plane & Compute):
+CloudX is a set of distributed microservices that can run in All-in-One or Multi-Node mode (Control Plane & Compute):
 
-* **Auth (`auth-api`)**: Manajemen otentikasi identitas, proyek, pengguna, peran (Identity Service), dan credentials.
-* **Compute (`compute-api`, `compute-worker`, `conductor`)**: Manajemen siklus hidup VM, flavor, keypair, server groups, dan affinity policies (Compute Service).
-* **Networking (`networking-api`)**: L2/L3 Network, subnet, router gateway, floating IP, security groups, VPC peering, BGP, dan IPSec VPN (Networking Service).
-* **Storage (`block-store-api`, `block-store-worker`)**: Block storage persistent, volume types (LVM / Ceph RBD), snapshot, dan full volume backup (Block Storage Service).
-* **Image (`image-api`, `image-worker`)**: Repositori sistem operasi VM berbasis qcow2/raw dengan backend local file atau MinIO S3 (Image Service).
-* **Metadata & Placement (`metadata-api`, `placement-api`)**: Cloud-init metadata service (`169.254.169.254`) dan tracking alokasi kapasitas compute nodes.
-* **Orchestration & Containers (`orchestration-api`, `k8s_engine`)**: Auto-scaling groups berbasis metrik utilisasi dan Managed Kubernetes Engine (K3s).
-* **Security & Observability (`key_manager`, `telemetry-api`, `billing-api`, `event-api`)**: Secret vault terintegrasi, pengumpulan metrik utilisasi, billing/invoicing, dan audit event logging.
-* **Dashboard (`dashboard`)**: Antarmuka web modern React + Cloudscape UI yang terhubung langsung melalui reverse proxy terpadu.
+* **Auth (`auth-api`)**: Identity, project, user, role and credential management (Identity Service).
+* **Compute (`compute-api`, `compute-worker`, `conductor`)**: VM lifecycle, flavors, keypairs, server groups and affinity policies (Compute Service).
+* **Networking (`networking-api`)**: L2/L3 networks, subnets, router gateways, floating IPs, security groups, VPC peering, BGP and IPSec VPN (Networking Service).
+* **Storage (`block-store-api`, `block-store-worker`)**: Persistent block storage, volume types (LVM / Ceph RBD), snapshots and full volume backups (Block Storage Service).
+* **Image (`image-api`, `image-worker`)**: Repository of VM operating system images (qcow2/raw) with a local-file or MinIO S3 backend (Image Service).
+* **Metadata & Placement (`metadata-api`, `placement-api`)**: Cloud-init metadata service (`169.254.169.254`) and capacity allocation tracking for compute nodes.
+* **Orchestration & Containers (`orchestration-api`, `k8s_engine`)**: Metric-driven auto-scaling groups and a managed Kubernetes engine (K3s).
+* **Security & Observability (`key_manager`, `telemetry-api`, `billing-api`, `event-api`)**: Integrated secret vault, utilization metrics, billing/invoicing and audit event logging.
+* **Dashboard (`dashboard`)**: Modern React + Cloudscape web UI, connected through a unified reverse proxy.
 
 ---
 
 ## 💻 CloudX CLI Preview
 
-Pengelolaan CloudX dapat dilakukan secara efisien melalui antarmuka baris perintah (`cloudx`). 
+CloudX can be managed efficiently from the command line (`cloudx`).
 
-Gunakan opsi `-h` atau `--help` pada root maupun subgrup perintah untuk melihat opsi dan parameter lengkap:
+Use `-h` or `--help` on the root command or on any subgroup to see the full list of options and parameters:
 
 ```bash
 $ cloudx --help
@@ -69,27 +69,27 @@ Commands:
   service         Systemd services and daemon lifecycle
 ```
 
-Untuk melihat bantuan pada sub-perintah tertentu:
+To get help for a specific subcommand:
 ```bash
-# Bantuan perintah compute VM
+# Compute VM commands
 cloudx server -h
 
-# Bantuan perintah jaringan
+# Networking commands
 cloudx network --help
 
-# Bantuan perintah klaster Kubernetes
+# Kubernetes cluster commands
 cloudx cluster -h
 ```
 
 ---
 
-## 🚀 Panduan Setup & Panduan Lengkap
+## 🚀 Setup & Full Guides
 
-Instruksi mendalam mengenai instalasi prasyarat, konfigurasi jaringan host-only/provider, dan tata cara menjalankan CloudX di server menggunakan **Systemd** dapat dibaca pada:
+Detailed instructions on installing prerequisites, configuring the host-only/provider network, and running CloudX on servers with **systemd** are in:
 
-👉 **[SETUP.md — Panduan Deployment & Konfigurasi Server](./SETUP.md)**
+👉 **[SETUP.md — Server Deployment & Configuration Guide](./SETUP.md)**
 
-Dokumentasi tambahan:
-* **[Panduan Deployment Native Systemd](./docs/systemd-deployment-guide.md)**
-* **[Panduan Multi-Node (Control Plane + Compute)](./docs/multi-node-deployment.md)**
-* **[Panduan Penggunaan CLI Lengkap](./docs/user-guide-cli.md)**
+Additional documentation:
+* **[Native systemd Deployment Guide](./docs/systemd-deployment-guide.md)**
+* **[Multi-Node Guide (Control Plane + Compute)](./docs/multi-node-deployment.md)**
+* **[Complete CLI User Guide](./docs/user-guide-cli.md)**

@@ -1,35 +1,35 @@
 # 📊 Phase 5 — Telemetry, Billing & Event Microservices
 
-Dokumen ini menjelaskan arsitektur, API endpoints, serta operasional dari microservice Fase 5: **Telemetry (Ceilometer/Prometheus-like)**, **Billing & Rating (CloudKitty-like)**, dan **Event & Webhooks (Panko/Notification-like)**.
+This document describes the architecture, API endpoints, and operation of the Phase 5 microservices: **Telemetry (Ceilometer/Prometheus-like)**, **Billing & Rating (CloudKitty-like)**, and **Events & Webhooks (Panko/Notification-like)**.
 
 ---
 
 ## 📋 Service Overview
 
-| Service | Port | Database | Deskripsi |
+| Service | Port | Database | Description |
 |---------|------|----------|-----------|
-| `telemetry-api` | 8010 | `cloudx` | Pengumpulan metrik observability host/VM, Prometheus export (`/metrics`), agregasi statistik. |
-| `telemetry-worker` | N/A | N/A | Daemon pengumpul metrik libvirt/OVN periodik. |
-| `billing-api` | 8011 | `cloudx_billing` | Rating sheet, pencatatan konsumsi resource (usage records), generasi invoice, dan konversi PDF. |
-| `billing-worker` | N/A | `cloudx_billing` | Cron background perhitung penggunaan berkala per tenant. |
-| `event-api` | 8012 | `cloudx_events` | Emisi event internal cloud platform, katalog event types, dan engine webhook subscriber. |
-| `event-worker` | N/A | `cloudx_events` | Webhook delivery worker dengan eksponensial retry & HMAC signature. |
+| `telemetry-api` | 8010 | `cloudx` | Collection of host/VM observability metrics, Prometheus export (`/metrics`), statistics aggregation. |
+| `telemetry-worker` | N/A | N/A | Daemon that periodically collects libvirt/OVN metrics. |
+| `billing-api` | 8011 | `cloudx_billing` | Rating sheets, resource usage records, invoice generation, and PDF conversion. |
+| `billing-worker` | N/A | `cloudx_billing` | Background cron that periodically calculates usage per tenant. |
+| `event-api` | 8012 | `cloudx_events` | Internal cloud platform event emission, event type catalogue, and webhook subscriber engine. |
+| `event-worker` | N/A | `cloudx_events` | Webhook delivery worker with exponential retry & HMAC signature. |
 
 ---
 
 ## 1. Telemetry API (`telemetry-api` - Port 8010)
 
-Mengelola koleksi data performa (vCPU, memory, disk IOPS, network throughput) dari compute node dan hypervisor.
+Manages the collection of performance data (vCPU, memory, disk IOPS, network throughput) from compute nodes and hypervisors.
 
-### API Endpoints Utama
-- `GET /telemetry/metric-types` — Daftar tipe metrik yang terintegrasi (cpu_percent, memory_used_mb, dll.).
-- `POST /telemetry/metrics` — Push single metric point per VM/host.
-- `POST /telemetry/metrics/batch` — Ingest batch metrik sekaligus.
-- `GET /telemetry/metrics` — Query series metrik terfilter berdasarkan `instance_id`, `metric_type`, `from_time`, `to_time`.
-- `GET /telemetry/stats` — Agregasi statistik rata-rata, min, max, count per jenis metrik.
-- `GET /telemetry/instances/{instance_id}/stats` — Statistik performa VM spesifik.
-- `GET /metrics` — Prometheus Exposition Format endpoint untuk dikikis oleh Prometheus scraper.
-- `DELETE /telemetry/metrics/cleanup` — Maintenance cleanup metrik kadaluarsa (retensi bawaan: 7 hari).
+### Main API Endpoints
+- `GET /telemetry/metric-types` — List of integrated metric types (cpu_percent, memory_used_mb, and so on).
+- `POST /telemetry/metrics` — Push a single metric point per VM/host.
+- `POST /telemetry/metrics/batch` — Ingest a batch of metrics at once.
+- `GET /telemetry/metrics` — Query metric series filtered by `instance_id`, `metric_type`, `from_time`, `to_time`.
+- `GET /telemetry/stats` — Average, min, max, count statistics aggregation per metric type.
+- `GET /telemetry/instances/{instance_id}/stats` — Performance statistics for a specific VM.
+- `GET /metrics` — Prometheus exposition format endpoint, to be scraped by a Prometheus scraper.
+- `DELETE /telemetry/metrics/cleanup` — Maintenance cleanup of expired metrics (default retention: 7 days).
 
 ### CLI Usage
 ```bash
@@ -43,14 +43,14 @@ cloudx telemetry prometheus
 
 ## 2. Billing & Rating Engine (`billing-api` - Port 8011)
 
-Layanan perhitungan biaya resource private cloud berbasis durasi penggunaan (metering) dan generasi tagihan/invoice.
+Service that calculates private cloud resource costs from usage duration (metering) and generates bills/invoices.
 
-### API Endpoints Utama
-- `GET /billing/rating-sheets` & `POST /billing/rating-sheets` — Katalog tarif per kelas resource (vCPU, RAM, Volume Storage, Floating IP).
-- `GET /billing/usage-records` & `POST /billing/usage-records` — Catatan penggunaan aktual per project/tenant.
-- `GET /billing/invoices` & `POST /billing/invoices` — Pembuatan invoice bulanan / kustom rentang waktu.
-- `POST /billing/invoices/{id}/pdf` — Generasi file tagihan (PDF/HTML template).
-- `GET /billing/summary` — Ringkasan konsumsi total per tenant/project.
+### Main API Endpoints
+- `GET /billing/rating-sheets` & `POST /billing/rating-sheets` — Price catalogue per resource class (vCPU, RAM, Volume Storage, Floating IP).
+- `GET /billing/usage-records` & `POST /billing/usage-records` — Actual usage records per project/tenant.
+- `GET /billing/invoices` & `POST /billing/invoices` — Create monthly or custom-range invoices.
+- `POST /billing/invoices/{id}/pdf` — Generate the invoice file (PDF/HTML template).
+- `GET /billing/summary` — Summary of total consumption per tenant/project.
 
 ### CLI Usage
 ```bash
@@ -59,7 +59,7 @@ cloudx billing rating-sheet-create --resource-type vcpu --unit vcpu-hour --rate-
 cloudx billing usage-list --project <project_id>
 cloudx billing invoice-list
 cloudx billing invoice-create --project <project_id>
-cloudx billing invoice-pdf <invoice_id> --out tagihan.pdf
+cloudx billing invoice-pdf <invoice_id> --out invoice.pdf
 cloudx billing summary
 ```
 
@@ -67,15 +67,15 @@ cloudx billing summary
 
 ## 3. Event & Webhook Engine (`event-api` - Port 8012)
 
-Katalog audit log event platform internal serta dispatcher webhook waktu nyata untuk integrasi eksternal (Slack/PagerDuty/custom HTTP listener).
+Catalogue of the internal platform's audit log events, plus a real-time webhook dispatcher for external integrations (Slack/PagerDuty/custom HTTP listeners).
 
-### API Endpoints Utama
-- `POST /events/emit` — Emisi log event baru (misal: `instance.created`, `volume.attached`).
-- `GET /events/types` — Daftar tipe event terdaftar pada sistem.
-- `GET /events/logs` — Query audit trail event terfilter.
-- `POST /events/subscriptions` & `GET /events/subscriptions` — Pendaftaran endpoint webhook listener.
-- `GET /events/deliveries` — Tracking status pengiriman webhook.
-- `POST /events/deliveries/{id}/retry` — Percobaan pengiriman ulang webhook gagal.
+### Main API Endpoints
+- `POST /events/emit` — Emit a new event log entry (for example: `instance.created`, `volume.attached`).
+- `GET /events/types` — List of event types registered in the system.
+- `GET /events/logs` — Query the filtered event audit trail.
+- `POST /events/subscriptions` & `GET /events/subscriptions` — Register webhook listener endpoints.
+- `GET /events/deliveries` — Track webhook delivery status.
+- `POST /events/deliveries/{id}/retry` — Retry a failed webhook delivery.
 
 ### CLI Usage
 ```bash

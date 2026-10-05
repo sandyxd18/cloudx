@@ -1,8 +1,8 @@
 # Image Storage Backends
 
-MinIO digunakan untuk dua fungsi utama di CloudX:
-1. **CloudX Image Storage**: Menyimpan blob image OS (`IMAGE_STORAGE_BACKEND=minio`).
-2. **Block Store Volume & PostgreSQL Backups (Fase 5)**: Menyimpan backup otomatis database harian (23:00 Asia/Jakarta) dan ekspor volume block storage ke bucket `cloudx-backups`.
+MinIO has two main roles in CloudX:
+1. **CloudX Image Storage**: stores OS image blobs (`IMAGE_STORAGE_BACKEND=minio`).
+2. **Block Store Volume & PostgreSQL Backups (Phase 5)**: stores the automatic daily database backup (23:00 Asia/Jakarta) and block storage volume exports in the `cloudx-backups` bucket.
 
 ## File Backend
 

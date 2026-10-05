@@ -1,28 +1,28 @@
-# 📖 Panduan Deployment Native Systemd & Konfigurasi `/etc/cloudx/`
+# 📖 Native systemd Deployment & `/etc/cloudx/` Configuration Guide
 
-Dokumen ini menjelaskan tata cara deployment, konfigurasi, dan pengoperasian platform **CloudX** secara native di atas OS Linux menggunakan **Systemd Services** dan berkas konfigurasi baku per service di `/etc/cloudx/<service>/<service>.conf`.
-
----
-
-## 🏗️ Arsitektur Deployment Native Systemd
-
-Berbeda dengan arsitektur berbasis Docker Container, deployment native menjalankan seluruh microservice CloudX langsung di atas sistem operasi host:
-
-- **Process Manager**: Systemd (`/etc/systemd/system/cloudx-*.service`)
-- **WSGI/ASGI Engine**: Gunicorn dengan worker `uvicorn.workers.UvicornWorker`
-- **User Runtime**: Dedicated system user `cloudx` (akses terbatas & terisolasi)
-- **Virtual Environment**: `/opt/cloudx/venv`
-- **Struktur Konfigurasi**: `/etc/cloudx/<service>/<service>.conf` (Format INI)
-- **Logging**: Systemd Journald (`journalctl -u cloudx-<service>`)
+This document describes how to deploy, configure, and operate the **CloudX** platform natively on Linux using **systemd services** and a standard per-service configuration file at `/etc/cloudx/<service>/<service>.conf`.
 
 ---
 
-## 🛠️ Prasyarat Sistem Host
+## 🏗️ Native systemd Deployment Architecture
 
-Sebelum melakukan instalasi service CloudX, pastikan paket infrastruktur pendukung telah terpasang di OS host (Ubuntu 22.04 / 24.04 LTS):
+Unlike a container-based architecture, the native deployment runs every CloudX microservice directly on the host operating system:
+
+- **Process manager**: systemd (`/etc/systemd/system/cloudx-*.service`)
+- **WSGI/ASGI engine**: Gunicorn with the `uvicorn.workers.UvicornWorker` worker class
+- **Runtime user**: dedicated system user `cloudx` (restricted and isolated)
+- **Virtual environment**: `/opt/cloudx/venv`
+- **Configuration layout**: `/etc/cloudx/<service>/<service>.conf` (INI format)
+- **Logging**: systemd journald (`journalctl -u cloudx-<service>`)
+
+---
+
+## 🛠️ Host System Prerequisites
+
+Before installing the CloudX services, make sure the supporting infrastructure packages are installed on the host OS (Ubuntu 22.04 / 24.04 LTS):
 
 ```bash
-# 1. Update paket & pasang dependencies utama
+# 1. Update packages & install the main dependencies
 sudo apt update
 sudo apt install -y python3-venv python3-pip postgresql postgresql-contrib \
                     rabbitmq-server ovn-central ovn-host openvswitch-switch \
@@ -31,30 +31,30 @@ sudo apt install -y python3-venv python3-pip postgresql postgresql-contrib \
 
 ---
 
-## 🚀 Langkah Instalasi Otomatis (`scripts/install-systemd.sh`)
+## 🚀 Automatic Installation (`scripts/install-systemd.sh`)
 
-CloudX menyediakan script installer otomatis untuk menyiapkan seluruh lingkungan systemd:
+CloudX provides an installer script that prepares the whole systemd environment:
 
 ```bash
-# Jalankan installer dengan hak akses sudo/root
+# Run the installer with sudo/root privileges
 sudo ./scripts/install-systemd.sh
 ```
 
-### Apa yang dilakukan oleh `scripts/install-systemd.sh`?
-1. Membuat user & group sistem `cloudx` (`useradd -r -s /sbin/nologin cloudx`).
-2. Membuat direktori konfigurasi `/etc/cloudx/` dan direktori data `/var/lib/cloudx/`.
-3. Menyalin berkas sampel konfigurasi `.conf.sample` ke `/etc/cloudx/<service>/<service>.conf` (jika belum ada).
-4. Menyiapkan Python Virtual Environment di `/opt/cloudx/venv` dan memasang pustaka pendukung (`gunicorn`, `uvicorn`, `psycopg2-binary`, `sqlalchemy`, dll.).
-5. Menyalin berkas unit systemd ke `/etc/systemd/system/cloudx-*.service`.
-6. Menjalankan `systemctl daemon-reload`.
+### What does `scripts/install-systemd.sh` do?
+1. Creates the `cloudx` system user & group (`useradd -r -s /sbin/nologin cloudx`).
+2. Creates the configuration directory `/etc/cloudx/` and the data directory `/var/lib/cloudx/`.
+3. Copies the `.conf.sample` files to `/etc/cloudx/<service>/<service>.conf` (if they do not exist yet).
+4. Sets up the Python virtual environment in `/opt/cloudx/venv` and installs the supporting libraries (`gunicorn`, `uvicorn`, `psycopg2-binary`, `sqlalchemy`, and so on).
+5. Copies the systemd unit files to `/etc/systemd/system/cloudx-*.service`.
+6. Runs `systemctl daemon-reload`.
 
 ---
 
-## ⚙️ Manajemen Berkas Konfigurasi (`/etc/cloudx/`)
+## ⚙️ Managing Configuration Files (`/etc/cloudx/`)
 
-Setiap microservice membaca konfigurasi dari berkas baku di `/etc/cloudx/<service>/<service>.conf`. Format berkas ini menggunakan standar INI yang intuitif.
+Each microservice reads its configuration from the standard file `/etc/cloudx/<service>/<service>.conf`. The files use the plain INI format.
 
-### Contoh: `/etc/cloudx/compute-api/compute-api.conf`
+### Example: `/etc/cloudx/compute-api/compute-api.conf`
 
 ```ini
 [DEFAULT]
@@ -77,7 +77,7 @@ block_store_url = http://127.0.0.1:8004
 image_url = http://127.0.0.1:8002
 ```
 
-### Struktur Direktori Konfigurasi Lengkap
+### Full Configuration Directory Layout
 
 ```text
 /etc/cloudx/
@@ -113,15 +113,15 @@ image_url = http://127.0.0.1:8002
 
 ---
 
-## 📡 Mengaktifkan & Menjalankan Service
+## 📡 Enabling & Starting Services
 
-Setelah instalasi dan penyesuaian konfigurasi selesai, aktifkan seluruh service menggunakan `systemctl`:
+After installation and configuration are done, enable the services with `systemctl`:
 
 ```bash
-# Aktifkan dan jalankan seluruh service CloudX sekaligus
+# Enable and start all CloudX services at once
 sudo systemctl enable --now cloudx-*
 
-# Atau aktifkan per service spesifik
+# Or enable specific services
 sudo systemctl enable --now cloudx-compute-api
 sudo systemctl enable --now cloudx-networking-api
 sudo systemctl enable --now cloudx-k8s-engine-api
@@ -129,39 +129,39 @@ sudo systemctl enable --now cloudx-k8s-engine-api
 
 ---
 
-## 📊 Monitoring & Troubleshooting Service
+## 📊 Service Monitoring & Troubleshooting
 
-### 1. Memeriksa Status Service via Systemctl
+### 1. Checking service status with systemctl
 ```bash
-# Cek status seluruh service cloudx
+# Check the status of all cloudx services
 systemctl status 'cloudx-*' --no-pager
 
-# Cek status service spesifik
+# Check a specific service
 systemctl status cloudx-compute-api
 ```
 
-### 2. Membaca Log Systemd via Journalctl
+### 2. Reading systemd logs with journalctl
 ```bash
-# Tail log real-time service compute-api
+# Tail the compute-api log in real time
 journalctl -u cloudx-compute-api -f
 
-# Lihat 100 baris log terakhir service networking-api
+# Show the last 100 log lines of networking-api
 journalctl -u cloudx-networking-api -n 100 --no-pager
 ```
 
-### 3. Menggunakan CloudX CLI (`cloudx service`)
-CloudX menyediakan fitur manajemen service terintegrasi langsung melalui CLI:
+### 3. Using the CloudX CLI (`cloudx service`)
+CloudX provides built-in service management directly through the CLI:
 
 ```bash
-# List seluruh service CloudX
+# List all CloudX services
 cloudx service list
 
-# Cek status service
+# Check service status
 cloudx service status compute-api
 
-# Restart service
+# Restart a service
 cloudx service restart compute-api
 
-# Tail log service
+# Tail service logs
 cloudx service logs compute-api -f
 ```

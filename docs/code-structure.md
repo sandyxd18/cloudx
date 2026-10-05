@@ -1,99 +1,98 @@
-# Struktur Kode CloudX
+# CloudX Code Structure
 
-Dokumen ini menjelaskan tata letak kode setelah refactor (service dipecah per tanggung jawab, `shared` menjadi paket,
-skema database dikelola Alembic). Untuk arsitektur tingkat tinggi lihat `architecture.md`.
+This document describes the code layout after the refactor (services split by responsibility, `shared` as an installable
+package, database schema managed by Alembic). For the high-level architecture see `architecture.md`.
 
-## Tata letak repo
+## Repository layout
 
 ```
-cli/cloudx_cli/          CLI `cloudx` (Click)
-  main.py                entry point (`cloudx_cli.main:cli`), hanya mengimpor modul perintah
-  app.py                 grup root `cli`
-  common.py              config/kredensial, token, `_api`, format output
-  commands/*.py          satu modul per kelompok perintah (auth, compute, network, storage, ...)
+cli/cloudx_cli/          `cloudx` CLI (Click)
+  main.py                entry point (`cloudx_cli.main:cli`), only imports the command modules
+  app.py                 root `cli` group
+  common.py              config/credentials, token, `_api`, output formatting
+  commands/*.py          one module per command group (auth, compute, network, storage, ...)
 services/
-  shared/                paket `shared` (config, auth middleware, rpc, service_client, schema, migrate)
-  migrations/            alat Alembic bersama (env.py, registry.py); riwayat ada di tiap service
-  <service>/app/         kode service (lihat di bawah)
-  <service>/migrations/  riwayat migrasi service itu
-tests/                   pytest: satu folder per service (unit) + tests/live (butuh lab); lihat bagian Tes
-etc/                     unit systemd dan contoh konfigurasi
-scripts/                 installer dan skrip uji lab
+  shared/                `shared` package (config, auth middleware, rpc, service_client, schema, migrate)
+  migrations/            shared Alembic tooling (env.py, registry.py); each service keeps its own history
+  <service>/app/         service code (see below)
+  <service>/migrations/  migration history for that service
+tests/                   pytest: one folder per service (unit) + tests/live (needs a lab); see the Tests section
+etc/                     systemd units and sample configuration
+scripts/                 installers and lab test scripts
 ```
 
-## Service API yang sudah dipecah (auth, compute, block_store, networking)
+## Split API services (auth, compute, block_store, networking)
 
-Setiap `app/main.py` hanya membuat aplikasi FastAPI, middleware, event startup, health check, dan memasang router.
+Each `app/main.py` only creates the FastAPI app, middleware, startup events, health check, and mounts the routers.
 
-| Modul | Isi |
+| Module | Contents |
 |---|---|
-| `config.py` | konstanta dari environment |
-| `db.py` | engine, `SessionLocal`, dependency `DB` |
-| `models.py` | model SQLAlchemy |
-| `schemas.py` | skema Pydantic |
-| `clients.py` | HTTP/RPC ke service lain (compute, block_store); state `_rpc` ada di sini |
-| `serializers.py`, `lookups.py`, `service.py` | konversi respons, pencarian entitas, logika bisnis bersama |
-| `bootstrap.py` | data awal (flavor, quota, admin, SG default); **bukan** DDL |
-| `routers/*.py` | endpoint, dikelompokkan per sumber daya |
+| `config.py` | constants read from the environment |
+| `db.py` | engine, `SessionLocal`, `DB` dependency |
+| `models.py` | SQLAlchemy models |
+| `schemas.py` | Pydantic schemas |
+| `clients.py` | HTTP/RPC calls to other services (compute, block_store); the `_rpc` state lives here |
+| `serializers.py`, `lookups.py`, `service.py` | response conversion, entity lookups, shared business logic |
+| `bootstrap.py` | seed data (flavors, quotas, admin, default SG); **not** DDL |
+| `routers/*.py` | endpoints, grouped by resource |
 
-Aturan yang perlu diingat:
+Rules to keep in mind:
 
-- Nama yang di-patch oleh tes atau yang nilainya diganti saat runtime (misalnya `clients._rpc`, `clients.api_get`,
-  `ovn_cli.ovn`) dipanggil lewat modulnya (`clients.api_get(...)`), bukan di-import dengan nama.
-- Service lain (image, placement, billing, dan seterusnya) masih satu file `main.py`; pola yang sama dipakai kalau
-  nanti dipecah.
+- Names that tests patch, or whose value is replaced at runtime (for example `clients._rpc`, `clients.api_get`,
+  `ovn_cli.ovn`), are called through their module (`clients.api_get(...)`) and not imported by name.
+- The other services (image, placement, billing, and so on) are still a single `main.py`; the same pattern applies if
+  they are split later.
 
-## Skema database
+## Database schema
 
-Hanya Alembic yang membuat atau mengubah tabel; service gagal start kalau skema belum dimigrasi. Lihat
-`services/migrations/README.md` (perintah: `sudo make migrate`, `cloudx-db-migrate --revision <svc> --autogenerate`).
+Only Alembic creates or alters tables; services refuse to start if the schema has not been migrated. See
+`services/migrations/README.md` (commands: `sudo make migrate`, `cloudx-db-migrate --revision <svc> --autogenerate`).
 
-## Tes
+## Tests
 
 ```
 tests/
-  conftest.py        env wajib, opsi --live, isolasi os.environ per tes, fixture `networking` dan `cloudx`
-  stack.py           fresh_service(): impor ulang satu service di atas database sqlite sementara
-  <service>/         tes unit per service (auth, compute, compute_worker, networking, block_store, image,
+  conftest.py        required env, --live option, per-test os.environ isolation, `networking` and `cloudx` fixtures
+  stack.py           fresh_service(): re-imports one service on top of a temporary sqlite database
+  <service>/         unit tests per service (auth, compute, compute_worker, networking, block_store, image,
                      key_manager, k8s_engine, load_balancer, placement, metadata, cli, scripts, shared)
-  live/              tes API terhadap lab yang sedang berjalan; hanya jalan dengan --live
+  live/              API tests against a running lab; only run with --live
 ```
 
-- `pytest` (atau `make test`): hanya tes unit, tanpa lab, sekitar semenit. Inilah yang dijalankan CI
-  (`.github/workflows/tests.yml`, bersama `make lint`). Dependensi: `pip install -r requirements-dev.txt`.
-- `pytest --live tests/live` (atau `make test-live`): tes API terhadap lab. Butuh `AUTH_ADMIN_PASSWORD` dan
-  `AUTH_SECRET_KEY` (lihat `/etc/cloudx/cloudx.env` di controller); URL service bisa diganti dengan
-  `<SERVICE>_API_URL` (default `127.0.0.1`, misalnya lewat SSH tunnel). Di akhir sesi, `tests/live/cleanup.py`
-  menghapus resource yang dibuat tes (router, network, keypair, resource provider palsu, dan seterusnya); bisa juga
-  dijalankan manual.
-- Tes service yang sudah dipecah memakai `fresh_service(...)` / fixture `networking`; tes `shared/` mencakup
-  middleware auth, `shared.proc`, migrasi Alembic, dan penjaga penanganan error.
-- Tambahkan tes baru di folder service yang bersangkutan. Tes yang butuh lab masuk `tests/live` dan harus
-  membersihkan hasilnya (atau memakai pola nama yang dikenali `cleanup.py`).
+- `pytest` (or `make test`): unit tests only, no lab needed, about a minute. This is what CI runs
+  (`.github/workflows/tests.yml`, together with `make lint`). Dependencies: `pip install -r requirements-dev.txt`.
+- `pytest --live tests/live` (or `make test-live`): API tests against the lab. Needs `AUTH_ADMIN_PASSWORD` and
+  `AUTH_SECRET_KEY` (see `/etc/cloudx/cloudx.env` on the controller); service URLs can be overridden with
+  `<SERVICE>_API_URL` (default `127.0.0.1`, for example through an SSH tunnel). At the end of the session,
+  `tests/live/cleanup.py` removes the resources the tests created (routers, networks, keypairs, fake resource
+  providers, and so on); it can also be run manually.
+- Tests for the split services use `fresh_service(...)` / the `networking` fixture; the `shared/` tests cover the auth
+  middleware, `shared.proc`, Alembic migrations, and the error-handling guard.
+- Add new tests to the folder of the service they belong to. Tests that need a lab go in `tests/live` and must clean up
+  after themselves (or use a name pattern that `cleanup.py` recognises).
 
-## Penanganan error
+## Error handling
 
-- Jangan menelan error diam-diam. `except Exception:` harus mencatat log (`log.warning(...)`), mempersempit tipe
-  exception-nya, atau, kalau memang best-effort, menyebut alasannya di baris `except` (`# best-effort: <alasan>`).
-  `tests/test_error_handling.py` menggagalkan handler diam baru yang tidak punya alasan.
-- Reconciler (block_store_worker, networking, image_worker) bertindak berdasarkan apa yang mereka amati. Pengecekan
-  keberadaan yang gagal mengembalikan `None` (tidak diketahui) dan record dilewati; hanya `False` yang berarti
-  "tidak ada".
-- Event ke RabbitMQ dan pengayaan respons (nama image, floating IP, dan sebagainya) bersifat best-effort: kegagalannya
-  dicatat sebagai warning/debug dan tidak menggagalkan request.
+- Do not swallow errors silently. An `except Exception:` must log (`log.warning(...)`), narrow the exception type, or,
+  if it really is best-effort, state the reason on the `except` line (`# best-effort: <reason>`).
+  `tests/test_error_handling.py` fails on new silent handlers that have no reason.
+- Reconcilers (block_store_worker, networking, image_worker) act on what they observe. A failed existence check
+  returns `None` (unknown) and the record is skipped; only `False` means "does not exist".
+- RabbitMQ events and response enrichment (image names, floating IPs, and so on) are best-effort: failures are logged as
+  warning/debug and do not fail the request.
 
-## Menjalankan perintah eksternal
+## Running external commands
 
-Semua service menjalankan perintah (lvm, qemu-img, rbd, ovn-nbctl, virsh, mc, ...) lewat `shared.proc`, bukan
-`subprocess`/`os.system` langsung (`tests/test_proc.py` menggagalkan pemakaian langsung):
+All services run commands (lvm, qemu-img, rbd, ovn-nbctl, virsh, mc, ...) through `shared.proc`, never through
+`subprocess`/`os.system` directly (`tests/test_proc.py` fails on direct use):
 
-- `run([...])` selalu menerima **list** (string ditolak, tidak ada shell), punya **timeout** (default 60 detik;
-  `timeout=None` boleh, tapi harus ditulis eksplisit, misalnya untuk menyalin seluruh image), dan melempar
-  `CommandError` (subclass `RuntimeError`) berisi exit code dan stderr. Binary yang tidak ada dan timeout dilaporkan
-  dengan cara yang sama (exit 127 / 124).
-- `succeeds([...])` untuk probe (`lvdisplay`, `ovs-vsctl br-exists`, ...): `True`/`False`, dan melempar `CommandError`
-  kalau probe tidak bisa dijalankan. Hasil itu berarti "tidak diketahui", bukan "tidak ada".
-- `secrets=[...]` menyamarkan nilai rahasia di log dan pesan error (pesan error ikut tersimpan di field API).
-  Kredensial MinIO dikirim lewat environment (`MC_HOST_cloudx`), bukan argumen perintah.
-- Pengecualian: shell interaktif dashboard (`asyncio.create_subprocess_exec` dengan PTY). CLI `cloudx` berdiri
-  sendiri (tanpa `shared`), jadi memakai `subprocess.run` dengan list argumen dan memvalidasi nama service.
+- `run([...])` always takes a **list** (strings are rejected, there is no shell), has a **timeout** (default 60 seconds;
+  `timeout=None` is allowed but must be explicit, for example when copying a whole image), and raises `CommandError`
+  (a `RuntimeError` subclass) carrying the exit code and stderr. A missing binary and a timeout are reported the same
+  way (exit 127 / 124).
+- `succeeds([...])` is for probes (`lvdisplay`, `ovs-vsctl br-exists`, ...): `True`/`False`, and it raises
+  `CommandError` if the probe itself cannot run. That outcome means "unknown", not "does not exist".
+- `secrets=[...]` masks secret values in logs and error messages (error messages are also stored in API fields).
+  MinIO credentials are passed through the environment (`MC_HOST_cloudx`), not as command arguments.
+- Exceptions: the dashboard's interactive shell (`asyncio.create_subprocess_exec` with a PTY). The `cloudx` CLI is
+  standalone (no `shared`), so it uses `subprocess.run` with an argument list and validates service names.

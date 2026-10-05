@@ -1,14 +1,14 @@
 # Boot From Volume
 
-Project sekarang memakai volume-first architecture. Semua VM boot dari root volume. Tidak ada ephemeral root disk dan tidak ada boot langsung dari image.
+The project now uses a volume-first architecture. Every VM boots from a root volume. There is no ephemeral root disk and no direct boot from an image.
 
-Flow default:
+Default flow:
 
 ```text
 Image -> Root Volume -> VM
 ```
 
-Contoh:
+Example:
 
 ```bash
 compute server create vm1 --image cirros --flavor tiny --network private-net
@@ -16,16 +16,16 @@ compute server show vm1
 block-store volume show <root_volume_id>
 ```
 
-Saat server dibuat dari image, compute-api meminta block-store membuat volume bootable dari image tersebut. Compute-worker kemudian memakai path volume itu sebagai disk boot libvirt.
+When a server is created from an image, compute-api asks block-store to create a bootable volume from that image. Compute-worker then uses that volume's path as the libvirt boot disk.
 
-Boot dari volume existing:
+Boot from an existing volume:
 
 ```bash
 block-store volume create ubuntu-root --size 10 --image ubuntu
 compute server create vm2 --boot-volume ubuntu-root --flavor small --network private-net
 ```
 
-Validasi boot-volume:
+Boot-volume validation:
 
 - `bootable=true`
 - `status=available`
@@ -33,6 +33,6 @@ Validasi boot-volume:
 Delete policy:
 
 ```bash
-compute server delete vm1                    # root volume ikut dihapus
-compute server delete vm1 --keep-root-volume # root volume disimpan
+compute server delete vm1                    # the root volume is deleted too
+compute server delete vm1 --keep-root-volume # the root volume is kept
 ```

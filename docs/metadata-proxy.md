@@ -1,6 +1,6 @@
 # Metadata Proxy
 
-`metadata-proxy` menerima request VM untuk path metadata dan meneruskannya ke `metadata-api`. Proxy berjalan di host network pada port `8776` agar source IP VM bisa dipakai untuk lookup.
+`metadata-proxy` receives VM requests for metadata paths and forwards them to `metadata-api`. The proxy runs on the host network on port `8776` so the VM's source IP can be used for lookup.
 
 Environment:
 
@@ -12,23 +12,23 @@ METADATA_PROXY_PORT=8776
 
 Proxy lookup:
 
-1. Ambil source IP request atau `X-Forwarded-For`.
+1. Take the request's source IP or `X-Forwarded-For`.
 2. Query `networking-api /ports`.
-3. Cocokkan `fixed_ip` atau `ip_address`.
-4. Forward ke metadata-api dengan `X-Forwarded-For`, `X-Networking-Port-ID`, dan `X-Instance-ID`.
+3. Match `fixed_ip` or `ip_address`.
+4. Forward to metadata-api with `X-Forwarded-For`, `X-Networking-Port-ID`, and `X-Instance-ID`.
 
-Untuk setup host route metadata:
+To set up the metadata host route:
 
 ```bash
 sudo scripts/setup-metadata-route.sh --dry-run
 sudo scripts/setup-metadata-route.sh --force
 ```
 
-Cleanup rule metadata:
+To clean up the metadata rule:
 
 ```bash
 sudo scripts/cleanup-metadata-route.sh --dry-run
 sudo scripts/cleanup-metadata-route.sh --force
 ```
 
-Rule hanya menarget `169.254.169.254:80` ke port metadata-proxy. Ini tetap single-node lab behavior, bukan metadata-agent CloudX penuh.
+The rule only targets `169.254.169.254:80` to the metadata-proxy port. This is still single-node lab behaviour, not the full CloudX metadata agent.

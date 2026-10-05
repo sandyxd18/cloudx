@@ -1,8 +1,8 @@
 # Metadata Service
 
-`metadata-api` menyediakan metadata instance gaya Compute pada port `8775`. Service ini mendukung EC2-compatible metadata dan CloudX metadata.
+`metadata-api` provides Compute-style instance metadata on port `8775`. The service supports EC2-compatible metadata and CloudX metadata.
 
-Endpoint utama:
+Main endpoints:
 
 ```bash
 curl http://localhost:8775/health
@@ -11,15 +11,15 @@ curl "http://localhost:8775/openstack/latest/meta_data.json?instance_id=<server-
 curl "http://localhost:8775/openstack/latest/network_data.json?instance_id=<server-id>"
 ```
 
-Lookup metadata dilakukan berurutan dari `X-Instance-ID`, query `instance_id`, `X-Networking-Port-ID`, query `port_id`, query `fixed_ip`, lalu source IP request atau `X-Forwarded-For`. Jika tidak ditemukan, API mengembalikan `404` dan tidak fallback ke instance lain.
+Metadata lookup is done in this order: `X-Instance-ID`, query `instance_id`, `X-Networking-Port-ID`, query `port_id`, query `fixed_ip`, then the request's source IP or `X-Forwarded-For`. If nothing is found, the API returns `404` and does not fall back to another instance.
 
-`meta_data.json` berisi `uuid`, `name`, `hostname`, `launch_index`, `public_keys`, `meta`, dan `devices`. `network_data.json` mengambil CIDR, gateway, dan DNS dari data port/subnet networking-api.
+`meta_data.json` contains `uuid`, `name`, `hostname`, `launch_index`, `public_keys`, `meta`, and `devices`. `network_data.json` takes the CIDR, gateway, and DNS from the networking-api port/subnet data.
 
-User-data HTTP mengembalikan user-data instance jika ada. Jika kosong, metadata-api mengembalikan fallback minimal:
+HTTP user-data returns the instance's user-data if it exists. If it is empty, metadata-api returns a minimal fallback:
 
 ```yaml
 #cloud-config
 package_update: false
 ```
 
-Config-drive NoCloud tetap dibuat saat spawn VM dan menjadi fallback yang lebih reliable untuk single-node lab.
+The NoCloud config-drive is still created when a VM is spawned and is the more reliable fallback for the single-node lab.
