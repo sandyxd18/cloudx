@@ -4,10 +4,10 @@ port = 8013
 log_level = info
 
 [database]
-url = postgresql+psycopg2://mini:mini@127.0.0.1:5432/cloudx_orchestration
+url = postgresql+psycopg2://cloudx:cloudx@127.0.0.1:5432/cloudx_orchestration
 
 [transport]
-rabbitmq_url = amqp://mini:mini@127.0.0.1:5672/
+rabbitmq_url = amqp://cloudx:cloudx@127.0.0.1:5672/
 
 [service_urls]
 auth_url = http://127.0.0.1:8005

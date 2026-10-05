@@ -1,10 +1,10 @@
 [Unit]
-Description=CloudX Networking API Service (Neutron-like)
+Description=CloudX Networking API Service (Networking Service)
 After=network.target postgresql.service ovn-central.service
 Wants=postgresql.service ovn-central.service
 
 [Service]
-Environment=PYTHONPATH=/opt/cloudx/services
+EnvironmentFile=/etc/cloudx/cloudx.env
 Type=simple
 User=cloudx
 Group=cloudx

@@ -4,7 +4,7 @@ After=network.target postgresql.service
 Wants=postgresql.service
 
 [Service]
-Environment=PYTHONPATH=/opt/cloudx/services
+EnvironmentFile=/etc/cloudx/cloudx.env
 Type=simple
 User=cloudx
 Group=cloudx

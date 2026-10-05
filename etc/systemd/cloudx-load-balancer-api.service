@@ -4,11 +4,11 @@ After=network.target postgresql.service
 Wants=postgresql.service
 
 [Service]
-Environment=PYTHONPATH=/opt/cloudx/services
-Environment=AUTH_API_URL=http://192.168.10.10:8005
-Environment=COMPUTE_API_URL=http://192.168.10.10:8003
-Environment=NETWORKING_API_URL=http://192.168.10.10:8001
-Environment=RABBITMQ_URL=amqp://mini:mini@192.168.10.10:5672/
+EnvironmentFile=/etc/cloudx/cloudx.env
+Environment=AUTH_API_URL=http://127.0.0.1:8005
+Environment=COMPUTE_API_URL=http://127.0.0.1:8003
+Environment=NETWORKING_API_URL=http://127.0.0.1:8001
+Environment=RABBITMQ_URL=amqp://cloudx:cloudx@127.0.0.1:5672/
 Type=simple
 User=cloudx
 Group=cloudx

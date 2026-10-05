@@ -3,6 +3,7 @@
 Test Phase 8 (Managed Kubernetes Engine) against live CloudX services on VM.
 """
 
+import os
 import sys
 import json
 import time
@@ -12,7 +13,7 @@ K8S_ENGINE_URL = "http://127.0.0.1:8015"
 AUTH_URL       = "http://127.0.0.1:8005"
 
 def get_auth_token():
-    auth_resp = requests.post(f"{AUTH_URL}/auth/tokens", json={"username": "admin", "password": "admin123"})
+    auth_resp = requests.post(f"{AUTH_URL}/auth/tokens", json={"username": "admin", "password": os.environ["AUTH_ADMIN_PASSWORD"]})
     if auth_resp.status_code == 201:
         token = auth_resp.json().get("token")
         project_id = auth_resp.json().get("project", {}).get("id", "admin")

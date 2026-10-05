@@ -52,6 +52,26 @@ for svc in "${SERVICES[@]}"; do
     fi
 done
 
+# Upgrade: old samples shipped a default auth_secret_key that would override cloudx.env at startup.
+sed -i "/^auth_secret_key *= *cloudx-secret-key-change-in-production/d" "${ETC_DIR}"/*/*.conf 2>/dev/null || true
+
+# Shared secrets, generated once and never overwritten. Services refuse to start without them.
+ENV_FILE="${ETC_DIR}/cloudx.env"
+if [[ ! -f "${ENV_FILE}" ]]; then
+    echo "Generating ${ENV_FILE} (auth secret, admin password, key-manager master key)..."
+    (
+        umask 077
+        {
+            echo "AUTH_SECRET_KEY=$(openssl rand -hex 32)"
+            echo "AUTH_ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=')"
+            echo "KEY_MANAGER_MASTER_KEY=$(openssl rand -hex 32)"
+        } > "${ENV_FILE}"
+    )
+    echo "    Admin password is stored in ${ENV_FILE}."
+    echo "    Multi-node: copy this file to every other node (same path, mode 640) BEFORE running the installer there."
+fi
+chmod 640 "${ENV_FILE}"
+
 chown -R "${CLOUDX_USER}:${CLOUDX_GROUP}" "${ETC_DIR}"
 chmod 750 "${ETC_DIR}"
 
@@ -60,9 +80,9 @@ if [[ -f "${SCRIPT_DIR}/scripts/setup-storage.sh" ]]; then
     bash "${SCRIPT_DIR}/scripts/setup-storage.sh" || true
 fi
 
-echo "===> Creating runtime data directories under /var/lib/mini-openstack..."
-mkdir -p /var/lib/mini-openstack/images /var/lib/mini-openstack/object-store /var/lib/mini-openstack/compute
-chown -R "${CLOUDX_USER}:${CLOUDX_GROUP}" /var/lib/mini-openstack
+echo "===> Creating runtime data directories under /var/lib/cloudx..."
+mkdir -p /var/lib/cloudx/images /var/lib/cloudx/object-store /var/lib/cloudx/compute
+chown -R "${CLOUDX_USER}:${CLOUDX_GROUP}" /var/lib/cloudx
 
 echo "===> Syncing codebase to ${OPT_DIR}..."
 mkdir -p "${OPT_DIR}"
@@ -84,6 +104,9 @@ fi
 "${OPT_DIR}/venv/bin/pip" install --upgrade pip setuptools wheel
 "${OPT_DIR}/venv/bin/pip" install gunicorn uvicorn psycopg2-binary "psycopg[binary]" requests pydantic sqlalchemy cryptography fernet fastapi "python-jose[cryptography]" bcrypt passlib prometheus-client httpx paramiko pika boto3 botocore pyyaml jinja2 alembic psutil python-multipart websockets pymemcache
 
+echo "===> Installing shared library (import name: shared)..."
+"${OPT_DIR}/venv/bin/pip" install --upgrade --force-reinstall --no-deps "${OPT_DIR}/services"
+
 echo "===> Installing Systemd Unit Files to ${SYSTEMD_DIR}..."
 for unit in "${SCRIPT_DIR}/etc/systemd/"*.service; do
     if [[ -f "${unit}" ]]; then
@@ -93,6 +116,25 @@ for unit in "${SCRIPT_DIR}/etc/systemd/"*.service; do
 done
 
 systemctl daemon-reload
+
+# Database schema: Alembic is the only thing that creates or alters tables (services refuse to start otherwise).
+# Runs where PostgreSQL lives (the control plane). CLOUDX_MIGRATE=yes|no|auto (default auto = PostgreSQL on this node).
+MIGRATE_RC=0
+MIGRATE_MODE="${CLOUDX_MIGRATE:-auto}"
+if [[ "${MIGRATE_MODE}" == "auto" ]]; then
+    if systemctl cat postgresql.service >/dev/null 2>&1; then MIGRATE_MODE=yes; else MIGRATE_MODE=no; fi
+fi
+if [[ "${MIGRATE_MODE}" == "yes" ]]; then
+    echo "===> Applying database migrations (cloudx-db-migrate)..."
+    if ! CLOUDX_SERVICES_DIR="${OPT_DIR}/services" "${OPT_DIR}/venv/bin/cloudx-db-migrate"; then
+        echo "!! Database migration failed. Fix the database connection, then run: sudo make migrate" >&2
+        MIGRATE_RC=1
+    fi
+else
+    echo "Skipping database migrations (no PostgreSQL on this node). Run 'sudo make migrate' on the control plane."
+fi
+
 echo "✓ Systemd services installed successfully!"
 echo "To start all CloudX services, run:"
 echo "  systemctl enable --now cloudx-*"
+exit ${MIGRATE_RC}

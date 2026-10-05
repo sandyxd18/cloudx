@@ -55,13 +55,19 @@ echo "✓ Installed CLI commands to $bin_dir"
 
 # Auto-configure ~/.cloudx/credentials if auth-api is running and credentials don't exist
 CREDS_FILE="${HOME}/.cloudx/credentials"
-if [ ! -f "$CREDS_FILE" ]; then
+ADMIN_PW="${AUTH_ADMIN_PASSWORD:-}"
+if [ -z "$ADMIN_PW" ] && [ -r /etc/cloudx/cloudx.env ]; then
+  ADMIN_PW="$(grep -E '^AUTH_ADMIN_PASSWORD=' /etc/cloudx/cloudx.env | cut -d= -f2-)"
+fi
+if [ ! -f "$CREDS_FILE" ] && [ -z "$ADMIN_PW" ]; then
+  echo "Skipping credential auto-setup: set AUTH_ADMIN_PASSWORD (see /etc/cloudx/cloudx.env on the controller), or run: cloudx auth configure"
+elif [ ! -f "$CREDS_FILE" ]; then
   mkdir -p "${HOME}/.cloudx"
   echo "Setting up initial credentials in $CREDS_FILE..."
-  python3 -c "
+  ADMIN_PW="$ADMIN_PW" python3 -c "
 import requests, os
 try:
-    resp = requests.post('http://127.0.0.1:8005/auth/tokens', json={'username': 'admin', 'password': 'admin123'}, timeout=3)
+    resp = requests.post('http://127.0.0.1:8005/auth/tokens', json={'username': 'admin', 'password': os.environ['ADMIN_PW']}, timeout=3)
     if resp.status_code == 201:
         token = resp.json()['token']
         headers = {'Authorization': f'Bearer {token}'}

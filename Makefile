@@ -1,60 +1,39 @@
-.PHONY: up up-minio up-ha up-monitoring up-backup generate-certs down logs ps reset install-cli package test test-real-vm test-floating-ip test-metadata test-security-group test-volume-boot test-multi-network \
+.PHONY: start stop status restart logs install-systemd migrate generate-certs reset package install-cli test test-live lint test-real-vm test-floating-ip test-metadata test-security-group test-volume-boot test-multi-network \
         cleanup-network cleanup-compute cleanup-storage cleanup-all \
         node-bootstrap dashboard-dev
 
 # ── Bootstrap (run in order on fresh node) ────────────────────────────────────
 # Step 1: Prepare the host OS (packages, OVS bridges, systemd service)
-#         Must be run with sudo. Safe to re-run.
 node-bootstrap:
 	sudo ./scripts/node-bootstrap.sh
 
-# Step 2a: Start all Docker services (image backend: file/local)
-up:
-	docker compose up -d --build
+# Step 2: Install systemd units, configuration files, and Python virtualenv
+install-systemd:
+	sudo ./scripts/install-systemd.sh
 
-# Step 2b: Start all Docker services + MinIO (IMAGE_STORAGE_BACKEND=minio)
-up-minio:
-	docker compose --profile minio up -d --build
+# Step 3 (control plane): create/upgrade every service's database schema. Safe to re-run; also adopts existing installs.
+migrate:
+	sudo CLOUDX_SERVICES_DIR=/opt/cloudx/services /opt/cloudx/venv/bin/cloudx-db-migrate
 
-# ── Fase 5 overlays: production readiness stacks ─────────────────────────────
-# High Availability: RabbitMQ 3-node cluster + PostgreSQL streaming replication.
-# Requires RABBITMQ_ERLANG_COOKIE / POSTGRES_REPLICATION_* in .env.
-up-ha:
-	docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --build
+# ── Service management (systemd native) ───────────────────────────────────────
+start:
+	sudo systemctl start 'cloudx-*'
 
-# Monitoring: Prometheus (15-day retention) + Grafana + node/postgres exporters.
-up-monitoring:
-	docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d --build
+stop:
+	sudo systemctl stop 'cloudx-*'
 
-# Backup runner: nightly pg_dump to MinIO at 23:00 Asia/Jakarta (BACKUP_CRON).
-# Requires MinIO reachable (run `make up-minio` first, or point MINIO_ENDPOINT elsewhere).
-up-backup:
-	docker compose -f docker-compose.yml -f docker-compose.backup.yml up -d --build
+restart:
+	sudo systemctl restart 'cloudx-*'
 
-# Internal TLS PKI: generates CA + per-service certs under services/certs/out/.
-# Optional SERVICE_HOSTS="10.0.0.11 10.0.0.12" for multi-node SANs.
-generate-certs:
-	./services/certs/generate-certs.sh
-
-# ── Shortcut: restart lab after reboot (no node-bootstrap needed) ─────────────
-start: up
-start-minio: up-minio
-
-# ── Service management ────────────────────────────────────────────────────────
-reload:
-	docker compose up -d --build
-
-rebuild:
-	docker compose build --no-cache && docker compose up -d
-
-down:
-	docker compose down
+status:
+	sudo systemctl status 'cloudx-*' --no-pager
 
 logs:
-	docker compose logs -f
+	sudo journalctl -u 'cloudx-*' -f
 
-ps:
-	docker compose ps
+# Internal TLS PKI: generates CA + per-service certs under services/certs/out/.
+generate-certs:
+	./services/certs/generate-certs.sh
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 reset:
@@ -73,18 +52,24 @@ cleanup-all:
 	./scripts/cleanup-all.sh
 
 # ── Release packaging ────────────────────────────────────────────────────────
-# Generates a standalone release tarball under dist/ (with pre-built frontend)
 package:
 	./scripts/build-tarball.sh
 
 # ── CLI install ───────────────────────────────────────────────────────────────
-# Installs the unified 'cloudx' command to ~/.local/bin
 install-cli:
 	./scripts/install-cli.sh
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
+# Unit tests: no lab needed (this is what CI runs).
 test:
 	pytest -q
+
+# Live API tests against a running lab; needs AUTH_ADMIN_PASSWORD (see /etc/cloudx/cloudx.env on the controller).
+test-live:
+	pytest -q --live tests/live
+
+lint:
+	ruff check services cli tests --select F401,F811,F821 --exclude "node_modules,migrations/versions"
 
 test-real-vm:
 	./scripts/test-real-vm.sh
@@ -104,16 +89,5 @@ test-volume-boot:
 test-multi-network:
 	./scripts/test-multi-network.sh
 
-# ── Provider network helpers ──────────────────────────────────────────────────
-bootstrap-provider-network:
-	sudo ./scripts/bootstrap-provider-network.sh --dry-run
-
-cleanup-provider-network:
-	sudo ./scripts/cleanup-provider-network.sh --dry-run
-
-# ── Dashboard (frontend dev mode) ────────────────────────────────────────────
-# Runs the Vite dev server locally (requires node installed on host).
-# The proxy is set to http://localhost:8080 (dashboard container port).
-# Make sure the full stack is running first: make up
 dashboard-dev:
-	cd services/dashboard/frontend && npm install && npm run dev
+	cd services/dashboard/frontend && npm run dev

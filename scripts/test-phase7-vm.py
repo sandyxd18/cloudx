@@ -3,6 +3,7 @@
 Test Phase 7 features against live CloudX services (VM / Docker Compose stack).
 """
 
+import os
 import sys
 import json
 import time
@@ -14,7 +15,7 @@ BLOCK_STORE_URL = "http://127.0.0.1:8004"
 AUTH_URL        = "http://127.0.0.1:8005"
 
 def get_auth_token():
-    auth_resp = requests.post(f"{AUTH_URL}/auth/tokens", json={"username": "admin", "password": "admin123"})
+    auth_resp = requests.post(f"{AUTH_URL}/auth/tokens", json={"username": "admin", "password": os.environ["AUTH_ADMIN_PASSWORD"]})
     if auth_resp.status_code == 201:
         token = auth_resp.json().get("token")
         project_id = auth_resp.json().get("project", {}).get("id", "admin")

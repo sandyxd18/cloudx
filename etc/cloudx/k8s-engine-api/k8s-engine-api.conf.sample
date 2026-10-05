@@ -4,7 +4,7 @@ port = 8015
 log_level = info
 
 [database]
-url = postgresql+psycopg2://mini:mini@127.0.0.1:5432/cloudx_k8s_engine
+url = postgresql+psycopg2://cloudx:cloudx@127.0.0.1:5432/cloudx_k8s_engine
 
 [service_urls]
 auth_url = http://127.0.0.1:8005
