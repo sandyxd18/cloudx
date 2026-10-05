@@ -1,11 +1,7 @@
 from __future__ import annotations
-import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-try:
-    from shared.config import load_service_config
-    load_service_config("billing-api")
-except Exception as _cfg_err:
-    pass
+import os
+from shared.config import load_service_config
+load_service_config("billing-api")
 
 """
 cloudx Billing API — Rating, Usage, Invoicing & PDF
@@ -17,46 +13,39 @@ Service Fase 5.2: rating sheet, usage records, invoice generation, PDF export.
 
 import base64
 import logging
-import os
-import sys
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
 from jinja2 import Template
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import (
     Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text,
-    create_engine, select, inspect
+    create_engine, select, text
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
-sys.path.insert(0, "/app")
 from shared.auth_middleware import CurrentUser, AdminUser
+from shared.schema import require_schema
 
-try:
-    from shared.request_id_middleware import RequestIDMiddleware
-except ImportError:
-    RequestIDMiddleware = None
+from shared.request_id_middleware import RequestIDMiddleware
 
 try:
     from weasyprint import HTML
     WEASYPRINT_AVAILABLE = True
-except Exception:
+except (ImportError, OSError):
     WEASYPRINT_AVAILABLE = False
 
 log = logging.getLogger("billing-api")
 
-DATABASE_URL = os.getenv("BILLING_DATABASE_URL", os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/cloudx_billing"))
+DATABASE_URL = os.getenv("BILLING_DATABASE_URL", os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx_billing"))
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
-AUTH_SECRET_KEY = os.getenv("AUTH_SECRET_KEY", "cloudx-secret-key-change-in-production-min32chars!")
+AUTH_SECRET_KEY = os.environ["AUTH_SECRET_KEY"]
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-inspector = inspect(engine)
 
 
 class Base(DeclarativeBase):
@@ -140,22 +129,23 @@ DB = Annotated[Session, Depends(get_db)]
 
 
 def init_db():
-    tables = ["billing_rating_sheets", "billing_usage_records", "billing_invoices", "billing_invoice_items"]
-    if not all(inspector.has_table(t) for t in tables):
-        Base.metadata.create_all(bind=engine)
-        defaults = [
-            RatingSheet(resource_type="vcpu", unit="vcpu-hour", rate_per_unit=Decimal("100.0000"), description="vCPU per hour", currency="IDR"),
-            RatingSheet(resource_type="ram", unit="gb-hour", rate_per_unit=Decimal("50.0000"), description="RAM GB per hour", currency="IDR"),
-            RatingSheet(resource_type="volume", unit="gb-hour", rate_per_unit=Decimal("25.0000"), description="Volume GB per hour", currency="IDR"),
-            RatingSheet(resource_type="floating_ip", unit="hour", rate_per_unit=Decimal("500.0000"), description="Floating IP per hour", currency="IDR"),
-        ]
-        with SessionLocal() as db:
-            existing = {r.resource_type for r in db.execute(select(RatingSheet.resource_type)).scalars().all()}
-            for rs in defaults:
-                if rs.resource_type not in existing:
-                    db.add(rs)
-            db.commit()
-        log.info("Billing tables created and default rating sheet seeded")
+    require_schema(engine, "billing")
+    defaults = [
+        RatingSheet(resource_type="vcpu", unit="vcpu-hour", rate_per_unit=Decimal("100.0000"), description="vCPU per hour", currency="IDR"),
+        RatingSheet(resource_type="ram", unit="gb-hour", rate_per_unit=Decimal("50.0000"), description="RAM GB per hour", currency="IDR"),
+        RatingSheet(resource_type="volume", unit="gb-hour", rate_per_unit=Decimal("25.0000"), description="Volume GB per hour", currency="IDR"),
+        RatingSheet(resource_type="floating_ip", unit="hour", rate_per_unit=Decimal("500.0000"), description="Floating IP per hour", currency="IDR"),
+    ]
+    with SessionLocal() as db:
+        if db.get_bind().dialect.name == "postgresql":
+            # every gunicorn worker runs init_db at startup; without the lock they all see an empty table and seed it
+            db.execute(text("SELECT pg_advisory_xact_lock(5011)"))
+        existing = set(db.execute(select(RatingSheet.resource_type)).scalars().all())
+        for rs in defaults:
+            if rs.resource_type not in existing:
+                db.add(rs)
+        db.commit()
+    log.info("Billing default rating sheet seeded")
 
 
 app = FastAPI(

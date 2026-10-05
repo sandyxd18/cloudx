@@ -1,11 +1,7 @@
 from __future__ import annotations
-import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-try:
-    from shared.config import load_service_config
-    load_service_config("orchestration-api")
-except Exception as _cfg_err:
-    pass
+import os
+from shared.config import load_service_config
+load_service_config("orchestration-api")
 
 """
 cloudx Orchestration API — Auto-Scaling Group Engine
@@ -21,36 +17,29 @@ Database: cloudx_orchestration
 
 
 import logging
-import os
-import sys
 import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import (
-    Boolean, DateTime, ForeignKey, Integer, String, Text,
-    create_engine, select, inspect
+    Boolean, DateTime, ForeignKey, Integer, String, create_engine, select
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
-sys.path.insert(0, "/app")
-from shared.auth_middleware import CurrentUser, AdminUser
+from shared.auth_middleware import CurrentUser
+from shared.schema import require_schema
 
-try:
-    from shared.request_id_middleware import RequestIDMiddleware
-except ImportError:
-    RequestIDMiddleware = None
+from shared.request_id_middleware import RequestIDMiddleware
 
 log = logging.getLogger("orchestration-api")
 
-DATABASE_URL = os.getenv("ORCHESTRATION_DATABASE_URL", os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/cloudx_orchestration"))
+DATABASE_URL = os.getenv("ORCHESTRATION_DATABASE_URL", os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx_orchestration"))
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-inspector = inspect(engine)
 
 
 class Base(DeclarativeBase):
@@ -130,10 +119,7 @@ DB = Annotated[Session, Depends(get_db)]
 
 
 def init_db():
-    tables = ["orchestration_scaling_groups", "orchestration_scaling_group_instances", "orchestration_scaling_history"]
-    if not all(inspector.has_table(t) for t in tables):
-        Base.metadata.create_all(bind=engine)
-        log.info("Orchestration tables created")
+    require_schema(engine, "orchestration")
 
 
 app = FastAPI(

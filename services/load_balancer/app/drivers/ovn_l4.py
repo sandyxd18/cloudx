@@ -8,7 +8,8 @@ ponytail: production-grade might use OVN Northbound DB via python-ovs
 from __future__ import annotations
 
 import logging
-import subprocess
+
+from shared.proc import run
 
 from .base import LoadBalancerDriver
 
@@ -27,7 +28,7 @@ class OVNL4Driver(LoadBalancerDriver):
     def _run(self, *args):
         cmd = [self.ovn_nbctl, f"--db={self.nb_db}"] + list(args)
         log.debug("Running: %s", " ".join(cmd))
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        run(cmd, timeout=30)
 
     def _lb_name(self, lb_id: str) -> str:
         return f"cloudx-lb-{lb_id}"
@@ -55,12 +56,12 @@ class OVNL4Driver(LoadBalancerDriver):
         name = self._lb_name(lb["id"])
         try:
             self._run("lr-lb-del", self.logical_router, name)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("lr-lb-del failed (load balancer may not be attached): %s", exc)
         try:
             self._run("lb-del", name)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("lb-del failed for %s: %s", name, exc)
 
     def apply_listener(self, lb: dict, listener: dict) -> None:
         name = self._lb_name(lb["id"])

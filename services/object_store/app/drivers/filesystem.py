@@ -6,7 +6,6 @@ Stores objects as plain files on disk under a configurable root directory.
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +20,7 @@ class FilesystemDriver(ObjectStoreDriver):
     name = "filesystem"
 
     def __init__(self, config: dict) -> None:
-        self.root = Path(config.get("root", "/var/lib/mini-openstack/object-store"))
+        self.root = Path(config.get("root", "/var/lib/cloudx/object-store"))
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _bucket_path(self, bucket_name: str) -> Path:

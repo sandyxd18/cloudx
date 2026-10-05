@@ -1,11 +1,7 @@
 from __future__ import annotations
-import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-try:
-    from shared.config import load_service_config
-    load_service_config("event-api")
-except Exception as _cfg_err:
-    pass
+import os
+from shared.config import load_service_config
+load_service_config("event-api")
 
 """
 cloudx Event & Webhook API — Central Event Bus & Notification Engine
@@ -16,35 +12,29 @@ Service Fase 5.3: menangkap event audit/system dan mengirim webhook.
 
 
 import logging
-import os
-import sys
 from datetime import datetime, timezone
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
 from sqlalchemy import (
     Boolean, DateTime, ForeignKey, Integer, String, Text,
-    create_engine, select, inspect
+    create_engine, select
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
-sys.path.insert(0, "/app")
-from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+from shared.auth_middleware import CurrentUser, OptionalAuth
+from shared.schema import require_schema
 
-try:
-    from shared.request_id_middleware import RequestIDMiddleware
-except ImportError:
-    RequestIDMiddleware = None
+from shared.request_id_middleware import RequestIDMiddleware
 
 log = logging.getLogger("event-api")
 
-DATABASE_URL = os.getenv("EVENT_DATABASE_URL", os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/cloudx_events"))
+DATABASE_URL = os.getenv("EVENT_DATABASE_URL", os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx_events"))
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-inspector = inspect(engine)
 
 
 class Base(DeclarativeBase):
@@ -105,10 +95,7 @@ DB = Annotated[Session, Depends(get_db)]
 
 
 def init_db():
-    tables = ["event_webhook_subscriptions", "event_logs", "event_webhook_deliveries"]
-    if not all(inspector.has_table(t) for t in tables):
-        Base.metadata.create_all(bind=engine)
-        log.info("Event tables created")
+    require_schema(engine, "event")
 
 
 app = FastAPI(

@@ -1,11 +1,7 @@
 from __future__ import annotations
-import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-try:
-    from shared.config import load_service_config
-    load_service_config("telemetry-api")
-except Exception as _cfg_err:
-    pass
+import os
+from shared.config import load_service_config
+load_service_config("telemetry-api")
 
 """
 cloudx Telemetry API — Metrics Collection & Prometheus Exporter
@@ -16,34 +12,28 @@ Service Fase 5.1: mengumpulkan dan mengekspos metrik real-time per VM/tenant.
 
 
 import logging
-import os
-import sys
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any
+from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, Float, Integer, String, create_engine, select, text, inspect, func
+from pydantic import BaseModel
+from sqlalchemy import DateTime, Float, Integer, String, create_engine, select, text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-sys.path.insert(0, "/app")
 from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+from shared.schema import require_schema
 
-try:
-    from shared.request_id_middleware import RequestIDMiddleware
-except ImportError:
-    RequestIDMiddleware = None
+from shared.request_id_middleware import RequestIDMiddleware
 
 log = logging.getLogger("telemetry-api")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx")
 METRICS_RETENTION_DAYS = int(os.getenv("METRICS_RETENTION_DAYS", "7"))
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-inspector = inspect(engine)
 
 
 class Base(DeclarativeBase):
@@ -86,25 +76,23 @@ DB = Annotated[Session, Depends(get_db)]
 
 
 def init_db():
-    tables = [TelemetryMetric.__tablename__, TelemetryMetricType.__tablename__]
-    if not all(inspector.has_table(t) for t in tables):
-        Base.metadata.create_all(bind=engine)
-        defaults = [
-            TelemetryMetricType(name="cpu_percent", description="CPU utilization percentage", unit="%"),
-            TelemetryMetricType(name="memory_used_mb", description="Memory used in MB", unit="MB"),
-            TelemetryMetricType(name="memory_total_mb", description="Total memory in MB", unit="MB"),
-            TelemetryMetricType(name="disk_read_bytes", description="Disk read throughput", unit="B/s"),
-            TelemetryMetricType(name="disk_write_bytes", description="Disk write throughput", unit="B/s"),
-            TelemetryMetricType(name="net_rx_bytes", description="Network received bytes", unit="B/s"),
-            TelemetryMetricType(name="net_tx_bytes", description="Network transmitted bytes", unit="B/s"),
-        ]
-        with SessionLocal() as db:
-            existing = {r.name for r in db.execute(select(TelemetryMetricType.name)).scalars().all()}
-            for mt in defaults:
-                if mt.name not in existing:
-                    db.add(mt)
-            db.commit()
-        log.info("Telemetry tables created and metric types seeded")
+    require_schema(engine, "telemetry")
+    defaults = [
+        TelemetryMetricType(name="cpu_percent", description="CPU utilization percentage", unit="%"),
+        TelemetryMetricType(name="memory_used_mb", description="Memory used in MB", unit="MB"),
+        TelemetryMetricType(name="memory_total_mb", description="Total memory in MB", unit="MB"),
+        TelemetryMetricType(name="disk_read_bytes", description="Disk read throughput", unit="B/s"),
+        TelemetryMetricType(name="disk_write_bytes", description="Disk write throughput", unit="B/s"),
+        TelemetryMetricType(name="net_rx_bytes", description="Network received bytes", unit="B/s"),
+        TelemetryMetricType(name="net_tx_bytes", description="Network transmitted bytes", unit="B/s"),
+    ]
+    with SessionLocal() as db:
+        existing = set(db.execute(select(TelemetryMetricType.name)).scalars().all())
+        for mt in defaults:
+            if mt.name not in existing:
+                db.add(mt)
+        db.commit()
+    log.info("Telemetry metric types seeded")
 
 
 app = FastAPI(

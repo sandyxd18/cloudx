@@ -1,16 +1,9 @@
-import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-try:
-    from shared.config import load_service_config
-    load_service_config("image-api")
-except Exception as _cfg_err:
-    pass
+import os
+from shared.config import load_service_config
+load_service_config("image-api")
 
 import hashlib
-import json
 import logging
-import os
-import sys
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -25,40 +18,23 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, inspect, select, text
+from sqlalchemy import DateTime, Integer, String, Text, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-try:
-    from services.shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
-except ImportError:
-    try:
-        from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
-    except ImportError:
-        try:
-            from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
-        except ImportError:
-            from auth_middleware import CurrentUser, AdminUser, OptionalAuth
+from shared.auth_middleware import CurrentUser
+from shared.schema import require_schema
 
 # Import shared modules
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-try:
-    from shared.request_id_middleware import RequestIDMiddleware
-except ImportError:
-    RequestIDMiddleware = None
+from shared.request_id_middleware import RequestIDMiddleware
+from shared.rpc import RPCClient
 
-try:
-    from shared.rpc import RPCClient
-except ImportError:
-    RPCClient = None
-
-
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
-IMAGE_STORE_PATH = Path(os.getenv("IMAGE_STORE_PATH", "/var/lib/mini-openstack/images"))
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx")
+IMAGE_STORE_PATH = Path(os.getenv("IMAGE_STORE_PATH", "/var/lib/cloudx/images"))
 IMAGE_STORAGE_BACKEND = os.getenv("IMAGE_STORAGE_BACKEND", "file").lower()
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-MINIO_BUCKET = os.getenv("MINIO_BUCKET", "mini-openstack-images")
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "cloudx-images")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
 
@@ -145,7 +121,7 @@ class ImageMember(Base):
 
 
 class ImageTask(Base):
-    """Asynchronous image import task (Glance task API)."""
+    """Asynchronous image import task (Image task API)."""
     __tablename__ = "image_tasks"
     id:         Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     type:       Mapped[str] = mapped_column(String, default="import")  # import
@@ -301,8 +277,8 @@ if RequestIDMiddleware:
 try:
     from shared.metrics import setup_metrics
     setup_metrics(app, "image-api")
-except Exception:
-    pass
+except Exception as exc:
+    log.warning("metrics endpoint disabled: %s", exc)
 
 # RPC client (lazy init)
 _rpc: "RPCClient | None" = None
@@ -312,8 +288,8 @@ def _get_rpc():
     if _rpc is None and RPCClient:
         try:
             _rpc = RPCClient(RABBITMQ_URL)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("RabbitMQ client unavailable, events are not published: %s", exc)
     return _rpc
 
 
@@ -328,28 +304,7 @@ class ImageImportIn(BaseModel):
 @app.on_event("startup")
 def startup():
     IMAGE_STORE_PATH.mkdir(parents=True, exist_ok=True)
-    Base.metadata.create_all(bind=engine)
-    ensure_columns()
-
-
-def ensure_columns():
-    inspector = inspect(engine)
-    table_names = inspector.get_table_names()
-    if "image_images" in table_names:
-        columns = {column["name"] for column in inspector.get_columns("image_images")}
-        with engine.begin() as conn:
-            if "storage_backend" not in columns:
-                conn.execute(text("ALTER TABLE image_images ADD COLUMN storage_backend VARCHAR DEFAULT 'file'"))
-            if "object_name" not in columns:
-                conn.execute(text("ALTER TABLE image_images ADD COLUMN object_name VARCHAR"))
-                conn.execute(text("UPDATE image_images SET object_name = filename WHERE object_name IS NULL"))
-            if "visibility" not in columns:
-                conn.execute(text("ALTER TABLE image_images ADD COLUMN visibility VARCHAR DEFAULT 'private'"))
-            if "project_id" not in columns:
-                conn.execute(text("ALTER TABLE image_images ADD COLUMN project_id VARCHAR"))
-            conn.execute(text("UPDATE image_images SET storage_backend = 'file' WHERE storage_backend IS NULL"))
-            conn.execute(text("UPDATE image_images SET visibility = 'private' WHERE visibility IS NULL"))
-            conn.execute(text("UPDATE image_images SET object_name = filename WHERE object_name IS NULL"))
+    require_schema(engine, "image")
 
 
 def storage_backend() -> StorageBackend:
@@ -447,8 +402,8 @@ def upload_image(
                 "status":     "ACTIVE",
                 "project_id": current["project_id"],
             })
-    except Exception:
-        pass  # best-effort
+    except Exception as exc:
+        log.warning("image upload event not published: %s", exc)
     _cache_invalidate()  # invalidate all list caches
     return obj_to_dict(image)
 
@@ -597,7 +552,7 @@ def sign_image(ref: str, current: CurrentUser, db: DB):
 
     This uses the already-computed checksum from the upload process (SHA256 hash
     of the image bytes). The 'signature' and 'signature_hash_method' fields are
-    set on the image record, marking it as signed. Nova workers can call
+    set on the image record, marking it as signed. Compute workers can call
     GET /images/{ref}/verify before booting to confirm integrity.
     """
     image = require_image(db, ref)
@@ -614,7 +569,7 @@ def sign_image(ref: str, current: CurrentUser, db: DB):
         "name": image.name,
         "signature": image.signature,
         "signature_hash_method": image.signature_hash_method,
-        "message": "Image signed successfully. Nova will verify integrity before booting.",
+        "message": "Image signed successfully. Compute worker will verify integrity before booting.",
     }
 
 
@@ -624,7 +579,7 @@ def verify_image(ref: str, _: CurrentUser, db: DB):
     Verify image integrity by recalculating SHA256 and comparing to stored signature.
 
     If the image has no signature, verifies the stored checksum against the file.
-    This endpoint is also called internally by Nova worker before VM boot.
+    This endpoint is also called internally by compute worker before VM boot.
     """
     import hashlib as _hashlib
     image = require_image(db, ref)
@@ -798,7 +753,7 @@ def remove_image_member(ref: str, member_id: str, _: CurrentUser, db: DB):
         db.commit()
 
 
-# ── Glance Task API (async import) ────────────────────────────────────────────
+# ── Image Task API (async import) ────────────────────────────────────────────
 
 import json as _json
 
@@ -947,7 +902,7 @@ def update_task(task_id: str, payload: TaskPatchIn, db: DB):
 
 @app.get("/v2")
 def glance_v2_root():
-    """Glance v2 API version discovery."""
+    """Image API version discovery."""
     return {
         "version": {
             "id": "v2.9",

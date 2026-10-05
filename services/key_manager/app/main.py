@@ -1,11 +1,7 @@
 from __future__ import annotations
-import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-try:
-    from shared.config import load_service_config
-    load_service_config("key-manager-api")
-except Exception as _cfg_err:
-    pass
+import os
+from shared.config import load_service_config
+load_service_config("key-manager-api")
 
 """
 cloudx Key Manager API — Barbican-like Secret Management Service
@@ -19,52 +15,29 @@ import base64
 import hashlib
 import json
 import logging
-import os
-import sys
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Any
+from typing import Annotated
 
 from cryptography.fernet import Fernet
-from fastapi import Depends, FastAPI, HTTPException, Header, Query, Request, status
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import (
-    Boolean, DateTime, ForeignKey, Integer, String, Text,
-    create_engine, select, inspect
+    DateTime, Integer, String, Text,
+    create_engine, select
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-sys.path.insert(0, "/app")
-from jose import JWTError, jwt
+from shared.auth_middleware import require_auth
+from shared.schema import require_schema
 
-AUTH_SECRET_KEY = os.getenv("AUTH_SECRET_KEY", "cloudx-secret-key-change-in-production-min32chars!")
-
-def get_current_user(request: Request) -> dict:
-    token = request.headers.get("Authorization") or request.headers.get("X-Auth-Token")
-    if token:
-        try:
-            if token.startswith("Bearer "):
-                token = token[7:].strip()
-            return jwt.decode(token, AUTH_SECRET_KEY, algorithms=["HS256"])
-        except Exception:
-            pass
-
-    project_id = request.headers.get("X-Project-Id", "default")
-    role = request.headers.get("X-Role", "admin" if project_id == "admin" or project_id == "proj-admin" else "member")
-    return {"project_id": project_id, "role": role, "user_id": "usr-1"}
-
-CurrentUser = Annotated[dict, Depends(get_current_user)]
-
-try:
-    from shared.request_id_middleware import RequestIDMiddleware
-except ImportError:
-    RequestIDMiddleware = None
+from shared.request_id_middleware import RequestIDMiddleware
 
 log = logging.getLogger("key-manager-api")
 
-DATABASE_URL = os.getenv("KEY_MANAGER_DATABASE_URL", os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/cloudx_key_manager"))
-MASTER_KEY = os.getenv("KEY_MANAGER_MASTER_KEY", "cloudx-master-secret-key-32bytes!")
+DATABASE_URL = os.getenv("KEY_MANAGER_DATABASE_URL", os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx_key_manager"))
+MASTER_KEY = os.environ["KEY_MANAGER_MASTER_KEY"]
 
 # Derive a 32-byte urlsafe base64 Fernet key from MASTER_KEY
 _fernet_key = base64.urlsafe_b64encode(hashlib.sha256(MASTER_KEY.encode()).digest())
@@ -129,7 +102,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup():
-    Base.metadata.create_all(bind=engine)
+    require_schema(engine, "key_manager")
 
 
 # --- Schemas ---
@@ -180,7 +153,7 @@ def health():
 
 
 @app.post("/secrets", response_model=SecretOut, status_code=201)
-def create_secret(payload: SecretIn, db: DB, user: dict = Depends(get_current_user)):
+def create_secret(payload: SecretIn, db: DB, user: dict = Depends(require_auth)):
     project_id = user.get("project_id", "default")
     encrypted_bytes = _cipher.encrypt(payload.payload.encode("utf-8"))
     secret = Secret(
@@ -210,7 +183,7 @@ def create_secret(payload: SecretIn, db: DB, user: dict = Depends(get_current_us
 
 
 @app.get("/secrets", response_model=list[SecretOut])
-def list_secrets(db: DB, user: dict = Depends(get_current_user)):
+def list_secrets(db: DB, user: dict = Depends(require_auth)):
     project_id = user.get("project_id", "default")
     stmt = select(Secret)
     if user.get("role") != "admin":
@@ -234,7 +207,7 @@ def list_secrets(db: DB, user: dict = Depends(get_current_user)):
 
 
 @app.get("/secrets/{secret_id}", response_model=SecretOut)
-def get_secret(secret_id: str, db: DB, user: dict = Depends(get_current_user)):
+def get_secret(secret_id: str, db: DB, user: dict = Depends(require_auth)):
     secret = db.get(Secret, secret_id)
     if not secret:
         raise HTTPException(status_code=404, detail="Secret not found")
@@ -259,7 +232,7 @@ def get_secret(secret_id: str, db: DB, user: dict = Depends(get_current_user)):
 
 
 @app.delete("/secrets/{secret_id}", status_code=204)
-def delete_secret(secret_id: str, db: DB, user: dict = Depends(get_current_user)):
+def delete_secret(secret_id: str, db: DB, user: dict = Depends(require_auth)):
     secret = db.get(Secret, secret_id)
     if not secret:
         raise HTTPException(status_code=404, detail="Secret not found")
@@ -271,7 +244,7 @@ def delete_secret(secret_id: str, db: DB, user: dict = Depends(get_current_user)
 
 
 @app.post("/containers", response_model=ContainerOut, status_code=201)
-def create_container(payload: ContainerIn, db: DB, user: dict = Depends(get_current_user)):
+def create_container(payload: ContainerIn, db: DB, user: dict = Depends(require_auth)):
     project_id = user.get("project_id", "default")
     container = SecretContainer(
         name=payload.name,
@@ -294,7 +267,7 @@ def create_container(payload: ContainerIn, db: DB, user: dict = Depends(get_curr
 
 
 @app.get("/containers", response_model=list[ContainerOut])
-def list_containers(db: DB, user: dict = Depends(get_current_user)):
+def list_containers(db: DB, user: dict = Depends(require_auth)):
     project_id = user.get("project_id", "default")
     stmt = select(SecretContainer)
     if user.get("role") != "admin":
@@ -315,7 +288,7 @@ def list_containers(db: DB, user: dict = Depends(get_current_user)):
 
 
 @app.get("/containers/{container_id}", response_model=ContainerOut)
-def get_container(container_id: str, db: DB, user: dict = Depends(get_current_user)):
+def get_container(container_id: str, db: DB, user: dict = Depends(require_auth)):
     container = db.get(SecretContainer, container_id)
     if not container:
         raise HTTPException(status_code=404, detail="Container not found")
@@ -334,7 +307,7 @@ def get_container(container_id: str, db: DB, user: dict = Depends(get_current_us
 
 
 @app.delete("/containers/{container_id}", status_code=204)
-def delete_container(container_id: str, db: DB, user: dict = Depends(get_current_user)):
+def delete_container(container_id: str, db: DB, user: dict = Depends(require_auth)):
     container = db.get(SecretContainer, container_id)
     if not container:
         raise HTTPException(status_code=404, detail="Container not found")

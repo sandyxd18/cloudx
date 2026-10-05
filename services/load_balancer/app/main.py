@@ -1,11 +1,7 @@
 from __future__ import annotations
-import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-try:
-    from shared.config import load_service_config
-    load_service_config("load-balancer-api")
-except Exception as _cfg_err:
-    pass
+import os
+from shared.config import load_service_config
+load_service_config("load-balancer-api")
 
 """
 cloudx Load Balancer API (Octavia-like)
@@ -20,7 +16,6 @@ automatically from active instances in that group.
 """
 
 import logging
-import os
 import socket
 import threading
 import time
@@ -33,38 +28,25 @@ import requests
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-import sys
-sys.path.insert(0, "/app")
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-try:
-    from shared.auth_middleware import CurrentUser, AdminUser
-except ImportError:
-    try:
-        from app.auth_middleware import CurrentUser, AdminUser
-    except ImportError:
-        from auth_middleware import CurrentUser, AdminUser
-
-try:
-    from shared.request_id_middleware import RequestIDMiddleware
-except ImportError:
-    RequestIDMiddleware = None
+from shared.auth_middleware import CurrentUser
+from shared.schema import require_schema
+from shared.request_id_middleware import RequestIDMiddleware
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack",
+    "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx",
 )
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
 COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
 AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
-AUTH_ADMIN_PASSWORD = os.getenv("AUTH_ADMIN_PASSWORD", "admin123")
+AUTH_ADMIN_PASSWORD = os.environ["AUTH_ADMIN_PASSWORD"]
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 _svc_token: str | None = None
@@ -284,7 +266,8 @@ def _probe_member(member: Member, hm: HealthMonitor) -> bool:
             url = f"{proto}://{member.address}:{member.protocol_port}{hm.url_path}"
             resp = requests.get(url, timeout=min(hm.timeout, 5))
             return resp.status_code < 400
-    except Exception:
+    except Exception as exc:
+        log.debug("health probe failed: %s", exc)
         return False
     return False
 
@@ -337,7 +320,7 @@ def _health_monitor_loop():
 
 @app.on_event("startup")
 def startup():
-    Base.metadata.create_all(bind=engine)
+    require_schema(engine, "load_balancer")
     threading.Thread(target=_health_monitor_loop, daemon=True).start()
 
 
@@ -348,15 +331,12 @@ def _project_id(current: dict) -> str:
 
 
 def _get_driver(lb: LoadBalancer):
-    from app.drivers import get_driver
+    from .drivers import get_driver
     driver_cls = get_driver(lb.lb_type)
     return driver_cls({})
 
 
-try:
-    from shared.service_client import ServiceClient
-except ImportError:
-    from service_client import ServiceClient
+from shared.service_client import ServiceClient
 
 service_client = ServiceClient(service_name="service_load_balancer")
 

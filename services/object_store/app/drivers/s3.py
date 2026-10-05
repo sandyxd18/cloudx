@@ -6,7 +6,6 @@ Supports MinIO, AWS S3, Ceph RGW, Cloudflare R2, and any S3-compatible API.
 from __future__ import annotations
 
 import logging
-import os
 from typing import BinaryIO
 
 import boto3

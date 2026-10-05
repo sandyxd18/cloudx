@@ -1,21 +1,18 @@
-import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-try:
-    from shared.config import load_service_config
-    load_service_config("k8s-engine-api")
-except Exception as _cfg_err:
-    pass
-
 import os
+from shared.config import load_service_config
+load_service_config("k8s-engine-api")
+
 import uuid
 import datetime
-from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Header, Depends, status
+from typing import Optional
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Text, ForeignKey, select
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, ForeignKey, select
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from shared.auth_middleware import CurrentUser
+from shared.schema import require_schema
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://cloudx:cloudx_pass@cloudx_db:5432/cloudx_k8s_engine")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx_k8s_engine")
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
 engine = create_engine(DATABASE_URL)
@@ -49,6 +46,10 @@ class K8sCluster(Base):
 
 app = FastAPI(title="CloudX Kubernetes Engine Service API", version="1.0.0")
 
+def project_id(current: CurrentUser) -> str:
+    return current["project_id"]
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -58,7 +59,7 @@ def get_db():
 
 @app.on_event("startup")
 def startup():
-    Base.metadata.create_all(bind=engine)
+    require_schema(engine, "k8s_engine")
 
 @app.get("/health")
 def health_check():
@@ -84,7 +85,7 @@ class ClusterScale(BaseModel):
     worker_count: int
 
 @app.post("/cluster-templates", status_code=201)
-def create_cluster_template(body: TemplateCreate, x_project_id: str = Header("admin", alias="X-Project-Id"), db: Session = Depends(get_db)):
+def create_cluster_template(body: TemplateCreate, x_project_id: str = Depends(project_id), db: Session = Depends(get_db)):
     tpl = ClusterTemplate(
         name=body.name,
         k8s_version=body.k8s_version,
@@ -101,18 +102,18 @@ def create_cluster_template(body: TemplateCreate, x_project_id: str = Header("ad
     return tpl
 
 @app.get("/cluster-templates")
-def list_cluster_templates(x_project_id: str = Header("admin", alias="X-Project-Id"), db: Session = Depends(get_db)):
+def list_cluster_templates(x_project_id: str = Depends(project_id), db: Session = Depends(get_db)):
     return db.scalars(select(ClusterTemplate).where(ClusterTemplate.project_id == x_project_id)).all()
 
 @app.get("/cluster-templates/{tpl_id}")
-def get_cluster_template(tpl_id: str, x_project_id: str = Header("admin", alias="X-Project-Id"), db: Session = Depends(get_db)):
+def get_cluster_template(tpl_id: str, x_project_id: str = Depends(project_id), db: Session = Depends(get_db)):
     tpl = db.get(ClusterTemplate, tpl_id)
     if not tpl or tpl.project_id != x_project_id:
         raise HTTPException(status_code=404, detail="Template not found")
     return tpl
 
 @app.delete("/cluster-templates/{tpl_id}", status_code=204)
-def delete_cluster_template(tpl_id: str, x_project_id: str = Header("admin", alias="X-Project-Id"), db: Session = Depends(get_db)):
+def delete_cluster_template(tpl_id: str, x_project_id: str = Depends(project_id), db: Session = Depends(get_db)):
     tpl = db.get(ClusterTemplate, tpl_id)
     if not tpl or tpl.project_id != x_project_id:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -121,7 +122,7 @@ def delete_cluster_template(tpl_id: str, x_project_id: str = Header("admin", ali
     return None
 
 @app.post("/clusters", status_code=201)
-def create_cluster(body: ClusterCreate, x_project_id: str = Header("admin", alias="X-Project-Id"), db: Session = Depends(get_db)):
+def create_cluster(body: ClusterCreate, x_project_id: str = Depends(project_id), db: Session = Depends(get_db)):
     tpl = db.get(ClusterTemplate, body.template_id)
     if not tpl:
         raise HTTPException(status_code=400, detail="Invalid template_id")
@@ -140,18 +141,18 @@ def create_cluster(body: ClusterCreate, x_project_id: str = Header("admin", alia
     return cls
 
 @app.get("/clusters")
-def list_clusters(x_project_id: str = Header("admin", alias="X-Project-Id"), db: Session = Depends(get_db)):
+def list_clusters(x_project_id: str = Depends(project_id), db: Session = Depends(get_db)):
     return db.scalars(select(K8sCluster).where(K8sCluster.project_id == x_project_id)).all()
 
 @app.get("/clusters/{cls_id}")
-def get_cluster(cls_id: str, x_project_id: str = Header("admin", alias="X-Project-Id"), db: Session = Depends(get_db)):
+def get_cluster(cls_id: str, x_project_id: str = Depends(project_id), db: Session = Depends(get_db)):
     cls = db.get(K8sCluster, cls_id)
     if not cls or cls.project_id != x_project_id:
         raise HTTPException(status_code=404, detail="Cluster not found")
     return cls
 
 @app.post("/clusters/{cls_id}/scale")
-def scale_cluster(cls_id: str, body: ClusterScale, x_project_id: str = Header("admin", alias="X-Project-Id"), db: Session = Depends(get_db)):
+def scale_cluster(cls_id: str, body: ClusterScale, x_project_id: str = Depends(project_id), db: Session = Depends(get_db)):
     cls = db.get(K8sCluster, cls_id)
     if not cls or cls.project_id != x_project_id:
         raise HTTPException(status_code=404, detail="Cluster not found")
@@ -161,7 +162,7 @@ def scale_cluster(cls_id: str, body: ClusterScale, x_project_id: str = Header("a
     return cls
 
 @app.get("/clusters/{cls_id}/kubeconfig")
-def get_cluster_kubeconfig(cls_id: str, x_project_id: str = Header("admin", alias="X-Project-Id"), db: Session = Depends(get_db)):
+def get_cluster_kubeconfig(cls_id: str, x_project_id: str = Depends(project_id), db: Session = Depends(get_db)):
     cls = db.get(K8sCluster, cls_id)
     if not cls or cls.project_id != x_project_id:
         raise HTTPException(status_code=404, detail="Cluster not found")
@@ -187,7 +188,7 @@ users:
     return {"kubeconfig": yaml_kubeconfig}
 
 @app.delete("/clusters/{cls_id}", status_code=204)
-def delete_cluster(cls_id: str, x_project_id: str = Header("admin", alias="X-Project-Id"), db: Session = Depends(get_db)):
+def delete_cluster(cls_id: str, x_project_id: str = Depends(project_id), db: Session = Depends(get_db)):
     cls = db.get(K8sCluster, cls_id)
     if not cls or cls.project_id != x_project_id:
         raise HTTPException(status_code=404, detail="Cluster not found")

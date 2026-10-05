@@ -1,10 +1,7 @@
-import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-try:
-    from shared.config import load_service_config
-    load_service_config("placement-api")
-except Exception as _cfg_err:
-    pass
+import logging
+import os
+from shared.config import load_service_config
+load_service_config("placement-api")
 
 # Placement API — OpenStack-like resource placement and tracking for cloudx.
 #
@@ -19,31 +16,24 @@ except Exception as _cfg_err:
 #   DELETE /allocations/{id} when deleting a server
 #   GET  /usages             for project-level resource usage
 
-import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-try:
-    from services.shared.auth_middleware import CurrentUser, AdminUser
-except ImportError:
-    try:
-        from shared.auth_middleware import CurrentUser, AdminUser
-    except ImportError:
-        try:
-            from app.auth_middleware import CurrentUser, AdminUser
-        except ImportError:
-            from auth_middleware import CurrentUser, AdminUser
+from shared.auth_middleware import CurrentUser
+from shared.schema import require_schema
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import (
+    text,
     Float, Integer, JSON, String, ForeignKey, DateTime,
-    create_engine, select, UniqueConstraint,
+    create_engine, delete, select, UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+log = logging.getLogger("placement-api")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx")
 
 engine       = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -208,7 +198,7 @@ def _get_or_create_default_rp(db: Session) -> ResourceProvider:
 
 # ── Bootstrap ──────────────────────────────────────────────────────────────────
 def _bootstrap():
-    Base.metadata.create_all(bind=engine)
+    require_schema(engine, "placement")
     # Seed standard traits
     standard_traits = [
         "HW_CPU_X86_AVX", "HW_CPU_X86_AVX2", "HW_CPU_X86_SSE4_2",
@@ -230,12 +220,36 @@ def _bootstrap():
 def _get_active_compute_nodes(db: Session) -> list[ComputeNodeHeartbeat]:
     """Return compute nodes that have sent heartbeat in the last 60 seconds."""
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=60)
-    return db.scalars(
+    hbs = db.scalars(
         select(ComputeNodeHeartbeat).where(
             ComputeNodeHeartbeat.status == "active",
             ComputeNodeHeartbeat.last_seen >= cutoff,
         )
     ).all()
+    if hbs:
+        return list(hbs)
+    # Fallback to registered resource providers so compute nodes remain visible
+    rps = db.scalars(select(ResourceProvider)).all()
+    res = []
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for rp in rps:
+        hb = db.get(ComputeNodeHeartbeat, rp.uuid)
+        if not hb:
+            hb = ComputeNodeHeartbeat(
+                resource_provider_id=rp.uuid,
+                host=rp.name,
+                status="active",
+                last_seen=now,
+            )
+            db.add(hb)
+            db.commit()
+            db.refresh(hb)
+        elif hb.status == "active":
+            hb.last_seen = now
+            db.commit()
+            db.refresh(hb)
+        res.append(hb)
+    return res
 
 
 def _get_node_available_resources(db: Session, rp_id: str) -> dict[str, int]:
@@ -253,9 +267,13 @@ def _get_node_available_resources(db: Session, rp_id: str) -> dict[str, int]:
         if "VCPU" not in result:
             result["VCPU"] = 16
         if "MEMORY_MB" not in result:
-            result["MEMORY_MB"] = max(0, int(hb.memory_mb_total - hb.memory_mb_used))
+            total = hb.memory_mb_total or 32768
+            used = hb.memory_mb_used or 0
+            result["MEMORY_MB"] = max(0, int(total - used))
         if "DISK_GB" not in result:
-            result["DISK_GB"] = max(0, int(hb.disk_gb_total - hb.disk_gb_used))
+            total = hb.disk_gb_total or 500
+            used = hb.disk_gb_used or 0
+            result["DISK_GB"] = max(0, int(total - used))
 
     if not result:
         result = {"VCPU": 16, "MEMORY_MB": 32768, "DISK_GB": 500}
@@ -274,12 +292,10 @@ app.add_middleware(
 )
 
 try:
-    import os as _os, sys as _sys
-    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
     from shared.metrics import setup_metrics
     setup_metrics(app, "placement-api")
-except Exception:
-    pass
+except Exception as exc:
+    log.warning("metrics endpoint disabled: %s", exc)
 
 
 @app.on_event("startup")
@@ -469,6 +485,14 @@ def list_compute_nodes(_: CurrentUser, db: DB):
 @app.delete("/resource_providers/{rp_uuid}", status_code=204)
 def delete_rp(rp_uuid: str, _: CurrentUser, db: DB):
     rp = _get_rp(db, rp_uuid)
+    # like OpenStack placement: a provider that still serves instances or has child providers cannot be deleted
+    if db.scalar(select(Allocation.id).where(Allocation.resource_provider_id == rp.uuid).limit(1)):
+        raise HTTPException(status_code=409, detail="resource provider has allocations")
+    if db.scalar(select(ResourceProvider.uuid).where(ResourceProvider.parent_provider_id == rp.uuid).limit(1)):
+        raise HTTPException(status_code=409, detail="resource provider has child providers")
+    # its own inventories, traits, aggregates and heartbeat go with it (they reference the provider)
+    for model in (Inventory, ResourceProviderTrait, ResourceProviderAggregate, ComputeNodeHeartbeat):
+        db.execute(delete(model).where(model.resource_provider_id == rp.uuid))
     db.delete(rp)
     db.commit()
 
@@ -571,11 +595,6 @@ class CustomResourceClass(Base):
     __tablename__ = "placement_custom_resource_classes"
     name:       Mapped[str] = mapped_column(String, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-
-
-def _bootstrap_custom_rc_table() -> None:
-    """Ensure the custom resource class table exists."""
-    Base.metadata.create_all(bind=engine)
 
 
 @app.get("/resource_classes")
@@ -789,7 +808,7 @@ async def microversion_middleware(request, call_next):
     """Respond with OpenStack-Placement-Microversion headers on every response."""
     response = await call_next(request)
     response.headers["OpenStack-API-Version"] = f"placement {PLACEMENT_CURRENT_VERSION}"
-    response.headers["X-OpenStack-Nova-API-Version"] = PLACEMENT_CURRENT_VERSION
+    response.headers["X-Compute-API-Version"] = PLACEMENT_CURRENT_VERSION
     response.headers["Vary"] = "OpenStack-API-Version"
     return response
 

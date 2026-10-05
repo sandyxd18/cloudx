@@ -1,11 +1,7 @@
 from __future__ import annotations
-import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-try:
-    from shared.config import load_service_config
-    load_service_config("object-store-api")
-except Exception as _cfg_err:
-    pass
+import os
+from shared.config import load_service_config
+load_service_config("object-store-api")
 
 """
 cloudx Object Store API (swift/s3-compatible)
@@ -16,39 +12,25 @@ Manages buckets, objects, and bucket-types for multi-tenant object storage.
 
 import json
 import logging
-import os
 import uuid
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, ForeignKey, Integer, String, create_engine, text, inspect
+from sqlalchemy import DateTime, ForeignKey, Integer, String, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-import sys
-sys.path.insert(0, "/app")
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-try:
-    from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
-except ImportError:
-    try:
-        from app.auth_middleware import CurrentUser, AdminUser, OptionalAuth
-    except ImportError:
-        from auth_middleware import CurrentUser, AdminUser, OptionalAuth
-
-try:
-    from shared.request_id_middleware import RequestIDMiddleware
-except ImportError:
-    RequestIDMiddleware = None
+from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+from shared.schema import require_schema
+from shared.request_id_middleware import RequestIDMiddleware
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 DATABASE_URL = os.getenv("DATABASE_URL",
-    "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
+    "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx")
 LOG_LEVEL    = os.getenv("LOG_LEVEL", "INFO")
 
 logging.basicConfig(
@@ -162,7 +144,7 @@ DB = Annotated[Session, Depends(get_db)]
 
 @app.on_event("startup")
 def startup():
-    Base.metadata.create_all(bind=engine)
+    require_schema(engine, "object_store")
 
 
 
@@ -209,7 +191,7 @@ def _enforce_network_scope(request: Request, bucket: Bucket, current: dict | Non
 
 def _get_driver(bucket_type: BucketType):
     """Instantiate the correct storage driver from a bucket_type record."""
-    from app.drivers import get_driver
+    from .drivers import get_driver
     driver_cls = get_driver(bucket_type.driver)
     config = json.loads(bucket_type.config) if bucket_type.config else {}
     return driver_cls(config)
