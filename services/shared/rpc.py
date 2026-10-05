@@ -40,6 +40,16 @@ RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
 EXCHANGE     = "cloudx"                # default topic exchange
 EVENT_EXCHANGE = "cloudx.events"       # fanout exchange for live events
 
+
+def host_queue(service: str, host: str | None) -> str:
+    """Routing key / queue name that addresses *service* on one specific host.
+
+    Without a host the shared queue (``service``) is returned, so callers that do not
+    know the host keep the old competing-consumers behaviour.
+    """
+    return f"{service}.{host}" if host else service
+
+
 RPC_CALL_TIMEOUT = int(os.getenv("RPC_CALL_TIMEOUT", "30"))
 
 
@@ -258,8 +268,10 @@ class RPCConsumer:
         rabbitmq_url: str | None = None,
         exchange: str = EXCHANGE,
         prefetch: int = 1,
+        extra_queues: tuple[str, ...] = (),
     ):
         self.queue_name = queue_name
+        self.extra_queues = tuple(extra_queues)
         self.handlers = handlers
         self._url = rabbitmq_url or RABBITMQ_URL
         self._exchange = exchange
@@ -289,12 +301,13 @@ class RPCConsumer:
         # Declare exchange + queue + binding
         channel.exchange_declare(self._exchange, "topic", durable=True)
         channel.exchange_declare(EVENT_EXCHANGE, "fanout", durable=True)
-        channel.queue_declare(self.queue_name, durable=True)
-        channel.queue_bind(self.queue_name, self._exchange, self.queue_name)
+        for queue in (self.queue_name, *self.extra_queues):
+            channel.queue_declare(queue, durable=True)
+            channel.queue_bind(queue, self._exchange, queue)
         channel.basic_qos(prefetch_count=self._prefetch)
 
-        self.logger.info("Consuming from queue '%s' (exchange=%s, prefetch=%d)",
-                         self.queue_name, self._exchange, self._prefetch)
+        self.logger.info("Consuming from queues %s (exchange=%s, prefetch=%d)",
+                         [self.queue_name, *self.extra_queues], self._exchange, self._prefetch)
 
         def _on_message(ch, method_frame, props, body):
             msg = json.loads(body)
@@ -343,7 +356,8 @@ class RPCConsumer:
             finally:
                 ch.basic_ack(method_frame.delivery_tag)
 
-        channel.basic_consume(self.queue_name, _on_message)
+        for queue in (self.queue_name, *self.extra_queues):
+            channel.basic_consume(queue, _on_message)
         channel.start_consuming()
 
 
