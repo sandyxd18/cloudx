@@ -1,7 +1,7 @@
-# 📊 Perbandingan Fitur: cloudx vs OpenStack Asli
+# 📊 Perbandingan Fitur: cloudx vs Standar Private Cloud
 
 > Dokumen ini memetakan fitur yang sudah diimplementasikan di **cloudx private cloud lab**
-> dibandingkan dengan OpenStack service yang asli, beserta estimasi persentase kemiripan.
+> dibandingkan dengan spesifikasi cloud standar, beserta estimasi persentase kemiripan.
 >
 > **Diperbarui:** Agustus 2026 — mencakup Fase 1–4 (paritas API base services) dan
 > Fase 5 (production readiness: multi-node, HA, backup, monitoring, internal TLS,
@@ -11,16 +11,16 @@
 
 ## 🔢 Ringkasan Keseluruhan
 
-| Service cloudx | Setara OpenStack | Awal | Setelah F1–F4 | Setelah F5 |
+| Service cloudx | Setara CloudX | Awal | Setelah F1–F4 | Setelah F5 |
 |---|---|:---:|:---:|:---:|
-| `auth-api` | **Keystone** | 0% | ~93% | **~95%** |
-| `compute-api` + `compute-worker` | **Nova** | ~45% | ~94% | **~95%** |
-| `networking-api` | **Neutron** | ~55% | ~88% | **~90%** |
-| `image-api` | **Glance** | ~40% | ~90% | **~92%** |
-| `block-store-api` | **Cinder** | ~35% | ~93% | **~95%** |
-| `metadata-api` | **Nova Metadata API** | ~75% | ~92% | **~92%** |
+| `auth-api` | **Identity** | 0% | ~93% | **~95%** |
+| `compute-api` + `compute-worker` | **Compute** | ~45% | ~94% | **~95%** |
+| `networking-api` | **Networking** | ~55% | ~88% | **~90%** |
+| `image-api` | **Image** | ~40% | ~90% | **~92%** |
+| `block-store-api` | **Block Storage** | ~35% | ~93% | **~95%** |
+| `metadata-api` | **Metadata API** | ~75% | ~92% | **~92%** |
 | `placement-api` | **Placement** | ~15% | ~92% | **~93%** |
-| `dashboard` | **Horizon** | 0% | ~85% | **~90%** |
+| `dashboard` | **CloudX Dashboard** | 0% | ~85% | **~90%** |
 | *(tidak ada)* | **Heat** | 0% | 0% | 0% |
 | *(tidak ada)* | **Swift** | 0% | 0% | 0% (MinIO sebagai pengganti) |
 | *(tidak ada)* | **Ironic** | 0% | 0% | 0% |
@@ -41,11 +41,11 @@
 | Observability | Endpoint `/metrics` di semua API services + alert rules | ✅ |
 | Security | Internal TLS PKI (`services/certs/generate-certs.sh`, antar-service saja) | ✅ |
 | Database | Alembic migration scaffold (baseline stamp, additive-first) | ✅ |
-| Horizon | UI dirancang ulang ala AWS Console dengan Cloudscape Design System | ✅ |
+| CloudX Dashboard | UI dirancang ulang ala AWS Console dengan Cloudscape Design System | ✅ |
 
 ---
 
-## 1. Keystone (Identity) — `auth-api`
+## 1. Identity (Identity) — `auth-api`
 
 ### ✅ Fitur yang Sudah Ada
 
@@ -92,7 +92,7 @@
 | Delete access key | `DELETE /access-keys/{key_id}` | ✅ |
 | Validasi access key | `POST /auth/access-key` | ✅ |
 
-### ❌ Fitur yang Belum Ada (Keystone Asli)
+### ❌ Fitur yang Belum Ada (Identity Asli)
 | Fitur | Keterangan |
 |---|---|
 | **Service Catalog** | Tidak ada endpoint discovery catalog |
@@ -106,11 +106,11 @@
 | **Policy (oslo.policy)** | RBAC sederhana, bukan oslo.policy |
 | **Trust** (delegate token) | Tidak ada |
 
-**Estimasi kemiripan Keystone: ~65%**
+**Estimasi kemiripan Identity: ~65%**
 
 ---
 
-## 2. Nova (Compute API) — `compute-api` + `compute-worker`
+## 2. Compute (Compute API) — `compute-api` + `compute-worker`
 
 ### ✅ Fitur yang Sudah Ada
 
@@ -199,7 +199,7 @@
 | OVN port binding per VM | ✅ |
 | libvirt XML auto-detect: block / network / file | ✅ |
 
-### ❌ Fitur yang Belum Ada (Nova Asli)
+### ❌ Fitur yang Belum Ada (Compute Asli)
 | Fitur | Keterangan |
 |---|---|
 | **Live Migration** | Single-node, tidak ada live migration |
@@ -216,11 +216,11 @@
 | **Server tags** | Tidak ada |
 | **Trigger crash dump** | Tidak ada |
 
-**Estimasi kemiripan Nova: ~80%**
+**Estimasi kemiripan Compute: ~80%**
 
 ---
 
-## 3. Neutron (Networking API) — `networking-api`
+## 3. Networking (Networking API) — `networking-api`
 
 ### ✅ Fitur yang Sudah Ada
 
@@ -295,7 +295,7 @@
 |---|---|:---:|
 | Show seluruh OVN topology | `GET /ovn/show` | ✅ |
 
-### ❌ Fitur yang Belum Ada (Neutron Asli)
+### ❌ Fitur yang Belum Ada (Networking Asli)
 | Fitur | Keterangan |
 |---|---|
 | **QoS (Quality of Service)** | Tidak ada bandwidth limiting |
@@ -313,11 +313,11 @@
 | **Shared networks** | Tidak ada network sharing antar project |
 | **Subnet pools / address pools** | IPAM manual per subnet |
 
-**Estimasi kemiripan Neutron: ~65%**
+**Estimasi kemiripan Networking: ~65%**
 
 ---
 
-## 4. Glance (Image API) — `image-api`
+## 4. Image (Image API) — `image-api`
 
 ### ✅ Fitur yang Sudah Ada
 
@@ -339,7 +339,7 @@
 | Metadata image (name, disk_format, size, checksum) | Terintegrasi | ✅ |
 | Project scoping (private image per project) | Terintegrasi | ✅ |
 
-### ❌ Fitur yang Belum Ada (Glance Asli)
+### ❌ Fitur yang Belum Ada (Image Asli)
 | Fitur | Keterangan |
 |---|---|
 | **Image member** (share image antar project) | Tidak ada explicit sharing |
@@ -352,11 +352,11 @@
 | **Image caching** (dedicated cache service) | Cache hanya di compute-worker |
 | **Image conversion** (format auto-convert) | Tidak ada task-based conversion |
 
-**Estimasi kemiripan Glance: ~70%**
+**Estimasi kemiripan Image: ~70%**
 
 ---
 
-## 5. Cinder (Block Storage) — `block-store-api`
+## 5. Block Storage (Block Storage) — `block-store-api`
 
 ### ✅ Fitur yang Sudah Ada
 
@@ -419,7 +419,7 @@
 | Volume-first architecture (semua VM boot dari volume) | ✅ |
 | Delete VM + keep root volume | ✅ |
 
-### ❌ Fitur yang Belum Ada (Cinder Asli)
+### ❌ Fitur yang Belum Ada (Block Storage Asli)
 | Fitur | Keterangan |
 |---|---|
 | **Volume encryption** | Tidak ada Barbican integration |
@@ -433,11 +433,11 @@
 | **LVM thin provisioning** | LVM thick saja |
 | **QoS enforcement** | max_iops/max_throughput informational only, tidak ada cgroups/rate limit |
 
-**Estimasi kemiripan Cinder: ~75%**
+**Estimasi kemiripan Block Storage: ~75%**
 
 ---
 
-## 6. Nova Metadata API — `metadata-api`
+## 6. Metadata API — `metadata-api`
 
 ### ✅ Fitur yang Sudah Ada
 
@@ -458,7 +458,7 @@
 | `/{version}/meta-data/public-keys/0/openssh-key` | ✅ |
 | `/{version}/user-data` | ✅ |
 
-#### OpenStack Metadata Format
+#### CloudX Metadata Format
 | Endpoint | Status |
 |---|:---:|
 | `/openstack/latest/meta_data.json` | ✅ |
@@ -505,7 +505,7 @@
 | **X.509 instance identity cert** | Hanya HMAC, tidak ada PKI |
 | **`launch-index`** multi-instance | Selalu 0 |
 
-**Estimasi kemiripan Nova Metadata API: ~92%**
+**Estimasi kemiripan Metadata API: ~92%**
 
 ---
 
@@ -561,7 +561,7 @@
 
 ---
 
-## 8. Horizon (Web Dashboard) — `dashboard`
+## 8. CloudX Dashboard (Web Dashboard) — `dashboard`
 
 ### ✅ Fitur yang Sudah Ada
 
@@ -606,25 +606,25 @@
 | Fitur | Status |
 |---|:---:|
 | Overview dashboard: stat cards, allocation charts, quota progress bars | ✅ |
-| API Access panel (endpoint catalog dari Keystone service catalog) | ✅ |
+| API Access panel (endpoint catalog dari Identity service catalog) | ✅ |
 | Admin: Projects / Users / Access Keys (tabs) | ✅ |
 | Role management dengan inline role selector | ✅ |
 | WebSocket live events → auto-refresh tabel instances & volumes | ✅ |
 
-### ❌ Fitur yang Belum Ada (Horizon Asli)
+### ❌ Fitur yang Belum Ada (CloudX Dashboard Asli)
 | Fitur | Keterangan |
 |---|---|
 | **Heat / Orchestration UI** | Service Heat belum diimplementasikan |
 | **Object Storage (Swift) UI** | MinIO hanya backend image/backup, bukan UI file manager |
 
-**Estimasi kemiripan Horizon: ~90%**
+**Estimasi kemiripan CloudX Dashboard: ~90%**
 *(UI dirancang ulang dengan AWS Cloudscape Design System pada Fase 5)*
 
 ---
 
 ## 9. Service yang Sama Sekali Tidak Ada
 
-| OpenStack Service | Fungsi | Keterangan |
+| Layanan Cloud | Fungsi | Keterangan |
 |---|---|---|
 | **Heat** | Orchestration / IaC (template stack) | Tidak ada template engine |
 | **Swift** | Object storage | MinIO digunakan sebagai pengganti untuk image backend |
@@ -646,16 +646,16 @@
 ```
 Service         Awal   Setelah F1–F4   Setelah F5
 ──────────────────────────────────────────────────────
-Keystone           0%  ██████████████  ~93%  ██████████████▌  ~95%
-Nova              45%  ██████████████  ~94%  ██████████████▌  ~95%
-Neutron           55%  █████████████   ~88%  █████████████▌   ~90%
-Glance            40%  █████████████   ~90%  █████████████▌   ~92%
-Cinder            35%  █████████████   ~93%  █████████████▌   ~95%
+Identity           0%  ██████████████  ~93%  ██████████████▌  ~95%
+Compute              45%  ██████████████  ~94%  ██████████████▌  ~95%
+Networking           55%  █████████████   ~88%  █████████████▌   ~90%
+Image            40%  █████████████   ~90%  █████████████▌   ~92%
+Block Storage            35%  █████████████   ~93%  █████████████▌   ~95%
 Metadata          75%  █████████████   ~92%  █████████████    ~92%
 Placement         15%  █████████████   ~92%  █████████████▌   ~93%
-Horizon            0%  ████████████    ~85%  █████████████    ~90% (*)
+CloudX Dashboard            0%  ████████████    ~85%  █████████████    ~90% (*)
 
-(*) Horizon dirancang ulang dengan AWS Cloudscape Design System pada Fase 5.
+(*) CloudX Dashboard dirancang ulang dengan AWS Cloudscape Design System pada Fase 5.
 ```
 
 ---
@@ -664,13 +664,13 @@ Horizon            0%  ████████████    ~85%  ███�
 
 Persentase kemiripan dihitung berdasarkan tiga dimensi:
 
-1. **Coverage API endpoint** — berapa persen endpoint utama OpenStack yang sudah diimplementasikan
+1. **Coverage API endpoint** — berapa persen endpoint utama CloudX yang sudah diimplementasikan
 2. **Fidelitas perilaku** — apakah logika bisnis berperilaku sama (format response, error codes, lifecycle states)
 3. **Backend otentik** — apakah menggunakan komponen nyata (libvirt, OVN, LVM, Ceph) vs mock/simulasi
 
 > **Catatan:** Persentase bersifat **estimasi kualitatif**, bukan pengukuran formal. Beberapa fitur sengaja
 > dikecualikan (LBaaS, multi-AZ, dll.) bukan karena tidak bisa dibuat, tetapi karena di luar scope lab ini.
-> OpenStack memiliki ratusan sub-fitur per service; cloudx fokus pada **happy path operational** yang cukup
+> CloudX memiliki ratusan sub-fitur per service; cloudx fokus pada **happy path operational** yang cukup
 > untuk menjalankan infrastruktur cloud nyata di single-node.
 
 ### Fitur yang Sengaja Dikecualikan (by design)

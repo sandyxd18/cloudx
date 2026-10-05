@@ -42,7 +42,7 @@ sudo ./scripts/install-systemd.sh
 
 ### Apa yang dilakukan oleh `scripts/install-systemd.sh`?
 1. Membuat user & group sistem `cloudx` (`useradd -r -s /sbin/nologin cloudx`).
-2. Membuat direktori konfigurasi `/etc/cloudx/` dan direktori data `/var/lib/mini-openstack/`.
+2. Membuat direktori konfigurasi `/etc/cloudx/` dan direktori data `/var/lib/cloudx/`.
 3. Menyalin berkas sampel konfigurasi `.conf.sample` ke `/etc/cloudx/<service>/<service>.conf` (jika belum ada).
 4. Menyiapkan Python Virtual Environment di `/opt/cloudx/venv` dan memasang pustaka pendukung (`gunicorn`, `uvicorn`, `psycopg2-binary`, `sqlalchemy`, dll.).
 5. Menyalin berkas unit systemd ke `/etc/systemd/system/cloudx-*.service`.
@@ -64,7 +64,7 @@ log_level = info
 workers = 4
 
 [database]
-url = postgresql+psycopg2://mini:mini@127.0.0.1:5432/mini_openstack
+url = postgresql+psycopg2://mini:mini@127.0.0.1:5432/cloudx
 
 [transport]
 rabbitmq_url = amqp://mini:mini@127.0.0.1:5672/

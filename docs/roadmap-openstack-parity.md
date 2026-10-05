@@ -1,30 +1,30 @@
-# 🗺️ Roadmap Menuju Paritas OpenStack Base Services
+# 🗺️ Roadmap Menuju Paritas CloudX Base Services
 
 > **Dokumen ini** menganalisis kondisi **CloudX** saat ini dan merinci pekerjaan yang perlu dilakukan
-> untuk mencapai kemiripan yang lebih tinggi dengan tujuh base service OpenStack:
-> **Nova, Neutron, Cinder, Glance, Keystone, Placement, dan Horizon**.
+> untuk mencapai kemiripan yang lebih tinggi dengan tujuh base service CloudX:
+> **Compute, Networking, Block Storage, Image, Identity, Placement, dan CloudX Dashboard**.
 >
 > Analisis berdasarkan kode aktual di `services/`, dokumentasi di `docs/feature-comparison.md`,
-> dan perbandingan dengan perilaku OpenStack asli.
+> dan perbandingan dengan perilaku CloudX asli.
 >
 > **Skor awal (Juni 2026):**
-> Keystone ~65% · Nova ~80% · Neutron ~65% · Glance ~70% · Cinder ~75% · Placement ~70% · Horizon ~55%
+> Identity ~65% · Compute ~80% · Networking ~65% · Image ~70% · Block Storage ~75% · Placement ~70% · CloudX Dashboard ~55%
 >
 > **✅ Skor setelah Fase 1–4 (Akhir Agustus 2026):**
-> Keystone ~93% · Nova ~94% · Neutron ~88% · Glance ~90% · Cinder ~93% · Placement ~92% · Horizon ~85%
+> Identity ~93% · Compute ~94% · Networking ~88% · Image ~90% · Block Storage ~93% · Placement ~92% · CloudX Dashboard ~85%
 
 ---
 
 ## 📋 Daftar Isi
 
 1. [Ringkasan Eksekutif](#1-ringkasan-eksekutif)
-2. [Keystone — auth-api](#2-keystone--auth-api-saat-ini-65)
-3. [Nova — compute-api + compute-worker](#3-nova--compute-api--compute-worker-saat-ini-80)
-4. [Neutron — networking-api](#4-neutron--networking-api-saat-ini-65)
-5. [Glance — image-api](#5-glance--image-api-saat-ini-70)
-6. [Cinder — block-store-api + block-store-worker](#6-cinder--block-store-api--block-store-worker-saat-ini-75)
+2. [Identity — auth-api](#2-identity--auth-api-saat-ini-65)
+3. [Compute — compute-api + compute-worker](#3-compute--compute-api--compute-worker-saat-ini-80)
+4. [Networking — networking-api](#4-networking--networking-api-saat-ini-65)
+5. [Image — image-api](#5-image--image-api-saat-ini-70)
+6. [Block Storage — block-store-api + block-store-worker](#6-block-store--block-store-api--block-store-worker-saat-ini-75)
 7. [Placement — placement-api](#7-placement--placement-api-saat-ini-70)
-8. [Horizon — dashboard](#8-horizon--dashboard-saat-ini-55)
+8. [CloudX Dashboard — dashboard](#8-dashboard--dashboard-saat-ini-55)
 9. [Infrastruktur Cross-Cutting](#9-infrastruktur-cross-cutting)
 10. [Prioritas dan Estimasi Upaya](#10-prioritas-dan-estimasi-upaya)
 11. [Arsitektur Target](#11-arsitektur-target)
@@ -41,13 +41,13 @@ libvirt/QEMU/KVM, OVN/OVS, LVM, Ceph RBD, MinIO — bukan mock atau simulator.
 
 | Service | Awal | Setelah F1–F4 | Target | Gap Tersisa (Fase 5+) |
 |---|:---:|:---:|:---:|---|
-| Keystone (`auth-api`) | ~65% | **~93%** | ~95% | High Availability, Fernet token |
-| Nova (`compute-api`) | ~80% | **~94%** | ~95% | Live Migration (multi-node), HA |
-| Neutron (`networking-api`) | ~65% | **~88%** | ~90% | BGP Dynamic Routing, FWaaS |
-| Glance (`image-api`) | ~70% | **~90%** | ~92% | Swift backend, Image encryption |
-| Cinder (`block-store-api`) | ~75% | **~93%** | ~95% | Volume Replication, HA |
+| Identity (`auth-api`) | ~65% | **~93%** | ~95% | High Availability, Fernet token |
+| Compute (`compute-api`) | ~80% | **~94%** | ~95% | Live Migration (multi-node), HA |
+| Networking (`networking-api`) | ~65% | **~88%** | ~90% | BGP Dynamic Routing, FWaaS |
+| Image (`image-api`) | ~70% | **~90%** | ~92% | Swift backend, Image encryption |
+| Block Storage (`block-store-api`) | ~75% | **~93%** | ~95% | Volume Replication, HA |
 | Placement (`placement-api`) | ~70% | **~92%** | ~93% | Full scheduler integration (multi-node) |
-| Horizon (`dashboard`) | ~55% | **~85%** | ~90% | Heat UI, Octavia UI |
+| CloudX Dashboard (`dashboard`) | ~55% | **~85%** | ~90% | Heat UI, Octavia UI |
 
 ### Apa yang Sudah Sangat Baik (Tidak Perlu Diubah)
 
@@ -58,12 +58,12 @@ libvirt/QEMU/KVM, OVN/OVS, LVM, Ceph RBD, MinIO — bukan mock atau simulator.
 - ✅ LVM + Ceph dual-backend storage
 - ✅ WebSocket live events ke dashboard
 - ✅ JWT auth dengan project scoping
-- ✅ Metadata API (EC2 + OpenStack format, ~92%)
+- ✅ Metadata API (EC2 + CloudX format, ~92%)
 - ✅ CLI `cloudx` yang fungsional
 
 ---
 
-## 2. Keystone — `auth-api` (Saat ini: ~65%)
+## 2. Identity — `auth-api` (Saat ini: ~65%)
 
 ### Kondisi Kode Saat Ini
 
@@ -78,8 +78,8 @@ access key AWS-style, bootstrap admin otomatis.
 
 **1. Service Catalog**
 
-OpenStack Keystone memiliki endpoint discovery — setelah login, client mendapat
-daftar URL semua service per region. Ini dibutuhkan agar client OpenStack SDK/CLI
+CloudX Identity memiliki endpoint discovery — setelah login, client mendapat
+daftar URL semua service per region. Ini dibutuhkan agar client CloudX SDK/CLI
 standar bisa auto-discover endpoint.
 
 ```
@@ -95,17 +95,17 @@ GET  /v3/auth/catalog          — embedded dalam token response
 - Tambah tabel `services` dan `endpoints` di DB
 - Tambah field `catalog` dalam response `POST /auth/tokens`
 - Bootstrap: auto-register semua cloudx services ke catalog saat startup
-- Format token response harus sesuai Keystone v3: `token.catalog[]`
+- Format token response harus sesuai Identity v3: `token.catalog[]`
 
 ---
 
 **2. Multi-Scope Token (Domain & System Scope)**
 
-OpenStack mendukung token dengan scope: `project`, `domain`, `system`.
+CloudX mendukung token dengan scope: `project`, `domain`, `system`.
 Saat ini cloudx hanya mendukung `project` scope.
 
 ```python
-# Request body Keystone v3 standar:
+# Request body Identity v3 standar:
 {
   "auth": {
     "identity": { ... },
@@ -129,7 +129,7 @@ Saat ini cloudx hanya mendukung `project` scope.
 **3. oslo.policy-style RBAC** ✅ (Selesai di Fase 3)
 
 Saat ini role check dilakukan manual (`if token.role != "admin"`).
-OpenStack asli menggunakan file `policy.yaml` yang bisa dikonfigurasi per-rule.
+CloudX asli menggunakan file `policy.yaml` yang bisa dikonfigurasi per-rule.
 
 ```yaml
 # Contoh policy.yaml (oslo.policy format)
@@ -156,7 +156,7 @@ PATCH /v3/domains/{id}    — update domain
 DELETE /v3/domains/{id}   — delete domain
 ```
 
-OpenStack mendukung hierarki: Domain → Project → User.
+CloudX mendukung hierarki: Domain → Project → User.
 Saat ini cloudx flat (satu domain implisit).
 
 **Pekerjaan:**
@@ -169,7 +169,7 @@ Saat ini cloudx flat (satu domain implisit).
 
 **5. Application Credentials**
 
-Mirip access key yang sudah ada, tapi dengan format Keystone v3:
+Mirip access key yang sudah ada, tapi dengan format Identity v3:
 - Terikat ke user spesifik (bukan project-global)
 - Bisa punya `roles` terbatas
 - Secret tidak bisa diambil ulang setelah dibuat
@@ -189,7 +189,7 @@ DELETE /v3/users/{user_id}/application_credentials/{id}
 - **Fernet Token** — JWT sudah cukup fungsional
 - **Trust (delegate token)** — Advanced, di luar scope
 
-### Estimasi Upaya Keystone
+### Estimasi Upaya Identity
 
 | Pekerjaan | Kompleksitas | Upaya |
 |---|:---:|---|
@@ -203,7 +203,7 @@ DELETE /v3/users/{user_id}/application_credentials/{id}
 
 ---
 
-## 3. Nova — `compute-api` + `compute-worker` (Saat ini: ~80%)
+## 3. Compute — `compute-api` + `compute-worker` (Saat ini: ~80%)
 
 ### Kondisi Kode Saat Ini
 
@@ -252,10 +252,10 @@ def get_vnc_port(server_id) -> int:
 **2. Resize Confirm / Revert**
 
 Saat ini resize langsung dieksekusi (live hotplug vCPU + RAM).
-OpenStack asli memiliki dua langkah: VERIFY_RESIZE → confirm atau revert.
+CloudX asli memiliki dua langkah: VERIFY_RESIZE → confirm atau revert.
 
 ```
-Alur OpenStack Nova resize:
+Alur CloudX Compute resize:
 POST /servers/{id}/resize         -> status: VERIFY_RESIZE
 POST /servers/{id}/confirmResize  -> size berubah permanen
 POST /servers/{id}/revertResize   -> rollback ke flavor lama
@@ -348,7 +348,7 @@ POST /os-aggregates/{id}/action  — add/remove host
 **Pekerjaan:**
 - Tambah tabel `aggregates` dan `aggregate_hosts`
 - Availability zone otomatis dari aggregate
-- Default AZ: `nova`
+- Default AZ: `compute`
 
 ---
 
@@ -359,7 +359,7 @@ POST /os-aggregates/{id}/action  — add/remove host
 - **Config drive vfat** — ISO9660 sudah cukup
 - **Trigger Crash Dump** — Tidak relevan lab
 
-### Estimasi Upaya Nova
+### Estimasi Upaya Compute
 
 | Pekerjaan | Kompleksitas | Upaya |
 |---|:---:|---|
@@ -374,7 +374,7 @@ POST /os-aggregates/{id}/action  — add/remove host
 
 ---
 
-## 4. Neutron — `networking-api` (Saat ini: ~65%)
+## 4. Networking — `networking-api` (Saat ini: ~65%)
 
 ### Kondisi Kode Saat Ini
 
@@ -389,7 +389,7 @@ provider network via localnet, ARP proxy.
 
 **1. QoS (Quality of Service)**
 
-OpenStack Neutron mendukung bandwidth limiting per port via QoS policy.
+CloudX Networking mendukung bandwidth limiting per port via QoS policy.
 OVN sudah mendukung mekanisme ini melalui tabel `QoS` di NB DB.
 
 ```
@@ -415,7 +415,7 @@ ovn_nbctl("qos-add", ls_name, "from-lport", "100",
 
 **2. IPv6 Support** ✅ (Selesai di Fase 3)
 
-Saat ini hanya IPv4. OpenStack mendukung dual-stack dan IPv6-only subnets.
+Saat ini hanya IPv4. CloudX mendukung dual-stack dan IPv6-only subnets.
 
 ```python
 # Subnet create dengan IPv6:
@@ -437,7 +437,7 @@ POST /subnets {
 
 **3. Shared Networks (Cross-Project)**
 
-OpenStack mendukung network yang bisa di-share antar project.
+CloudX mendukung network yang bisa di-share antar project.
 Berguna untuk provider network yang diakses semua project.
 
 ```python
@@ -535,7 +535,7 @@ Implementasi DNS internal sederhana tanpa Designate penuh:
 - **FWaaS** — Security group sudah cukup
 - **Load Balancer (Octavia)** — Kompleksitas sangat tinggi
 
-### Estimasi Upaya Neutron
+### Estimasi Upaya Networking
 
 | Pekerjaan | Kompleksitas | Upaya |
 |---|:---:|---|
@@ -551,7 +551,7 @@ Implementasi DNS internal sederhana tanpa Designate penuh:
 
 ---
 
-## 5. Glance — `image-api` (Saat ini: ~70%)
+## 5. Image — `image-api` (Saat ini: ~70%)
 
 ### Kondisi Kode Saat Ini
 
@@ -566,7 +566,7 @@ visibility public/private, backend file + MinIO.
 
 **1. Image Members (Sharing antar Project)**
 
-Glance mendukung berbagi image private ke project lain secara eksplisit.
+Image mendukung berbagi image private ke project lain secara eksplisit.
 
 ```
 POST /images/{id}/members {"member": "target_project_id"}  -> status: "pending"
@@ -602,7 +602,7 @@ GET /images?tag=linux           — filter by tag
 
 **3. Task-based Import (Async dari URL)**
 
-Saat ini upload synchronous. Glance asli punya task API untuk import async dari URL.
+Saat ini upload synchronous. Image asli punya task API untuk import async dari URL.
 
 ```
 POST /v2/tasks {
@@ -666,7 +666,7 @@ Versi sederhana tanpa Barbican penuh:
 - **Multi-store backend (Ceph, Swift, HTTP)** — File + MinIO sudah cukup
 - **Image encryption** — Memerlukan Barbican, out of scope
 
-### Estimasi Upaya Glance
+### Estimasi Upaya Image
 
 | Pekerjaan | Kompleksitas | Upaya |
 |---|:---:|---|
@@ -681,13 +681,13 @@ Versi sederhana tanpa Barbican penuh:
 
 ---
 
-## 6. Cinder — `block-store-api` + `block-store-worker` (Saat ini: ~75%)
+## 6. Block Storage — `block-store-api` + `block-store-worker` (Saat ini: ~75%)
 
 ### Kondisi Kode Saat Ini
 
 File API: `services/block_store/app/main.py` (~36KB)
 Worker: `services/block_store_worker/`
-Drivers: `services/block_store/app/drivers/`
+Drivers: `services/block_store_worker/app/drivers/`
 
 Sudah ada: volume CRUD, attach/detach, extend, snapshot, backup, volume types,
 LVM + Ceph dual backend, boot-from-volume, transfer.
@@ -698,7 +698,7 @@ LVM + Ceph dual backend, boot-from-volume, transfer.
 
 **1. Quota Management per Project**
 
-Cinder mendukung quota (max volumes, max snapshots, max GB) per project.
+Block Storage mendukung quota (max volumes, max snapshots, max GB) per project.
 Saat ini tidak ada batasan apapun.
 
 ```
@@ -707,7 +707,7 @@ PUT  /os-quota-sets/{project_id}         — set quota (admin)
 DELETE /os-quota-sets/{project_id}       — reset ke default
 GET  /os-quota-sets/{project_id}/detail  — usage + limit
 
-# Default quotas (Cinder default):
+# Default quotas (Block Storage default):
 volumes: 10
 snapshots: 10
 gigabytes: 1000
@@ -764,7 +764,7 @@ def create_volume(project_id, size):
 
 **4. Multi-Attach Volume** ✅ (Selesai di Fase 3)
 
-Cinder mendukung volume yang di-attach ke lebih dari satu server sekaligus
+Block Storage mendukung volume yang di-attach ke lebih dari satu server sekaligus
 (khusus untuk volume type yang support multi-attach, biasanya dengan Ceph).
 
 ```python
@@ -784,7 +784,7 @@ POST /volumes/{id}/attach {"server_id": "server2_id", "mountpoint": "/dev/vdb"}
 **5. QoS Enforcement (cgroups / blkio)**
 
 Saat ini `max_iops` dan `max_throughput` di volume type hanya informational.
-Cinder asli enforce via storage backend.
+Block Storage asli enforce via storage backend.
 
 ```bash
 # Ceph RBD throttle:
@@ -835,7 +835,7 @@ POST /cgsnapshots         — snapshot semua volume dalam group sekaligus
 - **Volume Replication** — Diperlukan HA, di luar scope single-node
 - **iSCSI / NFS / FC backend** — Hanya LVM + Ceph sudah cukup untuk lab
 
-### Estimasi Upaya Cinder
+### Estimasi Upaya Block Storage
 
 | Pekerjaan | Kompleksitas | Upaya |
 |---|:---:|---|
@@ -865,7 +865,7 @@ traits, allocations, usages.
 
 **1. Allocation Candidates**
 
-Ini adalah fitur paling penting yang hilang — Nova scheduler menggunakannya
+Ini adalah fitur paling penting yang hilang — Compute scheduler menggunakannya
 untuk menemukan host yang memenuhi syarat.
 
 ```
@@ -923,20 +923,20 @@ compute-host (root)
 
 **3. API Microversions**
 
-OpenStack Placement menggunakan microversioning untuk evolusi API
+CloudX Placement menggunakan microversioning untuk evolusi API
 tanpa breaking change.
 
 ```
 # Request header:
-OpenStack-API-Version: placement 1.36
+CloudX-API-Version: placement 1.36
 
 # Response header:
-OpenStack-API-Version: placement 1.36
+CloudX-API-Version: placement 1.36
 x-openstack-request-id: req-...
 ```
 
 **Pekerjaan:**
-- Middleware yang parse `OpenStack-API-Version: placement X.Y`
+- Middleware yang parse `CloudX-API-Version: placement X.Y`
 - Mapping versi ke feature flags
 - Header `x-openstack-request-id` di semua response
 
@@ -962,7 +962,7 @@ POST /reshaper {
 
 **5. Custom Resource Classes**
 
-Selain VCPU/MEMORY_MB/DISK_GB, OpenStack mendukung custom resource class
+Selain VCPU/MEMORY_MB/DISK_GB, CloudX mendukung custom resource class
 (FPGA, GPU, VGPU, SRIOV_NET_VF, dll.)
 
 ```
@@ -1009,7 +1009,7 @@ GET /allocation_candidates?required=COMPUTE_VOLUME_EXTEND
 
 ---
 
-## 8. Horizon — `dashboard` (Saat ini: ~55%)
+## 8. CloudX Dashboard — `dashboard` (Saat ini: ~55%)
 
 ### Kondisi Kode Saat Ini
 
@@ -1027,7 +1027,7 @@ Stack: React + Vite + dark theme premium
 
 **1. noVNC Console (In-Browser)**
 
-Fitur paling dicari dari web dashboard. Memerlukan noVNC proxy (dibahas di bagian Nova).
+Fitur paling dicari dari web dashboard. Memerlukan noVNC proxy (dibahas di bagian Compute).
 
 ```jsx
 // Di Servers.jsx, saat klik tombol "Console":
@@ -1122,7 +1122,7 @@ const ImageUploadModal = () => {
 **5. Project Selector (Live Switch)**
 
 Saat ini login hanya untuk satu project per session.
-Horizon memiliki project switcher di header.
+CloudX Dashboard memiliki project switcher di header.
 
 ```jsx
 const ProjectSelector = () => {
@@ -1160,7 +1160,7 @@ const QuotaWidget = ({ resource }) => (
 
 **Pekerjaan:**
 - Endpoint placement `GET /usages` sudah ada — expose ke dashboard
-- Tambah quota endpoint di Cinder dan Keystone
+- Tambah quota endpoint di Block Storage dan Identity
 - Widget baru di halaman Overview
 
 ---
@@ -1206,7 +1206,7 @@ Perlu: Server detail page, Volume detail page, Network detail page.
 - **Object Storage UI (Swift/MinIO)** — Out of scope base services
 - **Heat / Orchestration UI** — Service belum diimplementasikan
 
-### Estimasi Upaya Horizon
+### Estimasi Upaya CloudX Dashboard
 
 | Pekerjaan | Kompleksitas | Upaya |
 |---|:---:|---|
@@ -1229,26 +1229,26 @@ Beberapa pekerjaan lintas service yang perlu dikerjakan bersamaan.
 
 ### 9.1 API Versioning ✅ (Selesai di Fase 3)
 
-OpenStack semua service menggunakan versioning: `/v2/`, `/v3/`, microversions.
+CloudX semua service menggunakan versioning: `/v2/`, `/v3/`, microversions.
 Saat ini cloudx tidak punya prefix versi.
 
 ```
 Saat ini:    GET /servers
-OpenStack:   GET /v2.1/servers  (Nova)
-             GET /v3/tokens     (Keystone)
-             GET /v2/images     (Glance)
+CloudX:   GET /v2.1/servers  (Compute)
+             GET /v3/tokens     (Identity)
+             GET /v2/images     (Image)
 ```
 
 **Pekerjaan:**
 - Tambah prefix versi di setiap service router
-- Header `X-OpenStack-Request-Id` di setiap response
+- Header `X-CloudX-Request-Id` di setiap response
 - Endpoint `GET /` (version discovery)
 
 ---
 
 ### 9.2 Request ID Tracing
 
-OpenStack meng-generate `x-openstack-request-id` di setiap request.
+CloudX meng-generate `x-openstack-request-id` di setiap request.
 
 ```python
 @app.middleware("http")
@@ -1297,7 +1297,7 @@ Saat ini hanya compute dan block-store yang punya event notifications.
 Semua service harus bisa publish events standar.
 
 ```python
-# Event types standar OpenStack:
+# Event types standar CloudX:
 "compute.instance.create.start"
 "compute.instance.create.end"
 "volume.create.start"
@@ -1344,22 +1344,22 @@ Dampak Rendah      | API microversions         | Volume migration        |
 
 | # | Pekerjaan | Service | Status |
 |---|---|---|:---:|
-| 1 | Server tags | Nova | ✅ |
-| 2 | Lock/unlock server | Nova | ✅ |
-| 3 | Image tags | Glance | ✅ |
-| 4 | Image members (sharing) | Glance | ✅ |
-| 5 | Shared networks | Neutron | ✅ |
-| 6 | Quota management basic | Cinder | ✅ |
+| 1 | Server tags | Compute | ✅ |
+| 2 | Lock/unlock server | Compute | ✅ |
+| 3 | Image tags | Image | ✅ |
+| 4 | Image members (sharing) | Image | ✅ |
+| 5 | Shared networks | Networking | ✅ |
+| 6 | Quota management basic | Block Storage | ✅ |
 | 7 | Pagination standard semua service | Cross-cutting | ✅ |
 | 8 | Request ID tracing | Cross-cutting | ✅ |
-| 9 | Service catalog | Keystone | ✅ |
-| 10 | Quota display di dashboard | Horizon | ✅ |
-| 11 | Live log streaming di dashboard | Horizon | ✅ |
-| 12 | Image upload via UI | Horizon | ✅ |
-| 13 | Project selector | Horizon | ✅ |
+| 9 | Service catalog | Identity | ✅ |
+| 10 | Quota display di dashboard | CloudX Dashboard | ✅ |
+| 11 | Live log streaming di dashboard | CloudX Dashboard | ✅ |
+| 12 | Image upload via UI | CloudX Dashboard | ✅ |
+| 13 | Project selector | CloudX Dashboard | ✅ |
 
 **Skor setelah Fase 1:**
-Keystone ~75% · Nova ~84% · Neutron ~68% · Glance ~80% · Cinder ~80% · Horizon ~68%
+Identity ~75% · Compute ~84% · Networking ~68% · Image ~80% · Block Storage ~80% · CloudX Dashboard ~68%
 
 ---
 
@@ -1367,20 +1367,20 @@ Keystone ~75% · Nova ~84% · Neutron ~68% · Glance ~80% · Cinder ~80% · Hori
 
 | # | Pekerjaan | Service | Status |
 |---|---|---|:---:|
-| 1 | noVNC proxy + console UI | Nova + Horizon | ✅ |
+| 1 | noVNC proxy + console UI | Compute + CloudX Dashboard | ✅ |
 | 2 | Allocation candidates | Placement | ✅ |
-| 3 | Resize confirm/revert | Nova | ✅ |
-| 4 | Shelve/unshelve | Nova | ✅ |
-| 5 | QoS policies (OVN-based) | Neutron | ✅ |
-| 6 | Domain management | Keystone | ✅ |
-| 7 | Task-based image import | Glance | ✅ |
-| 8 | Subnet pools | Neutron | ✅ |
-| 9 | Network topology view | Horizon | ✅ |
+| 3 | Resize confirm/revert | Compute | ✅ |
+| 4 | Shelve/unshelve | Compute | ✅ |
+| 5 | QoS policies (OVN-based) | Networking | ✅ |
+| 6 | Domain management | Identity | ✅ |
+| 7 | Task-based image import | Image | ✅ |
+| 8 | Subnet pools | Networking | ✅ |
+| 9 | Network topology view | CloudX Dashboard | ✅ |
 | 10 | API microversions | Placement | ✅ |
 | 11 | Reshaper endpoint | Placement | ✅ |
 
 **Skor setelah Fase 2:**
-Keystone ~82% · Nova ~90% · Neutron ~78% · Glance ~86% · Cinder ~82% · Placement ~85% · Horizon ~78%
+Identity ~82% · Compute ~90% · Networking ~78% · Image ~86% · Block Storage ~82% · Placement ~85% · CloudX Dashboard ~78%
 
 ---
 
@@ -1388,51 +1388,51 @@ Keystone ~82% · Nova ~90% · Neutron ~78% · Glance ~86% · Cinder ~82% · Plac
 
 | # | Pekerjaan | Service | Status |
 |---|---|---|:---:|
-| 1 | IPv6 support (SLAAC, DHCPv6 stateful/stateless) | Neutron | ✅ |
-| 2 | LVM thin provisioning (`lvm_type=thin`, auto thin pool) | Cinder | ✅ |
-| 3 | Multi-attach volume (`multiattach=true`) | Cinder | ✅ |
-| 4 | Central oslo.policy RBAC (`shared/policy.py`) | Keystone | ✅ |
-| 5 | Port forwarding DNAT per-port | Neutron | ✅ |
+| 1 | IPv6 support (SLAAC, DHCPv6 stateful/stateless) | Networking | ✅ |
+| 2 | LVM thin provisioning (`lvm_type=thin`, auto thin pool) | Block Storage | ✅ |
+| 3 | Multi-attach volume (`multiattach=true`) | Block Storage | ✅ |
+| 4 | Central oslo.policy RBAC (`shared/policy.py`) | Identity | ✅ |
+| 5 | Port forwarding DNAT per-port | Networking | ✅ |
 | 6 | Nested resource providers + Aggregates | Placement | ✅ |
 | 7 | API version discovery (`GET /`, `GET /v2.1`, dll.) | Cross-cutting | ✅ |
 
 **Skor setelah Fase 3:**
-Keystone ~87% · Nova ~90% · Neutron ~82% · Glance ~84% · Cinder ~88% · Placement ~88% · Horizon ~70%
+Identity ~87% · Compute ~90% · Networking ~82% · Image ~84% · Block Storage ~88% · Placement ~88% · CloudX Dashboard ~70%
 
 ---
 
 ### ✅ Fase 4 — Advanced Integration (Selesai)
 
 Fase ini berfokus pada fitur-fitur lanjutan yang meningkatkan paritas secara signifikan,
-terutama di sisi **Horizon**, **integrasi antar-service**, dan **hardening** sistem yang sudah ada.
+terutama di sisi **CloudX Dashboard**, **integrasi antar-service**, dan **hardening** sistem yang sudah ada.
 
 #### 🔴 Prioritas Tinggi
 
 | # | Pekerjaan | Service | Status | Catatan |
 |---|---|---|:---:|---|
-| 1 | **noVNC Console (In-Browser)** | Nova + Horizon | ✅ | Websockify container, token auth WebSocket |
-| 2 | **Network Topology View** | Horizon | ✅ | React Flow / Cytoscape.js, klik node → detail |
-| 3 | **Application Credentials** | Keystone | ✅ | `/v3/users/{id}/application_credentials`, scoped roles |
-| 4 | **Multi-Scope Token** (domain/system scope) | Keystone | ✅ | Extend JWT dengan `scope_type` field |
-| 5 | **Ceph QoS Enforcement** | Cinder Worker | ✅ | `rbd config image set rbd_qos_iops_limit` |
-| 6 | **Quota Reserved State** (atomic reserve) | Cinder | ✅ | Reserve sebelum create, rollback jika error |
+| 1 | **noVNC Console (In-Browser)** | Compute + CloudX Dashboard | ✅ | Websockify container, token auth WebSocket |
+| 2 | **Network Topology View** | CloudX Dashboard | ✅ | React Flow / Cytoscape.js, klik node → detail |
+| 3 | **Application Credentials** | Identity | ✅ | `/v3/users/{id}/application_credentials`, scoped roles |
+| 4 | **Multi-Scope Token** (domain/system scope) | Identity | ✅ | Extend JWT dengan `scope_type` field |
+| 5 | **Ceph QoS Enforcement** | Block Store Worker | ✅ | `rbd config image set rbd_qos_iops_limit` |
+| 6 | **Quota Reserved State** (atomic reserve) | Block Storage | ✅ | Reserve sebelum create, rollback jika error |
 | 7 | **Custom Resource Classes** | Placement | ✅ | `PUT /resource_classes/CUSTOM_GPU_A100` |
 | 8 | **Forbidden Traits Filter** di allocation_candidates | Placement | ✅ | `?required=X&forbidden=Y` query params |
-| 9 | **Identity: Roles Management UI** | Horizon | ✅ | Halaman admin manage role assignments |
-| 10 | **API Access Panel** | Horizon | ✅ | Tampilkan endpoint catalog + access keys |
+| 9 | **Identity: Roles Management UI** | CloudX Dashboard | ✅ | Halaman admin manage role assignments |
+| 10 | **API Access Panel** | CloudX Dashboard | ✅ | Tampilkan endpoint catalog + access keys |
 
 #### 🟡 Prioritas Menengah
 
 | # | Pekerjaan | Service | Status | Catatan |
 |---|---|---|:---:|---|
-| 11 | **Trunk Ports** (VLAN-in-VLAN) | Neutron | ✅ | OVN parent_port, wrapping API |
-| 12 | **DNS Integration** (OVN internal DNS) | Neutron | ✅ | Kolom `dns_name` port, tabel `DNS` di OVN NB |
-| 13 | **Dual-Stack Port** (IPv4 + IPv6 sekaligus) | Neutron | ✅ | `fixed_ips` array dengan dua entry |
-| 14 | **Image Signing & Verification** | Glance + Nova | ✅ | Hash signature di properties, verify saat download |
-| 15 | **Image Advanced Filtering** | Glance | ✅ | `?min_disk=`, `?disk_format=`, `?sort=` |
-| 16 | **Volume Migration** (LVM ↔ Ceph) | Cinder | ✅ | `qemu-img convert`, atomic swap setelah copy |
-| 17 | **Aggregates & AZ** (Nova) | Nova | ✅ | `/os-aggregates`, AZ otomatis dari aggregate |
-| 18 | **Resource Detail Pages** | Horizon | ✅ | Server detail, Volume detail, Network detail pages |
+| 11 | **Trunk Ports** (VLAN-in-VLAN) | Networking | ✅ | OVN parent_port, wrapping API |
+| 12 | **DNS Integration** (OVN internal DNS) | Networking | ✅ | Kolom `dns_name` port, tabel `DNS` di OVN NB |
+| 13 | **Dual-Stack Port** (IPv4 + IPv6 sekaligus) | Networking | ✅ | `fixed_ips` array dengan dua entry |
+| 14 | **Image Signing & Verification** | Image + Compute | ✅ | Hash signature di properties, verify saat download |
+| 15 | **Image Advanced Filtering** | Image | ✅ | `?min_disk=`, `?disk_format=`, `?sort=` |
+| 16 | **Volume Migration** (LVM ↔ Ceph) | Block Storage | ✅ | `qemu-img convert`, atomic swap setelah copy |
+| 17 | **Aggregates & AZ** (Compute) | Compute | ✅ | `/os-aggregates`, AZ otomatis dari aggregate |
+| 18 | **Resource Detail Pages** | CloudX Dashboard | ✅ | Server detail, Volume detail, Network detail pages |
 | 19 | **Enforce policy.py di setiap endpoint** | Cross-cutting | ✅ | Integrasi `policy.enforce()` per action |
 | 20 | **Centralized Quota System** (`shared/quota.py`) | Cross-cutting | ✅ | oslo.quota-inspired, atomic reserve/commit/rollback |
 
@@ -1440,13 +1440,13 @@ terutama di sisi **Horizon**, **integrasi antar-service**, dan **hardening** sis
 
 | # | Pekerjaan | Service | Status | Catatan |
 |---|---|---|:---:|---|
-| 21 | Consistency Groups | Cinder | ✅ | Atomic snapshot grup volume |
-| 22 | Image Caching (TTL) | Glance | ✅ | Cache metadata, opsional Redis |
+| 21 | Consistency Groups | Block Storage | ✅ | Atomic snapshot grup volume |
+| 22 | Image Caching (TTL) | Image | ✅ | Cache metadata, opsional Redis |
 | 23 | Health Check Standard | Cross-cutting | ✅ | `GET /healthcheck` → `{db: ok, rabbitmq: ok}` |
 | 24 | Event Notification Standard | Cross-cutting | ✅ | `compute.instance.create.start/end` di semua service |
 
 **Target skor setelah Fase 4:**
-Keystone ~93% · Nova ~94% · Neutron ~88% · Glance ~90% · Cinder ~93% · Placement ~92% · Horizon ~85%
+Identity ~93% · Compute ~94% · Networking ~88% · Image ~90% · Block Storage ~93% · Placement ~92% · CloudX Dashboard ~85%
 
 ---
 
@@ -1465,7 +1465,7 @@ Keystone ~93% · Nova ~94% · Neutron ~88% · Glance ~90% · Cinder ~93% · Plac
 
 ### 🚀 Fase 5 — Production Readiness & Day-2 Operations (Estimasi: 4–6 minggu)
 
-Setelah semua layanan inti (base services) mencapai tingkat paritas yang tinggi dengan OpenStack, fokus beralih ke stabilitas operasional, skalabilitas, dan hardening agar CloudX siap untuk environment pseudo-production atau lab yang lebih serius.
+Setelah semua layanan inti (base services) mencapai tingkat paritas yang tinggi dengan CloudX, fokus beralih ke stabilitas operasional, skalabilitas, dan hardening agar CloudX siap untuk environment pseudo-production atau lab yang lebih serius.
 
 #### 🔴 Prioritas Tinggi
 | # | Pekerjaan | Area | Upaya | Catatan |
@@ -1480,7 +1480,7 @@ Setelah semua layanan inti (base services) mencapai tingkat paritas yang tinggi 
 | 4 | **Zero-Downtime Migrations** | Infrastruktur | 3-4 hari | ✅ Alembic scaffold (`services/migrations/`), baseline + additive-first rules. |
 | 5 | **CI/CD & Automated Testing** | Infrastruktur | 5 hari | ⏭️ Ditunda (belum direncanakan user). |
 | 6 | **Security Hardening (TLS/SSL)** | Cross-cutting | 3-4 hari | ✅ Internal PKI (`services/certs/generate-certs.sh`), TLS antar-service internal saja. |
-| 7 | **Volume Backups to Object Storage** | Cinder | 3-4 hari | ✅ `POST /volumes/{id}/backup` + worker export → MinIO, restore ke volume baru. |
+| 7 | **Volume Backups to Object Storage** | Block Storage | 3-4 hari | ✅ `POST /volumes/{id}/backup` + worker export → MinIO, restore ke volume baru. |
 
 #### 🟢 Prioritas Rendah (Ekspansi Ekosistem)
 | # | Pekerjaan | Area | Upaya | Catatan |
@@ -1541,9 +1541,9 @@ Detail operasional: `docs/fase5-production-readiness.md`.
     image_tags, placement_rp_aggregates
 
   PostgreSQL — tabel baru (Fase 4):
-    application_credentials (Keystone)
-    os_aggregates, aggregate_hosts (Nova)
-    networking_trunks, networking_trunk_subports (Neutron)
+    application_credentials (Identity)
+    os_aggregates, aggregate_hosts (Compute)
+    networking_trunks, networking_trunk_subports (Networking)
     resource_classes (Placement)
     quota_reservations (Cross-cutting)
 ```
@@ -1554,33 +1554,33 @@ Detail operasional: `docs/fase5-production-readiness.md`.
 
 | Tabel | Service | Tujuan |
 |---|---|---|
-| `auth_services` | Keystone | Service catalog entries |
-| `auth_endpoints` | Keystone | Endpoint per service per region |
-| `auth_domains` | Keystone | Domain hierarchy |
-| `compute_server_tags` | Nova | Server tagging |
-| `image_members` | Glance | Image sharing antar project |
-| `image_tasks` | Glance | Async import tasks |
-| `block_store_volume_quotas` | Cinder | Hard limit per project |
-| `networking_subnet_pools` | Neutron | Subnet address pool |
-| `networking_qos_policies` | Neutron | QoS policy definitions |
-| `networking_qos_rules` | Neutron | Bandwidth limit rules |
-| `networking_port_forwardings` | Neutron | DNAT per-port forwarding |
+| `auth_services` | Identity | Service catalog entries |
+| `auth_endpoints` | Identity | Endpoint per service per region |
+| `auth_domains` | Identity | Domain hierarchy |
+| `compute_server_tags` | Compute | Server tagging |
+| `image_members` | Image | Image sharing antar project |
+| `image_tasks` | Image | Async import tasks |
+| `block_store_volume_quotas` | Block Storage | Hard limit per project |
+| `networking_subnet_pools` | Networking | Subnet address pool |
+| `networking_qos_policies` | Networking | QoS policy definitions |
+| `networking_qos_rules` | Networking | Bandwidth limit rules |
+| `networking_port_forwardings` | Networking | DNAT per-port forwarding |
 | `placement_rp_aggregates` | Placement | RP → aggregate association |
-| `auth_application_credentials` | Keystone | Application credentials |
-| `compute_aggregates` | Nova | Host aggregate definitions |
-| `compute_aggregate_hosts` | Nova | Host → aggregate membership |
-| `networking_trunks` | Neutron | Trunk port parent |
-| `networking_trunk_subports` | Neutron | VLAN sub-port entries |
+| `auth_application_credentials` | Identity | Application credentials |
+| `compute_aggregates` | Compute | Host aggregate definitions |
+| `compute_aggregate_hosts` | Compute | Host → aggregate membership |
+| `networking_trunks` | Networking | Trunk port parent |
+| `networking_trunk_subports` | Networking | VLAN sub-port entries |
 | `placement_resource_classes` | Placement | Custom resource classes |
 | `quota_reservations` | Cross-cutting | Atomic quota reserve tracking |
-| `block_store_consistency_groups` | Cinder | Consistency Groups metadata |
-| `block_store_cgsnapshots` | Cinder | Consistency Group Snapshots |
+| `block_store_consistency_groups` | Block Storage | Consistency Groups metadata |
+| `block_store_cgsnapshots` | Block Storage | Consistency Group Snapshots |
 
 #### 🚀 Diperlukan di Fase 5 (Opsional / Ekstensi)
 
 | Tabel | Service | Tujuan |
 |---|---|---|
-| `cinder_backups` | Cinder | Metadata backup volume ke MinIO |
+| `block-store_backups` | Block Storage | Metadata backup volume ke MinIO |
 | `heat_stacks` | Heat | Menyimpan status stack orkestrasi |
 | `octavia_loadbalancers` | Octavia | Metadata load balancer |
 
@@ -1597,12 +1597,12 @@ Detail operasional: `docs/fase5-production-readiness.md`.
 > CloudX sudah menggunakan backend nyata (libvirt, OVN, LVM, Ceph).
 > Mayoritas pekerjaan tersisa adalah di **API layer** dan **UI**, bukan di backend.
 
-> **Catatan 3 — Kompatibilitas OpenStack Client**
-> Untuk bisa dipakai dengan `openstack` CLI atau OpenStack SDK standar,
+> **Catatan 3 — Kompatibilitas CloudX Client**
+> Untuk bisa dipakai dengan `openstack` CLI atau CloudX SDK standar,
 > prioritas utama adalah:
-> 1. Service catalog di Keystone (client auto-discover endpoints)
+> 1. Service catalog di Identity (client auto-discover endpoints)
 > 2. API prefix versioning (`/v2/`, `/v3/`)
-> 3. Response format yang sesuai Keystone v3 token format
+> 3. Response format yang sesuai Identity v3 token format
 
 ---
 

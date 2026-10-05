@@ -1,6 +1,6 @@
 # Placement Lite
 
-Placement-lite bukan OpenStack Placement penuh. Ini hanya inventory single-node untuk mencegah create server saat kapasitas jelas tidak cukup.
+Placement-lite bukan CloudX Placement penuh. Ini hanya inventory single-node untuk mencegah create server saat kapasitas jelas tidak cukup.
 
 Command:
 

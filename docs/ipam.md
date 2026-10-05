@@ -22,7 +22,7 @@ When a port is created, networking-api generates:
 Compute-created ports use:
 
 ```text
-device_owner=compute:nova-like
+device_owner=compute:compute-based
 device_id=<server_id>
 ```
 
@@ -31,7 +31,7 @@ OVN logical switch ports receive:
 ```text
 addresses="<mac> <ip>"
 external_ids:device_id=<server_id>
-external_ids:device_owner=compute:nova-like
+external_ids:device_owner=compute:compute-based
 ```
 
 Commands:

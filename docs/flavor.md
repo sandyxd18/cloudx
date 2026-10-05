@@ -1,6 +1,6 @@
 # Flavor
 
-Flavor is owned by `compute-api`, matching the Nova-like boundary. `image-api` only stores OS image metadata and bytes.
+Flavor is owned by `compute-api`, matching the Compute-based boundary. `image-api` only stores OS image metadata and bytes.
 
 Fields:
 

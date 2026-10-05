@@ -31,7 +31,7 @@ Compute node **tidak** punya disk VM lokal. Root disk & volume VM dilayani dari
 **Storage Node** (Ceph RBD) melalui management network. Compute node hanya
 menyimpan libvirt XML + config-drive ISO secara ephemeral.
 
-### Prinsip Network (OVN, seperti OpenStack)
+### Prinsip Network (OVN, seperti CloudX)
 - `ovn-nb-db`, `ovn-sb-db`, `ovn-northd` **terpusat** di Control Plane.
 - `ovn-controller` berjalan di **setiap** compute/gateway node, terhubung ke
   SB DB pusat via `tcp:${CONTROLLER_IP}:6642`.
@@ -116,7 +116,7 @@ docker compose exec backup restore.sh                       # backup daily terba
 docker compose exec backup restore.sh postgres/daily/xxx.dump
 ```
 
-### Volume Backup (Cinder → MinIO)
+### Volume Backup (Block Storage → MinIO)
 ```
 POST   /volumes/{id}/backup      → backup penuh volume ke object storage
 GET    /backups                  → list backup
@@ -164,15 +164,18 @@ set `TLS_ENABLED=true` dan ubah `*_API_URL` menjadi `https://`.
 
 ## 7. Database Migrations (Alembic)
 
-CloudX kini punya scaffold Alembic bersama di `services/migrations/`.
+Alembic adalah satu-satunya jalur pembuatan dan perubahan tabel. Setiap service punya riwayat migrasi sendiri
+(`services/<service>/migrations/versions/`) dan tabel versi sendiri (`alembic_version_<service>`), sehingga
+service boleh berbagi satu database atau memakai database terpisah. Service menolak start kalau schema belum
+dimigrasi. Detail di `services/migrations/README.md`.
 
 ```bash
-# adopsi schema existing sebagai baseline (sekali saja)
-alembic -c services/migrations/alembic.ini stamp base_0001
+sudo make migrate                     # control plane: buat/upgrade schema semua service (idempoten)
+cloudx-db-migrate compute auth        # hanya service tertentu
+cloudx-db-migrate --current           # revisi saat ini per service
 
-# buat migrasi baru (additive-first, zero-downtime)
-alembic -c services/migrations/alembic.ini revision -m "deskripsi"
-alembic -c services/migrations/alembic.ini upgrade head
+# buat migrasi baru setelah mengubah model (additive-first, zero-downtime)
+cloudx-db-migrate --revision compute -m "deskripsi" --autogenerate
 ```
 
 Aturan zero-downtime: tambah kolom nullable/default dulu → deploy code →

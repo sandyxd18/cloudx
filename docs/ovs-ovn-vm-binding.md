@@ -20,4 +20,4 @@ ovs-vsctl set Interface tap-mini-xxx external_ids:iface-status=active
 
 Linux interface names are limited to 15 characters, so the `tap-mini-` prefix uses a 6 character server id suffix.
 
-Cleanup only targets project-owned resources with `mini-os-` and `tap-mini-` prefixes.
+Cleanup only targets project-owned resources with `cloudx-` and `tap-mini-` prefixes.

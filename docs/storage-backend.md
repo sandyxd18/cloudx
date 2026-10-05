@@ -1,17 +1,17 @@
 # Image Storage Backends
 
 MinIO digunakan untuk dua fungsi utama di CloudX:
-1. **Glance Image Storage**: Menyimpan blob image OS (`IMAGE_STORAGE_BACKEND=minio`).
-2. **Cinder Volume & PostgreSQL Backups (Fase 5)**: Menyimpan backup otomatis database harian (23:00 Asia/Jakarta) dan ekspor volume block storage ke bucket `cloudx-backups`.
+1. **CloudX Image Storage**: Menyimpan blob image OS (`IMAGE_STORAGE_BACKEND=minio`).
+2. **Block Store Volume & PostgreSQL Backups (Fase 5)**: Menyimpan backup otomatis database harian (23:00 Asia/Jakarta) dan ekspor volume block storage ke bucket `cloudx-backups`.
 
 ## File Backend
 
 ```env
 IMAGE_STORAGE_BACKEND=file
-IMAGE_STORE_PATH=/var/lib/mini-openstack/images
+IMAGE_STORE_PATH=/var/lib/cloudx/images
 ```
 
-This is the default. Image files are written to the Docker volume mounted at `/var/lib/mini-openstack/images`. PostgreSQL stores metadata including:
+This is the default. Image files are written to the Docker volume mounted at `/var/lib/cloudx/images`. PostgreSQL stores metadata including:
 
 - `storage_backend=file`
 - `object_name`
@@ -26,7 +26,7 @@ IMAGE_STORAGE_BACKEND=minio
 MINIO_ENDPOINT=http://minio:9000
 MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=minioadmin
-MINIO_BUCKET=mini-openstack-images
+MINIO_BUCKET=cloudx-images
 MINIO_SECURE=false
 ```
 

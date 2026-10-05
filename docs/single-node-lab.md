@@ -10,7 +10,7 @@ The real VM backend is intentionally scoped to one lab host:
 Resource names are prefixed so they can be extended later:
 
 ```text
-mini-os-<server_name>-<short_id>
+cloudx-<server_name>-<short_id>
 tap-mini-<6-char-id>
 ```
 

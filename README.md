@@ -1,6 +1,6 @@
 # CloudX — Private Cloud Platform
 
-**CloudX** adalah platform private cloud modular dan adaptif berbasis Linux native (Systemd) dengan arsitektur menyerupai OpenStack. Menggunakan **libvirt + QEMU/KVM** untuk virtualisasi, **OVN/Open vSwitch** untuk software-defined networking, **RabbitMQ** untuk messaging asinkron antar-komponen, serta dilengkapi **CloudX CLI** dan **Web Dashboard** interaktif berbasis AWS Cloudscape Design System.
+**CloudX** adalah platform private cloud modular dan adaptif berbasis Linux native (Systemd) dengan arsitektur enterprise cloud modern. Menggunakan **libvirt + QEMU/KVM** untuk virtualisasi, **OVN/Open vSwitch** untuk software-defined networking, **RabbitMQ** untuk messaging asinkron antar-komponen, serta dilengkapi **CloudX CLI** dan **Web Dashboard** interaktif berbasis AWS Cloudscape Design System.
 
 ---
 
@@ -8,14 +8,14 @@
 
 CloudX terdiri dari microservices terdistribusi yang dapat berjalan dalam mode All-in-One maupun Multi-Node (Control Plane & Compute):
 
-* **Auth (`auth-api`)**: Manajemen otentikasi identitas, proyek, pengguna, peran (Keystone-like), dan credentials.
-* **Compute (`compute-api`, `compute-worker`, `conductor`)**: Manajemen siklus hidup VM, flavor, keypair, server groups, dan affinity policies (Nova-like).
-* **Networking (`networking-api`)**: L2/L3 Network, subnet, router gateway, floating IP, security groups, VPC peering, BGP, dan IPSec VPN (Neutron-like).
-* **Storage (`block-store-api`, `block-store-worker`)**: Block storage persistent, volume types (LVM / Ceph RBD), snapshot, dan full volume backup (Cinder-like).
-* **Image (`image-api`, `image-worker`)**: Repositori sistem operasi VM berbasis qcow2/raw dengan backend local file atau MinIO S3 (Glance-like).
+* **Auth (`auth-api`)**: Manajemen otentikasi identitas, proyek, pengguna, peran (Identity Service), dan credentials.
+* **Compute (`compute-api`, `compute-worker`, `conductor`)**: Manajemen siklus hidup VM, flavor, keypair, server groups, dan affinity policies (Compute Service).
+* **Networking (`networking-api`)**: L2/L3 Network, subnet, router gateway, floating IP, security groups, VPC peering, BGP, dan IPSec VPN (Networking Service).
+* **Storage (`block-store-api`, `block-store-worker`)**: Block storage persistent, volume types (LVM / Ceph RBD), snapshot, dan full volume backup (Block Storage Service).
+* **Image (`image-api`, `image-worker`)**: Repositori sistem operasi VM berbasis qcow2/raw dengan backend local file atau MinIO S3 (Image Service).
 * **Metadata & Placement (`metadata-api`, `placement-api`)**: Cloud-init metadata service (`169.254.169.254`) dan tracking alokasi kapasitas compute nodes.
 * **Orchestration & Containers (`orchestration-api`, `k8s_engine`)**: Auto-scaling groups berbasis metrik utilisasi dan Managed Kubernetes Engine (K3s).
-* **Security & Observability (`key_manager`, `telemetry-api`, `billing-api`, `event-api`)**: Barbican-like secret vault, pengumpulan metrik utilisasi, billing/invoicing, dan audit event logging.
+* **Security & Observability (`key_manager`, `telemetry-api`, `billing-api`, `event-api`)**: Secret vault terintegrasi, pengumpulan metrik utilisasi, billing/invoicing, dan audit event logging.
 * **Dashboard (`dashboard`)**: Antarmuka web modern React + Cloudscape UI yang terhubung langsung melalui reverse proxy terpadu.
 
 ---
@@ -59,7 +59,7 @@ Commands:
   backup          Full volume backups to object storage
   snapshot        Volume snapshots
   object-store    S3-compatible bucket and object storage
-  secret          Barbican key manager secret vault
+  secret          Key manager secret vault
   cluster         Managed Kubernetes cluster provisioning
   k8s-template    Kubernetes cluster version & node templates
   hypervisor      Inspect compute host nodes and physical capacity

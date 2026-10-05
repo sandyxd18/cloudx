@@ -46,4 +46,4 @@ sudo scripts/cleanup-network.sh --dry-run
 sudo scripts/cleanup-network.sh
 ```
 
-The script is conservative. It deletes resources with `mini-os-` naming and only deletes `br-int` or `br-ex` when those bridges are explicitly marked as owned by mini OpenStack lab.
+The script is conservative. It deletes resources with `cloudx-` naming and only deletes `br-int` or `br-ex` when those bridges are explicitly marked as owned by CloudX lab.

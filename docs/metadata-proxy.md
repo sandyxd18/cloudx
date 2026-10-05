@@ -15,7 +15,7 @@ Proxy lookup:
 1. Ambil source IP request atau `X-Forwarded-For`.
 2. Query `networking-api /ports`.
 3. Cocokkan `fixed_ip` atau `ip_address`.
-4. Forward ke metadata-api dengan `X-Forwarded-For`, `X-Neutron-Port-ID`, dan `X-Instance-ID`.
+4. Forward ke metadata-api dengan `X-Forwarded-For`, `X-Networking-Port-ID`, dan `X-Instance-ID`.
 
 Untuk setup host route metadata:
 
@@ -31,4 +31,4 @@ sudo scripts/cleanup-metadata-route.sh --dry-run
 sudo scripts/cleanup-metadata-route.sh --force
 ```
 
-Rule hanya menarget `169.254.169.254:80` ke port metadata-proxy. Ini tetap single-node lab behavior, bukan metadata-agent OpenStack penuh.
+Rule hanya menarget `169.254.169.254:80` ke port metadata-proxy. Ini tetap single-node lab behavior, bukan metadata-agent CloudX penuh.

@@ -5,10 +5,10 @@ The lab uses NoCloud/config-drive first. Metadata HTTP at `169.254.169.254` is p
 Per instance:
 
 ```text
-/var/lib/mini-openstack/compute/instances/<server_id>/seed.iso
-/var/lib/mini-openstack/compute/instances/<server_id>/cloud-init/meta-data
-/var/lib/mini-openstack/compute/instances/<server_id>/cloud-init/user-data
-/var/lib/mini-openstack/compute/instances/<server_id>/cloud-init/network-config
+/var/lib/cloudx/compute/instances/<server_id>/seed.iso
+/var/lib/cloudx/compute/instances/<server_id>/cloud-init/meta-data
+/var/lib/cloudx/compute/instances/<server_id>/cloud-init/user-data
+/var/lib/cloudx/compute/instances/<server_id>/cloud-init/network-config
 ```
 
 `meta-data` includes `instance-id` and `local-hostname`.

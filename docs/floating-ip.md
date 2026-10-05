@@ -1,6 +1,6 @@
 # Floating IP
 
-Floating IP follows the OpenStack model: the VM keeps its private fixed IP, and OVN creates a NAT mapping between a provider-network IP and that private IP.
+Floating IP follows the CloudX model: the VM keeps its private fixed IP, and OVN creates a NAT mapping between a provider-network IP and that private IP.
 
 Normal workflow:
 

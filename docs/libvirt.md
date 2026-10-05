@@ -25,9 +25,9 @@ Compose uses bind mounts for libvirt-visible storage. These must be host paths, 
 /dev/kvm:/dev/kvm
 /dev/net/tun:/dev/net/tun
 /var/run/openvswitch:/var/run/openvswitch
-/var/lib/mini-openstack/compute/instances:/var/lib/mini-openstack/compute/instances
-/var/lib/mini-openstack/compute/cache:/var/lib/mini-openstack/compute/cache
-/var/lib/mini-openstack/volumes:/var/lib/mini-openstack/volumes
+/var/lib/cloudx/compute/instances:/var/lib/cloudx/compute/instances
+/var/lib/cloudx/compute/cache:/var/lib/cloudx/compute/cache
+/var/lib/cloudx/volumes:/var/lib/cloudx/volumes
 ```
 
 `compute-worker` uses `network_mode: host` because tap devices must exist in the host network namespace used by host libvirt/QEMU. It also uses `privileged: true` and `NET_ADMIN`/`SYS_ADMIN` for lab ergonomics. Do not treat this as a production deployment model.

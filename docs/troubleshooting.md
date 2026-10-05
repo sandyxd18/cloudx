@@ -78,7 +78,7 @@ sudo scripts/prepare-host-libvirt.sh --create-br-int
 docker compose up -d --build compute-worker compute-api block-store-api
 ```
 
-The paths under `/var/lib/mini-openstack/compute/instances`, `/var/lib/mini-openstack/compute/cache`, and `/var/lib/mini-openstack/volumes` must exist on the host, not only inside Docker volumes.
+The paths under `/var/lib/cloudx/compute/instances`, `/var/lib/cloudx/compute/cache`, and `/var/lib/cloudx/volumes` must exist on the host, not only inside Docker volumes.
 
 Then clean leftovers:
 

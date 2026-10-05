@@ -8,7 +8,7 @@ Dokumen ini menjelaskan arsitektur, API endpoints, serta operasional dari micros
 
 | Service | Port | Database | Deskripsi |
 |---------|------|----------|-----------|
-| `telemetry-api` | 8010 | `mini_openstack` | Pengumpulan metrik observability host/VM, Prometheus export (`/metrics`), agregasi statistik. |
+| `telemetry-api` | 8010 | `cloudx` | Pengumpulan metrik observability host/VM, Prometheus export (`/metrics`), agregasi statistik. |
 | `telemetry-worker` | N/A | N/A | Daemon pengumpul metrik libvirt/OVN periodik. |
 | `billing-api` | 8011 | `cloudx_billing` | Rating sheet, pencatatan konsumsi resource (usage records), generasi invoice, dan konversi PDF. |
 | `billing-worker` | N/A | `cloudx_billing` | Cron background perhitung penggunaan berkala per tenant. |

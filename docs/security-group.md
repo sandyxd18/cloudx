@@ -1,6 +1,6 @@
 # Security Group
 
-Security group di lab ini meniru model Neutron/OVN secara sederhana:
+Security group di lab ini meniru model Networking/OVN secara sederhana:
 
 - SecurityGroup menjadi OVN Port Group.
 - SecurityGroupRule menjadi OVN ACL pada port group.

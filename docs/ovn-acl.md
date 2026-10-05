@@ -33,4 +33,4 @@ match: outport == @<port-group> && ip4
 action: drop
 ```
 
-Implementasi ini belum mencakup seluruh fitur Neutron security group, tetapi sudah memakai primitive OVN yang sama: Port Group dan ACL.
+Implementasi ini belum mencakup seluruh fitur Networking security group, tetapi sudah memakai primitive OVN yang sama: Port Group dan ACL.

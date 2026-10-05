@@ -1,6 +1,6 @@
 # 🚀 Phase 6 — Multi-Node Compute, Auto-Scaling & VPC Peering/BGP
 
-Dokumen ini menjelaskan arsitektur, API endpoints, serta operasional dari fitur Fase 6: **Multi-Node Scheduler (Placement Extension)**, **Auto-Scaling Group Orchestration (Heat/Senlin-like)**, serta **VPC Peering & BGP Dynamic Routing (Neutron Extension)**.
+Dokumen ini menjelaskan arsitektur, API endpoints, serta operasional dari fitur Fase 6: **Multi-Node Scheduler (Placement Extension)**, **Auto-Scaling Group Orchestration (Heat/Senlin-like)**, serta **VPC Peering & BGP Dynamic Routing (Networking Extension)**.
 
 ---
 
@@ -8,10 +8,10 @@ Dokumen ini menjelaskan arsitektur, API endpoints, serta operasional dari fitur 
 
 | Service | Port | Database | Deskripsi |
 |---------|------|----------|-----------|
-| `placement-api` | 8006 | `mini_openstack` | Dynamic node Heartbeat, multi-node compute node discovery, scheduling candidate resolution (`select_destination`). |
+| `placement-api` | 8006 | `cloudx` | Dynamic node Heartbeat, multi-node compute node discovery, scheduling candidate resolution (`select_destination`). |
 | `orchestration-api` | 8013 | `cloudx_orchestration` | Engine pengelola Auto-Scaling Group (ASG), evaluasi metrik otomatis, scaling-out & scaling-in. |
 | `orchestration-worker` | N/A | `cloudx_orchestration` | Worker background yang mengevaluasi threshold metrik telemetry terhadap policy ASG setiap 30 detik. |
-| `networking-api` | 8001 | `mini_openstack` | Inter-router VPC Peering via OVN logical patch ports & manajemen tetangga BGP dynamic routing. |
+| `networking-api` | 8001 | `cloudx` | Inter-router VPC Peering via OVN logical patch ports & manajemen tetangga BGP dynamic routing. |
 
 ---
 

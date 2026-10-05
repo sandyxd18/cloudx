@@ -31,8 +31,8 @@ Dalam deployment multi-node, tugas API & Database dipisahkan secara fisik dari p
 │  │    (NB: 6641, SB: 6642) │  │       │  └────────────────────────────────────────────┘  │
 │  └─────────────────────────┘  │       │  ┌────────────────────────────────────────────┐  │
 │  ┌─────────────────────────┐  │       │  │ Compute & Storage Worker Daemons           │  │
-│  │ Control Plane REST APIs │  │◄──────┼──┼──- compute-worker (Nova Compute)          │  │
-│  │  - auth-api     :8005   │  │ AMQP  │  │  - block-store-worker (Cinder Worker)     │  │
+│  │ Control Plane REST APIs │  │◄──────┼──┼──- compute-worker (Compute Service)          │  │
+│  │  - auth-api     :8005   │  │ AMQP  │  │  - block-store-worker (Block Store Worker)     │  │
 │  │  - compute-api  :8003   │  │ & API │  └────────────────────────────────────────────┘  │
 │  │  - placement    :8006   │  │       │  ┌────────────────────────────────────────────┐  │
 │  │  - networking   :8001   │  │       │  │ Guest VMs (Libvirt QEMU Instances)        │  │
@@ -77,8 +77,8 @@ Subnet Host-Only Network VirtualBox (`vboxnet0`): **`192.168.10.0/24`**
 
 1. Cloning repositori CloudX di VM 1:
    ```bash
-   git clone https://github.com/your-org/mini-openstack-lab.git
-   cd mini-openstack-lab
+   git clone https://github.com/your-org/cloudx.git
+   cd cloudx
    ```
 
 2. Pastikan service infrastruktur mengikat IP `0.0.0.0` / `192.168.10.10`:
@@ -107,10 +107,12 @@ Subnet Host-Only Network VirtualBox (`vboxnet0`): **`192.168.10.0/24`**
 
 ### **Langkah 2: Setup Compute Worker Node (VM 2)**
 
+> **Secret bersama.** `/etc/cloudx/cloudx.env` (berisi `AUTH_SECRET_KEY`, `AUTH_ADMIN_PASSWORD`, `KEY_MANAGER_MASTER_KEY`) dibuat otomatis oleh `install-systemd.sh` di control plane. Salin file yang sama ke setiap node lain (path sama, mode `640`) **sebelum** menjalankan installer di node tersebut. Secret yang berbeda antar node membuat verifikasi token dan login service gagal.
+
 1. Cloning repositori CloudX di VM 2:
    ```bash
-   git clone https://github.com/your-org/mini-openstack-lab.git
-   cd mini-openstack-lab
+   git clone https://github.com/your-org/cloudx.git
+   cd cloudx
    ```
 
 2. Jalankan script setup Compute Node otomatis:

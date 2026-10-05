@@ -16,7 +16,7 @@ cloudx volume create vol2 --size 10 --snapshot snap1
 
 ## Volume Backup (Object Storage MinIO)
 
-Di Fase 5, CloudX mengimplementasikan Cinder-style volume backup:
+Di Fase 5, CloudX mengimplementasikan Block storage volume backup:
 - Meng-export volume penuh (`qemu-img` / `rbd export`) dan me-upload file mentah ke MinIO bucket `cloudx-backups`.
 - Bertahan meskipun node storage fisik mengalami kegagalan total.
 
@@ -36,7 +36,7 @@ cloudx image show snap-vm1
 Flow server snapshot:
 
 ```text
-VM -> Root Volume Snapshot -> Image API (Glance)
+VM -> Root Volume Snapshot -> Image API (Image)
 ```
 
 Image hasil snapshot dapat digunakan kembali untuk membuat VM baru.

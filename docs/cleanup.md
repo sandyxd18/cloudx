@@ -15,13 +15,13 @@ sudo scripts/cleanup-all.sh --force --with-volumes
 
 `cleanup-compute.sh` targets:
 
-- libvirt domains with prefix `mini-os-`
+- libvirt domains with prefix `cloudx-`
 - libvirt domains with prefix `test-mini-`
 - OVS ports with prefix `tap-mini-`
 - OVS ports with prefix `tap-test-`
 - tap interfaces with prefix `tap-mini-`
 - tap interfaces with prefix `tap-test-`
-- instance directories under `/var/lib/mini-openstack/compute/instances`
+- instance directories under `/var/lib/cloudx/compute/instances`
 
 Running domains are destroyed before undefine. Managed save and NVRAM are removed when libvirt supports it.
 

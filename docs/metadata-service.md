@@ -1,6 +1,6 @@
 # Metadata Service
 
-`metadata-api` menyediakan metadata instance gaya Nova pada port `8775`. Service ini mendukung EC2-compatible metadata dan OpenStack metadata.
+`metadata-api` menyediakan metadata instance gaya Compute pada port `8775`. Service ini mendukung EC2-compatible metadata dan CloudX metadata.
 
 Endpoint utama:
 
@@ -11,7 +11,7 @@ curl "http://localhost:8775/openstack/latest/meta_data.json?instance_id=<server-
 curl "http://localhost:8775/openstack/latest/network_data.json?instance_id=<server-id>"
 ```
 
-Lookup metadata dilakukan berurutan dari `X-Instance-ID`, query `instance_id`, `X-Neutron-Port-ID`, query `port_id`, query `fixed_ip`, lalu source IP request atau `X-Forwarded-For`. Jika tidak ditemukan, API mengembalikan `404` dan tidak fallback ke instance lain.
+Lookup metadata dilakukan berurutan dari `X-Instance-ID`, query `instance_id`, `X-Networking-Port-ID`, query `port_id`, query `fixed_ip`, lalu source IP request atau `X-Forwarded-For`. Jika tidak ditemukan, API mengembalikan `404` dan tidak fallback ke instance lain.
 
 `meta_data.json` berisi `uuid`, `name`, `hostname`, `launch_index`, `public_keys`, `meta`, dan `devices`. `network_data.json` mengambil CIDR, gateway, dan DNS dari data port/subnet networking-api.
 
