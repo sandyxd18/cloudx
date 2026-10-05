@@ -352,8 +352,12 @@ Run on the Compute node:
 ```bash
 sudo apt update && sudo apt install -y \
   qemu-kvm libvirt-daemon-system libvirt-clients \
-  openvswitch-switch ovn-host nfs-common qemu-utils \
+  openvswitch-switch ovn-host nfs-common qemu-utils qemu-guest-agent \
+  genisoimage cloud-image-utils libvirt-dev pkg-config build-essential \
   python3-venv python3-pip python3-dev
+# After the venv exists (section 4.4): the worker drives libvirt through this binding. Without it the worker
+# starts fine but cannot create VMs ("libvirt = None" fallback).
+sudo /opt/cloudx/venv/bin/pip install libvirt-python
 ```
 
 ### 4.2 Mounting the Shared NFS Storage

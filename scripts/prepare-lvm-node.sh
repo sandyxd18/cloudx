@@ -51,7 +51,7 @@ if (( ! DRY )); then
         echo "${DEVICE} (or one of its partitions) is mounted; unmount it and move its data first" >&2
         exit 1
     fi
-    signature="$(wipefs -n --noheadings -o TYPE "$DEVICE" 2>/dev/null | sort -u | tr '\n' ' ')"
+    signature="$(lsblk -no FSTYPE "$DEVICE" | sort -u | tr '\n' ' ')"
     if [[ -n "${signature// /}" && "${signature// /}" != "LVM2_member" ]]; then
         if (( WIPE )); then
             wipefs -a "$DEVICE"

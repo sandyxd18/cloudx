@@ -55,8 +55,15 @@ echo "===> [1/5] Installing KVM, libvirt, Open vSwitch, and OVN Host..."
 apt-get update -qq
 apt-get install -y -qq \
     qemu-kvm libvirt-daemon-system libvirt-clients \
-    openvswitch-switch ovn-host \
+    openvswitch-switch ovn-host qemu-utils qemu-guest-agent \
+    genisoimage cloud-image-utils \
+    libvirt-dev pkg-config build-essential python3-dev \
     python3-venv python3-pip curl jq bridge-utils >/dev/null
+# genisoimage/cloud-image-utils build the cloud-init config drive; libvirt-python is what the compute worker drives
+# libvirt with (without it the worker starts but cannot create VMs).
+if [[ -x /opt/cloudx/venv/bin/pip ]]; then
+    /opt/cloudx/venv/bin/pip install -q libvirt-python
+fi
 
 echo "===> [2/5] Ensuring libvirtd service is active..."
 systemctl enable --now libvirtd || true
@@ -97,10 +104,10 @@ host_ip = ${NODE_IP}
 log_level = info
 
 [transport]
-rabbitmq_url = amqp://mini:mini@${CONTROLLER_IP}:5672/
+rabbitmq_url = amqp://cloudx:cloudx@${CONTROLLER_IP}:5672/
 
 [database]
-url = postgresql+psycopg2://mini:mini@${CONTROLLER_IP}:5432/mini_openstack
+url = postgresql+psycopg2://cloudx:cloudx@${CONTROLLER_IP}:5432/cloudx
 
 [service_urls]
 auth_url = http://${CONTROLLER_IP}:8005
@@ -115,8 +122,8 @@ cat <<EOF > .env.multinode
 CONTROLLER_IP=${CONTROLLER_IP}
 NODE_IP=${NODE_IP}
 NODE_NAME=${NODE_NAME}
-DATABASE_URL=postgresql+psycopg2://mini:mini@${CONTROLLER_IP}:5432/mini_openstack
-RABBITMQ_URL=amqp://mini:mini@${CONTROLLER_IP}:5672/
+DATABASE_URL=postgresql+psycopg2://cloudx:cloudx@${CONTROLLER_IP}:5432/cloudx
+RABBITMQ_URL=amqp://cloudx:cloudx@${CONTROLLER_IP}:5672/
 AUTH_API_URL=http://${CONTROLLER_IP}:8005
 PLACEMENT_API_URL=http://${CONTROLLER_IP}:8006
 NETWORKING_API_URL=http://${CONTROLLER_IP}:8001

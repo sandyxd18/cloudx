@@ -91,6 +91,24 @@ sudo iscsiadm -m session                              # on the VM's node: a sess
 cloudx volume detach v1                               # the session and the target disappear
 ```
 
+## Gotchas found while building this lab
+
+- **Addresses.** The examples in the guides use `192.168.10.x`; the lab's management network is `172.20.0.0/16`
+  (controller `.131`, compute `.130`, storage `.129`). `--portal-ip` and `NODE_IP` must be the management address of the
+  node itself, the one the other node can reach.
+- **Compute nodes need two more things than the guides said**: `genisoimage` (config drive; without it every build
+  fails with "cloud-localds or genisoimage is required") and the `libvirt-python` binding in the CloudX venv
+  (`libvirt-dev build-essential python3-dev pkg-config` to build it). `setup-compute-node.sh` now installs both.
+- **Workers use their own addresses for the other services.** compute-api and block-store-api put the address they use
+  (`http://127.0.0.1:...`) in the messages; a worker on another node ignores it when its own `IMAGE_API_URL`,
+  `BLOCK_STORE_API_URL` and `NETWORKING_API_URL` are set (drop-in `service-urls.conf` on the compute workers).
+- **The provider NIC** (`ens19` here) must be up for the OVS port to carry traffic; a
+  `/etc/systemd/network/50-ens19.network` file keeps it up after a reboot. Put it in `br-ex` with
+  `ovn-bridge-mappings=physnet1:br-ex` on every node that may host VMs.
+- Per-node names live in drop-ins: `COMPUTE_HOST` in the compute worker unit, `BLOCK_STORE_HOST` in
+  `cloudx-block-store-worker.service.d/node.conf`; the lists on the controller (`BLOCK_STORE_LVM_HOSTS`,
+  `COMPUTE_HOSTS`) in `cloudx-block-store-api.service.d/nodes.conf` and `cloudx-compute-api.service.d/nodes.conf`.
+
 ## Limits
 
 - A volume is only as available as its node: if the storage node is down, VMs using its volumes (root volumes included)
