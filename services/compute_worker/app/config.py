@@ -11,3 +11,5 @@ OVS_BRIDGE = os.getenv("OVS_BRIDGE", "br-int")
 VM_NAME_PREFIX = os.getenv("VM_NAME_PREFIX", "mini-os")
 DEFAULT_VM_USER = os.getenv("DEFAULT_VM_USER", "ubuntu")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
+# Name of this compute node: its placement provider, server.host, and the suffix of its own RPC queue.
+COMPUTE_HOST = os.getenv("COMPUTE_HOST", os.getenv("NODE_NAME", "cloudx-compute-01"))

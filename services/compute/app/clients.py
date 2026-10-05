@@ -1,6 +1,6 @@
 import requests
 from fastapi import HTTPException
-from shared.rpc import RPCClient
+from shared.rpc import RPCClient, host_queue
 
 from .config import (
     AUTH_ADMIN_PASSWORD,
@@ -104,15 +104,24 @@ def response_detail(response: requests.Response):
 
 # ── RPC helpers (replaces worker_post / worker_delete) ────────────────────────
 
+LEGACY_HOST = "single-node"  # what workers recorded as server.host before multi-node: no queue of its own
+
+
+def worker_queue(payload: dict) -> str:
+    """Queue of the compute node that runs the server (the shared queue when the host is unknown)."""
+    host = payload.get("host")
+    return host_queue("compute", None if host == LEGACY_HOST else host)
+
+
 def cast_to_worker(method: str, payload: dict) -> None:
-    """Fire-and-forget to compute worker via RabbitMQ (async)."""
-    _rpc.cast("compute", method, payload)
-    log.info("CAST compute.%s for server %s", method, payload.get("id", "?"))
+    """Fire-and-forget to the compute worker of the server's host via RabbitMQ (async)."""
+    _rpc.cast(worker_queue(payload), method, payload)
+    log.info("CAST %s.%s for server %s", worker_queue(payload), method, payload.get("id", "?"))
 
 
 def call_worker(method: str, payload: dict, timeout: int | None = None) -> dict:
     """Synchronous RPC call — waits for worker reply."""
-    return _rpc.call("compute", method, payload, timeout=timeout or RPC_CALL_TIMEOUT)
+    return _rpc.call(worker_queue(payload), method, payload, timeout=timeout or RPC_CALL_TIMEOUT)
 
 
 def release_server_volumes(server_id: str) -> dict | None:

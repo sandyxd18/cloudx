@@ -22,6 +22,7 @@ from ..service import (
     ensure_capacity,
     flavor_snapshot,
     format_comma_list,
+    schedule_host,
     selected_backend,
     server_metadata_payload,
     server_worker_payload,
@@ -123,6 +124,7 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
         snapshot = flavor_snapshot(flavor)
         server = Server(
             id=server_id,
+            host=schedule_host(db),
             name=payload.name,
             image_id=image_id,
             root_volume_id=root_volume["id"],

@@ -32,10 +32,10 @@ from collections import deque
 import requests
 
 # Append parent so shared/ is importable
-from shared.rpc import RPCClient, RPCConsumer  # noqa: E402
+from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
 from . import libvirt_driver, volume_manager, worker  # noqa: E402
-from .config import LIBVIRT_URI, OVS_BRIDGE, IMAGE_API_URL, BLOCK_STORE_API_URL, VM_NAME_PREFIX  # noqa: E402
+from .config import COMPUTE_HOST, LIBVIRT_URI, OVS_BRIDGE, IMAGE_API_URL, BLOCK_STORE_API_URL, VM_NAME_PREFIX  # noqa: E402
 from shared.proc import CommandError, succeeds
 from .utils import run, tool_available  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -44,7 +44,6 @@ from pathlib import Path  # noqa: E402
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
 LOG_LEVEL    = os.getenv("LOG_LEVEL", "INFO")
-COMPUTE_HOST = os.getenv("COMPUTE_HOST", os.getenv("NODE_NAME", "cloudx-compute-01"))
 PLACEMENT_API_URL = os.getenv("PLACEMENT_API_URL", "http://192.168.10.10:8006")
 
 def placement_registration_loop() -> None:
@@ -514,6 +513,9 @@ def handle_build_instance(args: dict) -> None:
                 args["root_volume"]["path"] = ready_volume.get("path", "")
             else:
                 args["root_volume"] = ready_volume
+            # An LV on another storage node is reached over iSCSI: spawn_server gets the local block device.
+            args["root_volume"]["host"] = ready_volume.get("host")
+            args["root_volume"]["path"] = str(volume_manager.connect({**args["root_volume"], "volume_id": root_volume_id}, _rpc))
 
         result = worker.spawn_server(server_id, args)
 
@@ -541,6 +543,8 @@ def handle_build_instance(args: dict) -> None:
 
     except Exception as exc:
         log.error("Failed to spawn VM %s: %s", server_id, exc, exc_info=True)
+        if root_volume_id:
+            _disconnect_volume(root_volume_id, (args.get("root_volume") or {}).get("host"))  # a leftover session keeps the LV busy
         conductor_mark_error(server_id, str(exc))
 
 
@@ -564,7 +568,11 @@ def handle_delete_instance(args: dict) -> None:
 
         # 2. Release volumes via block-store API (use probed URL for host network mode)
         bs_url = _probe_block_store_url(block_store_url)
-        _http_post(f"{bs_url}/servers/{server_id}/volumes/detach-all", {})
+        released = _http_post(f"{bs_url}/servers/{server_id}/volumes/detach-all", {}) or {}
+        for volume in released.get("detached", []):
+            _disconnect_volume(volume["id"], volume.get("host"))
+        if root_volume_id:
+            _disconnect_volume(root_volume_id, _volume_host(bs_url, root_volume_id))
         if root_volume_id and not keep_root_volume:
             _http_delete(f"{bs_url}/internal/volumes/{root_volume_id}")
 
@@ -688,10 +696,26 @@ def handle_get_console_info(args: dict) -> dict:
 # Volume/Port hotplug handlers (RPC Cast)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _volume_host(bs_url: str, volume_id: str) -> str | None:
+    try:
+        return requests.get(f"{bs_url}/internal/volumes/{volume_id}", timeout=10).json().get("host")
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("could not look up the storage node of volume %s: %s", volume_id, exc)
+        return None
+
+
+def _disconnect_volume(volume_id: str, host: str | None) -> None:
+    """Drop the iSCSI session of a volume left behind by a deleted VM (no-op for local volumes)."""
+    try:
+        volume_manager.disconnect(volume_id, host, _rpc)
+    except Exception as exc:  # best-effort: the VM is already gone; a stale session must not block the delete
+        log.warning("could not disconnect volume %s: %s", volume_id, exc)
+
+
 def handle_attach_volume(args: dict) -> None:
     server_id = args.get("id")
     try:
-        volume_manager.attach_volume(args)
+        volume_manager.attach_volume(args, _rpc)
         log.info("volume attached to %s", server_id)
     except Exception as exc:
         log.error("attach_volume %s failed: %s", server_id, exc, exc_info=True)
@@ -700,7 +724,7 @@ def handle_attach_volume(args: dict) -> None:
 def handle_detach_volume(args: dict) -> None:
     server_id = args.get("id")
     try:
-        volume_manager.detach_volume(args)
+        volume_manager.detach_volume(args, _rpc)
         log.info("volume detached from %s", server_id)
     except Exception as exc:
         log.error("detach_volume %s failed: %s", server_id, exc, exc_info=True)
@@ -990,8 +1014,10 @@ def main():
     threading.Thread(target=collect_metrics_loop, daemon=True).start()
     threading.Thread(target=placement_registration_loop, daemon=True).start()
 
+    # Own queue for what the API addresses to this node + the shared queue (messages for servers without a known host)
     consumer = RPCConsumer(
-        queue_name="compute",
+        queue_name=host_queue("compute", COMPUTE_HOST),
+        extra_queues=("compute",),
         handlers=HANDLERS,
         rabbitmq_url=RABBITMQ_URL,
     )

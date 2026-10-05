@@ -5,7 +5,7 @@ from pathlib import Path
 import requests
 
 from . import cloudinit, libvirt_driver, network_manager
-from .config import IMAGE_API_URL, INSTANCE_DIR, OVS_BRIDGE
+from .config import COMPUTE_HOST, IMAGE_API_URL, INSTANCE_DIR, OVS_BRIDGE
 from shared.proc import succeeds
 
 from .utils import tool_available
@@ -97,7 +97,7 @@ def spawn_server(server_id: str, payload: dict) -> dict:
             shutil.rmtree(instance_dir)
         raise
     return {
-        "host": "single-node",
+        "host": COMPUTE_HOST,
         "instance_dir": str(instance_dir),
         "disk_path": str(disk_path),
         "config_drive_path": str(seed_iso),

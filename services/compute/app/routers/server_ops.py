@@ -167,7 +167,7 @@ def server_metrics(ref: str, _: CurrentUser, db: DB, time_range: str = "1h"):
     hours = _METRICS_TIME_RANGE_HOURS.get(time_range, 1)
     since_epoch = time.time() - hours * 3600
     try:
-        result = clients.call_worker("get_metrics", {"server_id": server.id, "since_epoch": since_epoch}, timeout=RPC_CALL_TIMEOUT)
+        result = clients.call_worker("get_metrics", {"server_id": server.id, "host": server.host, "since_epoch": since_epoch}, timeout=RPC_CALL_TIMEOUT)
         result["time_range"] = time_range
         return result
     except Exception as exc:

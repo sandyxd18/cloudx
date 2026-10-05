@@ -10,6 +10,10 @@ url = postgresql+psycopg2://cloudx:cloudx@127.0.0.1:5432/cloudx
 [transport]
 rabbitmq_url = amqp://cloudx:cloudx@127.0.0.1:5672/
 
+# Compute nodes that may receive new servers (the COMPUTE_HOST of each compute-worker). Without it, the nodes
+# registered in the placement API are used.
+# compute_hosts = cloudx-compute-01,cloudx-storage-01
+
 [service_urls]
 auth_url = http://127.0.0.1:8005
 placement_url = http://127.0.0.1:8006

@@ -5,7 +5,7 @@ import shutil
 import requests
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import clients
@@ -13,6 +13,7 @@ from .clients import _svc_headers
 from .config import (
     AUTH_API_URL,
     COMPUTE_BACKEND,
+    COMPUTE_HOSTS,
     NETWORKING_API_URL,
     ONLY_BACKEND,
     PLACEMENT_API_URL,
@@ -50,6 +51,31 @@ def placement_inventory(db: Session) -> dict:
         "used_disk_gb": used_disk,
         "free_disk_gb": max(total_disk - used_disk, 0),
     }
+
+
+def compute_hosts() -> list[str]:
+    """Compute nodes that can take a new server: COMPUTE_HOSTS, else the providers registered in placement."""
+    if COMPUTE_HOSTS:
+        return COMPUTE_HOSTS
+    try:
+        response = requests.get(f"{PLACEMENT_API_URL}/resource_providers", headers=_svc_headers(), timeout=5)
+        response.raise_for_status()
+        body = response.json()
+        return [rp["name"] for rp in (body.get("resource_providers", body) if isinstance(body, dict) else body)]
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        log.warning("cannot list compute nodes from placement (%s): new servers go to any worker", exc)
+        return []
+
+
+def schedule_host(db: Session, hosts: list[str] | None = None) -> str | None:
+    """Compute node with the fewest servers (None = no node known, the shared queue picks one)."""
+    hosts = compute_hosts() if hosts is None else hosts
+    if not hosts:
+        return None
+    counts = dict(db.execute(
+        select(Server.host, func.count()).where(Server.host.in_(hosts), Server.status != "DELETED").group_by(Server.host)
+    ).all())
+    return min(hosts, key=lambda h: counts.get(h, 0))  # min() keeps the first host on ties
 
 
 def ensure_capacity(db: Session, flavor: Flavor) -> None:

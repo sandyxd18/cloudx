@@ -71,6 +71,7 @@ class VolumeAttachIn(BaseModel):
     volume_id: str
     volume_name: str | None = None
     path: str
+    host: str | None = None  # storage node that owns the LV; the compute-worker logs in over iSCSI if it is not itself
     target_dev: str | None = None
 
 
