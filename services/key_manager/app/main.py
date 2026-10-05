@@ -7,7 +7,7 @@ load_service_config("key-manager-api")
 cloudx Key Manager API — Barbican-like Secret Management Service
 ================================================================
 
-Service Fase 7.1: Key management service for LUKS encryption keys, SSL certificates, SSH keys.
+Service Phase 7.1: Key management service for LUKS encryption keys, SSL certificates, SSH keys.
 """
 
 

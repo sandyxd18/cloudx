@@ -121,7 +121,7 @@ class FloatingIP(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 class VPCPeering(Base):
-    """VPC Peering connection between two routers (Fase 6.3)."""
+    """VPC Peering connection between two routers (Phase 6.3)."""
     __tablename__ = "networking_vpc_peerings"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
@@ -136,7 +136,7 @@ class VPCPeering(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
 class BGPPeer(Base):
-    """BGP peer configuration for dynamic gateway (Fase 6.3)."""
+    """BGP peer configuration for dynamic gateway (Phase 6.3)."""
     __tablename__ = "networking_bgp_peers"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
@@ -154,7 +154,7 @@ class BGPPeer(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
 class IKEPolicy(Base):
-    """VPNaaS IKE Policy (Fase 7.2)."""
+    """VPNaaS IKE Policy (Phase 7.2)."""
     __tablename__ = "networking_ike_policies"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: f"ike-{uuid.uuid4().hex[:12]}")
@@ -167,7 +167,7 @@ class IKEPolicy(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 class IPsecPolicy(Base):
-    """VPNaaS IPsec Policy (Fase 7.2)."""
+    """VPNaaS IPsec Policy (Phase 7.2)."""
     __tablename__ = "networking_ipsec_policies"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: f"ipsec-{uuid.uuid4().hex[:12]}")
@@ -180,7 +180,7 @@ class IPsecPolicy(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 class VPNSiteConnection(Base):
-    """VPNaaS IPsec Site-to-Site Connection (Fase 7.2)."""
+    """VPNaaS IPsec Site-to-Site Connection (Phase 7.2)."""
     __tablename__ = "networking_vpn_site_connections"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: f"vpn-{uuid.uuid4().hex[:12]}")

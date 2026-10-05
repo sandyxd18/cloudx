@@ -877,7 +877,7 @@ def handle_prefetch_image(args: dict) -> dict:
 
 
 def handle_live_migrate(args: dict) -> None:
-    """Live migrate a running VM to another compute node (Fase 6.1)."""
+    """Live migrate a running VM to another compute node (Phase 6.1)."""
     server_id = args.get("server_id")
     target_host = args.get("target_host")
     log.info("Live migrate request: server=%s target=%s", server_id, target_host)

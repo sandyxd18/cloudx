@@ -7,7 +7,7 @@ load_service_config("telemetry-api")
 cloudx Telemetry API — Metrics Collection & Prometheus Exporter
 ================================================================
 
-Service Fase 5.1: mengumpulkan dan mengekspos metrik real-time per VM/tenant.
+Service Phase 5.1: mengumpulkan dan mengekspos metrik real-time per VM/tenant.
 """
 
 

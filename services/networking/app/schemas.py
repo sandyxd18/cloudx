@@ -100,7 +100,7 @@ class PortSecurityGroupsIn(BaseModel):
     security_group_ids: list[str] = Field(default_factory=list)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# VPC Peering (Fase 6.3)
+# VPC Peering (Phase 6.3)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class VPCPeeringIn(BaseModel):
@@ -123,7 +123,7 @@ class VPCPeeringOut(BaseModel):
         from_attributes = True
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# BGP Dynamic Gateway (Fase 6.3)
+# BGP Dynamic Gateway (Phase 6.3)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class BGPPeerIn(BaseModel):
@@ -152,7 +152,7 @@ class BGPPeerOut(BaseModel):
         from_attributes = True
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# VPNAAS — IPSEC SITE-TO-SITE VPN (Fase 7.2)
+# VPNAAS — IPSEC SITE-TO-SITE VPN (Phase 7.2)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class IKEPolicyIn(BaseModel):

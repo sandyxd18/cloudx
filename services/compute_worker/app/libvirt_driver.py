@@ -97,8 +97,8 @@ def domain_xml(
     ET.SubElement(os_el, "type", arch="x86_64", machine="pc").text = "hvm"
     ET.SubElement(os_el, "boot", dev="hd")
 
-    # ACPI dan APIC diperlukan agar VM bisa shutdown/reboot dengan benar
-    # dan agar serial console bekerja dengan baik
+    # ACPI and APIC are needed so the VM can shut down/reboot properly
+    # and so the serial console works well
     features = ET.SubElement(domain, "features")
     ET.SubElement(features, "acpi")
     ET.SubElement(features, "apic")
@@ -133,7 +133,7 @@ def domain_xml(
     ET.SubElement(iface, "target", dev=tap_name, managed="no")
     ET.SubElement(iface, "model", type="virtio")
 
-    # Serial console — target type="serial" port 0 agar virsh console terhubung ke ttyS0
+    # Serial console — target type="serial" port 0 so virsh console attaches to ttyS0
     instance_dir = Path(seed_iso).parent
     console_log_path = instance_dir / "console.log"
 
@@ -141,7 +141,7 @@ def domain_xml(
     ET.SubElement(console, "target", type="serial", port="0")
     ET.SubElement(console, "log", file=str(console_log_path), append="on")
 
-    # virtio-balloon untuk memory management yang lebih baik
+    # virtio-balloon for better memory management
     ET.SubElement(devices, "memballoon", model="virtio")
 
     ET.SubElement(devices, "graphics", type="vnc", port="-1", autoport="yes", listen="127.0.0.1")

@@ -105,7 +105,7 @@ class VolumeMigrateIn(BaseModel):
     lock_volume: bool = False        # lock during migration (prevents use while migrating)
 
 
-# ── Volume Replication & DR (Fase 7.3) ──────────────────────────────────────
+# ── Volume Replication & DR (Phase 7.3) ──────────────────────────────────────
 
 class ReplicationEnableIn(BaseModel):
     target: str

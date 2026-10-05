@@ -7,9 +7,9 @@ load_service_config("orchestration-api")
 cloudx Orchestration API — Auto-Scaling Group Engine
 ======================================================
 
-Microservice independen (Fase 6.2) untuk mengelola Auto-Scaling Group:
-  • Scaling Group Definition (min/max instances, target CPU, cooldown)
-  • Integration dengan compute-api, load_balancer, telemetry-api
+Independent microservice (Phase 6.2) that manages Auto-Scaling Groups:
+  • Scaling Group definition (min/max instances, target CPU, cooldown)
+  • Integration with compute-api, load_balancer, telemetry-api
   • Manual scale operations
 
 Database: cloudx_orchestration

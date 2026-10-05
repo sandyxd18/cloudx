@@ -3,9 +3,9 @@ from __future__ import annotations
 cloudx Telemetry Worker — Metrics Collector
 ============================================
 
-Worker service (Fase 5.1) yang berjalan di background untuk:
-  • Mengumpulkan metrik VM dari libvirt (virsh domstats)
-  • Mengumpulkan metrik network dari OVN
+Background worker service (Phase 5.1) that:
+  • Collects VM metrics from libvirt (virsh domstats)
+  • Collects network metrics from OVN
   • Mengirim data ke telemetry-api via REST API
 
 Tables:

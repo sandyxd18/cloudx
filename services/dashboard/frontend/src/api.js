@@ -231,7 +231,7 @@ export const api = {
   createSnapshot: (volId, b) => request('POST', `/block-store/volumes/${volId}/snapshots`, b),
   deleteSnapshot: (id) => request('DELETE', `/block-store/snapshots/${id}`),
 
-  // Block Store — Volume backups to object storage (Fase 5)
+  // Block Store — Volume backups to object storage (Phase 5)
   getVolumeBackups: () => request('GET', '/block-store/backups'),
   createVolumeBackup: (volId, b) => request('POST', `/block-store/volumes/${volId}/backup`, b),
   deleteVolumeBackup: (id) => request('DELETE', `/block-store/backups/${id}`),

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fix-localnet-flow.sh
-# Inject table=0 flow untuk localnet port ke br-int secara manual.
-# Diperlukan ketika ovn-controller tidak otomatis membuat flow (OVN 24.x issue).
+# Manually inject a table=0 flow for the localnet port into br-int.
+# Needed when ovn-controller does not create the flow automatically (OVN 24.x issue).
 # Safe to re-run.
 set -euo pipefail
 

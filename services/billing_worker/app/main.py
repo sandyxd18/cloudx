@@ -3,13 +3,13 @@ from __future__ import annotations
 cloudx Billing Worker — Usage Aggregation & Invoice Generator
 ===============================================================
 
-Worker service (Fase 5.2) yang berjalan di background untuk:
-  • Mengumpulkan data penggunaan resource dari service-service lain
-  • Menghitung biaya berdasarkan Rating Sheet
-  • Membuat invoice otomatis periode bulanan
-  • Membersihkan usage records lama
+Background worker service (Phase 5.2) that:
+  • Collects resource usage data from the other services
+  • Calculates costs based on the Rating Sheet
+  • Generates automatic monthly invoices
+  • Cleans up old usage records
 
-Database: cloudx_billing (terisolasi dari service lain)
+Database: cloudx_billing (isolated from the other services)
 """
 
 

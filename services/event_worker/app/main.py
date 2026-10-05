@@ -3,11 +3,11 @@ from __future__ import annotations
 cloudx Event Worker — Webhook Delivery Engine
 ==============================================
 
-Worker service (Fase 5.3) yang berjalan di background untuk:
-  • Mengambil event pending dari database
-  • Mengirim HTTP POST ke endpoint webhook dengan HMAC signature
-  • Mengelola retry dengan exponential backoff
-  • Menangani dead letter queue untuk event yang gagal
+Background worker service (Phase 5.3) that:
+  • Fetches pending events from the database
+  • Sends an HTTP POST to the webhook endpoint with an HMAC signature
+  • Manages retries with exponential backoff
+  • Handles the dead letter queue for failed events
 
 Database: cloudx_events
 """

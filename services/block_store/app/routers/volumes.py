@@ -251,8 +251,8 @@ def attach_volume(ref: str, payload: AttachIn, db: DB):
 @router.post("/volumes/{ref}/detach")
 def detach_volume(ref: str, db: DB):
     """Hotplug detach via compute-api → compute-worker (hotplug path).
-    Jika compute-api mengembalikan 404 (instance sudah terhapus), tetap
-    lepas attach secara lokal supaya volume tidak stuck 'in-use'.
+    If compute-api returns 404 (the instance was already deleted), still
+    release the attachment locally so the volume does not get stuck 'in-use'.
     """
     volume = require_volume(db, ref)
     if volume.status != "in-use" or not volume.attached_to_server_id:
@@ -270,7 +270,7 @@ def detach_volume(ref: str, db: DB):
             timeout=60,
         )
         if resp.status_code == 404:
-            # instance sudah terhapus — tetap lepas attach lokal
+            # the instance was already deleted — still release the attachment locally
             volume.attached_to_server_id = None
             volume.target_device = None
             volume.status = "available"

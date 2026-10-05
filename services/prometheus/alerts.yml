@@ -1,4 +1,4 @@
-# CloudX Prometheus alert rules (Fase 5)
+# CloudX Prometheus alert rules (Phase 5)
 groups:
   - name: cloudx-availability
     rules:

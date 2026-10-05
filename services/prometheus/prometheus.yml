@@ -1,4 +1,4 @@
-# CloudX Prometheus scrape configuration (Fase 5)
+# CloudX Prometheus scrape configuration (Phase 5)
 # Retention is set on the CLI in docker-compose.monitoring.yml (15d default).
 global:
   scrape_interval: 15s

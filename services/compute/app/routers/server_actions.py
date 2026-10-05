@@ -241,7 +241,7 @@ def delete_server(ref: str, current: CurrentUser, db: DB, keep_root_volume: bool
 
 @router.post("/servers/{ref}/live-migrate", status_code=202)
 def live_migrate_server(ref: str, payload: dict, _: CurrentUser, db: DB):
-    """Live migrate a server to a target compute host (Fase 6.1)."""
+    """Live migrate a server to a target compute host (Phase 6.1)."""
     server = require_server(db, ref)
     target_host = payload.get("target_host")
     if not target_host:

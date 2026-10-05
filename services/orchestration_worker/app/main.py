@@ -3,11 +3,11 @@ from __future__ import annotations
 cloudx Orchestration Worker — Auto-Scaling Group Monitor
 =========================================================
 
-Worker service (Fase 6.2) yang berjalan di background untuk:
-  • Monitoring CPU rata-rata instance dalam scaling group
-  • Eksekusi scale-out (spawn VM + register ke LB pool)
-  • Eksekusi scale-in (drain + terminate VM)
-  • Menjaga cooldown hysteresis
+Background worker service (Phase 6.2) that:
+  • Monitors the average CPU of instances in a scaling group
+  • Executes scale-out (spawn a VM + register it in the LB pool)
+  • Executes scale-in (drain + terminate a VM)
+  • Maintains the cooldown hysteresis
 
 Database: cloudx_orchestration
 """

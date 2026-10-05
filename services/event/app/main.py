@@ -7,7 +7,7 @@ load_service_config("event-api")
 cloudx Event & Webhook API — Central Event Bus & Notification Engine
 ===================================================================
 
-Service Fase 5.3: menangkap event audit/system dan mengirim webhook.
+Service Phase 5.3: menangkap event audit/system dan mengirim webhook.
 """
 
 

@@ -7,7 +7,7 @@ load_service_config("billing-api")
 cloudx Billing API — Rating, Usage, Invoicing & PDF
 ====================================================
 
-Service Fase 5.2: rating sheet, usage records, invoice generation, PDF export.
+Service Phase 5.2: rating sheet, usage records, invoice generation, PDF export.
 """
 
 

@@ -57,12 +57,12 @@ systemctl enable --now libvirtd 2>/dev/null || \
 
 # OVN Controller (managed by systemd on compute nodes)
 systemctl enable --now ovn-controller.service 2>/dev/null || true
-echo "✓ openvswitch-switch, libvirtd, dan ovn-controller enabled"
+echo "✓ openvswitch-switch, libvirtd, and ovn-controller enabled"
 
 # ── Step 2b: Kernel networking parameters ──────────────────────────────────────
-# ip_nonlocal_bind  — wajib agar HAProxy/Keepalived bisa bind ke INTERNAL_VIP_ADDRESS
-#                     meskipun VIP belum aktif (state Backup) di node ini.
-# ip_forward        — wajib untuk routing antara jaringan (VM ↔ provider network).
+# ip_nonlocal_bind  — required so HAProxy/Keepalived can bind to INTERNAL_VIP_ADDRESS
+#                     even while the VIP is not active (Backup state) on this node.
+# ip_forward        — required for routing between networks (VM ↔ provider network).
 cat > /etc/sysctl.d/90-cloudx.conf << 'SYSCTL'
 net.ipv4.ip_nonlocal_bind = 1
 net.ipv4.ip_forward = 1
@@ -123,8 +123,8 @@ ip link set "$PROVIDER_BRIDGE" up 2>/dev/null || true
 ip link set "$PROVIDER_INTERFACE" up 2>/dev/null || true
 
 # Patch port br-int ↔ br-ex
-# OVN controller container tidak membuat ini otomatis karena tidak berjalan di host network.
-# Patch port ini wajib ada agar traffic provider network bisa masuk ke OVN pipeline di br-int.
+# The OVN controller container does not create this automatically because it does not run on the host network.
+# This patch port must exist so provider network traffic can enter the OVN pipeline on br-int.
 ovs-vsctl \
     -- --may-exist add-port br-int patch-br-int-to-br-ex \
     -- set interface patch-br-int-to-br-ex type=patch options:peer=patch-br-ex-to-br-int \
@@ -244,5 +244,5 @@ echo ""
 echo "  Next steps:"
 echo "    1. newgrp libvirt        (activate group membership)"
 echo "    2. make install-systemd && make start"
-echo "    3. Konfigurasi resource cloud secara manual (lihat README.md Langkah 4)"
+echo "    3. Configure the cloud resources manually (see README.md Step 4)"
 echo ""

@@ -395,7 +395,7 @@ def show_rp(rp_uuid: str, _: CurrentUser, db: DB):
     return _rp_to_dict(_get_rp(db, rp_uuid))
 
 
-# ── Compute Node Heartbeat (Fase 6.1 Multi-Node) ──────────────────────────────
+# ── Compute Node Heartbeat (Phase 6.1 Multi-Node) ──────────────────────────────
 
 class HeartbeatIn(BaseModel):
     host: str
@@ -943,7 +943,7 @@ def get_allocation_candidates(
     }
 
 
-# ── Multi-Node Scheduling (Fase 6.1) ─────────────────────────────────────────
+# ── Multi-Node Scheduling (Phase 6.1) ─────────────────────────────────────────
 
 class ScheduleRequest(BaseModel):
     resources: dict[str, int]  # RESOURCE_CLASS: amount
