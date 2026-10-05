@@ -8,7 +8,7 @@ PROJECT_PREFIX="mini-os-"
 TEST_PREFIX="test-mini-"
 TAP_PREFIX="tap-mini-"
 TEST_TAP_PREFIX="tap-test-"
-PROJECT_MARKER="mini-openstack-lab"
+PROJECT_MARKER="cloudx"
 
 for arg in "$@"; do
   case "$arg" in
@@ -46,7 +46,7 @@ has_cmd() {
 
 ovs_marked() {
   local bridge="$1"
-  [ "$(ovs-vsctl --if-exists get bridge "$bridge" external_ids:mini-openstack-lab 2>/dev/null | tr -d '"')" = "true" ]
+  [ "$(ovs-vsctl --if-exists get bridge "$bridge" external_ids:cloudx 2>/dev/null | tr -d '"')" = "true" ]
 }
 
 if has_cmd ovs-vsctl; then
@@ -94,38 +94,33 @@ else
   echo "skipped ip cleanup: ip command not found"
 fi
 
-if has_cmd docker && docker compose ps ovn-nb-db >/dev/null 2>&1; then
+if has_cmd ovn-nbctl; then
   while IFS= read -r ls; do
     [ -z "$ls" ] && continue
-    add_action "docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --if-exists ls-del '$ls'" "OVN logical switch $ls"
-  done < <(docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --bare --columns=name list logical_switch 2>/dev/null | grep -E "^(${PROJECT_PREFIX}|${TEST_PREFIX})" || true)
+    add_action "ovn-nbctl --if-exists ls-del '$ls'" "OVN logical switch $ls"
+  done < <(ovn-nbctl --bare --columns=name list logical_switch 2>/dev/null | grep -E "^(${PROJECT_PREFIX}|${TEST_PREFIX})" || true)
 
   while IFS= read -r ls; do
     [ -z "$ls" ] && continue
-    add_action "docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --if-exists ls-del '$ls'" "marked OVN logical switch $ls"
-  done < <(docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --bare --columns=name find logical_switch external_ids:mini-openstack-lab=true 2>/dev/null || true)
+    add_action "ovn-nbctl --if-exists ls-del '$ls'" "marked OVN logical switch $ls"
+  done < <(ovn-nbctl --bare --columns=name find logical_switch external_ids:cloudx=true 2>/dev/null || true)
 
   while IFS= read -r lr; do
     [ -z "$lr" ] && continue
-    add_action "docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --if-exists lr-del '$lr'" "OVN logical router $lr"
-  done < <(docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --bare --columns=name list logical_router 2>/dev/null | grep -E "^(${PROJECT_PREFIX}|${TEST_PREFIX})" || true)
+    add_action "ovn-nbctl --if-exists lr-del '$lr'" "OVN logical router $lr"
+  done < <(ovn-nbctl --bare --columns=name list logical_router 2>/dev/null | grep -E "^(${PROJECT_PREFIX}|${TEST_PREFIX})" || true)
 
   while IFS= read -r uuid; do
     [ -z "$uuid" ] && continue
-    add_action "docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 destroy DHCP_Options '$uuid'" "OVN DHCP options $uuid"
-  done < <(docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --bare --columns=_uuid find DHCP_Options external_ids:mini-openstack-lab=true 2>/dev/null || true)
+    add_action "ovn-nbctl destroy DHCP_Options '$uuid'" "OVN DHCP options $uuid"
+  done < <(ovn-nbctl --bare --columns=_uuid find DHCP_Options external_ids:cloudx=true 2>/dev/null || true)
 
-  while IFS= read -r lr; do
   while IFS= read -r pg; do
     [ -z "$pg" ] && continue
-    add_action "docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --if-exists pg-del '$pg'" "OVN security group port group $pg"
-  done < <(docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --bare --columns=name find port_group external_ids:mini-openstack-lab=true 2>/dev/null || true)
-
-    [ -z "$lr" ] && continue
-    add_action "docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --if-exists lr-del '$lr'" "marked OVN logical router $lr"
-  done < <(docker compose exec -T networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --bare --columns=name find logical_router external_ids:mini-openstack-lab=true 2>/dev/null || true)
+    add_action "ovn-nbctl --if-exists pg-del '$pg'" "OVN security group port group $pg"
+  done < <(ovn-nbctl --bare --columns=name find port_group external_ids:cloudx=true 2>/dev/null || true)
 else
-  echo "skipped OVN logical cleanup: compose OVN service not reachable"
+  echo "skipped OVN logical cleanup: ovn-nbctl not found on host"
 fi
 
 if [ "${#actions[@]}" -eq 0 ]; then

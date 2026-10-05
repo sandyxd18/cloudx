@@ -16,7 +16,7 @@ key="mini-os-key-$suffix"
 volume="mini-os-volume-$suffix"
 dummy_image="$(mktemp)"
 
-printf 'mini-openstack-dummy-image-%s' "$suffix" > "$dummy_image"
+printf 'cloudx-dummy-image-%s' "$suffix" > "$dummy_image"
 
 cleanup() {
   set +e

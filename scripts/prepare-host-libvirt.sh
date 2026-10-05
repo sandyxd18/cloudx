@@ -84,15 +84,15 @@ if [ -n "${SUDO_USER:-}" ]; then
 fi
 
 mkdir -p \
-  /var/lib/mini-openstack/compute/instances \
-  /var/lib/mini-openstack/compute/cache/images \
-  /var/lib/mini-openstack/volumes
-chown -R root:kvm /var/lib/mini-openstack || true
-chmod -R g+rwX /var/lib/mini-openstack || true
+  /var/lib/cloudx/compute/instances \
+  /var/lib/cloudx/compute/cache/images \
+  /var/lib/cloudx/volumes
+chown -R root:kvm /var/lib/cloudx || true
+chmod -R g+rwX /var/lib/cloudx || true
 
 if [ "$CREATE_BR_INT" = true ]; then
   ovs-vsctl --may-exist add-br br-int
-  ovs-vsctl set bridge br-int external_ids:mini-openstack-lab=true
+  ovs-vsctl set bridge br-int external_ids:cloudx=true
   ovs-vsctl set bridge br-int fail_mode=secure
 fi
 
@@ -102,7 +102,7 @@ if [ "$CONFIGURE_OVN" = true ]; then
 
   # Ensure br-ex exists and enp0s8 is attached
   ovs-vsctl --may-exist add-br "$PROVIDER_BRIDGE"
-  ovs-vsctl set bridge "$PROVIDER_BRIDGE" external_ids:mini-openstack-lab=true
+  ovs-vsctl set bridge "$PROVIDER_BRIDGE" external_ids:cloudx=true
   if ! ovs-vsctl list-ports "$PROVIDER_BRIDGE" 2>/dev/null | grep -Fx "$PROVIDER_INTERFACE" > /dev/null 2>&1; then
     ovs-vsctl --may-exist add-port "$PROVIDER_BRIDGE" "$PROVIDER_INTERFACE" || true
   fi
@@ -119,7 +119,7 @@ if [ "$CONFIGURE_OVN" = true ]; then
 
   # Persist br-ex IP via netplan if PROVIDER_IP is given
   if [ -n "$PROVIDER_IP" ]; then
-    NETPLAN_FILE="/etc/netplan/60-mini-openstack-br-ex.yaml"
+    NETPLAN_FILE="/etc/netplan/60-cloudx-br-ex.yaml"
     cat > "$NETPLAN_FILE" <<EOF
 network:
   version: 2

@@ -88,7 +88,7 @@ else
 fi
 
 echo "===> [5/5] Generating Multi-Node Environment & Config Files..."
-mkdir -p /etc/cloudx/compute-worker /var/lib/mini-openstack/compute
+mkdir -p /etc/cloudx/compute-worker /var/lib/cloudx/compute
 
 cat <<EOF > /etc/cloudx/compute-worker/compute-worker.conf
 [DEFAULT]

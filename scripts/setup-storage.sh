@@ -47,7 +47,7 @@ if [ -d "/etc/systemd/system" ]; then
   cat <<EOF > "$SERVICE_FILE"
 [Unit]
 Description=CloudX Persistent LVM Loop Setup
-Before=docker.service libvirtd.service
+Before=libvirtd.service
 After=local-fs.target
 
 [Service]

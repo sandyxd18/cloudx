@@ -40,8 +40,8 @@ args=()
 
 if [ "$WITH_VOLUMES" = true ]; then
   if [ "$DRY_RUN" = true ]; then
-    echo "Dry-run mode: would run docker compose down -v --remove-orphans"
+    echo "Dry-run mode: would stop cloudx systemd services"
   else
-    docker compose down -v --remove-orphans
+    systemctl stop 'cloudx-*' 2>/dev/null || true
   fi
 fi

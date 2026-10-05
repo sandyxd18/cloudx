@@ -55,11 +55,9 @@ systemctl enable --now openvswitch-switch
 systemctl enable --now libvirtd 2>/dev/null || \
     systemctl enable --now libvirt-daemon 2>/dev/null || true
 
-# Matikan ovn-controller di HOST — dikelola oleh Docker container (ovs-ovn-controller)
-# Jika dua ovn-controller berjalan bersamaan, mereka akan konflik memperebutkan OVS
-systemctl stop    ovn-controller.service 2>/dev/null || true
-systemctl disable ovn-controller.service 2>/dev/null || true
-echo "✓ openvswitch-switch dan libvirtd enabled, host ovn-controller disabled"
+# OVN Controller (managed by systemd on compute nodes)
+systemctl enable --now ovn-controller.service 2>/dev/null || true
+echo "✓ openvswitch-switch, libvirtd, dan ovn-controller enabled"
 
 # ── Step 2b: Kernel networking parameters ──────────────────────────────────────
 # ip_nonlocal_bind  — wajib agar HAProxy/Keepalived bisa bind ke INTERNAL_VIP_ADDRESS
@@ -88,13 +86,13 @@ fi
 # ── Step 4: Storage directories ────────────────────────────────────────────────
 step "4/7  Creating storage directories"
 mkdir -p \
-    /var/lib/mini-openstack/compute/instances \
-    /var/lib/mini-openstack/compute/cache/images \
-    /var/lib/mini-openstack/volumes \
-    /var/lib/mini-openstack/images
-chown -R root:kvm /var/lib/mini-openstack 2>/dev/null || true
-chmod -R g+rwX  /var/lib/mini-openstack 2>/dev/null || true
-echo "✓ Storage directories ready at /var/lib/mini-openstack"
+    /var/lib/cloudx/compute/instances \
+    /var/lib/cloudx/compute/cache/images \
+    /var/lib/cloudx/volumes \
+    /var/lib/cloudx/images
+chown -R root:kvm /var/lib/cloudx 2>/dev/null || true
+chmod -R g+rwX  /var/lib/cloudx 2>/dev/null || true
+echo "✓ Storage directories ready at /var/lib/cloudx"
 
 # ── Step 5: OVS bridges ────────────────────────────────────────────────────────
 step "5/7  Configuring OVS bridges"
@@ -102,14 +100,14 @@ step "5/7  Configuring OVS bridges"
 # br-int — managed by OVN controller (fail_mode=secure is required)
 ovs-vsctl --may-exist add-br br-int
 ovs-vsctl set bridge br-int \
-    external_ids:mini-openstack-lab=true \
+    external_ids:cloudx=true \
     fail_mode=secure \
     datapath_type=system
 echo "✓ br-int ready (fail_mode=secure)"
 
 # br-ex — provider bridge
 ovs-vsctl --may-exist add-br "$PROVIDER_BRIDGE"
-ovs-vsctl set bridge "$PROVIDER_BRIDGE" external_ids:mini-openstack-lab=true
+ovs-vsctl set bridge "$PROVIDER_BRIDGE" external_ids:cloudx=true
 
 # Attach provider interface if not already attached
 if ovs-vsctl list-ports "$PROVIDER_BRIDGE" 2>/dev/null | grep -Fx "$PROVIDER_INTERFACE" >/dev/null 2>&1; then
@@ -145,7 +143,7 @@ fi
 
 # Metadata proxy setup:
 # 169.254.169.254 on br-ex → iptables DNAT :80→PROVIDER_HOST_IP:8775 → metadata-api
-# This lets cloud-init inside VMs reach the Nova metadata API.
+# This lets cloud-init inside VMs reach the CloudX metadata API.
 ip addr replace "$METADATA_IP/32" dev "$PROVIDER_BRIDGE" 2>/dev/null || \
 ip addr add    "$METADATA_IP/32" dev "$PROVIDER_BRIDGE" 2>/dev/null || true
 echo "✓ Metadata IP $METADATA_IP on $PROVIDER_BRIDGE"
@@ -174,10 +172,10 @@ echo "✓ Bridge mappings: ${PROVIDER_PHYSNET}:${PROVIDER_BRIDGE}"
 
 # ── Step 7: Systemd service for br-ex IP persistence ──────────────────────────
 step "7/7  Installing br-ex persistence service"
-mkdir -p /etc/mini-openstack
+mkdir -p /etc/cloudx
 
 # Write node config (read by the systemd service at boot)
-cat > /etc/mini-openstack/node.env <<EOF
+cat > /etc/cloudx/node.env <<EOF
 NETWORK_INTERFACE=${NETWORK_INTERFACE}
 PROVIDER_BRIDGE=${PROVIDER_BRIDGE}
 PROVIDER_INTERFACE=${PROVIDER_INTERFACE}
@@ -189,18 +187,18 @@ INTERNAL_VIP_ADDRESS=${INTERNAL_VIP_ADDRESS}
 METADATA_IP=${METADATA_IP}
 EOF
 
-cat > /etc/systemd/system/mini-openstack-network.service <<'UNIT'
+cat > /etc/systemd/system/cloudx-network.service <<'UNIT'
 [Unit]
 Description=mini-OpenStack Lab — Provider Bridge Network Setup
-Documentation=https://github.com/your-org/mini-openstack-lab
+Documentation=https://github.com/your-org/cloudx
 After=openvswitch-switch.service
 Requires=openvswitch-switch.service
-Before=docker.service
+Before=libvirtd.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-EnvironmentFile=/etc/mini-openstack/node.env
+EnvironmentFile=/etc/cloudx/node.env
 ExecStart=/bin/bash -c '\
     ip link set "${PROVIDER_BRIDGE:-br-ex}" up 2>/dev/null || true; \
     ip link set "${PROVIDER_INTERFACE:-enp0s8}" up 2>/dev/null || true; \
@@ -221,16 +219,16 @@ ExecStart=/bin/bash -c '\
         iptables -t nat -A PREROUTING -d "${METADATA_IP:-169.254.169.254}" -p tcp --dport 80 \
             -j DNAT --to-destination "${PROVIDER_HOST_IP_ADDR}:8775"; \
     fi; \
-    echo "mini-openstack-network: provider bridge and metadata proxy ready"'
+    echo "cloudx-network: provider bridge and metadata proxy ready"'
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable mini-openstack-network.service
-systemctl start  mini-openstack-network.service 2>/dev/null || true
-echo "✓ mini-openstack-network.service installed, enabled, started"
+systemctl enable cloudx-network.service
+systemctl start  cloudx-network.service 2>/dev/null || true
+echo "✓ cloudx-network.service installed, enabled, started"
 
 # ── Final summary ──────────────────────────────────────────────────────────────
 echo ""
@@ -245,6 +243,6 @@ echo "  IP:     $(ip addr show "$PROVIDER_BRIDGE" 2>/dev/null | grep -oP '(?<=in
 echo ""
 echo "  Next steps:"
 echo "    1. newgrp libvirt        (activate group membership)"
-echo "    2. make up               (start Docker services)"
+echo "    2. make install-systemd && make start"
 echo "    3. Konfigurasi resource cloud secara manual (lihat README.md Langkah 4)"
 echo ""

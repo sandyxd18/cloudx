@@ -11,5 +11,5 @@ else
   echo "Run sudo scripts/cleanup-compute.sh --force and sudo scripts/cleanup-network.sh --force if host leftovers exist."
 fi
 
-docker compose down -v --remove-orphans
-echo "Removed containers and lab volumes."
+systemctl stop 'cloudx-*' 2>/dev/null || true
+echo "Stopped CloudX systemd services."

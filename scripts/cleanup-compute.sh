@@ -7,7 +7,7 @@ VM_PREFIX="${VM_NAME_PREFIX:-mini-os}"
 TEST_VM_PREFIX="test-mini-"
 TAP_PREFIX="tap-mini-"
 TEST_TAP_PREFIX="tap-test-"
-INSTANCE_DIR="${COMPUTE_INSTANCE_DIR:-/var/lib/mini-openstack/compute/instances}"
+INSTANCE_DIR="${COMPUTE_INSTANCE_DIR:-/var/lib/cloudx/compute/instances}"
 LIBVIRT_URI="${LIBVIRT_URI:-qemu:///system}"
 
 for arg in "$@"; do

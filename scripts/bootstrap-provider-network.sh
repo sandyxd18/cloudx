@@ -71,7 +71,7 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 run_or_print ovs-vsctl --may-exist add-br "$PROVIDER_BRIDGE"
-run_or_print ovs-vsctl set bridge "$PROVIDER_BRIDGE" external_ids:mini-openstack-lab=true
+run_or_print ovs-vsctl set bridge "$PROVIDER_BRIDGE" external_ids:cloudx=true
 
 if ovs-vsctl list-ports "$PROVIDER_BRIDGE" 2>/dev/null | grep -Fx "$PROVIDER_INTERFACE" >/dev/null; then
   echo "provider interface already attached to $PROVIDER_BRIDGE"

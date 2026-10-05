@@ -4,7 +4,7 @@ set -euo pipefail
 DRY_RUN=true
 FORCE=false
 PREFIX="test-mini-"
-VOLUME_PATH="${VOLUME_STORE_PATH:-/var/lib/mini-openstack/volumes}"
+VOLUME_PATH="${VOLUME_STORE_PATH:-/var/lib/cloudx/volumes}"
 
 for arg in "$@"; do
   case "$arg" in
