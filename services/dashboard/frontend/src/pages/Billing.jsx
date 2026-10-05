@@ -75,7 +75,7 @@ export default function BillingPage() {
       header={
         <Header
           variant="h1"
-          description="Cloudkitty-compatible rating, usage metering, and invoice generation"
+          description="Resource rating, usage metering, and invoice generation"
         >
           Usage & Billing
         </Header>
@@ -86,7 +86,7 @@ export default function BillingPage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
           <Container header={<Header variant="h3">Current Month Total</Header>}>
             <Box fontSize="display-l" fontWeight="bold">
-              ${(summary?.total_cost ?? 0).toFixed(2)}
+              {summary?.currency || 'IDR'} {Number(summary?.total_cost || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </Box>
             <Box color="text-status-inactive">Accumulated estimated charges</Box>
           </Container>
@@ -129,7 +129,7 @@ export default function BillingPage() {
                   columnDefinitions={[
                     { id: 'id', header: 'Invoice ID', cell: item => <Box fontWeight="bold">{item.id}</Box> },
                     { id: 'period', header: 'Billing Period', cell: item => `${item.period_start || '—'} to ${item.period_end || '—'}` },
-                    { id: 'amount', header: 'Amount Due', cell: item => `$${(item.total_amount ?? 0).toFixed(2)}` },
+                    { id: 'amount', header: 'Amount Due', cell: item => `${item.currency || 'IDR'} ${Number(item.total_amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
                     { id: 'status', header: 'Status', cell: item => <ResourceStatus status={item.status || 'PAID'} /> },
                     {
                       id: 'actions',
@@ -180,9 +180,9 @@ export default function BillingPage() {
                     </Header>
                   }
                   columnDefinitions={[
-                    { id: 'service', header: 'Service / Resource', cell: item => <Box fontWeight="bold">{item.service || item.service_name}</Box> },
-                    { id: 'rate', header: 'Rate per Unit', cell: item => `$${item.rate ?? 0.01} / ${item.unit || 'hour'}` },
-                    { id: 'currency', header: 'Currency', cell: item => item.currency || 'USD' },
+                    { id: 'service', header: 'Service / Resource', cell: item => <Box fontWeight="bold">{item.resource_type || item.service || item.service_name}</Box> },
+                    { id: 'rate', header: 'Rate per Unit', cell: item => `${item.currency || 'IDR'} ${Number(item.rate_per_unit || item.rate || 0).toLocaleString()} / ${item.unit || 'hour'}` },
+                    { id: 'currency', header: 'Currency', cell: item => item.currency || 'IDR' },
                     { id: 'description', header: 'Description', cell: item => item.description || '-' },
                   ]}
                   items={ratingSheets}

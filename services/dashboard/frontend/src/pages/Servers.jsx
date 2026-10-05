@@ -314,7 +314,7 @@ export default function ServersPage() {
           { id: 'ip', header: 'Private IP', cell: item => item.ip_address || item.fixed_ip || '—' },
           { id: 'flavor', header: 'Flavor', cell: item => item.flavor_name || item.flavor || '—' },
           { id: 'keypair', header: 'Key pair', cell: item => item.keypair_name || item.keypair || '—' },
-          { id: 'az', header: 'Availability zone', cell: item => item.availability_zone || 'nova' },
+          { id: 'az', header: 'Availability zone', cell: item => item.availability_zone || 'default' },
           { id: 'task', header: 'Task', cell: item => taskState(item.status) },
           { id: 'power', header: 'Power state', cell: item => powerState(item.status) },
           { id: 'age', header: 'Launch time', cell: item => timeAgo(item.created_at) },

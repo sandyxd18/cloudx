@@ -23,7 +23,7 @@ async function request(method, path, body = null, opts = {}, skipJson = false) {
 
   const resp = await fetch(`${BASE}${path}`, config)
   if (resp.status === 401) {
-    if (!path.startsWith('/auth/session')) {
+    if (!path.startsWith('/auth/session') && window.location.pathname !== '/login' && localStorage.getItem('cloudx_token')) {
       localStorage.removeItem('cloudx_token')
       window.dispatchEvent(new CustomEvent('cloudx:session-expired'))
     }
@@ -56,11 +56,10 @@ export const api = {
     return res
   },
   logout: async () => {
+    localStorage.removeItem('cloudx_token')
     try {
       await request('POST', '/auth/session/logout')
-    } finally {
-      localStorage.removeItem('cloudx_token')
-    }
+    } catch { /* ignore */ }
   },
   getSessionMe: () => request('GET', '/auth/session/me'),
   getProjects: () => request('GET', '/auth/projects'),
@@ -78,12 +77,12 @@ export const api = {
   createAccessKey: (b) => request('POST', '/auth/access-keys', b),
   deleteAccessKey: (id) => request('DELETE', `/auth/access-keys/${id}`),
 
-  // Auth — Domains (Keystone v3)
+  // Auth — Domains (Identity v3)
   getDomains: () => request('GET', '/auth/v3/domains'),
   createDomain: (b) => request('POST', '/auth/v3/domains', b),
   deleteDomain: (id) => request('DELETE', `/auth/v3/domains/${id}`),
 
-  // Auth — Application Credentials (Keystone v3)
+  // Auth — Application Credentials
   getAppCredentials: (userId) => request('GET', `/auth/v3/users/${userId}/application_credentials`),
   createAppCredential: (userId, b) => request('POST', `/auth/v3/users/${userId}/application_credentials`, b),
   deleteAppCredential: (userId, credId) => request('DELETE', `/auth/v3/users/${userId}/application_credentials/${credId}`),
@@ -212,7 +211,7 @@ export const api = {
   reactivateImage: (id) => request('POST', `/image/images/${id}/reactivate`, {}),
   updateImage: (id, b) => request('PATCH', `/image/images/${id}`, b),
 
-  // Glance Tasks (async image import)
+  // Image Tasks (async image import)
   createImageTask: (b) => request('POST', '/image/v2/tasks', b),
   getImageTask: (id) => request('GET', `/image/v2/tasks/${id}`),
   getImageTasks: () => request('GET', '/image/v2/tasks'),

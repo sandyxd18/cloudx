@@ -17,7 +17,7 @@ import Badge from '@cloudscape-design/components/badge'
 import CopyToClipboard from '@cloudscape-design/components/copy-to-clipboard'
 import KeyValuePairs from '@cloudscape-design/components/key-value-pairs'
 import { api } from '../api.js'
-import { useToast } from '../context.jsx'
+import { useToast, useAuth } from '../context.jsx'
 import { BoolStatus, TableEmpty, TableNoMatch, fmtDate, shortId, counterText } from '../components/common.jsx'
 
 const ROLES = [
@@ -228,6 +228,7 @@ function AccessKeyModal({ onDismiss, onGenerate }) {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 export default function AdminPage() {
+  const { user } = useAuth()
   const toast = useToast()
   const [projects, setProjects] = useState([])
   const [users, setUsers]       = useState([])
@@ -244,6 +245,10 @@ export default function AdminPage() {
   const [showKey, setShowKey]   = useState(false)
 
   const load = useCallback(() => {
+    if (user?.role !== 'admin') {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     Promise.allSettled([api.getProjects(), api.getUsers(), api.getAccessKeys(), api.getAuditLogs()])
       .then(([p, u, k, a]) => {
@@ -253,9 +258,19 @@ export default function AdminPage() {
         if (a.status === 'fulfilled') setAuditLogs(a.value?.items || [])
       })
       .finally(() => setLoading(false))
-  }, [])
+  }, [user?.role])
 
   useEffect(() => { load() }, [load])
+
+  if (user?.role !== 'admin') {
+    return (
+      <ContentLayout header={<Header variant="h1">Identity Administration</Header>}>
+        <Alert type="warning" header="Administrator access required">
+          Only users with the admin role can access identity administration.
+        </Alert>
+      </ContentLayout>
+    )
+  }
 
   const q = filter.trim().toLowerCase()
 

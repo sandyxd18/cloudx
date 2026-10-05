@@ -51,7 +51,7 @@ const RESOURCE_STATUS = {
   down: 'stopped',
 }
 
-/** Status indicator for compute instance states (uppercase Nova statuses). */
+/** Status indicator for compute instance states. */
 export function ComputeStatus({ status }) {
   const type = COMPUTE_STATUS[status] || 'info'
   return <StatusIndicator type={type}>{status || '—'}</StatusIndicator>

@@ -66,6 +66,54 @@ import RolesPage from './pages/Roles.jsx'
 import XIDEPage from './pages/XIDE.jsx'
 import XIDECreatePage from './pages/XIDECreate.jsx'
 
+class GlobalErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error }
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error('Application error caught by GlobalErrorBoundary:', error, errorInfo)
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 40, fontFamily: 'system-ui, -apple-system, sans-serif', maxWidth: 600, margin: '60px auto', background: '#fff', borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
+          <h2 style={{ marginTop: 0, color: '#d13212' }}>Something went wrong</h2>
+          <p style={{ color: '#545b64', fontSize: 14 }}>
+            An unexpected error occurred while loading this page:
+          </p>
+          <pre style={{ background: '#f2f3f3', padding: 12, borderRadius: 4, fontSize: 12, overflowX: 'auto', whiteSpace: 'pre-wrap' }}>
+            {String(this.state.error?.message || this.state.error)}
+          </pre>
+          <div style={{ marginTop: 20 }}>
+            <button
+              onClick={() => {
+                localStorage.clear()
+                window.location.href = '/login'
+              }}
+              style={{
+                backgroundColor: '#0972d3',
+                color: '#fff',
+                border: 'none',
+                padding: '8px 16px',
+                borderRadius: 4,
+                cursor: 'pointer',
+                fontWeight: 'bold'
+              }}
+            >
+              Sign out & return to Login
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 class XShellErrorBoundary extends Component {
   constructor(props) {
     super(props)
@@ -98,8 +146,10 @@ function SessionExpiredHandler() {
   useEffect(() => {
     const handler = () => {
       logout()
-      toast('Session expired. Please sign in again.', 'error')
-      navigate('/login', { replace: true })
+      if (window.location.pathname !== '/login') {
+        toast('Session expired. Please sign in again.', 'error')
+        navigate('/login', { replace: true })
+      }
     }
     window.addEventListener('cloudx:session-expired', handler)
     return () => window.removeEventListener('cloudx:session-expired', handler)
@@ -184,19 +234,21 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <BrowserRouter>
-        <AuthProvider>
-          <ToastProvider>
-            <XShellProvider>
-              <AppRoutes />
-              <XShellErrorBoundary>
-                <XShellPanel />
-              </XShellErrorBoundary>
-            </XShellProvider>
-          </ToastProvider>
-        </AuthProvider>
-      </BrowserRouter>
-    </ThemeProvider>
+    <GlobalErrorBoundary>
+      <ThemeProvider>
+        <BrowserRouter>
+          <AuthProvider>
+            <ToastProvider>
+              <XShellProvider>
+                <AppRoutes />
+                <XShellErrorBoundary>
+                  <XShellPanel />
+                </XShellErrorBoundary>
+              </XShellProvider>
+            </ToastProvider>
+          </AuthProvider>
+        </BrowserRouter>
+      </ThemeProvider>
+    </GlobalErrorBoundary>
   )
 }

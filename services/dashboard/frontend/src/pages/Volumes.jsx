@@ -210,7 +210,7 @@ export default function VolumesPage() {
           { id: 'device', header: 'Device', cell: item => item.target_device ? `/dev/${item.target_device}` : '—' },
           { id: 'bootable', header: 'Bootable', cell: item => <BoolStatus value={item.bootable} /> },
           { id: 'multiattach', header: 'Multi-attach', cell: item => <BoolStatus value={item.multiattach} /> },
-          { id: 'az', header: 'Availability zone', cell: item => item.availability_zone || 'nova' },
+          { id: 'az', header: 'Availability zone', cell: item => item.availability_zone || 'default' },
         ]}
         filter={
           <TextFilter

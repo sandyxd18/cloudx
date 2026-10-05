@@ -290,7 +290,7 @@ export default function ServerDetail() {
                             </SpaceBetween>
                           ),
                         },
-                        { label: 'Availability zone', value: server.availability_zone || 'nova' },
+                        { label: 'Availability zone', value: server.availability_zone || 'default' },
                         { label: 'Host', value: server.host || '—' },
                         { label: 'Hypervisor', value: server.libvirt_domain_name || '—' },
                         { label: 'Error', value: server.error_message || '—' },

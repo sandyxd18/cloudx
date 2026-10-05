@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
@@ -14,6 +14,7 @@ import KeyValuePairs from '@cloudscape-design/components/key-value-pairs'
 import CopyToClipboard from '@cloudscape-design/components/copy-to-clipboard'
 import Table from '@cloudscape-design/components/table'
 import { api } from '../api.js'
+import { useAuth } from '../context.jsx'
 import { ComputeStatus, PageLoading, TableEmpty } from '../components/common.jsx'
 
 function MetricCard({ label, value, sub, href, onNavigate }) {
@@ -31,6 +32,7 @@ function MetricCard({ label, value, sub, href, onNavigate }) {
 }
 
 export default function OverviewPage() {
+  const { user } = useAuth()
   const navigate = useNavigate()
   const [servers, setServers]   = useState([])
   const [networks, setNetworks] = useState([])
@@ -42,7 +44,7 @@ export default function OverviewPage() {
   const [catalog, setCatalog]   = useState([])
   const [loading, setLoading]   = useState(true)
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true)
     Promise.allSettled([
       api.getServers(),
@@ -62,10 +64,11 @@ export default function OverviewPage() {
       if (c.status === 'fulfilled')  setCatalog(c.value?.catalog || c.value?.items || [])
       setLoading(false)
     })
-    api.getQuota('admin', true).then(setQuota).catch(() => {})
-  }
+    const projectRef = user?.project_id || 'admin'
+    api.getQuota(projectRef, true).then(setQuota).catch(() => {})
+  }, [user?.project_id])
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [load])
 
   if (loading) return <PageLoading text="Loading dashboard" />
 
@@ -224,25 +227,25 @@ export default function OverviewPage() {
 function ApiAccessPanel({ catalog }) {
   const base = window.location.hostname === 'localhost' ? 'http://localhost' : `http://${window.location.hostname}`
 
-  // Prefer the live Keystone service catalog; fall back to the standard ports.
+  // Prefer the live service catalog; fall back to the standard ports.
   const fromCatalog = (catalog || []).flatMap(svc => {
     const publicEp = (svc.endpoints || []).find(e => e.interface === 'public') || (svc.endpoints || [])[0]
     return publicEp ? [{ name: svc.name || svc.type, type: svc.type, url: publicEp.url }] : []
   })
 
   const endpoints = fromCatalog.length ? fromCatalog : [
-    { name: 'identity',    type: 'Keystone', url: `${base}:8005` },
-    { name: 'compute',     type: 'Nova',     url: `${base}:8003` },
-    { name: 'image',       type: 'Glance',   url: `${base}:8002` },
-    { name: 'volume',      type: 'Cinder',   url: `${base}:8004` },
-    { name: 'network',     type: 'Neutron',  url: `${base}:8001` },
+    { name: 'identity',    type: 'Identity', url: `${base}:8005` },
+    { name: 'compute',     type: 'Compute',  url: `${base}:8003` },
+    { name: 'image',       type: 'Image',    url: `${base}:8002` },
+    { name: 'volume',      type: 'Block Storage', url: `${base}:8004` },
+    { name: 'network',     type: 'Networking',    url: `${base}:8001` },
     { name: 'placement',    type: 'Placement',   url: `${base}:8006` },
     { name: 'object-store', type: 'Object Store', url: `${base}:8007` },
     { name: 'load-balancer', type: 'Load Balancer', url: `${base}:8008` },
   ]
 
   return (
-    <Container header={<Header variant="h2" description="Service endpoints for the CLI and OpenStack SDK">API access</Header>}>
+    <Container header={<Header variant="h2" description="Service endpoints for the CloudX CLI and API clients">API access</Header>}>
       <KeyValuePairs
         columns={2}
         items={endpoints.map(ep => ({

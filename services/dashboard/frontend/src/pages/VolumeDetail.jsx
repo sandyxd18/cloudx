@@ -145,7 +145,7 @@ export default function VolumeDetail() {
                         { label: 'Multi-attach', value: <BoolStatus value={volume.multiattach} /> },
                         { label: 'Created', value: fmtDate(volume.created_at) },
                         { label: 'Project', value: volume.project_id || '—' },
-                        { label: 'Availability zone', value: volume.availability_zone || 'nova' },
+                        { label: 'Availability zone', value: volume.availability_zone || 'default' },
                         { label: 'Error', value: volume.error_message || '—' },
                       ]}
                     />

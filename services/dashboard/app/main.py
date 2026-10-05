@@ -14,7 +14,6 @@ import os
 import pty
 import shutil
 import struct
-import sys
 import termios
 import threading
 import uuid
@@ -25,17 +24,13 @@ import httpx
 import websockets
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pymemcache.client.base import PooledClient as MemcacheClient
 
 # Import shared RPC EventConsumer
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-try:
-    from shared.rpc import EventConsumer
-except ImportError:
-    EventConsumer = None  # graceful fallback if RabbitMQ not available
+from shared.rpc import EventConsumer
 
 log = logging.getLogger("dashboard")
 
@@ -53,7 +48,7 @@ EVENT_API_URL      = os.getenv("EVENT_API_URL",      "http://event-api:8000").rs
 ORCHESTRATION_API_URL = os.getenv("ORCHESTRATION_API_URL","http://orchestration-api:8000").rstrip("/")
 KEY_MANAGER_API_URL = os.getenv("KEY_MANAGER_API_URL","http://key-manager-api:8000").rstrip("/")
 K8S_ENGINE_API_URL = os.getenv("K8S_ENGINE_API_URL", "http://k8s-engine-api:8000").rstrip("/")
-RABBITMQ_URL       = os.getenv("RABBITMQ_URL",       "amqp://cloudx:cloudx@rabbitmq:5672/")
+RABBITMQ_URL       = os.getenv("RABBITMQ_URL",       "amqp://cloudx:cloudx@127.0.0.1:5672/")
 MEMCACHED_URL      = os.getenv("MEMCACHED_URL",      "memcached:11211")
 SESSION_COOKIE_NAME = "cloudx_session"
 
@@ -112,7 +107,7 @@ async def _broadcast(payload: str) -> None:
     for ws in _ws_clients:
         try:
             await ws.send_text(payload)
-        except Exception:
+        except Exception:  # best-effort: a failed send marks the client as dead; it is dropped below
             dead.add(ws)
     _ws_clients.difference_update(dead)
 
@@ -141,7 +136,7 @@ async def ws_events(ws: WebSocket):
 def _set_winsize(master_fd: int, cols: int, rows: int) -> None:
     try:
         fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-    except Exception:
+    except (OSError, struct.error):  # closed fd, or a size outside 0..65535 sent by the browser
         pass
 
 
@@ -209,7 +204,7 @@ async def ws_xshell(ws: WebSocket):
         try:
             os.close(master_fd)
             os.close(slave_fd)
-        except Exception:
+        except OSError:
             pass
         await ws.close(code=4500)
         return
@@ -217,7 +212,7 @@ async def ws_xshell(ws: WebSocket):
         # Slave is owned by the child now; close our copy.
         try:
             os.close(slave_fd)
-        except Exception:
+        except OSError:
             pass
 
     loop = asyncio.get_event_loop()
@@ -235,12 +230,12 @@ async def ws_xshell(ws: WebSocket):
         except OSError:
             try:
                 loop.remove_reader(master_fd)
-            except Exception:
+            except Exception:  # best-effort: reader already removed
                 pass
 
     try:
         loop.add_reader(master_fd, _on_master_ready)
-    except Exception:
+    except Exception:  # best-effort: event loop without reader support; the shell just stays unread
         pass
 
     banner = (
@@ -263,7 +258,7 @@ async def ws_xshell(ws: WebSocket):
                     ctl = json.loads(msg)
                     if ctl.get("type") == "resize":
                         _set_winsize(master_fd, int(ctl.get("cols", 80)), int(ctl.get("rows", 24)))
-                except Exception:
+                except (ValueError, TypeError, AttributeError):  # not a control message
                     pass
                 continue
             try:
@@ -273,19 +268,19 @@ async def ws_xshell(ws: WebSocket):
     finally:
         try:
             loop.remove_reader(master_fd)
-        except Exception:
+        except Exception:  # best-effort: reader already removed
             pass
         try:
             os.close(master_fd)
-        except Exception:
+        except OSError:
             pass
         try:
             proc.kill()
-        except Exception:
+        except ProcessLookupError:
             pass
         try:
             await asyncio.wait_for(proc.wait(), timeout=2.0)
-        except Exception:
+        except asyncio.TimeoutError:
             pass
         log.info("XShell session ended for %s", username)
 
@@ -379,15 +374,19 @@ def _delete_session(session_id: str) -> None:
 class LoginRequest(BaseModel):
     username: str
     password: str
+    project: str | None = None
 
 
 @app.post("/api/auth/session/login")
 async def session_login(payload: LoginRequest, response: Response):
     """Authenticate with auth-api, store token in session store, return HTTPOnly cookie."""
+    auth_payload = {"username": payload.username, "password": payload.password}
+    if payload.project:
+        auth_payload["project"] = payload.project
     try:
         resp = await _http_client.post(
             f"{AUTH_API_URL}/auth/tokens",
-            json={"username": payload.username, "password": payload.password}
+            json=auth_payload,
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"auth-api unreachable: {exc}")
@@ -424,6 +423,58 @@ async def session_login(payload: LoginRequest, response: Response):
         "user": data.get("user"),
         "project": data.get("project"),
     }
+
+
+class SwitchProjectRequest(BaseModel):
+    project_id: str
+
+
+@app.post("/api/auth/session/switch-project")
+async def session_switch_project(payload: SwitchProjectRequest, request: Request, response: Response):
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    session_data = _get_session(session_id) if session_id else {}
+    token = session_data.get("token")
+    if not token:
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        resp = await _http_client.post(
+            f"{AUTH_API_URL}/session/switch-project",
+            json={"project_id": payload.project_id},
+            headers={"authorization": f"Bearer {token}"},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"auth-api unreachable: {exc}")
+
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=resp.json().get("detail", "Failed to switch project"))
+
+    data = resp.json()
+    new_token = data.get("token")
+    if new_token:
+        new_session_data = {
+            "token": new_token,
+            "user": data.get("user") or session_data.get("user"),
+            "project": data.get("project") or session_data.get("project"),
+        }
+        if session_id:
+            _save_session(session_id, new_session_data)
+        else:
+            session_id = str(uuid.uuid4())
+            _save_session(session_id, new_session_data)
+            response.set_cookie(
+                key=SESSION_COOKIE_NAME,
+                value=session_id,
+                httponly=True,
+                max_age=86400,
+                path="/",
+                samesite="lax",
+            )
+    return data
 
 
 @app.post("/api/auth/session/logout")
@@ -496,7 +547,8 @@ def _xide_load_meta() -> list[dict]:
     if XIDE_META_FILE.exists():
         try:
             return json.loads(XIDE_META_FILE.read_text())
-        except Exception:
+        except (OSError, ValueError) as exc:
+            log.warning("could not read workspace metadata, starting empty: %s", exc)
             return []
     return []
 
@@ -704,7 +756,7 @@ async def ws_xide_proxy(ws: WebSocket, path: str = ""):
                             await upstream.send(data["text"])
                         elif "bytes" in data:
                             await upstream.send(data["bytes"])
-                except Exception:
+                except Exception:  # best-effort: either side closing the websocket ends the proxy
                     pass
 
             async def upstream_to_client():
@@ -714,7 +766,7 @@ async def ws_xide_proxy(ws: WebSocket, path: str = ""):
                             await ws.send_bytes(message)
                         else:
                             await ws.send_text(message)
-                except Exception:
+                except Exception:  # best-effort: either side closing the websocket ends the proxy
                     pass
 
             client_task = asyncio.create_task(client_to_upstream())
@@ -726,7 +778,7 @@ async def ws_xide_proxy(ws: WebSocket, path: str = ""):
             )
             for t in [client_task, upstream_task]:
                 t.cancel()
-    except Exception:
+    except Exception:  # best-effort: either side closing the websocket ends the proxy
         pass
 
 
@@ -736,7 +788,19 @@ async def ws_xide_proxy(ws: WebSocket, path: str = ""):
 def _resolve_backend(path: str) -> tuple[str, str] | None:
     for prefix, backend in _ROUTES:
         if path.startswith(prefix):
-            return backend, path[len(prefix):]
+            rel = path[len(prefix):]
+            if not rel.startswith("/"):
+                rel = f"/{rel}"
+            # Normalize paths for services whose backend routes have service-specific prefixes
+            if prefix == "/api/telemetry" and not rel.startswith("/telemetry"):
+                rel = f"/telemetry{rel}"
+            elif prefix == "/api/billing" and not rel.startswith("/billing"):
+                rel = f"/billing{rel}"
+            elif prefix == "/api/event" and not rel.startswith("/events"):
+                rel = f"/events{rel}"
+            elif prefix == "/api/placement" and rel.startswith("/resource-providers"):
+                rel = rel.replace("/resource-providers", "/resource_providers", 1)
+            return backend, rel
     return None
 
 
@@ -875,6 +939,24 @@ if STATIC_DIR.exists():
 # NOTE: /xide/* routes are defined above (before SPA fallback) so they take
 # priority over the catch-all /{full_path:path} below.
 
+@app.api_route("/downloads/{filename}", methods=["GET", "HEAD"], include_in_schema=False)
+async def download_release(filename: str):
+    """Serve release tarball packages for node deployments."""
+    if not (filename.endswith(".tar.gz") or filename.endswith(".sha256")):
+        return Response(content="Invalid file requested", status_code=400)
+
+    possible_paths = [
+        Path("/opt/cloudx/dist") / filename,
+        Path(__file__).resolve().parents[3] / "dist" / filename,
+        STATIC_DIR / "downloads" / filename,
+    ]
+    for p in possible_paths:
+        if p.exists() and p.is_file():
+            media_type = "application/gzip" if filename.endswith(".tar.gz") else "text/plain"
+            return FileResponse(p, media_type=media_type, filename=filename)
+
+    return Response(content=f"Release artifact {filename} not found", status_code=404)
+
 @app.get("/{full_path:path}", include_in_schema=False)
 async def spa_fallback(full_path: str, request: Request):
     """Serve index.html for all non-API routes (SPA client-side routing)."""
@@ -883,4 +965,4 @@ async def spa_fallback(full_path: str, request: Request):
     index = STATIC_DIR / "index.html"
     if not index.exists():
         return Response(content="Dashboard not built yet", status_code=503)
-    return FileResponse(index)
+    return FileResponse(index, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})

@@ -105,7 +105,7 @@ export default function NetworkDetail() {
                       { label: 'Created', value: fmtDate(network.created_at) },
                       { label: 'DNS domain', value: network.dns_domain || '—' },
                       { label: 'OVN logical switch', value: network.ovn_switch_name || '—' },
-                      { label: 'Availability zone', value: network.availability_zone || 'nova' },
+                      { label: 'Availability zone', value: network.availability_zone || 'default' },
                     ]}
                   />
                 </Container>
@@ -169,7 +169,7 @@ export default function NetworkDetail() {
                         if (liveServerIds.has(p.device_id)) {
                           return <Link href={`/servers/${p.device_id}`} onFollow={(e) => { e.preventDefault(); navigate(`/servers/${p.device_id}`) }}>{shortId(p.device_id, 12)}</Link>
                         }
-                        if (p.device_owner?.startsWith('compute:') || p.device_owner === 'compute:nova-like') {
+                        if (p.device_owner?.startsWith('compute:') || p.device_owner === 'compute:instance' ) {
                           return <Box variant="small" color="text-body-secondary">Deleted instance ({shortId(p.device_id, 8)})</Box>
                         }
                         return <Box fontWeight="bold">{shortId(p.device_id, 12)}</Box>

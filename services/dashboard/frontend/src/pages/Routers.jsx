@@ -222,7 +222,7 @@ export default function RoutersPage() {
             cell: item => item.external_gateway_network || item.external_gateway_info?.network_id || '—',
           },
           { id: 'admin', header: 'Admin state', cell: item => <BoolStatus value={item.admin_state_up !== false} trueText="UP" falseText="DOWN" /> },
-          { id: 'az', header: 'Availability zone', cell: item => item.availability_zone || 'nova' },
+          { id: 'az', header: 'Availability zone', cell: item => item.availability_zone || 'default' },
         ]}
         filter={
           <TextFilter

@@ -1,15 +1,24 @@
 /**
- * Topology.jsx — network topology map.
+ * Topology.jsx — CloudX Hierarchical Network Topology Map
  *
- * The graph itself is a custom SVG force-directed layout (there is no
- * Cloudscape graph component); the surrounding chrome, stats, legend, and the
- * node inspector are Cloudscape components so the page matches the console.
+ * Deterministic top-down tiered layout:
+ * - Tier 0: External Networks / Internet
+ * - Tier 1: Virtual Routers
+ * - Tier 2: Internal Subnets & Private Networks
+ * - Tier 3: Compute Instances (VMs)
+ *
+ * Features:
+ * - Clean minimal VM cards (icon + name; status & IP details viewable upon click)
+ * - Smooth vertical cubic bezier connectors with endpoint indicators
+ * - Interactive Canvas: Pan (drag), Zoom (wheel), and floating Zoom controls
+ * - Detailed On-Click Inspector Panel for all network resource types
  */
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Alert from '@cloudscape-design/components/alert'
 import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
+import ButtonGroup from '@cloudscape-design/components/button-group'
 import Container from '@cloudscape-design/components/container'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import Header from '@cloudscape-design/components/header'
@@ -19,313 +28,571 @@ import SpaceBetween from '@cloudscape-design/components/space-between'
 import Spinner from '@cloudscape-design/components/spinner'
 import Badge from '@cloudscape-design/components/badge'
 import Grid from '@cloudscape-design/components/grid'
+import StatusIndicator from '@cloudscape-design/components/status-indicator'
+
 import { api } from '../api.js'
 import { ComputeStatus, shortId } from '../components/common.jsx'
+import { computeHierarchicalLayout } from '../utils/topologyLayout.js'
+import {
+  ServerNode,
+  RouterNode,
+  SubnetNode,
+  ExternalNetworkNode,
+} from '../components/topology/TopologyNodes.jsx'
+import { TopologyLink } from '../components/topology/TopologyLinks.jsx'
 
-const NODE_R = { network: 28, external: 28, router: 22, server: 18, floatingip: 14, subnet: 16 }
+// ── SVG Interactive Skyline Canvas ───────────────────────────────────────────
+function SkylineTopologyCanvas({
+  layoutResult,
+  width,
+  height,
+  selectedId,
+  onSelectNode,
+}) {
+  const { nodes, links, bounds } = layoutResult
+  const nodeMap = useMemo(() => new Map(nodes.map(n => [n.id, n])), [nodes])
 
-const NODE_COLORS = {
-  network:    { fill: '#0972d3', stroke: '#033160', label: '#fff' },
-  external:   { fill: '#8b5cf6', stroke: '#4c1d95', label: '#fff' },
-  router:     { fill: '#f89256', stroke: '#8d4004', label: '#fff' },
-  server:     { fill: '#037f0c', stroke: '#023d05', label: '#fff' },
-  floatingip: { fill: '#d63aff', stroke: '#7d1fa2', label: '#fff' },
-  subnet:     { fill: '#0972d3', stroke: '#033160', label: '#fff' },
-}
+  // Canvas Pan & Zoom State
+  const [zoom, setZoom] = useState(1.0)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const isDragging = useRef(false)
+  const dragStart = useRef({ x: 0, y: 0 })
 
-const STATUS_RING = {
-  ACTIVE: '#037f0c', SHUTOFF: '#8c8c94', ERROR: '#d91515',
-  BUILD: '#f89256', SHELVED_OFFLOADED: '#8b5cf6',
-}
+  // Auto-center or fit to canvas on initial layout
+  const fitToScreen = useCallback(() => {
+    if (!bounds.width || !bounds.height) return
+    const padding = 60
+    const scaleX = (width - padding) / bounds.width
+    const scaleY = (height - padding) / bounds.height
+    const newZoom = Math.min(Math.max(Math.min(scaleX, scaleY), 0.5), 1.2)
+    const offsetX = (width - bounds.width * newZoom) / 2
+    const offsetY = 20
+    setZoom(newZoom)
+    setPan({ x: offsetX, y: offsetY })
+  }, [bounds, width, height])
 
-const LINK_COLORS = { gateway: '#f89256', interface: '#0972d3', port: '#037f0c', floating: '#d63aff' }
+  useEffect(() => {
+    fitToScreen()
+  }, [bounds.width, bounds.height, fitToScreen])
 
-// ── Force-directed layout (synchronous, ~120 ticks) ──────────────────────────
-function layout(nodes, links, width, height) {
-  const cx = width / 2, cy = height / 2
-  nodes.forEach((n, i) => {
-    const angle = (i / Math.max(1, nodes.length)) * 2 * Math.PI
-    n.x = cx + Math.cos(angle) * (width * 0.3)
-    n.y = cy + Math.sin(angle) * (height * 0.3)
-    n.vx = 0; n.vy = 0
-  })
+  // Mouse Wheel Zoom
+  const handleWheel = (e) => {
+    e.preventDefault()
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9
+    setZoom(prev => Math.min(Math.max(prev * zoomFactor, 0.35), 2.5))
+  }
 
-  const byId = {}
-  nodes.forEach(n => { byId[n.id] = n })
+  // Mouse Drag to Pan
+  const handleMouseDown = (e) => {
+    if (e.button !== 0) return // Left click only
+    isDragging.current = true
+    dragStart.current = { x: e.clientX - pan.x, y: e.clientY - pan.y }
+  }
 
-  for (let tick = 0; tick < 120; tick++) {
-    const alpha = 0.3 * (1 - tick / 120)
-
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i], b = nodes[j]
-        const dx = b.x - a.x, dy = b.y - a.y
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1
-        const force = (3000 / (dist * dist)) * alpha
-        const fx = (dx / dist) * force, fy = (dy / dist) * force
-        a.vx -= fx; a.vy -= fy
-        b.vx += fx; b.vy += fy
-      }
-    }
-
-    links.forEach(l => {
-      const a = byId[l.source], b = byId[l.target]
-      if (!a || !b) return
-      const dx = b.x - a.x, dy = b.y - a.y
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1
-      const force = ((dist - 120) / dist) * 0.08 * alpha
-      a.vx += dx * force; a.vy += dy * force
-      b.vx -= dx * force; b.vy -= dy * force
-    })
-
-    nodes.forEach(n => {
-      n.vx += (cx - n.x) * 0.005 * alpha
-      n.vy += (cy - n.y) * 0.005 * alpha
-      n.x += n.vx; n.y += n.vy
-      n.vx *= 0.8; n.vy *= 0.8
-      n.x = Math.max(46, Math.min(width - 46, n.x))
-      n.y = Math.max(46, Math.min(height - 46, n.y))
+  const handleMouseMove = (e) => {
+    if (!isDragging.current) return
+    setPan({
+      x: e.clientX - dragStart.current.x,
+      y: e.clientY - dragStart.current.y,
     })
   }
-  return nodes
-}
 
-// ── Build the graph model from API data ──────────────────────────────────────
-function buildGraph({ networks, subnets, routers, servers, floatingIPs }) {
-  const nodes = []
-  const links = []
+  const handleMouseUp = () => {
+    isDragging.current = false
+  }
 
-  networks.forEach(n => nodes.push({
-    id: 'net-' + n.id,
-    type: n.external ? 'external' : 'network',
-    label: n.name,
-    sublabel: n.external ? 'External' : 'Network',
-    raw: n,
-  }))
-
-  routers.forEach(r => {
-    nodes.push({ id: 'rtr-' + r.id, type: 'router', label: r.name, sublabel: 'Router', raw: r })
-    if (r.external_network_id) {
-      links.push({ source: 'rtr-' + r.id, target: 'net-' + r.external_network_id, type: 'gateway' })
-    }
-    const rtrSubnetIds = new Set([
-      ...(r.subnet_ids || []),
-      ...(r.interfaces_info || []).map(i => i.subnet_id).filter(Boolean),
-      ...(r.interfaces || []).map(i => i.subnet_id || i.id).filter(Boolean)
-    ])
-    subnets
-      .filter(s => s.router_id === r.id || rtrSubnetIds.has(s.id))
-      .forEach(s => links.push({ source: 'rtr-' + r.id, target: 'net-' + s.network_id, type: 'interface' }))
-  })
-
-  servers.forEach(s => {
-    nodes.push({
-      id: 'srv-' + s.id,
-      type: 'server',
-      label: s.name,
-      sublabel: s.flavor_name || s.flavor || '',
-      status: s.status,
-      raw: s,
-    })
-    if (s.network_id) {
-      links.push({ source: 'srv-' + s.id, target: 'net-' + s.network_id, type: 'port' })
-    }
-  })
-
-  floatingIPs.forEach(f => {
-    if (!f.floating_ip_address) return
-    nodes.push({
-      id: 'fip-' + f.id,
-      type: 'floatingip',
-      label: f.floating_ip_address,
-      sublabel: f.server_id ? 'Associated' : 'Unassociated',
-      raw: f,
-    })
-    if (f.external_network_id || f.floating_network_id) {
-      links.push({ source: 'fip-' + f.id, target: 'net-' + (f.external_network_id || f.floating_network_id), type: 'floating' })
-    }
-    if (f.server_id) {
-      links.push({ source: 'fip-' + f.id, target: 'srv-' + f.server_id, type: 'floating' })
-    }
-  })
-
-  return { nodes, links }
-}
-
-// ── SVG canvas ───────────────────────────────────────────────────────────────
-function TopologySVG({ graph, width, height, onSelect, selectedId }) {
-  const positioned = useMemo(
-    () => layout(graph.nodes.map(n => ({ ...n })), graph.links, width, height),
-    [graph, width, height],
-  )
-  const posMap = {}
-  positioned.forEach(n => { posMap[n.id] = { x: n.x, y: n.y } })
+  const zoomIn = () => setZoom(prev => Math.min(prev * 1.2, 2.5))
+  const zoomOut = () => setZoom(prev => Math.max(prev / 1.2, 0.35))
+  const resetZoom = () => {
+    setZoom(1.0)
+    setPan({ x: 0, y: 0 })
+  }
 
   return (
-    <svg width={width} height={height} className="topology-canvas" role="img" aria-label="Network topology graph">
-      <defs>
-        {Object.entries(LINK_COLORS).map(([type, color]) => (
-          <marker key={type} id={`arrow-${type}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-            <path d="M 0 0 L 10 5 L 0 10 z" fill={color} opacity={0.75} />
-          </marker>
-        ))}
-      </defs>
+    <div
+      style={{
+        position: 'relative',
+        width: '100%',
+        height: `${height}px`,
+        overflow: 'hidden',
+        backgroundColor: '#0f172a',
+        borderRadius: '8px',
+        userSelect: 'none',
+      }}
+      onWheel={handleWheel}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+    >
+      {/* Floating Zoom & View Controls Toolbar */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '12px',
+          right: '12px',
+          zIndex: 10,
+          backgroundColor: 'rgba(30, 41, 59, 0.85)',
+          backdropFilter: 'blur(6px)',
+          borderRadius: '6px',
+          padding: '4px',
+          border: '1px solid #334155',
+          boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)',
+        }}
+      >
+        <SpaceBetween direction="horizontal" size="xs">
+          <Button variant="inline-icon" iconName="zoom-in" ariaLabel="Zoom In" onClick={zoomIn} />
+          <Button variant="inline-icon" iconName="zoom-out" ariaLabel="Zoom Out" onClick={zoomOut} />
+          <Button variant="inline-icon" iconName="expand" ariaLabel="Fit to Screen" onClick={fitToScreen} />
+          <Button variant="inline-link" onClick={resetZoom}>
+            {Math.round(zoom * 100)}%
+          </Button>
+        </SpaceBetween>
+      </div>
 
-      {graph.links.map((l, i) => {
-        const a = posMap[l.source], b = posMap[l.target]
-        if (!a || !b) return null
-        const color = LINK_COLORS[l.type] || '#8c8c94'
-        return (
-          <line
-            key={i}
-            x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-            stroke={color}
-            strokeWidth={l.type === 'gateway' ? 2.5 : 1.5}
-            strokeOpacity={0.65}
-            strokeDasharray={l.type === 'floating' ? '5,3' : undefined}
-            markerEnd={`url(#arrow-${l.type})`}
-          />
-        )
-      })}
+      {/* SVG Canvas */}
+      <svg
+        width={width}
+        height={height}
+        style={{ cursor: isDragging.current ? 'grabbing' : 'grab', display: 'block' }}
+      >
+        {/* Grid pattern background */}
+        <defs>
+          <pattern id="skyline-grid" width="30" height="30" patternUnits="userSpaceOnUse">
+            <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#1e293b" strokeWidth="0.75" />
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#skyline-grid)" />
 
-      {positioned.map(n => {
-        const pos = posMap[n.id]
-        if (!pos) return null
-        const r = NODE_R[n.type] || 18
-        const colors = NODE_COLORS[n.type] || NODE_COLORS.network
-        const ring = n.status ? STATUS_RING[n.status] : null
-        const isSelected = selectedId === n.id
-        return (
-          <g
-            key={n.id}
-            className="topology-node"
-            transform={`translate(${pos.x},${pos.y})`}
-            onClick={() => onSelect(n)}
-            tabIndex={0}
-            role="button"
-            aria-label={`${n.type} ${n.label}`}
-            onKeyDown={e => { if (e.key === 'Enter') onSelect(n) }}
-          >
-            <title>{n.label}{n.sublabel ? ` (${n.sublabel})` : ''}</title>
-            {isSelected && <circle r={r + 9} fill="none" stroke={colors.fill} strokeWidth={2} strokeDasharray="4,3" />}
-            <circle r={r} fill={colors.fill} stroke={colors.stroke} strokeWidth={2} />
-            {ring && <circle r={r + 4} fill="none" stroke={ring} strokeWidth={2.5} opacity={0.8} />}
-            <text textAnchor="middle" dominantBaseline="central" fontSize={r * 0.75} fill={colors.label}>
-              {n.type === 'network' || n.type === 'external' ? '⬡'
-                : n.type === 'router' ? '⤢'
-                : n.type === 'server' ? '▣'
-                : n.type === 'floatingip' ? '◎' : '◯'}
-            </text>
-            <text y={r + 14} textAnchor="middle" fontSize={11} fill="currentColor" fontWeight="600">
-              {n.label?.length > 16 ? n.label.slice(0, 14) + '…' : n.label}
-            </text>
-            {n.sublabel && (
-              <text y={r + 27} textAnchor="middle" fontSize={9} fill="currentColor" opacity={0.65}>
-                {n.sublabel}
-              </text>
-            )}
-          </g>
-        )
-      })}
-    </svg>
+        <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+          {/* Render Connection Links */}
+          {links.map(link => {
+            const isHighlighted = selectedId && (link.source === selectedId || link.target === selectedId)
+            return (
+              <TopologyLink
+                key={link.id}
+                link={link}
+                nodeMap={nodeMap}
+                isHighlighted={Boolean(isHighlighted)}
+              />
+            )
+          })}
+
+          {/* Render Nodes by Tier */}
+          {nodes.map(node => {
+            const isSelected = selectedId === node.id
+            const selectHandler = (e) => {
+              e.stopPropagation()
+              onSelectNode(node)
+            }
+
+            switch (node.type) {
+              case 'server':
+                return (
+                  <ServerNode
+                    key={node.id}
+                    node={node}
+                    isSelected={isSelected}
+                    onClick={selectHandler}
+                  />
+                )
+              case 'router':
+                return (
+                  <RouterNode
+                    key={node.id}
+                    node={node}
+                    isSelected={isSelected}
+                    onClick={selectHandler}
+                  />
+                )
+              case 'subnet':
+                return (
+                  <SubnetNode
+                    key={node.id}
+                    node={node}
+                    isSelected={isSelected}
+                    onClick={selectHandler}
+                  />
+                )
+              case 'external':
+                return (
+                  <ExternalNetworkNode
+                    key={node.id}
+                    node={node}
+                    isSelected={isSelected}
+                    onClick={selectHandler}
+                  />
+                )
+              default:
+                return null
+            }
+          })}
+        </g>
+      </svg>
+    </div>
   )
 }
 
-// ── Node inspector ───────────────────────────────────────────────────────────
+// ── Detailed On-Click Node Inspector Panel ───────────────────────────────────
 function NodeInspector({ node, onNavigate }) {
   if (!node) {
     return (
-      <Container header={<Header variant="h2">Resource details</Header>}>
-        <Box color="text-body-secondary">Select a node in the graph to inspect it.</Box>
+      <Container header={<Header variant="h2">Resource Inspector</Header>}>
+        <Box textAlign="center" color="text-body-secondary" padding="l">
+          Click any resource card in the topology to inspect its details and connections.
+        </Box>
       </Container>
     )
   }
 
   const raw = node.raw || {}
-  const items = []
 
   if (node.type === 'server') {
-    items.push(
-      { label: 'Instance', value: <Link href={`/servers/${raw.id}`} onFollow={(e) => { e.preventDefault(); onNavigate(`/servers/${raw.id}`) }}>{raw.name}</Link> },
-      { label: 'State', value: <ComputeStatus status={raw.status} /> },
-      { label: 'Private IP', value: raw.ip_address || '—' },
-      { label: 'Flavor', value: raw.flavor_name || raw.flavor || '—' },
-      { label: 'Instance ID', value: shortId(raw.id, 18) },
-    )
-  } else if (node.type === 'network' || node.type === 'external') {
-    items.push(
-      { label: 'Network', value: <Link href={`/networks/${raw.id}`} onFollow={(e) => { e.preventDefault(); onNavigate(`/networks/${raw.id}`) }}>{raw.name}</Link> },
-      { label: 'Type', value: raw.external ? <Badge color="severity-medium">External</Badge> : 'Tenant' },
-      { label: 'Shared', value: raw.shared ? 'Yes' : 'No' },
-      { label: 'Network ID', value: shortId(raw.id, 18) },
-    )
-  } else if (node.type === 'router') {
-    items.push(
-      { label: 'Router', value: raw.name },
-      { label: 'External gateway', value: raw.external_gateway_network || (raw.external_network_id ? shortId(raw.external_network_id, 12) : '—') },
-      { label: 'Router ID', value: shortId(raw.id, 18) },
-    )
-  } else if (node.type === 'floatingip') {
-    items.push(
-      { label: 'Floating IP', value: raw.floating_ip_address },
-      { label: 'Fixed IP', value: raw.fixed_ip_address || raw.fixed_ip || '—' },
-      { label: 'Status', value: node.sublabel },
-      { label: 'Port', value: raw.port_id ? shortId(raw.port_id, 14) : '—' },
+    const items = [
+      {
+        label: 'Instance Name',
+        value: (
+          <Link
+            href={`/servers/${raw.id}`}
+            onFollow={(e) => {
+              e.preventDefault()
+              onNavigate(`/servers/${raw.id}`)
+            }}
+          >
+            {raw.name}
+          </Link>
+        ),
+      },
+      {
+        label: 'Status',
+        value: <ComputeStatus status={raw.status} />,
+      },
+      {
+        label: 'Private IP Address',
+        value: (
+          <Box variant="code">
+            {raw.ip_address || (raw.addresses ? JSON.stringify(raw.addresses) : '—')}
+          </Box>
+        ),
+      },
+      {
+        label: 'Floating IP',
+        value: node.floating_ip ? (
+          <Badge color="severity-medium">{node.floating_ip}</Badge>
+        ) : (
+          <Box color="text-status-inactive">None attached</Box>
+        ),
+      },
+      {
+        label: 'Flavor',
+        value: raw.flavor_name || raw.flavor || '—',
+      },
+      {
+        label: 'Hypervisor / Host',
+        value: raw.host || raw['OS-EXT-SRV-ATTR:host'] || 'cloudx-compute-01',
+      },
+      {
+        label: 'Instance ID',
+        value: <Box variant="code">{shortId(raw.id, 24)}</Box>,
+      },
+    ]
+
+    return (
+      <Container
+        header={
+          <Header
+            variant="h2"
+            description="Compute Instance"
+            actions={
+              <SpaceBetween direction="horizontal" size="xs">
+                <Button
+                  iconName="external"
+                  onClick={() => onNavigate(`/console/${raw.id}`)}
+                >
+                  Console
+                </Button>
+                <Button
+                  onClick={() => onNavigate(`/servers/${raw.id}`)}
+                >
+                  Details
+                </Button>
+              </SpaceBetween>
+            }
+          >
+            {raw.name}
+          </Header>
+        }
+      >
+        <KeyValuePairs columns={1} items={items} />
+      </Container>
     )
   }
 
-  return (
-    <Container header={<Header variant="h2" description={node.sublabel}>{node.label}</Header>}>
-      <KeyValuePairs columns={1} items={items} />
-    </Container>
-  )
+  if (node.type === 'router') {
+    const items = [
+      {
+        label: 'Router Name',
+        value: (
+          <Link
+            href={`/routers/${raw.id}`}
+            onFollow={(e) => {
+              e.preventDefault()
+              onNavigate(`/routers/${raw.id}`)
+            }}
+          >
+            {raw.name}
+          </Link>
+        ),
+      },
+      {
+        label: 'Status',
+        value: <StatusIndicator type="success">{raw.status || 'ACTIVE'}</StatusIndicator>,
+      },
+      {
+        label: 'External Gateway Network',
+        value: raw.external_gateway_info?.network_id
+          ? shortId(raw.external_gateway_info.network_id, 16)
+          : (raw.external_gateway_network || (raw.external_network_id ? shortId(raw.external_network_id, 16) : '—')),
+      },
+      {
+        label: 'External Gateway IP',
+        value: (raw.external_gateway_info?.external_fixed_ips?.[0]?.ip_address || raw.external_gateway_ip) ? (
+          <Box variant="code">
+            {raw.external_gateway_info?.external_fixed_ips?.[0]?.ip_address || raw.external_gateway_ip}
+          </Box>
+        ) : '—',
+      },
+      {
+        label: 'Connected Subnets',
+        value: (raw.subnet_ids?.length || 0) + ' subnets',
+      },
+      {
+        label: 'Router ID',
+        value: <Box variant="code">{shortId(raw.id, 24)}</Box>,
+      },
+    ]
+
+    return (
+      <Container
+        header={
+          <Header
+            variant="h2"
+            description="Virtual Router"
+            actions={
+              <Button onClick={() => onNavigate(`/routers/${raw.id}`)}>
+                Router Details
+              </Button>
+            }
+          >
+            {raw.name}
+          </Header>
+        }
+      >
+        <KeyValuePairs columns={1} items={items} />
+      </Container>
+    )
+  }
+
+  if (node.type === 'subnet') {
+    const primarySub = node.subnets?.[0] || {}
+    const items = [
+      {
+        label: 'Network Name',
+        value: (
+          <Link
+            href={`/networks/${node.network_id}`}
+            onFollow={(e) => {
+              e.preventDefault()
+              onNavigate(`/networks/${node.network_id}`)
+            }}
+          >
+            {node.label}
+          </Link>
+        ),
+      },
+      {
+        label: 'Subnet CIDR',
+        value: <Box variant="code">{node.cidr || primarySub.cidr || '—'}</Box>,
+      },
+      {
+        label: 'Gateway IP',
+        value: (primarySub.gateway_ip || raw.gateway_ip) ? (
+          <Box variant="code">{primarySub.gateway_ip || raw.gateway_ip}</Box>
+        ) : '—',
+      },
+      {
+        label: 'DHCP Enabled',
+        value: primarySub.enable_dhcp !== false ? 'Yes' : 'No',
+      },
+      {
+        label: 'Network ID',
+        value: (
+          <Link
+            href={`/networks/${node.network_id}`}
+            onFollow={(e) => {
+              e.preventDefault()
+              onNavigate(`/networks/${node.network_id}`)
+            }}
+          >
+            {shortId(node.network_id, 24)}
+          </Link>
+        ),
+      },
+    ]
+
+    return (
+      <Container
+        header={
+          <Header
+            variant="h2"
+            description="Internal Tenant Network"
+            actions={
+              <Button onClick={() => onNavigate(`/networks/${node.network_id}`)}>
+                Network Details
+              </Button>
+            }
+          >
+            {node.label}
+          </Header>
+        }
+      >
+        <KeyValuePairs columns={1} items={items} />
+      </Container>
+    )
+  }
+
+  if (node.type === 'external') {
+    const items = [
+      {
+        label: 'Network Name',
+        value: (
+          <Link
+            href={`/networks/${raw.id}`}
+            onFollow={(e) => {
+              e.preventDefault()
+              onNavigate(`/networks/${raw.id}`)
+            }}
+          >
+            {raw.name}
+          </Link>
+        ),
+      },
+      {
+        label: 'External CIDR',
+        value: <Box variant="code">{node.cidr || '—'}</Box>,
+      },
+      {
+        label: 'Type',
+        value: <Badge color="severity-medium">External / Public Gateway</Badge>,
+      },
+      {
+        label: 'Shared Network',
+        value: raw.shared ? 'Yes' : 'No',
+      },
+      {
+        label: 'Network ID',
+        value: <Box variant="code">{shortId(raw.id, 24)}</Box>,
+      },
+    ]
+
+    return (
+      <Container
+        header={
+          <Header
+            variant="h2"
+            description="External Provider Network"
+            actions={
+              <Button onClick={() => onNavigate(`/networks/${raw.id}`)}>
+                Network Details
+              </Button>
+            }
+          >
+            {raw.name}
+          </Header>
+        }
+      >
+        <KeyValuePairs columns={1} items={items} />
+      </Container>
+    )
+  }
+
+  return null
 }
 
-// ── Legend ───────────────────────────────────────────────────────────────────
-function Legend() {
+// ── Skyline Topology Legend ──────────────────────────────────────────────────
+function SkylineLegend() {
   const nodeItems = [
-    ['Network', NODE_COLORS.network.fill],
-    ['External network', NODE_COLORS.external.fill],
-    ['Router', NODE_COLORS.router.fill],
-    ['Instance', NODE_COLORS.server.fill],
-    ['Floating IP', NODE_COLORS.floatingip.fill],
+    { label: 'External Network', color: '#a855f7' },
+    { label: 'Virtual Router', color: '#f97316' },
+    { label: 'Internal Network', color: '#0284c7' },
+    { label: 'Compute Instance', color: '#22c55e' },
   ]
+
+  const linkItems = [
+    { label: 'External Gateway', color: '#f97316' },
+    { label: 'Router Interface', color: '#0284c7' },
+    { label: 'Instance Port', color: '#22c55e' },
+  ]
+
   return (
-    <Container header={<Header variant="h3">Legend</Header>}>
-      <SpaceBetween direction="horizontal" size="l">
-        {nodeItems.map(([label, color]) => (
-          <SpaceBetween key={label} direction="horizontal" size="xxs">
-            <svg width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="6" fill={color} /></svg>
-            <Box variant="small">{label}</Box>
-          </SpaceBetween>
-        ))}
-        {Object.entries(LINK_COLORS).map(([type, color]) => (
-          <SpaceBetween key={type} direction="horizontal" size="xxs">
-            <svg width="24" height="10" aria-hidden="true">
-              <line x1="0" y1="5" x2="24" y2="5" stroke={color} strokeWidth="2" strokeDasharray={type === 'floating' ? '5,3' : undefined} />
-            </svg>
-            <Box variant="small">{type.charAt(0).toUpperCase() + type.slice(1)}</Box>
-          </SpaceBetween>
-        ))}
+    <Container header={<Header variant="h3">Topology Legend</Header>}>
+      <SpaceBetween direction="horizontal" size="xl">
+        <SpaceBetween direction="horizontal" size="l">
+          {nodeItems.map(item => (
+            <SpaceBetween key={item.label} direction="horizontal" size="xxs" alignItems="center">
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: '12px',
+                  height: '12px',
+                  borderRadius: '3px',
+                  backgroundColor: item.color,
+                }}
+              />
+              <Box variant="small">{item.label}</Box>
+            </SpaceBetween>
+          ))}
+        </SpaceBetween>
+
+        <SpaceBetween direction="horizontal" size="l">
+          {linkItems.map(item => (
+            <SpaceBetween key={item.label} direction="horizontal" size="xxs" alignItems="center">
+              <svg width="22" height="10" aria-hidden="true">
+                <line
+                  x1="0"
+                  y1="5"
+                  x2="22"
+                  y2="5"
+                  stroke={item.color}
+                  strokeWidth="2.5"
+                  strokeDasharray={item.dashed ? '4,3' : undefined}
+                />
+              </svg>
+              <Box variant="small">{item.label}</Box>
+            </SpaceBetween>
+          ))}
+        </SpaceBetween>
       </SpaceBetween>
     </Container>
   )
 }
 
-// ── Page ─────────────────────────────────────────────────────────────────────
+// ── Main Page Component ───────────────────────────────────────────────────────
 export default function TopologyPage() {
   const navigate = useNavigate()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [selected, setSelected] = useState(null)
+  const [selectedNode, setSelectedNode] = useState(null)
   const containerRef = useRef(null)
-  const [dims, setDims] = useState({ width: 800, height: 520 })
+  const [dims, setDims] = useState({ width: 850, height: 620 })
 
   const load = useCallback(async () => {
-    setLoading(true); setError('')
+    setLoading(true)
+    setError('')
     try {
-      setData(await api.getNetworkTopology())
+      const result = await api.getNetworkTopology()
+      setData(result)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -333,75 +600,118 @@ export default function TopologyPage() {
     }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+  }, [load])
 
+  // Track container dimensions dynamically
   useEffect(() => {
     if (!containerRef.current) return
     const obs = new ResizeObserver(entries => {
+      if (!entries[0]) return
       const { width } = entries[0].contentRect
-      setDims({ width: Math.max(400, width), height: 520 })
+      setDims({ width: Math.max(450, width), height: 620 })
     })
     obs.observe(containerRef.current)
     return () => obs.disconnect()
   }, [])
 
-  const graph = useMemo(() => (data ? buildGraph(data) : { nodes: [], links: [] }), [data])
-  const hasNodes = graph.nodes.length > 0
+  // Calculate Hierarchical Layout
+  const layoutResult = useMemo(() => {
+    if (!data) return { nodes: [], links: [], bounds: { width: 900, height: 620 } }
+    return computeHierarchicalLayout({
+      networks: data.networks || [],
+      subnets: data.subnets || [],
+      routers: data.routers || [],
+      servers: data.servers || [],
+      floatingIPs: data.floatingIPs || [],
+      width: dims.width,
+      height: dims.height,
+    })
+  }, [data, dims.width, dims.height])
+
+  const hasNodes = layoutResult.nodes.length > 0
 
   return (
     <ContentLayout
       header={
         <Header
           variant="h1"
-          description="Visual map of networks, routers, instances, and floating IPs"
-          actions={<Button iconName="refresh" onClick={load} loading={loading}>Refresh</Button>}
+          description="Hierarchical tiered map of virtual networks, routers, subnets, and compute workloads"
+          actions={
+            <Button iconName="refresh" onClick={load} loading={loading}>
+              Refresh
+            </Button>
+          }
         >
-          Network topology
+          Network Topology
         </Header>
       }
     >
       <SpaceBetween size="l">
+        {/* Resource Counters */}
         {data && (
           <Container>
             <KeyValuePairs
               columns={4}
               items={[
-                { label: 'Networks', value: data.networks.length },
-                { label: 'Routers', value: data.routers.length },
-                { label: 'Instances', value: data.servers.length },
-                { label: 'Floating IPs', value: data.floatingIPs.length },
+                { label: 'Networks', value: data.networks?.length || 0 },
+                { label: 'Virtual Routers', value: data.routers?.length || 0 },
+                { label: 'Subnets', value: data.subnets?.length || 0 },
+                { label: 'Compute Instances', value: data.servers?.length || 0 },
               ]}
             />
           </Container>
         )}
 
+        {/* Main Grid: Interactive Canvas (8 cols) + Resource Inspector (4 cols) */}
         <Grid gridDefinition={[{ colspan: { default: 12, l: 8 } }, { colspan: { default: 12, l: 4 } }]}>
-          <Container header={<Header variant="h2">Topology graph</Header>} disableContentPaddings>
+          <Container
+            header={
+              <Header
+                variant="h2"
+                description="Top-down hierarchical topology. Click any node to inspect details."
+              >
+                Topology Canvas
+              </Header>
+            }
+            disableContentPaddings
+          >
             <div ref={containerRef}>
               {loading ? (
-                <Box textAlign="center" padding="xxxl"><SpaceBetween size="s" alignItems="center"><Spinner size="large" /><Box>Loading topology…</Box></SpaceBetween></Box>
+                <Box textAlign="center" padding="xxxl">
+                  <SpaceBetween size="s" alignItems="center">
+                    <Spinner size="large" />
+                    <Box>Building hierarchical topology…</Box>
+                  </SpaceBetween>
+                </Box>
               ) : error ? (
-                <Box padding="l"><Alert type="error" header="Failed to load topology">{error}</Alert></Box>
+                <Box padding="l">
+                  <Alert type="error" header="Failed to load topology">
+                    {error}
+                  </Alert>
+                </Box>
               ) : !hasNodes ? (
                 <Box textAlign="center" padding="xxxl" color="text-body-secondary">
                   No network resources found. Create networks, routers, or instances to populate the topology.
                 </Box>
               ) : (
-                <TopologySVG
-                  graph={graph}
+                <SkylineTopologyCanvas
+                  layoutResult={layoutResult}
                   width={dims.width}
                   height={dims.height}
-                  onSelect={setSelected}
-                  selectedId={selected?.id}
+                  selectedId={selectedNode?.id}
+                  onSelectNode={setSelectedNode}
                 />
               )}
             </div>
           </Container>
 
-          <NodeInspector node={selected} onNavigate={navigate} />
+          <NodeInspector node={selectedNode} onNavigate={navigate} />
         </Grid>
 
-        <Legend />
+        {/* Skyline Legend */}
+        <SkylineLegend />
       </SpaceBetween>
     </ContentLayout>
   )

@@ -16,6 +16,10 @@ export function ToastProvider({ children }) {
     setItems(list => list.filter(i => i.id !== id))
   }, [])
 
+  const clearToasts = useCallback(() => {
+    setItems([])
+  }, [])
+
   const addToast = useCallback((msg, type = 'info') => {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
     const flashType = type === 'error' ? 'error'
@@ -35,6 +39,8 @@ export function ToastProvider({ children }) {
       setTimeout(() => dismiss(id), 5000)
     }
   }, [dismiss])
+
+  addToast.clear = clearToasts
 
   return (
     <ToastCtx.Provider value={addToast}>
@@ -87,11 +93,12 @@ export function AuthProvider({ children }) {
   }, [])
 
   const logout = useCallback(async () => {
+    localStorage.removeItem('cloudx_token')
+    setUser(null)
+    setProjects([])
     try {
       await api.logout()
     } catch (e) { /* ignore */ }
-    setUser(null)
-    setProjects([])
   }, [])
 
   /**
@@ -100,12 +107,16 @@ export function AuthProvider({ children }) {
   const switchProject = useCallback(async (projectId) => {
     try {
       const data = await api.switchProject(projectId)
+      if (data?.token) {
+        localStorage.setItem('cloudx_token', data.token)
+      }
       if (data?.user) setUser(data.user)
       await checkSession()
+      await loadProjects()
     } catch (e) {
       console.warn('switchProject failed:', e.message)
     }
-  }, [checkSession])
+  }, [checkSession, loadProjects])
 
   const value = useMemo(
     () => ({ user, loading, login, logout, checkSession, projects, switchProject }),

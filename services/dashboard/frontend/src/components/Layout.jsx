@@ -201,15 +201,20 @@ export default function Layout() {
 
   const crumbs = useMemo(() => buildCrumbs(location.pathname), [location.pathname])
 
+  const navItems = useMemo(() => {
+    if (user?.role === 'admin') return NAV_ITEMS
+    return NAV_ITEMS.filter(section => section.text !== 'Administration')
+  }, [user?.role])
+
   // Highlight the deepest matching nav link.
   const activeHref = useMemo(() => {
     if (location.pathname === '/') return '/'
-    const flat = NAV_ITEMS.flatMap(i => (i.items ? i.items : i.type === 'link' ? [i] : []))
+    const flat = navItems.flatMap(i => (i.items ? i.items : i.type === 'link' ? [i] : []))
     const match = flat
       .filter(i => location.pathname.startsWith(i.href) && i.href !== '/')
       .sort((a, b) => b.href.length - a.href.length)[0]
     return match?.href || location.pathname
-  }, [location.pathname])
+  }, [location.pathname, navItems])
 
   const handleFollow = (event) => {
     if (event.detail.external) return
@@ -265,13 +270,15 @@ export default function Layout() {
       iconName: 'user-profile',
       items: [
         { id: 'api-access', text: 'API access & endpoints' },
-        { id: 'keys', text: 'Access keys' },
-        { id: 'roles', text: 'Role management' },
+        ...(user?.role === 'admin' ? [
+          { id: 'keys', text: 'Access keys' },
+          { id: 'roles', text: 'Role management' },
+        ] : []),
         { id: 'signout', text: 'Sign out' },
       ],
-      onItemClick: ({ detail }) => {
+      onItemClick: async ({ detail }) => {
         if (detail.id === 'signout') {
-          logout()
+          await logout()
           navigate('/login')
         } else if (detail.id === 'api-access') {
           navigate('/')
@@ -330,7 +337,7 @@ export default function Layout() {
           <SideNavigation
             header={{ href: '/', text: 'Dashboard' }}
             activeHref={activeHref}
-            items={NAV_ITEMS}
+            items={navItems}
             onFollow={handleFollow}
           />
         }

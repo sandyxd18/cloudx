@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
@@ -20,12 +20,21 @@ export default function LoginPage() {
   const toast = useToast()
   const navigate = useNavigate()
 
+  useEffect(() => {
+    toast.clear?.()
+  }, [toast])
+
   const handleSubmit = async (e) => {
     e?.preventDefault?.()
     setError('')
+    toast.clear?.()
     setLoading(true)
     try {
-      await api.login({ username: form.username, password: form.password })
+      await api.login({
+        username: form.username,
+        password: form.password,
+        project: form.project?.trim() || undefined,
+      })
       await checkSession()
       toast('Signed in successfully', 'success')
       navigate('/')

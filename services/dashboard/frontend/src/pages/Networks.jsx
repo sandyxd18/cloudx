@@ -127,7 +127,7 @@ export default function NetworksPage() {
           { id: 'external', header: 'External', cell: item => <BoolStatus value={!!(item.external || item['router:external'] === 'External')} /> },
           { id: 'shared', header: 'Shared', cell: item => <BoolStatus value={!!item.shared} /> },
           { id: 'admin', header: 'Admin state', cell: item => <BoolStatus value={item.admin_state_up !== false} trueText="UP" falseText="DOWN" /> },
-          { id: 'az', header: 'Availability zone', cell: item => item.availability_zone || 'nova' },
+          { id: 'az', header: 'Availability zone', cell: item => item.availability_zone || 'default' },
         ]}
         filter={
           <TextFilter
