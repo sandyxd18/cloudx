@@ -15,13 +15,11 @@ Database: cloudx_orchestration
 
 import logging
 import os
-import sys
 import time
 from datetime import datetime, timedelta, timezone
 
 import requests
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 log = logging.getLogger("orchestration-worker")
 
@@ -32,7 +30,7 @@ TELEMETRY_API_URL = os.getenv("TELEMETRY_API_URL", "http://telemetry-api:8010").
 LOAD_BALANCER_API_URL = os.getenv("LOAD_BALANCER_API_URL", "http://load-balancer-api:8008").rstrip("/")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
-AUTH_ADMIN_PASSWORD = os.getenv("AUTH_ADMIN_PASSWORD", "admin123")
+AUTH_ADMIN_PASSWORD = os.environ["AUTH_ADMIN_PASSWORD"]
 
 MONITOR_INTERVAL = int(os.getenv("MONITOR_INTERVAL", "30"))  # seconds
 

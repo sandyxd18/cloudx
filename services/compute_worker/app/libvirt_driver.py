@@ -1,8 +1,11 @@
+import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from .config import LIBVIRT_URI, VM_NAME_PREFIX
 from .utils import short_id
+
+log = logging.getLogger("compute-worker")
 
 try:
     import libvirt
@@ -100,13 +103,21 @@ def domain_xml(
     ET.SubElement(features, "acpi")
     ET.SubElement(features, "apic")
 
-    ET.SubElement(domain, "clock", offset="utc")
+    clock = ET.SubElement(domain, "clock", offset="utc")
+    ET.SubElement(clock, "timer", name="rtc", tickpolicy="catchup")
+    ET.SubElement(clock, "timer", name="pit", tickpolicy="delay")
+    ET.SubElement(clock, "timer", name="hpet", present="no")
+    ET.SubElement(clock, "timer", name="kvmclock", present="yes")
+
     ET.SubElement(domain, "on_poweroff").text = "destroy"
     ET.SubElement(domain, "on_reboot").text = "restart"
-    ET.SubElement(domain, "on_crash").text = "destroy"
+    ET.SubElement(domain, "on_crash").text = "restart"
     devices = ET.SubElement(domain, "devices")
     ET.SubElement(devices, "emulator").text = "/usr/bin/qemu-system-x86_64"
     ET.SubElement(devices, "controller", type="scsi", model="virtio-scsi")
+
+    # Hardware watchdog to prevent silent guest kernel hangs during nested virt pause/resume
+    ET.SubElement(devices, "watchdog", model="i6300esb", action="reset")
 
     # Root disk — auto-detect LVM block / Ceph RBD / legacy file
     _build_boot_disk_element(devices, disk_path)
@@ -222,8 +233,8 @@ def get_domain_raw_counters(name: str, tap_name: str | None, disk_target: str = 
                 mem_used_kb = stats["available"] - stats["unused"]
             elif "rss" in stats:
                 mem_used_kb = stats["rss"]
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("memory stats unavailable: %s", exc)
 
         net_rx_bytes = net_tx_bytes = net_rx_packets = net_tx_packets = 0
         if tap_name:
@@ -232,16 +243,16 @@ def get_domain_raw_counters(name: str, tap_name: str | None, disk_target: str = 
                     domain.interfaceStats(tap_name)
                 net_rx_bytes, net_tx_bytes = rx_bytes, tx_bytes
                 net_rx_packets, net_tx_packets = rx_packets, tx_packets
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("interface stats unavailable: %s", exc)
 
         disk_read_req = disk_read_bytes = disk_write_req = disk_write_bytes = 0
         try:
             read_req, read_bytes, write_req, write_bytes, _errs = domain.blockStats(disk_target)
             disk_read_req, disk_read_bytes = read_req, read_bytes
             disk_write_req, disk_write_bytes = write_req, write_bytes
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("block stats unavailable: %s", exc)
 
         return {
             "cpu_time_ns": cpu_time_ns,
@@ -313,14 +324,16 @@ def delete(name: str) -> None:
     try:
         try:
             domain = conn.lookupByName(name)
-        except Exception:
+        except Exception as exc:
+            log.info("domain %s not found, nothing to delete: %s", name, exc)
             return
         if domain.isActive():
             domain.destroy()
         try:
             flags = getattr(libvirt, "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", 1) | getattr(libvirt, "VIR_DOMAIN_UNDEFINE_NVRAM", 4)
             domain.undefineFlags(flags)
-        except Exception:
+        except Exception as exc:
+            log.info("undefineFlags unsupported, using plain undefine: %s", exc)
             domain.undefine()
     finally:
         conn.close()
@@ -498,14 +511,16 @@ def resize(name: str, new_vcpus: int | None, new_ram_mb: int | None) -> None:
             # we fall back to config-only so the change takes effect on next boot.
             try:
                 domain.setVcpusFlags(new_vcpus, flags)
-            except Exception:
+            except Exception as exc:
+                log.info("live vCPU change not possible, applied to the persistent config only: %s", exc)
                 domain.setVcpusFlags(new_vcpus, cfg)
 
         if new_ram_mb is not None:
             ram_kb = new_ram_mb * 1024
             try:
                 domain.setMemoryFlags(ram_kb, flags)
-            except Exception:
+            except Exception as exc:
+                log.info("live memory change not possible, applied to the persistent config only: %s", exc)
                 domain.setMemoryFlags(ram_kb, cfg)
     finally:
         conn.close()
@@ -519,14 +534,12 @@ def get_console_log(name: str, lines: int = 50) -> str:
     We configure the VM with <log file="...console.log" append="on"/> on its
     PTY console, so we can just read that log file from the instance directory.
     """
-    import subprocess
+    from shared.proc import run
+
     from .config import LIBVIRT_URI
     try:
         # Read XML to find the log file path
-        result = subprocess.run(
-            ["virsh", "-c", LIBVIRT_URI, "dumpxml", name],
-            capture_output=True, text=True, timeout=10,
-        )
+        result = run(["virsh", "-c", LIBVIRT_URI, "dumpxml", name], check=False, timeout=10)
         if result.returncode != 0:
             return ""
         root = ET.fromstring(result.stdout)
@@ -536,10 +549,7 @@ def get_console_log(name: str, lines: int = 50) -> str:
             if log_el is not None:
                 log_file = log_el.attrib.get("file", "")
                 if log_file and Path(log_file).exists():
-                    tail = subprocess.run(
-                        ["tail", "-n", str(lines), log_file],
-                        capture_output=True, text=True, timeout=5,
-                    )
+                    tail = run(["tail", "-n", str(lines), log_file], check=False, timeout=5)
                     return tail.stdout
     except Exception as exc:
         return f"[Error fetching logs: {exc}]"
@@ -582,10 +592,11 @@ def rebuild(name: str, new_disk_path: str, seed_iso: str, tap_name: str,
             try:
                 flags = getattr(libvirt, "VIR_DOMAIN_UNDEFINE_MANAGED_SAVE", 1) | getattr(libvirt, "VIR_DOMAIN_UNDEFINE_NVRAM", 4)
                 domain.undefineFlags(flags)
-            except Exception:
+            except Exception as exc:
+                log.info("undefineFlags unsupported, using plain undefine: %s", exc)
                 domain.undefine()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("could not remove the old domain %s before rebuild: %s", name, exc)
         xml = domain_xml(name, ram_mb, vcpus, new_disk_path, seed_iso, tap_name, mac_address)
         new_domain = conn.defineXML(xml)
         new_domain.create()

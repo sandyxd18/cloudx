@@ -53,5 +53,5 @@ def download_and_prepare_disk(image_ref: str, target: Path) -> Path:
     cached = download_image(image)
     target.parent.mkdir(parents=True, exist_ok=True)
     # Convert to standalone qcow2 (breaks backing-file chain if image is an overlay)
-    run(["qemu-img", "convert", "-O", "qcow2", str(cached), str(target)])
+    run(["qemu-img", "convert", "-O", "qcow2", str(cached), str(target)], timeout=3600)
     return target

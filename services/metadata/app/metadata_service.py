@@ -18,7 +18,7 @@ import time
 from fastapi import HTTPException, Request
 
 from .clients import compute_get
-from .config import METADATA_BASE_URL, METADATA_HMAC_KEY
+from .config import METADATA_HMAC_KEY
 
 
 def _first_forwarded_for(value: str | None) -> str | None:
@@ -40,7 +40,7 @@ def lookup_metadata(
     query_port = port_id or query_params.get("port_id")
     query_ip = fixed_ip or query_params.get("fixed_ip")
     header_instance = headers.get("X-Instance-ID")
-    header_port = headers.get("X-Neutron-Port-ID")
+    header_port = headers.get("X-Port-ID")
     forwarded_for = _first_forwarded_for(headers.get("X-Forwarded-For"))
     client_ip = client.host if client else None
 
@@ -133,7 +133,7 @@ def meta_data_json(metadata: dict) -> dict:
         "name": metadata["name"],
         "hostname": metadata.get("hostname") or metadata["name"],
         "launch_index": 0,
-        "availability_zone": "nova",
+        "availability_zone": "default",
         "project_id": metadata.get("project_id", ""),
         "public_keys": metadata.get("public_keys") or {},
         "meta": metadata.get("meta") or {},
@@ -263,7 +263,7 @@ def _instance_identity_doc(metadata: dict) -> dict:
         "hostname": metadata.get("hostname") or metadata.get("name", ""),
         "project_id": metadata.get("project_id", ""),
         "instance_type": metadata.get("instance_type") or "unknown",
-        "availability_zone": "nova",
+        "availability_zone": "default",
         "region": "cloudx-region-1",
         "created_at": metadata.get("created_at", ""),
         "issued_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

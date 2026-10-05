@@ -13,7 +13,8 @@ All volumes appear as /dev/{VG}/{LV} on the host (and in VM via libvirt block di
 
 import logging
 import os
-import subprocess
+
+from shared.proc import output, run, succeeds
 
 log = logging.getLogger(__name__)
 
@@ -32,12 +33,13 @@ LVM_CONTAINER_CFG = [
 ]
 
 
-def _run(cmd: list[str], check: bool = True) -> str:
-    """Run an LVM command, raise RuntimeError on failure."""
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if check and result.returncode != 0:
-        raise RuntimeError(f"LVM command failed: {' '.join(cmd)}\nstdout: {result.stdout}\nstderr: {result.stderr}")
-    return result.stdout.strip()
+LVM_TIMEOUT = 120      # lvm metadata commands
+LVM_ZEROING_TIMEOUT = 1800  # lvcreate -Z y writes zeroes over the whole new volume
+
+
+def _run(cmd: list[str], check: bool = True, timeout: float | None = LVM_TIMEOUT) -> str:
+    """Run an LVM command and return stdout; raises CommandError (a RuntimeError) on failure."""
+    return output(cmd, check=check, timeout=timeout)
 
 
 def vg_name() -> str:
@@ -47,13 +49,11 @@ def vg_name() -> str:
 
 
 def _vg_exists(vg: str) -> bool:
-    result = subprocess.run(["vgdisplay", vg], capture_output=True)
-    return result.returncode == 0
+    return succeeds(["vgdisplay", vg])
 
 
 def _pv_exists(pv: str) -> bool:
-    result = subprocess.run(["pvdisplay", pv], capture_output=True)
-    return result.returncode == 0
+    return succeeds(["pvdisplay", pv])
 
 
 def ensure_vg() -> None:
@@ -64,8 +64,8 @@ def ensure_vg() -> None:
     vg = vg_name()
 
     # Refresh system LVM state
-    subprocess.run(["pvscan"], capture_output=True)
-    subprocess.run(["vgchange", "-ay", vg], capture_output=True)
+    run(["pvscan"], check=False)
+    run(["vgchange", "-ay", vg], check=False)
 
     if _vg_exists(vg):
         log.info("LVM: VG '%s' active and ready", vg)
@@ -79,12 +79,12 @@ def ensure_vg() -> None:
         log.info("LVM: LVM_PV_NAME not set, initializing self-healing loop device at %s", img_path)
         if not os.path.exists(img_path):
             log.info("LVM: Creating 10GB backing file at %s", img_path)
-            subprocess.run(["dd", "if=/dev/zero", f"of={img_path}", "bs=1M", "count=10240"], check=True)
+            run(["dd", "if=/dev/zero", f"of={img_path}", "bs=1M", "count=10240"], timeout=1800)
 
-        res = subprocess.run(["losetup", "-j", img_path], capture_output=True, text=True)
+        res = run(["losetup", "-j", img_path], check=False)
         loop_dev = res.stdout.split(":")[0].strip() if res.stdout else ""
         if not loop_dev:
-            res_attach = subprocess.run(["losetup", "--find", "--show", img_path], capture_output=True, text=True, check=True)
+            res_attach = run(["losetup", "--find", "--show", img_path])
             loop_dev = res_attach.stdout.strip()
             log.info("LVM: Attached %s to loop device %s", img_path, loop_dev)
 
@@ -104,10 +104,7 @@ def ensure_vg() -> None:
 
 def _udev_settle() -> None:
     """Ask udev to process pending events. No-op if udevadm is not available."""
-    try:
-        subprocess.run(["udevadm", "settle", "--timeout=10"], capture_output=True)
-    except FileNotFoundError:
-        pass  # udevadm not in container — safe to skip when LVM udev_sync=0
+    run(["udevadm", "settle", "--timeout=10"], check=False, timeout=30)  # missing udevadm (containers) is fine
 
 
 def _cleanup_stale_lv(volume_name: str, vg: str) -> None:
@@ -120,21 +117,17 @@ def _cleanup_stale_lv(volume_name: str, vg: str) -> None:
     dm_name = f"{vg}-{volume_name}"
 
     # Check if this LV already exists
-    lv_exists = subprocess.run(
-        ["lvs", "--noheadings", "-o", "lv_name", f"{vg}/{volume_name}"],
-        capture_output=True,
-    ).returncode == 0
+    lv_exists = succeeds(["lvs", "--noheadings", "-o", "lv_name", f"{vg}/{volume_name}"], timeout=LVM_TIMEOUT)
 
     if lv_exists:
         log.info("LVM: removing existing LV %s before re-creating", dev_path)
-        subprocess.run(["lvremove", "-f", dev_path] + LVM_CONTAINER_CFG, capture_output=True)
+        run(["lvremove", "-f", dev_path] + LVM_CONTAINER_CFG, check=False, timeout=300)
         _udev_settle()
 
     # Also forcibly remove stale dm entry (no-op if not present)
-    r = subprocess.run(["dmsetup", "info", dm_name], capture_output=True)
-    if r.returncode == 0:
+    if succeeds(["dmsetup", "info", dm_name]):
         log.info("LVM: removing stale dm entry %s", dm_name)
-        subprocess.run(["dmsetup", "remove", "--force", "--retry", dm_name], capture_output=True)
+        run(["dmsetup", "remove", "--force", "--retry", dm_name], check=False, timeout=300)
         _udev_settle()
 
 
@@ -209,7 +202,8 @@ def create(volume_name: str, size_gb: int, lvm_type: str = "default") -> str:
         ] + LVM_CONTAINER_CFG)
     else:
         _cleanup_stale_lv(volume_name, vg)
-        _run(["lvcreate", "-y", "-W", "y", "-Z", "y", "-L", f"{size_gb}G", "-n", volume_name, vg] + LVM_CONTAINER_CFG)
+        _run(["lvcreate", "-y", "-W", "y", "-Z", "y", "-L", f"{size_gb}G", "-n", volume_name, vg] + LVM_CONTAINER_CFG,
+         timeout=LVM_ZEROING_TIMEOUT)
     return f"/dev/{vg}/{volume_name}"
 
 
@@ -230,20 +224,18 @@ def create_from_source(volume_name: str, source_path: str, size_gb: int) -> str:
     _cleanup_stale_lv(volume_name, vg)
 
     # Create the LV with udev sync disabled (required inside Docker containers)
-    _run(["lvcreate", "-y", "-W", "y", "-Z", "y", "-L", f"{size_gb}G", "-n", volume_name, vg] + LVM_CONTAINER_CFG)
+    _run(["lvcreate", "-y", "-W", "y", "-Z", "y", "-L", f"{size_gb}G", "-n", volume_name, vg] + LVM_CONTAINER_CFG,
+         timeout=LVM_ZEROING_TIMEOUT)
 
     # Give the kernel a moment to register the new device node
     _udev_settle()
 
     # Write image to block device using qemu-img convert for format compatibility
-    result = subprocess.run(
-        ["qemu-img", "convert", "-O", "raw", source_path, dev],
-        capture_output=True, text=True,
-    )
+    result = run(["qemu-img", "convert", "-O", "raw", source_path, dev], check=False, timeout=None)  # size of the image
     if result.returncode != 0:
         # Fallback to dd if qemu-img unavailable or fails
         log.warning("qemu-img convert failed, falling back to dd: %s", result.stderr)
-        _run(["dd", f"if={source_path}", f"of={dev}", "bs=4M", "status=none"])
+        _run(["dd", f"if={source_path}", f"of={dev}", "bs=4M", "status=none"], timeout=None)
 
     # Best-effort resize (growfs/resize2fs/xfs_growfs)
     _try_resize_fs(dev)
@@ -258,10 +250,9 @@ def _try_resize_fs(dev: str) -> None:
         ["resize2fs", dev],
         ["xfs_growfs", dev],
     ]:
-        try:
-            subprocess.run(cmd, capture_output=True, timeout=30)
-        except Exception:
-            pass
+        res = run(cmd, check=False, timeout=30)
+        if res.returncode != 0:
+            log.debug("%s failed (exit %s): %s", cmd[0], res.returncode, res.stderr.strip())
 
 
 def delete(volume_name: str) -> None:
@@ -284,9 +275,7 @@ def device_path(volume_name: str) -> str:
 
 
 def exists(volume_name: str) -> bool:
-    vg = vg_name()
-    result = subprocess.run(["lvdisplay", f"{vg}/{volume_name}"], capture_output=True)
-    return result.returncode == 0
+    return succeeds(["lvdisplay", f"{vg_name()}/{volume_name}"], timeout=LVM_TIMEOUT)
 
 
 def list_volumes() -> list[str]:

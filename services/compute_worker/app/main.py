@@ -1,14 +1,9 @@
 from __future__ import annotations
-import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-try:
-    from shared.config import load_service_config
-    load_service_config("compute-worker")
-except Exception as _cfg_err:
-    pass
+from shared.config import load_service_config
+load_service_config("compute-worker")
 
 """
-cloudx Compute Worker — AMQP Consumer (nova-compute equivalent)
+cloudx Compute Worker — AMQP Consumer (Compute Hypervisor Worker)
 ================================================================
 
 Consumes messages from RabbitMQ queue ``compute``.
@@ -37,17 +32,17 @@ from collections import deque
 import requests
 
 # Append parent so shared/ is importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.rpc import RPCClient, RPCConsumer  # noqa: E402
 
 from . import libvirt_driver, volume_manager, worker  # noqa: E402
-from .config import LIBVIRT_URI, OVS_BRIDGE, IMAGE_API_URL, BLOCK_STORE_API_URL  # noqa: E402
+from .config import LIBVIRT_URI, OVS_BRIDGE, IMAGE_API_URL, BLOCK_STORE_API_URL, VM_NAME_PREFIX  # noqa: E402
+from shared.proc import CommandError, succeeds
 from .utils import run, tool_available  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@rabbitmq:5672/")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
 LOG_LEVEL    = os.getenv("LOG_LEVEL", "INFO")
 COMPUTE_HOST = os.getenv("COMPUTE_HOST", os.getenv("NODE_NAME", "cloudx-compute-01"))
 PLACEMENT_API_URL = os.getenv("PLACEMENT_API_URL", "http://192.168.10.10:8006")
@@ -116,7 +111,7 @@ def conductor_delete_record(server_id: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Power-state reconciliation (nova-compute _sync_power_states equivalent)
+# Power-state reconciliation (_sync_power_states reconciliation)
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # Anything that stops a domain outside our own RPC handlers — `virsh destroy`,
@@ -405,8 +400,8 @@ def _probe_block_store_url(base_url: str) -> str:
                 log.info("block-store-api reachable at %s", url)
                 _resolved_block_store_url = url
                 return url
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("block-store-api not reachable at %s: %s", url, exc)
     log.warning("No block-store-api URL responded; defaulting to %s", base_url)
     _resolved_block_store_url = base_url
     return base_url
@@ -471,7 +466,10 @@ def handle_health(args: dict) -> dict:
     ovs_available = tool_available("ovs-vsctl")
     br_int_exists = False
     if ovs_available:
-        br_int_exists = run(["ovs-vsctl", "br-exists", OVS_BRIDGE], check=False).returncode == 0
+        try:
+            br_int_exists = succeeds(["ovs-vsctl", "br-exists", OVS_BRIDGE])
+        except CommandError as exc:
+            log.warning("could not check OVS bridge %s: %s", OVS_BRIDGE, exc)
     libvirt_connected = False
     libvirt_error = None
     try:
@@ -747,7 +745,7 @@ def handle_shelve(args: dict) -> None:
         domain_name = args.get("libvirt_domain_name")
         if domain_name:
             try:
-                import libvirt as _libvirt
+                import libvirt as _libvirt  # noqa: F401  (availability probe: falls back to virsh when missing)
                 conn = libvirt_driver.connect()
                 domain = conn.lookupByName(domain_name)
                 if domain.isActive():
@@ -826,17 +824,13 @@ def handle_unshelve(args: dict) -> None:
                     # Download shelved image and restore to volume path
                     img_resp = requests.get(f"{image_api_url}/images/{shelved_image_id}/download", stream=True, timeout=300)
                     if img_resp.status_code == 200 and vol_path:
-                        import subprocess
                         import tempfile
                         with tempfile.NamedTemporaryFile(suffix=".qcow2", delete=False) as tmp:
                             for chunk in img_resp.iter_content(chunk_size=65536):
                                 if chunk:
                                     tmp.write(chunk)
                             tmp_path = tmp.name
-                        subprocess.run(
-                            ["qemu-img", "convert", "-O", "raw", tmp_path, vol_path],
-                            check=True, timeout=600
-                        )
+                        run(["qemu-img", "convert", "-O", "raw", tmp_path, vol_path], timeout=600)
                         import os as _os
                         _os.unlink(tmp_path)
                         log.info("unshelve: volume %s restored from image %s", root_volume_id, shelved_image_id)
@@ -900,10 +894,10 @@ def handle_live_migrate(args: dict) -> None:
         dom = None
         try:
             dom = conn.lookupByUUIDString(server_id)
-        except Exception:
+        except Exception:  # best-effort: falls back to lookup by name
             try:
                 dom = conn.lookupByName(f"{VM_NAME_PREFIX}-{server_id[:8]}")
-            except Exception:
+            except Exception:  # best-effort: dom stays None and a 'domain not found' error is raised below
                 pass
 
         if not dom:

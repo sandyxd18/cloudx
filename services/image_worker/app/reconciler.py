@@ -26,18 +26,18 @@ log = logging.getLogger("image-reconciler")
 
 RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL_SECONDS", "60"))
 IMAGE_API_URL = os.getenv("IMAGE_API_URL", "http://127.0.0.1:8002").rstrip("/")
-IMAGE_STORE_PATH = os.getenv("IMAGE_STORE_PATH", "/var/lib/mini-openstack/images")
+IMAGE_STORE_PATH = os.getenv("IMAGE_STORE_PATH", "/var/lib/cloudx/images")
 IMAGE_STORAGE_BACKEND = os.getenv("IMAGE_STORAGE_BACKEND", "file").lower()
 
 # MinIO config (only used when backend is minio)
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-MINIO_BUCKET = os.getenv("MINIO_BUCKET", "mini-openstack-images")
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "cloudx-images")
 
 
-def _image_exists(object_name: str) -> bool:
-    """Return True if the physical image object exists in storage."""
+def _image_exists(object_name: str) -> bool | None:
+    """True/False if the image object does/doesn't exist; None if storage could not be queried."""
     if IMAGE_STORAGE_BACKEND == "file":
         path = os.path.join(IMAGE_STORE_PATH, object_name)
         return os.path.exists(path)
@@ -55,8 +55,13 @@ def _image_exists(object_name: str) -> bool:
             )
             client.head_object(Bucket=MINIO_BUCKET, Key=object_name)
             return True
-        except Exception:
-            return False
+        except Exception as exc:
+            response = getattr(exc, "response", None)  # botocore ClientError carries the S3 error code
+            code = str(response.get("Error", {}).get("Code", "")) if isinstance(response, dict) else ""
+            if code in ("404", "NoSuchKey", "NotFound"):
+                return False
+            log.warning("[reconcile] cannot check image object %s: %s", object_name, exc)
+            return None  # unknown: never treated as 'missing'
     return False
 
 
@@ -123,6 +128,8 @@ def reconcile_images() -> None:
             continue
 
         physical_exists = _image_exists(object_name)
+        if physical_exists is None:
+            continue  # could not check this pass; do not touch the record
 
         # 1. DB says ACTIVE/DEACTIVATED but physical missing → mark error
         if not physical_exists and db_status in ("ACTIVE", "DEACTIVATED"):

@@ -1,3 +1,4 @@
+import logging
 import shutil
 from pathlib import Path
 
@@ -5,7 +6,11 @@ import requests
 
 from . import cloudinit, libvirt_driver, network_manager
 from .config import IMAGE_API_URL, INSTANCE_DIR, OVS_BRIDGE
-from .utils import run, tool_available
+from shared.proc import succeeds
+
+from .utils import tool_available
+
+log = logging.getLogger("compute-worker")
 
 
 def fetch_image(image_ref: str) -> dict:
@@ -22,7 +27,7 @@ def expose_to_host_libvirt(*paths: Path) -> None:
         for parent in path.parents:
             if parent == parent.parent or str(parent) == "/var/lib":
                 break
-            if str(parent).startswith("/var/lib/mini-openstack"):
+            if str(parent).startswith("/var/lib/cloudx") or str(parent).startswith("/var/lib/mini-openstack"):
                 parent.chmod(0o755)
 
 
@@ -33,7 +38,7 @@ def ensure_host_ready() -> None:
         raise RuntimeError("/dev/net/tun is required to create VM tap interfaces")
     if not tool_available("ovs-vsctl"):
         raise RuntimeError("ovs-vsctl is required to bind VM tap interfaces to OVS")
-    if run(["ovs-vsctl", "br-exists", OVS_BRIDGE], check=False).returncode != 0:
+    if not succeeds(["ovs-vsctl", "br-exists", OVS_BRIDGE]):
         raise RuntimeError(f"OVS bridge {OVS_BRIDGE} was not found; run scripts/prepare-host-libvirt.sh --create-br-int")
 
 
@@ -85,8 +90,8 @@ def spawn_server(server_id: str, payload: dict) -> dict:
     except Exception:
         try:
             libvirt_driver.delete(domain)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("rollback: could not delete domain %s: %s", domain, exc)
         network_manager.delete_tap(tap)
         if instance_dir.exists() and instance_dir.is_dir():
             shutil.rmtree(instance_dir)

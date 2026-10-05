@@ -13,18 +13,14 @@ Tables:
 """
 
 
-import json
 import logging
 import os
-import sys
-import threading
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
 
 import requests
+from shared.proc import run
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 log = logging.getLogger("telemetry-worker")
 
@@ -33,7 +29,7 @@ TELEMETRY_API_URL = os.getenv("TELEMETRY_API_URL", "http://127.0.0.1:8010").rstr
 COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
-AUTH_ADMIN_PASSWORD = os.getenv("AUTH_ADMIN_PASSWORD", "admin123")
+AUTH_ADMIN_PASSWORD = os.environ["AUTH_ADMIN_PASSWORD"]
 COMPUTE_HOST = os.getenv("COMPUTE_HOST", "single-node")
 
 SAMPLE_INTERVAL = int(os.getenv("SAMPLE_INTERVAL", "30"))  # seconds
@@ -136,8 +132,8 @@ def _get_instance_stats_libvirt(dom) -> dict:
                                 stats["disk_read_iops"] = bs[0]  # rd_req
                                 stats["disk_write_iops"] = bs[2]  # wr_req
                                 break
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            log.debug("disk stats unavailable: %s", exc)
     except Exception as e:
         log.debug("Block stats error: %s", e)
     
@@ -157,8 +153,8 @@ def _get_instance_stats_libvirt(dom) -> dict:
                             stats["net_rx_packets"] = ifs[1]  # rx_packets
                             stats["net_tx_packets"] = ifs[5]  # tx_packets
                             break
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.debug("interface stats unavailable: %s", exc)
     except Exception as e:
         log.debug("Interface stats error: %s", e)
     
@@ -167,15 +163,11 @@ def _get_instance_stats_libvirt(dom) -> dict:
 
 def _get_instance_stats_shell(instance_name: str) -> dict:
     """Fallback: get stats using virsh shell commands."""
-    import subprocess
     stats = {}
     
     try:
         # CPU and memory via domstats
-        result = subprocess.run(
-            ["virsh", "-c", LIBVIRT_URI, "domstats", instance_name],
-            capture_output=True, text=True, timeout=10
-        )
+        result = run(["virsh", "-c", LIBVIRT_URI, "domstats", instance_name], check=False, timeout=10)
         if result.returncode == 0:
             for line in result.stdout.split("\n"):
                 if "cpu.time=" in line:
@@ -296,10 +288,10 @@ def collect_and_send():
                 # Try to find domain by UUID or name
                 try:
                     dom = conn.lookupByUUIDString(instance_id)
-                except Exception:
+                except Exception:  # best-effort: falls back to lookup by name
                     try:
                         dom = conn.lookupByName(instance_name)
-                    except Exception:
+                    except Exception:  # best-effort: instance is not on this host; dom stays None
                         dom = None
                 
                 if dom:

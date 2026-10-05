@@ -1,6 +1,6 @@
 from __future__ import annotations
 """
-cloudx block-store-worker — AMQP Consumer (cinder-volume equivalent)
+cloudx block-store-worker — AMQP Consumer (Block Store Volume Worker)
 =====================================================================
 
 Consumes messages from RabbitMQ queue ``block-store``.
@@ -17,30 +17,30 @@ Handlers:
 
 
 import logging
-import math
 import os
-import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 
 # Append parent so shared/ is importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from shared.proc import run  # noqa: E402
 from shared.rpc import RPCClient, RPCConsumer  # noqa: E402
 
-from app.drivers import lvm, ceph  # noqa: E402
+from .drivers import lvm, ceph, nfs  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-RABBITMQ_URL  = os.getenv("RABBITMQ_URL",  "amqp://cloudx:cloudx@rabbitmq:5672/")
+RABBITMQ_URL  = os.getenv("RABBITMQ_URL",  "amqp://cloudx:cloudx@127.0.0.1:5672/")
 IMAGE_API_URL = os.getenv("IMAGE_API_URL", "http://image-api:8000").rstrip("/")
 LOG_LEVEL     = os.getenv("LOG_LEVEL", "INFO")
 
 STORAGE_LVM_DRIVER      = os.getenv("STORAGE_LVM_DRIVER", "false").lower() == "true"
 STORAGE_CEPH_RBD_DRIVER = os.getenv("STORAGE_CEPH_RBD_DRIVER", "false").lower() == "true"
+STORAGE_NFS_DRIVER      = os.getenv("STORAGE_NFS_DRIVER", "true").lower() == "true"
 LVM_VG_NAME  = os.getenv("LVM_VG_NAME", "")
 LVM_PV_NAME  = os.getenv("LVM_PV_NAME", "")
 CEPH_POOL    = os.getenv("CEPH_POOL", "")
@@ -157,8 +157,8 @@ def _create_backend(volume_id: str, backend: str, size_gb: int,
         finally:
             try:
                 os.unlink(tmp_path)
-            except Exception:
-                pass
+            except OSError as exc:
+                log.warning("could not remove temp file %s: %s", tmp_path, exc)
 
     if snapshot_id:
         snap_lv = _snap_lv_name(snapshot_id)
@@ -168,7 +168,7 @@ def _create_backend(volume_id: str, backend: str, size_gb: int,
         snap_path = snapshot_id  # caller passes snapshot_path separately
         if backend == "lvm":
             dev = lvm.create(lv, size_gb)
-            subprocess.run(["dd", f"if={snap_path}", f"of={dev}", "bs=4M", "status=none"], check=False)
+            run(["dd", f"if={snap_path}", f"of={dev}", "bs=4M", "status=none"], timeout=None)
             return dev
         else:
             snap_img, _, snap_name = snap_path.partition("@")
@@ -219,41 +219,49 @@ def handle_create_volume(args: dict) -> None:
             try:
                 if backend == "lvm":
                     path = lvm.create_from_source(lv, tmp_path, size_gb)
-                else:
+                elif backend == "ceph":
                     path = ceph.create_from_source(lv, tmp_path, size_gb)
+                else:
+                    path = nfs.create_from_source(lv, tmp_path, size_gb)
             finally:
                 try:
                     os.unlink(tmp_path)
-                except Exception:
-                    pass
+                except OSError as exc:
+                    log.warning("could not remove temp file %s: %s", tmp_path, exc)
 
         elif snapshot_id and snapshot_path:
             snap_lv = _snap_lv_name(snapshot_id)
             if backend == "lvm":
                 dev = lvm.create(lv, size_gb)
-                subprocess.run(["dd", f"if={snapshot_path}", f"of={dev}", "bs=4M", "status=none"], check=False)
+                run(["dd", f"if={snapshot_path}", f"of={dev}", "bs=4M", "status=none"], timeout=None)
                 path = dev
-            else:
+            elif backend == "ceph":
                 snap_img, _, snap_name = snapshot_path.partition("@")
                 snap_img = snap_img.replace("rbd:", "").split("/", 1)[-1]
                 path = ceph.clone(snap_img, snap_name, lv)
+            else:
+                path = nfs.clone(snapshot_path, snap_lv, lv)
 
         elif source_volume_id and source_path:
             if backend == "lvm":
                 dev = lvm.create(lv, size_gb)
-                subprocess.run(["dd", f"if={source_path}", f"of={dev}", "bs=4M", "status=none"], check=False)
+                run(["dd", f"if={source_path}", f"of={dev}", "bs=4M", "status=none"], timeout=None)
                 path = dev
-            else:
+            elif backend == "ceph":
                 snap_name = f"clone-src-{_snap_lv_name(volume_id)}"
                 src_img = source_path.replace("rbd:", "").split("/", 1)[-1]
                 path = ceph.clone(src_img, snap_name, lv)
+            else:
+                path = nfs.clone(source_path, "", lv)
 
         else:
             # Blank volume
             if backend == "lvm":
                 path = lvm.create(lv, size_gb, lvm_type=lvm_type)
-            else:
+            elif backend == "ceph":
                 path = ceph.create(lv, size_gb)
+            else:
+                path = nfs.create(lv, size_gb)
 
         # ── Apply Ceph QoS if volume type specifies limits ─────────────────
         if backend == "ceph" and (max_iops or max_throughput):
@@ -287,6 +295,8 @@ def handle_delete_volume(args: dict) -> None:
             lvm.delete(lv)
         elif backend == "ceph":
             ceph.delete(lv)
+        else:
+            nfs.delete(lv)
     except Exception as exc:
         log.warning("Backend delete for volume %s: %s (continuing with DB cleanup)", volume_id, exc)
 
@@ -307,6 +317,8 @@ def handle_extend_volume(args: dict) -> None:
             lvm.extend(lv, new_size_gb)
         elif backend == "ceph":
             ceph.extend(lv, new_size_gb)
+        else:
+            nfs.extend(lv, new_size_gb)
         conductor_update_volume(volume_id, {
             "status": "available",
             "size_gb": new_size_gb,
@@ -334,7 +346,7 @@ def handle_create_snapshot(args: dict) -> None:
         elif backend == "ceph":
             path = ceph.snapshot(lv, snap_lv, cow_gb)
         else:
-            raise ValueError(f"Unknown backend: {backend}")
+            path = nfs.snapshot(lv, snap_lv, cow_gb)
 
         conductor_update_snapshot(snapshot_id, {
             "status": "available",
@@ -357,6 +369,8 @@ def handle_delete_snapshot(args: dict) -> None:
             lvm.delete(snap_lv)
         elif backend == "ceph":
             ceph.delete(snap_lv)
+        else:
+            nfs.delete(snap_lv)
     except Exception as exc:
         log.warning("Backend delete for snapshot %s: %s", snapshot_id, exc)
 
@@ -458,7 +472,7 @@ def handle_migrate_volume(args: dict) -> None:
     target_host = args.get("target_host", "")
     force_copy  = args.get("force_host_copy", False)
 
-    # Parse target backend from the host string (e.g. "cinder@ceph#ceph" → "ceph")
+    # Parse target backend from the host string (e.g. "block_store@ceph#ceph" → "ceph")
     # Format is "service@driver#pool" (OpenStack convention)
     target_backend = backend  # default: same backend
     if "#" in target_host:
@@ -488,12 +502,7 @@ def handle_migrate_volume(args: dict) -> None:
             source_dev = f"/dev/{LVM_VG_NAME}/{source_lv}"
             dest_dev   = new_path
             log.info("Copying %s → %s via dd", source_dev, dest_dev)
-            result = subprocess.run(
-                ["dd", f"if={source_dev}", f"of={dest_dev}", "bs=4M", "status=none"],
-                capture_output=True, text=True, timeout=3600,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"dd failed: {result.stderr.strip()}")
+            run(["dd", f"if={source_dev}", f"of={dest_dev}", "bs=4M", "status=none"], timeout=3600)
             # Delete old LV
             try:
                 lvm.delete(source_lv)
@@ -504,12 +513,7 @@ def handle_migrate_volume(args: dict) -> None:
         elif backend == "ceph" and target_backend == "ceph":
             dest_rbd_name = f"vol-mig-{volume_id.replace('-', '')[:20]}"
             log.info("Ceph rbd copy: %s → %s", source_lv, dest_rbd_name)
-            result = subprocess.run(
-                ["rbd", "copy", "--pool", CEPH_POOL, source_lv, dest_rbd_name],
-                capture_output=True, text=True, timeout=3600,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"rbd copy failed: {result.stderr.strip()}")
+            run(["rbd", "copy", "--pool", CEPH_POOL, source_lv, dest_rbd_name], timeout=3600)
             new_path = f"rbd:{CEPH_POOL}/{dest_rbd_name}"
             # Delete old image (non-fatal)
             try:
@@ -526,32 +530,20 @@ def handle_migrate_volume(args: dict) -> None:
                 # Export from source
                 if backend == "lvm":
                     source_dev = f"/dev/{LVM_VG_NAME}/{source_lv}"
-                    subprocess.run(
-                        ["qemu-img", "convert", "-f", "raw", "-O", "raw", source_dev, tmp_path],
-                        check=True, capture_output=True, timeout=3600,
-                    )
+                    run(["qemu-img", "convert", "-f", "raw", "-O", "raw", source_dev, tmp_path], timeout=3600)
                 elif backend == "ceph":
-                    subprocess.run(
-                        ["rbd", "export", "--pool", CEPH_POOL, source_lv, tmp_path],
-                        check=True, capture_output=True, timeout=3600,
-                    )
+                    run(["rbd", "export", "--pool", CEPH_POOL, source_lv, tmp_path], timeout=3600)
 
                 # Import to destination
                 if target_backend == "lvm":
                     dest_lv_name = f"vol-mig-{volume_id.replace('-', '')[:20]}"
                     lvm.create(dest_lv_name, size_gb)
                     dest_dev = f"/dev/{LVM_VG_NAME}/{dest_lv_name}"
-                    subprocess.run(
-                        ["qemu-img", "convert", "-f", "raw", "-O", "raw", tmp_path, dest_dev],
-                        check=True, capture_output=True, timeout=3600,
-                    )
+                    run(["qemu-img", "convert", "-f", "raw", "-O", "raw", tmp_path, dest_dev], timeout=3600)
                     new_path = dest_dev
                 elif target_backend == "ceph":
                     dest_rbd_name = f"vol-mig-{volume_id.replace('-', '')[:20]}"
-                    subprocess.run(
-                        ["rbd", "import", "--pool", CEPH_POOL, tmp_path, dest_rbd_name],
-                        check=True, capture_output=True, timeout=3600,
-                    )
+                    run(["rbd", "import", "--pool", CEPH_POOL, tmp_path, dest_rbd_name], timeout=3600)
                     new_path = f"rbd:{CEPH_POOL}/{dest_rbd_name}"
             finally:
                 Path(tmp_path).unlink(missing_ok=True)
@@ -575,19 +567,24 @@ def handle_migrate_volume(args: dict) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Volume backup → MinIO/S3 (Cinder swift/s3 backup driver equivalent)
+# Volume backup → MinIO/S3 (Block Store S3 backup driver)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _mc_env() -> dict[str, str]:
+    """mc reads the `cloudx` alias from MC_HOST_cloudx, so the credentials never appear on a command line (`ps`)."""
+    endpoint = MINIO_ENDPOINT if "://" in MINIO_ENDPOINT else f"http://{MINIO_ENDPOINT}"
+    scheme, rest = endpoint.split("://", 1)
+    creds = f"{quote(MINIO_ACCESS_KEY, safe='')}:{quote(MINIO_SECRET_KEY, safe='')}"
+    return {**os.environ, "MC_HOST_cloudx": f"{scheme}://{creds}@{rest}"}
+
+
+def _mc(args: list[str], **kwargs):
+    return run(["mc", *args], env=_mc_env(), secrets=[MINIO_SECRET_KEY, quote(MINIO_SECRET_KEY, safe="")], **kwargs)
+
+
 def _mc_alias() -> None:
-    """Configure the mc alias 'cloudx' pointing at the backup MinIO endpoint."""
-    subprocess.run(
-        ["mc", "alias", "set", "cloudx", MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY],
-        check=True, capture_output=True, text=True,
-    )
-    subprocess.run(
-        ["mc", "mb", "--ignore-existing", f"cloudx/{BACKUP_BUCKET}"],
-        check=False, capture_output=True, text=True,
-    )
+    """Make sure the backup bucket exists (the `cloudx` mc alias itself comes from the environment, see _mc_env)."""
+    _mc(["mb", "--ignore-existing", f"cloudx/{BACKUP_BUCKET}"], check=False)
 
 
 def _export_volume_to_file(volume_path: str, backend: str, dest_file: str) -> None:
@@ -595,15 +592,9 @@ def _export_volume_to_file(volume_path: str, backend: str, dest_file: str) -> No
     if backend == "ceph":
         # volume_path like rbd:pool/image → strip prefix to pool/image
         rbd_name = volume_path.replace("rbd:", "").split("/", 1)[-1]
-        subprocess.run(
-            ["rbd", "export", "--pool", CEPH_POOL, rbd_name, dest_file],
-            check=True, capture_output=True, text=True, timeout=7200,
-        )
+        run(["rbd", "export", "--pool", CEPH_POOL, rbd_name, dest_file], timeout=7200)
     else:  # lvm (volume_path is a device like /dev/vg/vol-xxx)
-        subprocess.run(
-            ["qemu-img", "convert", "-f", "raw", "-O", "raw", volume_path, dest_file],
-            check=True, capture_output=True, text=True, timeout=7200,
-        )
+        run(["qemu-img", "convert", "-f", "raw", "-O", "raw", volume_path, dest_file], timeout=7200)
 
 
 def _import_file_to_volume(src_file: str, backend: str, volume_id: str, size_gb: int) -> str:
@@ -616,10 +607,7 @@ def _import_file_to_volume(src_file: str, backend: str, volume_id: str, size_gb:
         lv = _lv_name(volume_id)
         lvm.create(lv, size_gb)
         dev = f"/dev/{LVM_VG_NAME}/{lv}"
-        subprocess.run(
-            ["qemu-img", "convert", "-f", "raw", "-O", "raw", src_file, dev],
-            check=True, capture_output=True, text=True, timeout=7200,
-        )
+        run(["qemu-img", "convert", "-f", "raw", "-O", "raw", src_file, dev], timeout=7200)
         return dev
 
 
@@ -638,10 +626,7 @@ def handle_backup_volume(args: dict) -> None:
         with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as f:
             tmp = f.name
         _export_volume_to_file(volume_path, backend, tmp)
-        subprocess.run(
-            ["mc", "cp", tmp, f"cloudx/{BACKUP_BUCKET}/{object_key}"],
-            check=True, capture_output=True, text=True, timeout=7200,
-        )
+        _mc(["cp", tmp, f"cloudx/{BACKUP_BUCKET}/{object_key}"], timeout=7200)
         conductor_update_backup(backup_id, {"status": "available", "object_key": object_key})
         log.info("Backup %s uploaded to %s/%s", backup_id, BACKUP_BUCKET, object_key)
     except Exception as exc:
@@ -666,10 +651,7 @@ def handle_restore_backup(args: dict) -> None:
         _mc_alias()
         with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as f:
             tmp = f.name
-        subprocess.run(
-            ["mc", "cp", f"cloudx/{BACKUP_BUCKET}/{object_key}", tmp],
-            check=True, capture_output=True, text=True, timeout=7200,
-        )
+        _mc(["cp", f"cloudx/{BACKUP_BUCKET}/{object_key}", tmp], timeout=7200)
         new_path = _import_file_to_volume(tmp, backend, volume_id, size_gb)
         conductor_update_volume(volume_id, {"status": "available", "path": new_path})
         log.info("Backup %s restored into volume %s at %s", backup_id, volume_id, new_path)
@@ -689,10 +671,7 @@ def handle_delete_backup(args: dict) -> None:
     try:
         if object_key:
             _mc_alias()
-            subprocess.run(
-                ["mc", "rm", f"cloudx/{BACKUP_BUCKET}/{object_key}"],
-                check=False, capture_output=True, text=True,
-            )
+            _mc(["rm", f"cloudx/{BACKUP_BUCKET}/{object_key}"], check=False)
     except Exception as exc:
         log.warning("Backup object delete for %s: %s", backup_id, exc)
     conductor_delete_backup(backup_id)
@@ -775,7 +754,7 @@ def main():
         sys.exit(1)
 
     # Start background storage reconciler thread (same interval as compute_worker)
-    from app.reconciler import start_reconcile_thread  # noqa: E402
+    from .reconciler import start_reconcile_thread  # noqa: E402
     start_reconcile_thread(_rpc)
 
     consumer = RPCConsumer(

@@ -22,7 +22,8 @@ Volumes are accessed by VMs via libvirt XML network disk:
 import json
 import logging
 import os
-import subprocess
+
+from shared.proc import output, run
 
 log = logging.getLogger(__name__)
 
@@ -31,15 +32,12 @@ CEPH_CONF    = os.getenv("CEPH_CONF", "/etc/ceph/ceph.conf")
 CEPH_KEYRING = os.getenv("CEPH_KEYRING", "")
 
 
-def _rbd(*args: str) -> str:
+def _rbd(*args: str, timeout: float | None = 300) -> str:
     cmd = ["rbd", "--conf", CEPH_CONF]
     if CEPH_KEYRING:
         cmd += ["--keyring", CEPH_KEYRING]
     cmd += list(args)
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"rbd command failed: {' '.join(cmd)}\nstdout: {result.stdout}\nstderr: {result.stderr}")
-    return result.stdout.strip()
+    return output(cmd, timeout=timeout)  # CommandError (a RuntimeError) on failure
 
 
 def pool() -> str:
@@ -64,14 +62,11 @@ def create_from_source(image_name: str, source_path: str, size_gb: int) -> str:
     """
     p = pool()
     # Use qemu-img convert to import into RBD
-    result = subprocess.run(
-        ["qemu-img", "convert", "-O", "raw", source_path, f"rbd:{p}/{image_name}"],
-        capture_output=True, text=True,
-    )
+    result = run(["qemu-img", "convert", "-O", "raw", source_path, f"rbd:{p}/{image_name}"], check=False, timeout=None)
     if result.returncode != 0:
         # Fallback: rbd import
         log.warning("qemu-img convert to rbd failed, trying rbd import: %s", result.stderr)
-        _rbd("import", source_path, f"{p}/{image_name}")
+        _rbd("import", source_path, f"{p}/{image_name}", timeout=None)
 
     # Resize if needed (source might be smaller than requested size)
     _rbd("resize", f"{p}/{image_name}", "--size", f"{size_gb * 1024}M", "--allow-shrink")
@@ -110,15 +105,18 @@ def exists(image_name: str) -> bool:
     try:
         _rbd("info", f"{pool()}/{image_name}")
         return True
-    except RuntimeError:
-        return False
+    except RuntimeError as exc:
+        if "No such file or directory" in str(exc):   # rbd: error opening image ...: (2) No such file or directory
+            return False
+        raise
 
 
 def list_images() -> list[str]:
     try:
         out = _rbd("ls", pool(), "--format", "json")
         return json.loads(out)
-    except Exception:
+    except Exception as exc:
+        log.warning("rbd ls failed: %s", exc)
         return []
 
 

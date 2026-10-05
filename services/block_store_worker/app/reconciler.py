@@ -20,14 +20,12 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable
-from typing import Any
 
 sys = __import__("sys")
 os_mod = os  # shadow to keep linter happy
 
 # These imports resolve when the module is imported from the worker package.
-from app.drivers import lvm, ceph  # noqa: E402
+from .drivers import lvm, ceph  # noqa: E402
 
 log = logging.getLogger("block-store-reconciler")
 
@@ -51,31 +49,50 @@ def _snap_lv_name(snapshot_id: str) -> str:
     return f"snap-{snapshot_id.replace('-', '')[:22]}"
 
 
-def _backend_exists_for_volume(volume: dict) -> bool:
-    """Return True if the physical storage object for *volume* is present."""
+def _backend_exists_for_volume(volume: dict) -> bool | None:
+    """True/False if the physical storage object for *volume* is/is not present; None if it could not be checked."""
     backend = volume.get("backend", "lvm").lower()
     name = _lv_name(volume["id"])
 
     if backend == "lvm":
-        return lvm.exists(name)
+        try:
+            return lvm.exists(name)
+        except Exception as exc:
+            log.warning("[reconcile] cannot check lvm object %s: %s", name, exc)
+            return None  # unknown: never treated as 'missing'
     if backend == "ceph":
-        return ceph.exists(name)
-    # file-based volumes (future / unsupported today)
+        try:
+            return ceph.exists(name)
+        except Exception as exc:
+            log.warning("[reconcile] cannot check ceph object %s: %s", name, exc)
+            return None  # unknown: never treated as 'missing'
+    # file-based / NFS volumes
     path = volume.get("path", "")
     if path:
         return os.path.exists(path)
     return False
 
 
-def _backend_exists_for_snapshot(snap: dict) -> bool:
-    """Return True if the physical snapshot object for *snap* is present."""
+def _backend_exists_for_snapshot(snap: dict) -> bool | None:
+    """True/False if the physical snapshot object for *snap* is/is not present; None if it could not be checked."""
     backend = snap.get("backend", "lvm").lower()
     name = _snap_lv_name(snap["id"])
 
     if backend == "lvm":
-        return lvm.exists(name)
+        try:
+            return lvm.exists(name)
+        except Exception as exc:
+            log.warning("[reconcile] cannot check lvm object %s: %s", name, exc)
+            return None  # unknown: never treated as 'missing'
     if backend == "ceph":
-        return ceph.exists(name)
+        try:
+            return ceph.exists(name)
+        except Exception as exc:
+            log.warning("[reconcile] cannot check ceph object %s: %s", name, exc)
+            return None  # unknown: never treated as 'missing'
+    path = snap.get("path", "")
+    if path:
+        return os.path.exists(path)
     return False
 
 
@@ -103,6 +120,8 @@ def reconcile_volumes(rpc_client) -> None:
             continue  # skip transient / handler-owned statuses
 
         physical_exists = _backend_exists_for_volume(vol)
+        if physical_exists is None:
+            continue  # could not check this pass; do not touch the record
 
         # 1. DB says available/in-use/creating/error but physical missing
         if not physical_exists and db_status in ("available", "in-use", "creating", "error"):
@@ -160,6 +179,8 @@ def reconcile_snapshots(rpc_client) -> None:
             continue
 
         physical_exists = _backend_exists_for_snapshot(snap)
+        if physical_exists is None:
+            continue  # could not check this pass; do not touch the record
 
         if not physical_exists and db_status in ("available", "error"):
             log.warning(

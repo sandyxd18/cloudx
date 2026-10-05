@@ -1,20 +1,7 @@
 import shutil
-import subprocess
 from pathlib import Path
 
-
-class CommandError(RuntimeError):
-    def __init__(self, cmd: list[str], stderr: str):
-        super().__init__(f"{' '.join(cmd)} failed: {stderr}")
-        self.cmd = cmd
-        self.stderr = stderr
-
-
-def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    proc = subprocess.run(cmd, text=True, capture_output=True)
-    if check and proc.returncode != 0:
-        raise CommandError(cmd, proc.stderr.strip() or proc.stdout.strip())
-    return proc
+from shared.proc import CommandError, run  # noqa: F401  (re-exported: callers import them from here)
 
 
 def tool_available(name: str) -> bool:

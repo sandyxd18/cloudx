@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 METADATA_API_URL = os.getenv("METADATA_API_URL", "http://metadata-api:8775").rstrip("/")
 NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
 
-app = FastAPI(title="mini OpenStack lab metadata-proxy", version="1.0.0")
+app = FastAPI(title="CloudX metadata-proxy", version="1.0.0")
 
 
 @app.get("/health")
@@ -41,7 +41,7 @@ def forward(path: str, request: Request) -> Response:
     port = lookup_port(ip)
     headers = {"X-Forwarded-For": ip or ""}
     if port.get("id"):
-        headers["X-Neutron-Port-ID"] = port["id"]
+        headers["X-Port-ID"] = port["id"]
     if port.get("device_id"):
         headers["X-Instance-ID"] = port["device_id"]
     try:

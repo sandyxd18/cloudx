@@ -1,6 +1,6 @@
 from __future__ import annotations
 """
-cloudx Image Worker — AMQP Consumer (glance-import equivalent)
+cloudx Image Worker — AMQP Consumer (Image Import Worker)
 ==============================================================
 
 Consumes messages from RabbitMQ queue ``image``.
@@ -21,18 +21,17 @@ from pathlib import Path
 import requests
 
 # Append parent so shared/ is importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.rpc import RPCConsumer  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────────
 RABBITMQ_URL          = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
 IMAGE_API_URL         = os.getenv("IMAGE_API_URL", "http://127.0.0.1:8002").rstrip("/")
-IMAGE_STORE_PATH      = Path(os.getenv("IMAGE_STORE_PATH", "/var/lib/mini-openstack/images"))
+IMAGE_STORE_PATH      = Path(os.getenv("IMAGE_STORE_PATH", "/var/lib/cloudx/images"))
 IMAGE_STORAGE_BACKEND = os.getenv("IMAGE_STORAGE_BACKEND", "file").lower()
 MINIO_ENDPOINT        = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
 MINIO_ACCESS_KEY      = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY      = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-MINIO_BUCKET          = os.getenv("MINIO_BUCKET", "mini-openstack-images")
+MINIO_BUCKET          = os.getenv("MINIO_BUCKET", "cloudx-images")
 LOG_LEVEL             = os.getenv("LOG_LEVEL", "INFO")
 
 logging.basicConfig(
@@ -211,7 +210,7 @@ def main():
         sys.exit(1)
 
     # Start background image reconciler thread
-    from app.reconciler import start_reconcile_thread  # noqa: E402
+    from .reconciler import start_reconcile_thread  # noqa: E402
     start_reconcile_thread()
 
     consumer = RPCConsumer(

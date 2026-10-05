@@ -1,6 +1,6 @@
 from __future__ import annotations
 """
-cloudx Conductor — nova-conductor equivalent
+cloudx Conductor — Compute Conductor Service
 ==============================================
 
 AMQP consumer that acts as a DB proxy for compute and block-store workers.
@@ -38,17 +38,16 @@ import sys
 import time
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 # Append parent path so shared/ is importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared.rpc import RPCClient, RPCConsumer  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 DATABASE_URL = os.getenv("DATABASE_URL",
-    "postgresql+psycopg://mini:mini@postgres:5432/mini_openstack")
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@rabbitmq:5672/")
+    "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx")
+RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
 LOG_LEVEL    = os.getenv("LOG_LEVEL", "INFO")
 
 logging.basicConfig(
