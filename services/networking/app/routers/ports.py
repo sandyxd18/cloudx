@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from .. import ovn_cli
 from ..config import log
 from ..db import DB
-from ..events import _publish_net_event
+from ..events import _actor, _publish_net_event
 from ..ipam import allocate_fixed_ip, format_id_list, parse_id_list
 from ..models import FloatingIP, Network, Port, Router, SecurityGroup, Subnet, mac
 from ..ovn_cli import _ovn_register_dns, apply_security_groups, port_group_name
@@ -105,6 +105,7 @@ def create_port(payload: PortIn, current: CurrentUser, db: DB):
         "network_id": port.network_id,
         "fixed_ip":   port.fixed_ip,
         "device_id":  port.device_id,
+        **_actor({**current, "project_id": current.get("project_id") or network.project_id}),
     })
     return port_to_dict(db, port)
 

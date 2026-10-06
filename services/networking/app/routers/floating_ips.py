@@ -7,6 +7,7 @@ from sqlalchemy import select
 from .. import ovn_cli
 from ..config import log
 from ..db import DB
+from ..events import _actor, _publish_net_event
 from ..ipam import allocate_floating_ip, find_router_for_fip, resolve_association_port
 from ..models import FloatingIP, Network, Port, Router
 from ..ovn_cli import nat_rule_args
@@ -64,6 +65,8 @@ def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
     db.add(fip)
     db.commit()
     db.refresh(fip)
+    _publish_net_event("network.floating_ip.create", {
+        "floating_ip_id": fip.id, "floating_ip": floating_ip, **_actor(current)})
     return obj_to_dict(fip)
 
 @router.get("/floating-ips")
@@ -91,11 +94,15 @@ def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, current: Cur
     fip.status = "ACTIVE"
     db.commit()
     db.refresh(fip)
+    _publish_net_event("network.floating_ip.associate", {
+        "floating_ip_id": fip.id, "floating_ip": fip.floating_ip, "port_id": port.id,
+        "server_id": fip.server_id, **_actor(current)})
     return fip_to_os_dict(db, fip, current)
 
 @router.post("/floating-ips/{ref}/disassociate")
-def disassociate_floating_ip(ref: str, _: CurrentUser, db: DB):
+def disassociate_floating_ip(ref: str, current: CurrentUser, db: DB):
     fip = require_floating_ip(db, ref)
+    old_server_id = fip.server_id
     router = db.get(Router, fip.router_id) if fip.router_id else None
     if router and fip.floating_ip:
         ovn_cli.ovn("--if-exists", "lr-nat-del", router.name, "dnat_and_snat", fip.floating_ip, check=False)
@@ -107,10 +114,13 @@ def disassociate_floating_ip(ref: str, _: CurrentUser, db: DB):
     fip.status = "DOWN"
     db.commit()
     db.refresh(fip)
+    _publish_net_event("network.floating_ip.disassociate", {
+        "floating_ip_id": fip.id, "floating_ip": fip.floating_ip,
+        "server_id": old_server_id, **_actor(current)})
     return fip_to_os_dict(db, fip)
 
 @router.delete("/floating-ips/{ref}")
-def delete_floating_ip(ref: str, _: CurrentUser, db: DB):
+def delete_floating_ip(ref: str, current: CurrentUser, db: DB):
     fip = require_floating_ip(db, ref)
     if fip.router_id and fip.floating_ip:
         router = db.get(Router, fip.router_id)
@@ -118,4 +128,6 @@ def delete_floating_ip(ref: str, _: CurrentUser, db: DB):
             ovn_cli.ovn("--if-exists", "lr-nat-del", router.name, "dnat_and_snat", fip.floating_ip, check=False)
     db.delete(fip)
     db.commit()
+    _publish_net_event("network.floating_ip.delete", {
+        "floating_ip_id": fip.id, "floating_ip": fip.floating_ip, **_actor(current)})
     return {"status": "deleted", "id": fip.id, "name": fip.name}

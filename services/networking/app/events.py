@@ -15,3 +15,12 @@ def _publish_net_event(event_type: str, payload: dict) -> None:
         _rpc.publish_event(event_type, payload)
     except Exception as exc:
         log.debug("Event publish failed (non-critical): %s", exc)
+
+
+def _actor(current: dict | None) -> dict:
+    c = current or {}
+    out = {"project_id": c.get("project_id")}
+    uid = c.get("user_id") or c.get("sub")
+    if uid:
+        out["user_id"] = uid
+    return {k: v for k, v in out.items() if v}

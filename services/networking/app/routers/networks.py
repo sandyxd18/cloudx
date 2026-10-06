@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from .. import ovn_cli
 from ..db import DB
-from ..events import _publish_net_event
+from ..events import _actor, _publish_net_event
 from ..ipam import allocation_bounds_for_network
 from ..models import Network, Port, Subnet
 from ..ovn_cli import ensure_provider_ovn, external_network_defaults
@@ -49,6 +49,7 @@ def create_network(payload: NetworkIn, current: CurrentUser, db: DB):
         "network_id": network.id,
         "name":       network.name,
         "external":   network.external,
+        **_actor({**current, "project_id": network.project_id or current.get("project_id")}),
     })
     return obj_to_dict(network)
 

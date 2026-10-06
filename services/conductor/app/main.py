@@ -95,6 +95,37 @@ def _publish_volume_event(event_type: str, volume_id: str,
         log.warning("Failed to publish event %s: %s", event_type, exc)
 
 
+def _row(table: str, rid: str, cols: str = "project_id, status") -> dict:
+    """Best-effort lookup of a row's columns; never raises."""
+    try:
+        with SessionLocal() as db:
+            r = db.execute(text(f"SELECT {cols} FROM {table} WHERE id = :i"), {"i": rid}).mappings().first()
+        return dict(r) if r else {}
+    except Exception as exc:
+        log.debug("lookup %s %s failed: %s", table, rid, exc)
+        return {}
+
+
+def _pid(prev: dict) -> dict:
+    return {"project_id": prev["project_id"]} if prev.get("project_id") else {}
+
+
+def _lifecycle_server(server_id: str, prev: dict, new_status: str | None, extra: dict | None = None) -> None:
+    """Emit compute.instance.* lifecycle events on status transitions."""
+    old = prev.get("status")
+    ev = None
+    if new_status == "ACTIVE" and old == "BUILD":
+        ev = "compute.instance.create.end"
+    elif new_status == "DELETED" and old != "DELETED":
+        ev = "compute.instance.delete.end"
+    elif new_status in ("RESIZE", "VERIFY_RESIZE") and old != new_status:
+        ev = "compute.instance.resize"
+    elif new_status == "ERROR" and old != "ERROR":
+        ev = "compute.instance.crashed"
+    if ev:
+        _publish_server_event(ev, server_id, {**_pid(prev), "status": new_status, **(extra or {})})
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Handlers
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -132,6 +163,7 @@ def handle_update_server(args: dict) -> dict:
         params[f"_{key}"] = value
 
     sql = f"UPDATE compute_servers SET {', '.join(set_parts)} WHERE id = :_sid"
+    prev = _row("compute_servers", server_id)
 
     with SessionLocal() as db:
         result = db.execute(text(sql), params)
@@ -141,7 +173,9 @@ def handle_update_server(args: dict) -> dict:
              list(safe_fields.keys()), result.rowcount)
 
     # Publish event
-    _publish_server_event("server.update", server_id, safe_fields)
+    _publish_server_event("server.update", server_id, {**_pid(prev), **safe_fields})
+    _lifecycle_server(server_id, prev, safe_fields.get("status"),
+                      {"error_message": safe_fields["error_message"]} if safe_fields.get("error_message") else None)
 
     return {"ok": True, "updated": list(safe_fields.keys())}
 
@@ -157,6 +191,7 @@ def handle_delete_server_record(args: dict) -> dict:
     if not server_id:
         return {"error": "server_id required"}
 
+    prev = _row("compute_servers", server_id)
     with SessionLocal() as db:
         result = db.execute(
             text("DELETE FROM compute_servers WHERE id = :sid"),
@@ -165,7 +200,9 @@ def handle_delete_server_record(args: dict) -> dict:
         db.commit()
 
     log.info("Deleted server record %s (rows=%d)", server_id, result.rowcount)
-    _publish_server_event("server.delete", server_id)
+    _publish_server_event("server.delete", server_id, _pid(prev))
+    if prev and prev.get("status") != "DELETED":  # soft-delete path already emitted delete.end
+        _publish_server_event("compute.instance.delete.end", server_id, _pid(prev))
 
     return {"ok": True, "deleted": result.rowcount}
 
@@ -210,6 +247,7 @@ def handle_mark_server_error(args: dict) -> dict:
     if not server_id:
         return {"error": "server_id required"}
 
+    prev = _row("compute_servers", server_id)
     with SessionLocal() as db:
         db.execute(
             text("UPDATE compute_servers SET status = 'ERROR', error_message = :msg WHERE id = :sid"),
@@ -219,7 +257,8 @@ def handle_mark_server_error(args: dict) -> dict:
 
     log.info("Marked server %s as ERROR: %s", server_id, error_msg)
     _publish_server_event("server.update", server_id,
-                          {"status": "ERROR", "error_message": error_msg})
+                          {**_pid(prev), "status": "ERROR", "error_message": error_msg})
+    _lifecycle_server(server_id, prev, "ERROR", {"error_message": error_msg})
 
     return {"ok": True}
 
@@ -261,12 +300,21 @@ def handle_update_volume(args: dict) -> dict:
         params[f"_{key}"] = value
 
     sql = f"UPDATE block_store_volumes SET {', '.join(set_parts)} WHERE id = :_vid"
+    prev = _row("block_store_volumes", volume_id, "project_id, status, attached_to_server_id")
     with SessionLocal() as db:
         result = db.execute(text(sql), params)
         db.commit()
 
     log.info("Updated volume %s: %s (rows=%d)", volume_id, list(safe.keys()), result.rowcount)
-    _publish_volume_event("volume.update", volume_id, safe)
+    _publish_volume_event("volume.update", volume_id, {**_pid(prev), **safe})
+    if safe.get("status") == "available" and prev.get("status") == "creating":
+        _publish_volume_event("volume.create.end", volume_id, {**_pid(prev), "status": "available"})
+    if "attached_to_server_id" in safe:
+        new_srv, old_srv = safe["attached_to_server_id"], prev.get("attached_to_server_id")
+        if new_srv and new_srv != old_srv:
+            _publish_volume_event("volume.attach", volume_id, {**_pid(prev), "server_id": new_srv})
+        elif not new_srv and old_srv:
+            _publish_volume_event("volume.detach", volume_id, {**_pid(prev), "server_id": old_srv})
     return {"ok": True, "updated": list(safe.keys())}
 
 
@@ -281,6 +329,7 @@ def handle_delete_volume_record(args: dict) -> dict:
     if not volume_id:
         return {"error": "volume_id required"}
 
+    prev = _row("block_store_volumes", volume_id)
     with SessionLocal() as db:
         result = db.execute(
             text("DELETE FROM block_store_volumes WHERE id = :vid"),
@@ -289,7 +338,8 @@ def handle_delete_volume_record(args: dict) -> dict:
         db.commit()
 
     log.info("Deleted volume record %s (rows=%d)", volume_id, result.rowcount)
-    _publish_volume_event("volume.delete", volume_id)
+    _publish_volume_event("volume.delete", volume_id, _pid(prev))
+    _publish_volume_event("volume.delete.end", volume_id, _pid(prev))
     return {"ok": True, "deleted": result.rowcount}
 
 
@@ -300,6 +350,7 @@ def handle_mark_volume_error(args: dict) -> dict:
     if not volume_id:
         return {"error": "volume_id required"}
 
+    prev = _row("block_store_volumes", volume_id)
     with SessionLocal() as db:
         db.execute(
             text("UPDATE block_store_volumes SET status = 'error', error_message = :msg WHERE id = :vid"),
@@ -308,7 +359,7 @@ def handle_mark_volume_error(args: dict) -> dict:
         db.commit()
 
     log.info("Marked volume %s as error: %s", volume_id, error_msg)
-    _publish_volume_event("volume.update", volume_id, {"status": "error", "error_message": error_msg})
+    _publish_volume_event("volume.update", volume_id, {**_pid(prev), "status": "error", "error_message": error_msg})
     return {"ok": True}
 
 
