@@ -11,20 +11,24 @@ Service Phase 5.3: menangkap event audit/system dan mengirim webhook.
 """
 
 
+import ipaddress
+import json
 import logging
+import socket
 from datetime import datetime, timezone
 from typing import Annotated
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 from sqlalchemy import (
     Boolean, DateTime, ForeignKey, Integer, String, Text,
-    create_engine, select
+    create_engine, or_, select
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
-from shared.auth_middleware import CurrentUser, OptionalAuth
+from shared.auth_middleware import AdminUser, CurrentUser, OptionalAuth
 from shared.schema import require_schema
 
 from shared.request_id_middleware import RequestIDMiddleware
@@ -79,8 +83,23 @@ class WebhookDelivery(Base):
     response_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     subscription: Mapped["WebhookSubscription"] = relationship("WebhookSubscription", back_populates="deliveries")
+    event: Mapped["EventLog"] = relationship("EventLog", lazy="joined")
+
+    @property
+    def event_type(self) -> str:
+        return self.event.event_type
+
+    @property
+    def payload(self) -> str | None:
+        return self.event.payload
+
+    @property
+    def attempt_count(self) -> int:
+        return self.attempts
 
 
 def get_db():
@@ -109,16 +128,78 @@ if RequestIDMiddleware:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+ALLOW_PRIVATE = os.getenv("EVENT_ALLOW_PRIVATE_WEBHOOKS", "").lower() == "true"
+
+
+def _is_admin(user: dict) -> bool:
+    return user.get("role") == "admin"
+
+
+def _check_url(url: str) -> None:
+    """SSRF guard: reject hosts resolving to loopback/private/link-local/etc."""
+    host = urlparse(url).hostname
+    if not host:
+        raise ValueError("URL has no host")
+    if ALLOW_PRIVATE:
+        return
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        raise ValueError("URL host cannot be resolved")
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+            raise ValueError("URL host resolves to a non-public address")
+
+
+def persist_event(db: Session, event_type: str, resource_type: str, resource_id: str | None,
+                  project_id: str | None, user_id: str | None, payload: str | None) -> EventLog:
+    entry = EventLog(event_type=event_type, resource_type=resource_type, resource_id=resource_id,
+                     project_id=project_id, user_id=user_id, payload=payload)
+    db.add(entry)
+    db.flush()
+    if project_id:
+        subs = db.execute(select(WebhookSubscription).where(
+            WebhookSubscription.is_active == True, WebhookSubscription.project_id == project_id,
+        )).scalars().all()
+        for sub in subs:
+            types = [t.strip() for t in sub.event_types.split(",")]
+            if "*" in types or event_type in types:
+                db.add(WebhookDelivery(subscription_id=sub.id, event_id=entry.id, status="pending"))
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+def _on_bus_event(msg: dict) -> None:
+    try:
+        etype = msg.get("type")
+        if not etype:
+            return
+        p = msg.get("payload")
+        p = p if isinstance(p, dict) else {}
+        rid = p.get("server_id") or p.get("volume_id") or p.get("id")
+        with SessionLocal() as db:
+            persist_event(db, etype, etype.split(".")[0], str(rid) if rid is not None else None,
+                          p.get("project_id"), p.get("user_id"), json.dumps(p, default=str))
+    except Exception:
+        log.exception("failed to persist bus event")
+
 
 @app.on_event("startup")
 def on_startup():
     init_db()
+    try:
+        from shared.rpc import EventConsumer
+        EventConsumer(_on_bus_event, os.getenv("RABBITMQ_URL")).start()  # spawns its own daemon thread
+    except Exception:
+        log.exception("event consumer not started")
     log.info("Event API started")
 
 
@@ -136,6 +217,7 @@ class WebhookSubscriptionIn(BaseModel):
     def validate_url(cls, v: str) -> str:
         if not v.startswith(("http://", "https://")):
             raise ValueError("URL must start with http:// or https://")
+        _check_url(v)
         return v
 
 
@@ -145,12 +227,32 @@ class WebhookSubscriptionOut(BaseModel):
     name: str
     endpoint_url: str
     event_types: str
-    secret: str | None
+    has_secret: bool
     is_active: bool
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class WebhookSubscriptionCreated(WebhookSubscriptionOut):
+    secret: str | None
+
+
+def _sub_out(sub: WebhookSubscription, model=WebhookSubscriptionOut):
+    d = {k: getattr(sub, k) for k in ("id", "project_id", "name", "endpoint_url", "event_types", "is_active", "created_at")}
+    d["has_secret"] = bool(sub.secret)
+    if model is WebhookSubscriptionCreated:
+        d["secret"] = sub.secret
+    return model(**d)
+
+
+class DeliveryPatch(BaseModel):
+    status: str | None = None
+    response_code: int | None = None
+    attempts: int | None = None
+    next_retry_at: datetime | None = None
+    last_error: str | None = None
 
 
 class EventEmitIn(BaseModel):
@@ -183,6 +285,11 @@ class WebhookDeliveryOut(BaseModel):
     status: str
     response_code: int | None
     attempts: int
+    attempt_count: int
+    event_type: str
+    payload: str | None
+    next_retry_at: datetime | None
+    last_error: str | None
     created_at: datetime
 
     class Config:
@@ -193,41 +300,14 @@ class WebhookDeliveryOut(BaseModel):
 
 @app.post("/events/emit", response_model=EventLogOut, status_code=status.HTTP_201_CREATED)
 def emit_event(user: CurrentUser, data: EventEmitIn, db: DB):
-    payload_str = str(data.payload) if isinstance(data.payload, dict) else data.payload
-    pid = data.project_id or (user.get("project_id") if isinstance(user, dict) else getattr(user, "project_id", "admin")) or "admin"
-    uid = data.user_id or (user.get("user_id") if isinstance(user, dict) else getattr(user, "user_id", "system")) or "system"
-    log_entry = EventLog(
-        event_type=data.event_type,
-        resource_type=data.resource_type,
-        resource_id=data.resource_id,
-        project_id=pid,
-        user_id=uid,
-        payload=payload_str,
-    )
-    db.add(log_entry)
-    db.commit()
-    db.refresh(log_entry)
-
-    # Queue matching webhooks
-    subs = db.execute(
-        select(WebhookSubscription).where(
-            WebhookSubscription.is_active == True,
-            WebhookSubscription.project_id == pid,
-        )
-    ).scalars().all()
-
-    for sub in subs:
-        types = [t.strip() for t in sub.event_types.split(",")]
-        if "*" in types or data.event_type in types:
-            delivery = WebhookDelivery(
-                subscription_id=sub.id,
-                event_id=log_entry.id,
-                status="pending",
-            )
-            db.add(delivery)
-    db.commit()
-
-    return log_entry
+    payload_str = json.dumps(data.payload) if isinstance(data.payload, dict) else data.payload
+    pid = user.get("project_id")
+    if _is_admin(user) and data.project_id:
+        pid = data.project_id
+    uid = user.get("user_id") or user.get("sub") or "system"
+    if _is_admin(user) and data.user_id:
+        uid = data.user_id
+    return persist_event(db, data.event_type, data.resource_type, data.resource_id, pid, uid, payload_str)
 
 
 @app.post("/events/deliver", status_code=status.HTTP_202_ACCEPTED)
@@ -256,27 +336,46 @@ def list_event_logs(
     resource_type: str | None = None,
     resource_id: str | None = None,
     project_id: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
     limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
 ):
     q = select(EventLog)
+    if _is_admin(user):
+        if project_id:
+            q = q.where(EventLog.project_id == project_id)
+    else:
+        q = q.where(EventLog.project_id == user.get("project_id"))
+    if since:
+        q = q.where(EventLog.timestamp >= since)
+    if until:
+        q = q.where(EventLog.timestamp <= until)
     if event_type:
         q = q.where(EventLog.event_type == event_type)
     if resource_type:
         q = q.where(EventLog.resource_type == resource_type)
     if resource_id:
         q = q.where(EventLog.resource_id == resource_id)
-    if project_id:
-        q = q.where(EventLog.project_id == project_id)
-    q = q.order_by(EventLog.timestamp.desc()).limit(limit)
+    q = q.order_by(EventLog.timestamp.desc(), EventLog.id.desc()).limit(limit).offset(offset)
     return db.execute(q).scalars().all()
 
 
-@app.post("/events/subscriptions", response_model=WebhookSubscriptionOut, status_code=status.HTTP_201_CREATED)
+def _own_sub(user: dict, db: Session, sub_id: int) -> WebhookSubscription:
+    sub = db.get(WebhookSubscription, sub_id)
+    if not sub or (not _is_admin(user) and sub.project_id != user.get("project_id")):
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    return sub
+
+
+@app.post("/events/subscriptions", response_model=WebhookSubscriptionCreated, status_code=status.HTTP_201_CREATED)
 def create_subscription(user: CurrentUser, data: WebhookSubscriptionIn, db: DB):
-    pid = user.get("project_id", "admin") if isinstance(user, dict) else getattr(user, "project_id", "admin")
+    pid = user.get("project_id")
+    if not pid:
+        raise HTTPException(status_code=400, detail="token has no project_id")
     event_types_str = ",".join(data.event_types)
     sub = WebhookSubscription(
-        project_id=pid or "admin",
+        project_id=pid,
         name=data.name,
         endpoint_url=data.endpoint_url,
         event_types=event_types_str,
@@ -286,52 +385,78 @@ def create_subscription(user: CurrentUser, data: WebhookSubscriptionIn, db: DB):
     db.add(sub)
     db.commit()
     db.refresh(sub)
-    return sub
+    return _sub_out(sub, WebhookSubscriptionCreated)
 
 
 @app.get("/events/subscriptions", response_model=list[WebhookSubscriptionOut])
-def list_subscriptions(user: CurrentUser, db: DB, project_id: str | None = None):
-    pid = project_id or getattr(user, "project_id", "admin")
+def list_subscriptions(user: CurrentUser, db: DB, project_id: str | None = None,
+                       limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
+    pid = project_id if _is_admin(user) and project_id else user.get("project_id")
     q = select(WebhookSubscription).where(WebhookSubscription.project_id == pid)
-    return db.execute(q).scalars().all()
+    q = q.order_by(WebhookSubscription.id).limit(limit).offset(offset)
+    return [_sub_out(s) for s in db.execute(q).scalars().all()]
 
 
 @app.get("/events/subscriptions/{sub_id}", response_model=WebhookSubscriptionOut)
 def get_subscription(user: CurrentUser, sub_id: int, db: DB):
-    sub = db.get(WebhookSubscription, sub_id)
-    if not sub:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    return sub
+    return _sub_out(_own_sub(user, db, sub_id))
+
+
+@app.get("/events/internal/subscriptions/{sub_id}", response_model=WebhookSubscriptionCreated)
+def internal_get_subscription(user: AdminUser, sub_id: int, db: DB):
+    return _sub_out(_own_sub(user, db, sub_id), WebhookSubscriptionCreated)
 
 
 @app.delete("/events/subscriptions/{sub_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_subscription(user: CurrentUser, sub_id: int, db: DB):
-    sub = db.get(WebhookSubscription, sub_id)
-    if not sub:
-        raise HTTPException(status_code=404, detail="Subscription not found")
-    db.delete(sub)
+    db.delete(_own_sub(user, db, sub_id))
     db.commit()
     return None
 
 
+def _own_delivery(user: dict, db: Session, delivery_id: int) -> WebhookDelivery:
+    d = db.get(WebhookDelivery, delivery_id)
+    if not d or (not _is_admin(user) and d.subscription.project_id != user.get("project_id")):
+        raise HTTPException(status_code=404, detail="Delivery not found")
+    return d
+
+
 @app.get("/events/deliveries", response_model=list[WebhookDeliveryOut])
-def list_deliveries(user: CurrentUser, db: DB, subscription_id: int | None = None, status: str | None = None):
+def list_deliveries(user: CurrentUser, db: DB, subscription_id: int | None = None, status: str | None = None,
+                    limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
     q = select(WebhookDelivery)
+    if not _is_admin(user):
+        q = q.join(WebhookSubscription, WebhookDelivery.subscription_id == WebhookSubscription.id).where(
+            WebhookSubscription.project_id == user.get("project_id"))
     if subscription_id:
         q = q.where(WebhookDelivery.subscription_id == subscription_id)
     if status:
         q = q.where(WebhookDelivery.status == status)
-    q = q.order_by(WebhookDelivery.created_at.desc())
-    return db.execute(q).scalars().all()
+        if status == "pending":
+            q = q.where(or_(WebhookDelivery.next_retry_at.is_(None),
+                            WebhookDelivery.next_retry_at <= datetime.now(timezone.utc)))
+    q = q.order_by(WebhookDelivery.created_at.desc(), WebhookDelivery.id.desc()).limit(limit).offset(offset)
+    return db.execute(q).scalars().unique().all()
+
+
+@app.patch("/events/deliveries/{delivery_id}", response_model=WebhookDeliveryOut)
+def patch_delivery(user: AdminUser, delivery_id: int, data: DeliveryPatch, db: DB):
+    d = _own_delivery(user, db, delivery_id)
+    if data.status is not None and data.status not in ("pending", "success", "failed"):
+        raise HTTPException(status_code=422, detail="status must be pending, success or failed")
+    for k in data.model_fields_set:
+        setattr(d, k, getattr(data, k))
+    db.commit()
+    db.refresh(d)
+    return d
 
 
 @app.post("/events/deliveries/{delivery_id}/retry", response_model=WebhookDeliveryOut)
 def retry_delivery(user: CurrentUser, delivery_id: int, db: DB):
-    d = db.get(WebhookDelivery, delivery_id)
-    if not d:
-        raise HTTPException(status_code=404, detail="Delivery not found")
+    d = _own_delivery(user, db, delivery_id)
     d.status = "pending"
     d.attempts = 0
+    d.next_retry_at = None
     db.commit()
     db.refresh(d)
     return d
