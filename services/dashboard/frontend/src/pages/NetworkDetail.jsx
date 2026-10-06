@@ -134,7 +134,7 @@ export default function NetworkDetail() {
                     { id: 'version', header: 'IP version', cell: s => `IPv${s.ip_version || 4}` },
                     { id: 'gateway', header: 'Gateway', cell: s => s.gateway_ip || s.gateway || '—' },
                     { id: 'dhcp', header: 'DHCP', cell: s => <BoolStatus value={s.enable_dhcp !== false} trueText="Enabled" falseText="Disabled" /> },
-                    { id: 'pool', header: 'Allocation pool', cell: s => (s.allocation_start ? `${s.allocation_start} – ${s.allocation_end}` : '—') },
+                    { id: 'pool', header: 'Allocation pool', cell: s => (s.allocation_pools || '').replace('-', ' – ') || '—' },
                     { id: 'dns', header: 'DNS servers', cell: s => (s.dns_nameservers || []).join(', ') || '—' },
                   ]}
                   empty={<TableEmpty title="No subnets" description="Add a subnet to allocate IP addresses on this network." />}

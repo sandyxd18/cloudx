@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Alert from '@cloudscape-design/components/alert'
+import Button from '@cloudscape-design/components/button'
 import Container from '@cloudscape-design/components/container'
+import FileUpload from '@cloudscape-design/components/file-upload'
 import FormField from '@cloudscape-design/components/form-field'
 import Header from '@cloudscape-design/components/header'
 import Input from '@cloudscape-design/components/input'
@@ -12,8 +14,10 @@ import Textarea from '@cloudscape-design/components/textarea'
 import { api } from '../api.js'
 import { useToast } from '../context.jsx'
 import FormPage from '../components/FormPage.jsx'
+import { KeypairModal, SecurityGroupModal } from '../components/QuickCreateModals.jsx'
 
 const DEFAULT_ROOT_GB = 8
+const MAX_SCRIPT_KB = 64
 
 const fmtRam = (mb) => (mb >= 1024 ? `${(mb / 1024).toFixed(mb % 1024 ? 1 : 0)} GB` : `${mb} MB`)
 
@@ -27,6 +31,8 @@ export default function ServerLaunchPage() {
   const [selectedSecGroups, setSelectedSecGroups] = useState([])
   const [selectedServerGroup, setSelectedServerGroup] = useState(null)
   const [userData, setUserData]     = useState('')
+  const [scriptFile, setScriptFile] = useState([])
+  const [modal, setModal]           = useState(null)
   const [flavors, setFlavors]       = useState([])
   const [images, setImages]         = useState([])
   const [keypairs, setKeypairs]     = useState([])
@@ -74,6 +80,19 @@ export default function ServerLaunchPage() {
       }
     })
   }, [])
+
+  const refreshKeypairs = () =>
+    api.getKeypairs().then(r => setKeypairs(r?.items || [])).catch(e => toast(e.message, 'error'))
+
+  const refreshSecGroups = () =>
+    api.getSecurityGroups().then(r => setSecGroups(r?.items || [])).catch(e => toast(e.message, 'error'))
+
+  const loadScript = async (file) => {
+    if (!file) { setScriptFile([]); return }
+    if (file.size > MAX_SCRIPT_KB * 1024) { toast(`Script file is larger than ${MAX_SCRIPT_KB} KB`, 'error'); return }
+    setUserData(await file.text())
+    setScriptFile([file])
+  }
 
   const back = () => navigate('/servers')
 
@@ -192,26 +211,38 @@ export default function ServerLaunchPage() {
       <Container header={<Header variant="h2">Key pair & Groups</Header>}>
         <SpaceBetween size="l">
           <FormField label="Key pair" description="Optional — injected via cloud-init for SSH access.">
-            <Select
-              selectedOption={form.keypair}
-              onChange={({ detail }) => setForm(f => ({ ...f, keypair: detail.selectedOption }))}
-              options={keypairs.map(k => ({ value: k.name, label: k.name }))}
-              placeholder="Search for a key pair"
-              empty="No key pairs"
-              filteringType="auto"
-              controlId="server-keypair"
-            />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <div style={{ flex: 1 }}>
+                <Select
+                  selectedOption={form.keypair}
+                  onChange={({ detail }) => setForm(f => ({ ...f, keypair: detail.selectedOption }))}
+                  options={keypairs.map(k => ({ value: k.name, label: k.name }))}
+                  placeholder="Search for a key pair"
+                  empty="No key pairs"
+                  filteringType="auto"
+                  controlId="server-keypair"
+                />
+              </div>
+              <Button iconName="refresh" ariaLabel="Refresh key pairs" onClick={refreshKeypairs} />
+              <Button iconName="add-plus" formAction="none" onClick={() => setModal('keypair')}>Create new key pair</Button>
+            </div>
           </FormField>
 
           <FormField label="Security groups" description="Traffic control rules for instance network ports.">
-            <Multiselect
-              selectedOptions={selectedSecGroups}
-              onChange={({ detail }) => setSelectedSecGroups(detail.selectedOptions)}
-              options={secGroups.map(s => ({ value: s.name, label: s.name, description: s.description || undefined }))}
-              placeholder="Select security groups"
-              empty="No security groups"
-              controlId="server-secgroups"
-            />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <div style={{ flex: 1 }}>
+                <Multiselect
+                  selectedOptions={selectedSecGroups}
+                  onChange={({ detail }) => setSelectedSecGroups(detail.selectedOptions)}
+                  options={secGroups.map(s => ({ value: s.name, label: s.name, description: s.description || undefined }))}
+                  placeholder="Select security groups"
+                  empty="No security groups"
+                  controlId="server-secgroups"
+                />
+              </div>
+              <Button iconName="refresh" ariaLabel="Refresh security groups" onClick={refreshSecGroups} />
+              <Button iconName="add-plus" formAction="none" onClick={() => setModal('sg')}>Create new security group</Button>
+            </div>
           </FormField>
 
           <FormField label="Server group" description="Optional — affinity or anti-affinity policy group.">
@@ -281,16 +312,35 @@ export default function ServerLaunchPage() {
       </Container>
 
       <Container header={<Header variant="h2">Advanced options (User script)</Header>}>
-        <FormField label="User script (user_data)" description="Custom shell script or cloud-config passed to cloud-init during instance initialization.">
-          <Textarea
-            value={userData}
-            onChange={({ detail }) => setUserData(detail.value)}
-            placeholder="#!/bin/bash&#10;echo 'Hello World' > /tmp/hello.txt"
-            rows={5}
-            controlId="server-user-data"
-          />
+        <FormField label="User script (user_data)" description="Custom shell script or cloud-config passed to cloud-init during instance initialization. Type it below or upload a file.">
+          <SpaceBetween size="xs">
+            <FileUpload
+              value={scriptFile}
+              onChange={({ detail }) => loadScript(detail.value[0])}
+              accept=".sh,.yaml,.yml,.txt,.cfg,text/*"
+              showFileLastModified={false}
+              i18nStrings={{
+                uploadButtonText: () => 'Upload script file',
+                dropzoneText: () => 'Drop script file to upload',
+                removeFileAriaLabel: () => 'Remove script file',
+                limitShowFewer: 'Show fewer files',
+                limitShowMore: 'Show more files',
+                errorIconAriaLabel: 'Error',
+              }}
+              constraintText={`Max ${MAX_SCRIPT_KB} KB. The file replaces the text below.`}
+            />
+            <Textarea
+              value={userData}
+              onChange={({ detail }) => setUserData(detail.value)}
+              placeholder="#!/bin/bash&#10;echo 'Hello World' > /tmp/hello.txt"
+              rows={8}
+              controlId="server-user-data"
+            />
+          </SpaceBetween>
         </FormField>
       </Container>
+      {modal === 'keypair' && <KeypairModal onClose={() => setModal(null)} />}
+      {modal === 'sg' && <SecurityGroupModal onClose={() => setModal(null)} />}
     </FormPage>
   )
 }

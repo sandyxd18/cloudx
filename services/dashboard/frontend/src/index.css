@@ -10,10 +10,18 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html, body, #root {
+html, body {
   margin: 0;
   padding: 0;
   height: 100%;
+}
+
+/* min-height, not height: the sticky top bar is a child of #root and only stays
+   stuck while #root is as tall as the page content. */
+#root {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
 }
 
 /* ── Topology canvas (custom SVG force-directed graph) ──────────────────────── */
