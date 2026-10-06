@@ -46,6 +46,12 @@ async function request(method, path, body = null, opts = {}, skipJson = false) {
   return resp.json()
 }
 
+// Build "?a=1&b=2" from an object, skipping empty values
+const qs = (p) => {
+  const e = Object.entries(p).filter(([, v]) => v !== undefined && v !== null && v !== '')
+  return e.length ? '?' + new URLSearchParams(e).toString() : ''
+}
+
 export const api = {
   // Auth
   login: async (body) => {
@@ -382,25 +388,29 @@ export const api = {
   deleteVpnIpsecPolicy: (id) => request('DELETE', `/networking/vpn/ipsecpolicies/${id}`),
 
   // Telemetry & Metrics
-  getTelemetryMetrics: (instanceId) => request('GET', `/telemetry/metrics${instanceId ? `?instance_id=${instanceId}` : ''}`),
-  getTelemetryStats: () => request('GET', '/telemetry/stats'),
-  getInstanceStats: (instanceId) => request('GET', `/telemetry/instances/${instanceId}/stats`),
+  getTelemetryMetrics: (params = {}) => request('GET', `/telemetry/metrics${qs(params)}`),
+  getTelemetryStats: (params = {}) => request('GET', `/telemetry/stats${qs(params)}`),
+  getTelemetrySeries: (params = {}) => request('GET', `/telemetry/series${qs(params)}`),
+  getInstanceStats: (instanceId, params = {}) => request('GET', `/telemetry/instances/${instanceId}/stats${qs(params)}`),
 
   // Billing & Invoices
   getBillingSummary: (projectId) => request('GET', `/billing/summary${projectId ? `/${projectId}` : ''}`),
-  getRatingSheets: () => request('GET', '/billing/rating-sheets'),
+  getRatingSheets: (params = {}) => request('GET', `/billing/rating-sheets${qs(params)}`),
   createRatingSheet: (b) => request('POST', '/billing/rating-sheets', b),
-  getInvoices: () => request('GET', '/billing/invoices'),
+  getUsageRecords: (params = {}) => request('GET', `/billing/usage-records${qs(params)}`),
+  getInvoices: (params = {}) => request('GET', `/billing/invoices${qs(params)}`),
   getInvoice: (id) => request('GET', `/billing/invoices/${id}`),
-  createInvoice: (b) => request('POST', '/billing/invoices', b),
+  createInvoice: (b) => request('POST', `/billing/invoices${qs(b || {})}`),
   downloadInvoicePdf: (id) => request('POST', `/billing/invoices/${id}/pdf`),
 
   // Audit Event Logs & Subscriptions
-  getEventLogs: (limit = 100) => request('GET', `/event/events/logs?limit=${limit}`),
+  getEventLogs: (params = {}) => request('GET', `/event/events/logs${qs(typeof params === 'number' ? { limit: params } : params)}`),
   getEventTypes: () => request('GET', '/event/events/types'),
-  getEventSubscriptions: () => request('GET', '/event/events/subscriptions'),
+  getEventSubscriptions: (params = {}) => request('GET', `/event/events/subscriptions${qs(params)}`),
   createEventSubscription: (b) => request('POST', '/event/events/subscriptions', b),
   deleteEventSubscription: (id) => request('DELETE', `/event/events/subscriptions/${id}`),
+  getEventDeliveries: (params = {}) => request('GET', `/event/events/deliveries${qs(params)}`),
+  retryEventDelivery: (id) => request('POST', `/event/events/deliveries/${id}/retry`),
 
   // Hypervisors & Compute Nodes
   getComputeNodes: () => request('GET', '/placement/compute_nodes'),
