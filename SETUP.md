@@ -178,6 +178,8 @@ sudo systemctl enable --now \
   cloudx-telemetry-api \
   cloudx-billing-api \
   cloudx-event-api \
+  cloudx-object-store-api \
+  cloudx-load-balancer-api \
   cloudx-dashboard
 ```
 
