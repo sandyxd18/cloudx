@@ -111,6 +111,35 @@ def billing_rating_sheet_create(ctx, resource_type, unit, rate_per_unit, currenc
     _output(data, ctx.obj["fmt"])
 
 
+@billing.command("rating-sheet-show")
+@click.argument("sheet_id")
+@click.pass_context
+def billing_rating_sheet_show(ctx, sheet_id):
+    data = _api("get", f"{DEFAULT_URLS['billing']}/billing/rating-sheets/{sheet_id}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+
+@billing.command("rating-sheet-update")
+@click.argument("sheet_id")
+@click.option("--resource-type")
+@click.option("--unit")
+@click.option("--rate-per-unit", type=float)
+@click.option("--currency")
+@click.option("--description")
+@click.option("--active/--inactive", "is_active", default=None)
+@click.pass_context
+def billing_rating_sheet_update(ctx, sheet_id, resource_type, unit, rate_per_unit, currency, description, is_active):
+    """Partial update: only the flags you pass are changed"""
+    payload = {k: v for k, v in {"resource_type": resource_type, "unit": unit, "rate_per_unit": rate_per_unit,
+                                 "currency": currency, "description": description, "is_active": is_active}.items()
+               if v is not None}
+    if not payload:
+        click.echo("❌ Nothing to update", err=True)
+        sys.exit(1)
+    data = _api("patch", f"{DEFAULT_URLS['billing']}/billing/rating-sheets/{sheet_id}", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"])
+
+
 @billing.command("usage-list")
 @click.option("--project")
 @click.option("--limit", type=int, default=50)
@@ -161,18 +190,36 @@ def billing_invoice_list(ctx, project, status):
 
 @billing.command("invoice-create")
 @click.option("--project", "project_id")
+@click.option("--year", type=int)
+@click.option("--month", type=int)
 @click.option("--period-start")
 @click.option("--period-end")
 @click.option("--notes")
 @click.pass_context
-def billing_invoice_create(ctx, project_id, period_start, period_end, notes):
-    params = "?"
-    if project_id:   params += f"project_id={project_id}&"
-    if period_start: params += f"period_start={period_start}&"
-    if period_end:   params += f"period_end={period_end}&"
-    if notes:        params += f"notes={notes}&"
-    data = _api("post", f"{DEFAULT_URLS['billing']}/billing/invoices{params}", ctx.obj["profile"])
+def billing_invoice_create(ctx, project_id, year, month, period_start, period_end, notes):
+    """Create an invoice; --year and --month go together (409 if it already exists)."""
+    if bool(year) != bool(month):
+        click.echo("❌ --year and --month must be given together", err=True)
+        sys.exit(1)
+    q = {"project_id": project_id, "year": year, "month": month,
+         "period_start": period_start, "period_end": period_end, "notes": notes}
+    data = _api("post", f"{DEFAULT_URLS['billing']}/billing/invoices", ctx.obj["profile"],
+                params={k: v for k, v in q.items() if v is not None})
     _output(data, ctx.obj["fmt"])
+
+
+@billing.command("invoice-show")
+@click.argument("invoice_id")
+@click.pass_context
+def billing_invoice_show(ctx, invoice_id):
+    """Show an invoice with its line items"""
+    data = _api("get", f"{DEFAULT_URLS['billing']}/billing/invoices/{invoice_id}", ctx.obj["profile"])
+    if ctx.obj["fmt"] == "json":
+        return _output(data, "json")
+    items = data.pop("items", [])
+    _output(data, ctx.obj["fmt"])
+    click.echo("\nItems:")
+    _output(items, ctx.obj["fmt"], ["resource_type", "resource_id", "quantity", "unit", "rate_per_unit", "total"])
 
 
 @billing.command("invoice-pdf")
