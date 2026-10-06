@@ -4,7 +4,6 @@ __pycache__/
 .codex/
 .agents/
 .opencode/
-error.txt
 *.pyc
 *.pyo
 *.log
@@ -21,3 +20,4 @@ build/
 # Local assistant tooling
 .claude/
 .mcp.json
+graphify-out/
