@@ -1,3 +1,5 @@
+import ipaddress
+
 from fastapi import APIRouter, HTTPException
 from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
@@ -5,6 +7,7 @@ from sqlalchemy import select
 from .. import ovn_cli
 from ..config import METADATA_LINK_LOCAL, PROVIDER_HOST_IP_RAW
 from ..db import DB
+from ..events import _actor, _publish_net_event
 from ..ipam import subnet_ip_with_prefix
 from ..models import Network, Router, RouterInterface, Subnet, mac
 from ..ovn_cli import ensure_router_gateway_ovn
@@ -12,6 +15,20 @@ from ..schemas import RouterGatewayIn, RouterIn, RouterInterfaceIn
 from ..serializers import get_by_ref, obj_to_dict, require_by_ref, router_to_os_dict
 
 router = APIRouter()
+
+
+def _router_external_ip(db, network: Network) -> str:
+    # ponytail: gateway_ip is the upstream next-hop, so the router takes the address just below
+    # the subnet's allocation pool; with no pool, falls back to gateway_ip (legacy, no default route).
+    sub = db.scalar(select(Subnet).where(Subnet.network_id == network.id))
+    if sub and sub.allocation_start:
+        return str(ipaddress.ip_address(sub.allocation_start) - 1)
+    return network.gateway_ip
+
+
+def _snat(router_name: str, router_ip: str, port_ip: str) -> None:
+    cidr = str(ipaddress.ip_interface(port_ip).network)
+    ovn_cli.ovn("--may-exist", "lr-nat-add", router_name, "snat", router_ip, cidr, check=False)
 
 
 @router.post("/routers", status_code=201)
@@ -24,6 +41,7 @@ def create_router(payload: RouterIn, current: CurrentUser, db: DB):
     db.add(router)
     db.commit()
     db.refresh(router)
+    _publish_net_event("network.router.create", {"router_id": router.id, "name": router.name, **_actor(current)})
     return obj_to_dict(router)
 
 @router.get("/routers")
@@ -35,7 +53,7 @@ def show_router(ref: str, current: CurrentUser, db: DB):
     return router_to_os_dict(db, require_by_ref(db, Router, ref, "router"), current)
 
 @router.delete("/routers/{ref}")
-def delete_router(ref: str, _: CurrentUser, db: DB):
+def delete_router(ref: str, current: CurrentUser, db: DB):
     router = require_by_ref(db, Router, ref, "router")
 
     # ── 1. Remove all router interfaces (lrp + lsp) from OVN and DB ──────────
@@ -54,6 +72,7 @@ def delete_router(ref: str, _: CurrentUser, db: DB):
     # ── 3. Delete router record ───────────────────────────────────────────────
     db.delete(router)
     db.commit()
+    _publish_net_event("network.router.delete", {"router_id": router.id, "name": router.name, **_actor(current)})
     return {"status": "deleted", "id": router.id, "name": router.name}
 
 @router.post("/routers/{ref}/gateway")
@@ -65,10 +84,13 @@ def set_router_gateway(ref: str, payload: RouterGatewayIn, _: CurrentUser, db: D
     network = require_by_ref(db, Network, network_ref, "network")
     if not network.external:
         raise HTTPException(status_code=400, detail="router gateway requires an external network")
-    ensure_router_gateway_ovn(router, network)
+    router_ip = _router_external_ip(db, network)
+    ensure_router_gateway_ovn(router, network, router_ip)
     router.external_network_id = network.id
     db.commit()
     db.refresh(router)
+    for i in db.scalars(select(RouterInterface).where(RouterInterface.router_id == router.id)).all():
+        _snat(router.name, router_ip, i.ip_address)
     ovn_cli.ovn("set", "logical_router", router.name, f"external_ids:external_network={network.name}")
     return {"router": router.name, "external_network": network.name, "status": "ACTIVE"}
 
@@ -95,6 +117,8 @@ def add_router_interface(ref: str, payload: RouterInterfaceIn, _: CurrentUser, d
     db.add(iface)
     db.commit()
     db.refresh(iface)
+    if router.external_network_id:
+        _snat(router.name, _router_external_ip(db, db.get(Network, router.external_network_id)), port_ip)
     # Add OVN static route for metadata service (169.254.169.254 → host)
     # Requires PROVIDER_HOST_IP to be set so OVN knows the nexthop.
     # On the host, iptables redirects :80 to metadata-proxy (default :8776).

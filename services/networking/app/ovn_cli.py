@@ -242,13 +242,17 @@ def _ensure_dhcpv6_options(
 def router_external_port_names(router_name: str) -> tuple[str, str]:
     return f"lrp-{router_name}-external", f"lsp-{router_name}-external"
 
-def ensure_router_gateway_ovn(router: Router, network: Network) -> None:
+def ensure_router_gateway_ovn(router: Router, network: Network, router_ip: str | None = None) -> None:
+    """gateway_ip is the upstream next-hop; router_ip is the router's own address on the provider net."""
     if not network.gateway_ip or not network.provider_cidr:
         raise HTTPException(status_code=400, detail="external network is missing provider gateway/cidr")
     cidr = ipaddress.ip_network(network.provider_cidr, strict=False)
     lrp, lsp = router_external_port_names(router.name)
     port_mac = stable_mac(f"{router.id}-{network.id}-external")
-    ovn("--may-exist", "lrp-add", router.name, lrp, port_mac, f"{network.gateway_ip}/{cidr.prefixlen}")
+    ovn("--may-exist", "lrp-add", router.name, lrp, port_mac, f"{router_ip or network.gateway_ip}/{cidr.prefixlen}")
+    if router_ip and router_ip != network.gateway_ip:
+        ovn("set", "logical_router_port", lrp, f'networks="{router_ip}/{cidr.prefixlen}"')
+        ovn("--may-exist", "lr-route-add", router.name, "0.0.0.0/0", network.gateway_ip)
     ovn("set", "logical_router_port", lrp, "external_ids:cloudx=true", "external_ids:external-gateway=true")
     ovn("--may-exist", "lsp-add", network.name, lsp)
     ovn("set", "logical_switch_port", lsp, "external_ids:cloudx=true", "external_ids:external-gateway=true")
