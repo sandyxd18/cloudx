@@ -32,6 +32,7 @@ AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
 AUTH_ADMIN_PASSWORD = os.environ["AUTH_ADMIN_PASSWORD"]
 COMPUTE_HOST = os.getenv("COMPUTE_HOST", "single-node")
 
+RETENTION_DAYS = int(os.getenv("TELEMETRY_RETENTION_DAYS", "7"))
 SAMPLE_INTERVAL = int(os.getenv("SAMPLE_INTERVAL", "30"))  # seconds
 LIBVIRT_URI = os.getenv("LIBVIRT_URI", "qemu:///system")
 
@@ -43,20 +44,24 @@ logging.basicConfig(
 
 # ── Service Token ─────────────────────────────────────────────────────────────
 _svc_token: str | None = None
+_svc_token_exp: float = 0.0
 
 
 def _get_svc_token() -> str | None:
-    global _svc_token
-    if _svc_token:
+    global _svc_token, _svc_token_exp
+    if _svc_token and time.time() < _svc_token_exp:
         return _svc_token
+    _svc_token = None
     try:
         r = requests.post(
             f"{AUTH_API_URL}/auth/tokens",
             json={"username": AUTH_ADMIN_USERNAME, "password": AUTH_ADMIN_PASSWORD},
             timeout=10,
         )
-        if r.status_code == 200:
-            _svc_token = r.json()["token"]
+        if r.status_code in (200, 201):
+            body = r.json()
+            _svc_token = body["token"]
+            _svc_token_exp = time.time() + float(body.get("expires_in", 3600)) - 60
             return _svc_token
     except Exception as e:
         log.warning("Failed to get service token: %s", e)
@@ -69,6 +74,56 @@ def _api_headers() -> dict:
     if token:
         h["Authorization"] = f"Bearer {token}"
     return h
+
+
+def _api(method: str, url: str, **kw):
+    """requests.request with service token; on 401 clear the cached token and retry once."""
+    global _svc_token
+    r = requests.request(method, url, headers=_api_headers(), **kw)
+    if r.status_code == 401:
+        _svc_token = None
+        r = requests.request(method, url, headers=_api_headers(), **kw)
+    return r
+
+
+# ── Rate math (pure) ──────────────────────────────────────────────────────────
+
+def cpu_percent(prev_ns: int, cur_ns: int, dt_s: float, vcpus: int) -> float:
+    """CPU % of all vCPUs over the interval, clamped to 0-100."""
+    if dt_s <= 0 or vcpus <= 0:
+        return 0.0
+    return min(100.0, max(0.0, (cur_ns - prev_ns) / (dt_s * 1e9 * vcpus) * 100))
+
+
+def counter_rate(prev: float, cur: float, dt_s: float) -> float:
+    """Per-second rate of a cumulative counter; a reset (cur < prev) reports 0."""
+    if dt_s <= 0:
+        return 0.0
+    return max(0.0, (cur - prev) / dt_s)
+
+
+# instance_id -> {"t": monotonic, "cpu_ns": int, "vcpus": int, <counter>: value}
+_prev: dict[str, dict] = {}
+
+_COUNTERS = ("disk_read_bytes", "disk_write_bytes", "disk_read_iops", "disk_write_iops",
+             "net_rx_bytes", "net_tx_bytes", "net_rx_packets", "net_tx_packets")
+
+
+def _apply_rates(instance_id: str, raw: dict, stats: dict) -> None:
+    """Turn raw cumulative counters in `raw` into rates in `stats`; first sample only stores."""
+    now = time.monotonic()
+    cur = {"t": now, "cpu_ns": raw.get("cpu_ns"), "vcpus": raw.get("vcpus", 1)}
+    cur.update({k: raw[k] for k in _COUNTERS if k in raw})
+    prev = _prev.get(instance_id)
+    _prev[instance_id] = cur
+    if not prev:
+        return
+    dt = now - prev["t"]
+    if cur["cpu_ns"] is not None and prev.get("cpu_ns") is not None:
+        stats["cpu_percent"] = cpu_percent(prev["cpu_ns"], cur["cpu_ns"], dt, cur["vcpus"])
+    for k in _COUNTERS:
+        if k in cur and k in prev:
+            stats[k] = counter_rate(prev[k], cur[k], dt)
 
 
 # ── Libvirt helpers ───────────────────────────────────────────────────────────
@@ -91,16 +146,15 @@ def _get_libvirt_conn():
     return None
 
 
-def _get_instance_stats_libvirt(dom) -> dict:
-    """Extract stats from a libvirt domain."""
-    stats = {}
+def _get_instance_stats_libvirt(dom, instance_id: str = "") -> dict:
+    """Extract stats from a libvirt domain (cumulative counters converted to rates)."""
+    stats: dict = {}
+    raw: dict = {}
     try:
-        # CPU stats
         cpu_stats = dom.getCPUStats(True)
-        if cpu_stats and len(cpu_stats) > 0:
-            cpu_time = cpu_stats[0].get("cpu_time", 0)
-            # Convert to percentage (simplified)
-            stats["cpu_percent"] = min(100.0, max(0.0, cpu_time / 1e9 / SAMPLE_INTERVAL * 100))
+        if cpu_stats:
+            raw["cpu_ns"] = cpu_stats[0].get("cpu_time", 0)
+            raw["vcpus"] = dom.info()[3]
     except Exception as e:
         log.debug("CPU stats error: %s", e)
     
@@ -114,72 +168,62 @@ def _get_instance_stats_libvirt(dom) -> dict:
         log.debug("Memory stats error: %s", e)
     
     try:
-        # Block stats
-        block_stats = dom.blockStats("vda") if "vda" in [d.get("name", "") for d in dom.blockInfo("vda")] else None
-        if not block_stats:
-            # Try to get all block devices
-            tree = ET.fromstring(dom.XMLDesc())
-            for disk in tree.findall(".//disk"):
-                target = disk.find("target")
-                if target is not None:
-                    dev = target.get("dev", "")
-                    if dev:
-                        try:
-                            bs = dom.blockStats(dev)
-                            if bs:
-                                stats["disk_read_bytes"] = bs[1]  # rd_bytes
-                                stats["disk_write_bytes"] = bs[3]  # wr_bytes
-                                stats["disk_read_iops"] = bs[0]  # rd_req
-                                stats["disk_write_iops"] = bs[2]  # wr_req
-                                break
-                        except Exception as exc:
-                            log.debug("disk stats unavailable: %s", exc)
-    except Exception as e:
-        log.debug("Block stats error: %s", e)
-    
-    try:
-        # Interface stats
         tree = ET.fromstring(dom.XMLDesc())
+    except Exception as e:
+        log.debug("XMLDesc error: %s", e)
+        tree = None
+
+    if tree is not None:
+        for disk in tree.findall(".//disk"):
+            target = disk.find("target")
+            dev = target.get("dev", "") if target is not None else ""
+            if not dev:
+                continue
+            try:
+                bs = dom.blockStats(dev)  # (rd_req, rd_bytes, wr_req, wr_bytes, errs)
+                raw.update(disk_read_iops=bs[0], disk_read_bytes=bs[1],
+                           disk_write_iops=bs[2], disk_write_bytes=bs[3])
+                break
+            except Exception as exc:
+                log.debug("disk stats unavailable for %s: %s", dev, exc)
+
         for iface in tree.findall(".//interface"):
             target = iface.find("target")
-            if target is not None:
-                dev = target.get("dev", "")
-                if dev:
-                    try:
-                        ifs = dom.interfaceStats(dev)
-                        if ifs:
-                            stats["net_rx_bytes"] = ifs[0]  # rx_bytes
-                            stats["net_tx_bytes"] = ifs[4]  # tx_bytes
-                            stats["net_rx_packets"] = ifs[1]  # rx_packets
-                            stats["net_tx_packets"] = ifs[5]  # tx_packets
-                            break
-                    except Exception as exc:
-                        log.debug("interface stats unavailable: %s", exc)
-    except Exception as e:
-        log.debug("Interface stats error: %s", e)
-    
+            dev = target.get("dev", "") if target is not None else ""
+            if not dev:
+                continue
+            try:
+                ifs = dom.interfaceStats(dev)  # (rx_bytes, rx_packets, rx_errs, rx_drop, tx_bytes, tx_packets, ...)
+                raw.update(net_rx_bytes=ifs[0], net_rx_packets=ifs[1],
+                           net_tx_bytes=ifs[4], net_tx_packets=ifs[5])
+                break
+            except Exception as exc:
+                log.debug("interface stats unavailable for %s: %s", dev, exc)
+
+    _apply_rates(instance_id, raw, stats)
     return stats
 
 
-def _get_instance_stats_shell(instance_name: str) -> dict:
+def _get_instance_stats_shell(instance_name: str, instance_id: str = "") -> dict:
     """Fallback: get stats using virsh shell commands."""
-    stats = {}
-    
+    stats: dict = {}
+    raw: dict = {}
     try:
-        # CPU and memory via domstats
         result = run(["virsh", "-c", LIBVIRT_URI, "domstats", instance_name], check=False, timeout=10)
         if result.returncode == 0:
             for line in result.stdout.split("\n"):
-                if "cpu.time=" in line:
-                    val = int(line.split("=")[1])
-                    stats["cpu_percent"] = min(100.0, val / 1e9 / SAMPLE_INTERVAL * 100)
-                elif "balloon.rss=" in line:
+                line = line.strip()
+                if line.startswith("cpu.time="):
+                    raw["cpu_ns"] = int(line.split("=")[1])
+                elif line.startswith("vcpu.current="):
+                    raw["vcpus"] = int(line.split("=")[1])
+                elif line.startswith("balloon.rss="):
                     stats["memory_used_mb"] = int(line.split("=")[1]) / 1024
-                elif "balloon.current=" in line:
+                elif line.startswith("balloon.current="):
                     stats["memory_total_mb"] = int(line.split("=")[1]) / 1024
     except Exception as e:
         log.debug("Shell domstats error: %s", e)
-    
+    _apply_rates(instance_id or instance_name, raw, stats)
     return stats
 
 
@@ -191,12 +235,8 @@ def _get_active_instances() -> list[dict]:
     
     # Try compute-api first
     try:
-        r = requests.get(
-            f"{COMPUTE_API_URL}/servers?all_tenants=true&status=ACTIVE",
-            headers=_api_headers(),
-            timeout=10,
-        )
-        if r.status_code == 200:
+        r = _api("GET", f"{COMPUTE_API_URL}/servers?all_tenants=true&status=ACTIVE", timeout=10)
+        if r.status_code in (200, 201):
             data = r.json()
             for s in data.get("servers", []):
                 instances.append({
@@ -249,12 +289,7 @@ def _send_metrics_batch(metrics: list[dict]) -> bool:
                 "host": COMPUTE_HOST,
             })
         
-        r = requests.post(
-            f"{TELEMETRY_API_URL}/telemetry/metrics/batch",
-            headers=_api_headers(),
-            json=payload,
-            timeout=30,
-        )
+        r = _api("POST", f"{TELEMETRY_API_URL}/telemetry/metrics/batch", json=payload, timeout=30)
         if r.status_code in (200, 201):
             log.debug("Sent %d metrics", len(metrics))
             return True
@@ -274,7 +309,10 @@ def collect_and_send():
     if not instances:
         log.debug("No active instances found")
         return
-    
+    live = {i["id"] for i in instances}
+    for k in [k for k in _prev if k not in live]:
+        del _prev[k]
+
     all_metrics = []
     conn = _get_libvirt_conn()
     
@@ -295,13 +333,13 @@ def collect_and_send():
                         dom = None
                 
                 if dom:
-                    stats = _get_instance_stats_libvirt(dom)
+                    stats = _get_instance_stats_libvirt(dom, instance_id)
             except Exception as e:
                 log.debug("Error getting stats for %s: %s", instance_id, e)
         
         if not stats:
             # Fallback to shell
-            stats = _get_instance_stats_shell(instance_name)
+            stats = _get_instance_stats_shell(instance_name, instance_id)
         
         # Build metric records
         for metric_type, value in stats.items():
@@ -336,11 +374,24 @@ def collect_and_send():
         _send_metrics_batch(batch)
 
 
+def _cleanup_old_metrics() -> None:
+    try:
+        r = _api("DELETE", f"{TELEMETRY_API_URL}/telemetry/metrics/cleanup?days={RETENTION_DAYS}", timeout=60)
+        if r.status_code >= 300:
+            log.warning("Metrics cleanup failed: %s %s", r.status_code, r.text)
+    except Exception as e:
+        log.warning("Metrics cleanup error: %s", e)
+
+
 def main_loop():
     """Main worker loop."""
     log.info("Telemetry Worker started (interval=%ds, host=%s)", SAMPLE_INTERVAL, COMPUTE_HOST)
-    
+
+    last_cleanup = None
     while True:
+        if last_cleanup is None or time.monotonic() - last_cleanup >= 3600:
+            last_cleanup = time.monotonic()
+            _cleanup_old_metrics()
         try:
             collect_and_send()
         except Exception as e:

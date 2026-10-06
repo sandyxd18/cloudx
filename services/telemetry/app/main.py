@@ -13,13 +13,14 @@ Service Phase 5.1: mengumpulkan dan mengekspos metrik real-time per VM/tenant.
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy import DateTime, Float, Integer, String, create_engine, select, text, func
+from sqlalchemy import DateTime, Float, Integer, String, create_engine, select, text, func, literal
+from sqlalchemy.dialects.postgresql import array_agg as pg_array_agg, aggregate_order_by
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
@@ -106,7 +107,7 @@ if RequestIDMiddleware:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -156,19 +157,17 @@ class MetricTypeOut(BaseModel):
         from_attributes = True
 
 
-class StatsQuery(BaseModel):
-    instance_id: str | None = None
-    project_id: str | None = None
-    metric_type: str | None = None
-    from_time: datetime | None = None
-    to_time: datetime | None = None
-    granularity: str = "1m"
+def _scope(user: dict, project_id: str | None) -> str | None:
+    """Project filter: admin may choose (None = all); others pinned to own project."""
+    if user.get("role") == "admin":
+        return project_id
+    return user.get("project_id") or "\0none"
 
 
 # ── API Endpoints ─────────────────────────────────────────────────────────────
 
 @app.post("/telemetry/metrics", response_model=MetricOut, status_code=status.HTTP_201_CREATED)
-def create_metric(user: CurrentUser, data: MetricIn, db: DB):
+def create_metric(user: AdminUser, data: MetricIn, db: DB):
     metric = TelemetryMetric(**data.model_dump())
     db.add(metric)
     db.commit()
@@ -177,7 +176,7 @@ def create_metric(user: CurrentUser, data: MetricIn, db: DB):
 
 
 @app.post("/telemetry/metrics/batch", status_code=status.HTTP_201_CREATED)
-def create_metrics_batch(user: CurrentUser, data: list[MetricIn], db: DB):
+def create_metrics_batch(user: AdminUser, data: list[MetricIn], db: DB):
     metrics = [TelemetryMetric(**m.model_dump()) for m in data]
     db.add_all(metrics)
     db.commit()
@@ -191,52 +190,95 @@ def list_metrics(
     instance_id: str | None = None,
     project_id: str | None = None,
     metric_type: str | None = None,
-    from_time: datetime | None = None,
-    to_time: datetime | None = None,
-    limit: int = Query(1000, ge=1, le=10000),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
 ):
     q = select(TelemetryMetric)
     if instance_id:
         q = q.where(TelemetryMetric.instance_id == instance_id)
-    if project_id:
-        q = q.where(TelemetryMetric.project_id == project_id)
+    scope = _scope(user, project_id)
+    if scope:
+        q = q.where(TelemetryMetric.project_id == scope)
     if metric_type:
         q = q.where(TelemetryMetric.metric_type == metric_type)
-    if from_time:
-        q = q.where(TelemetryMetric.timestamp >= from_time)
-    if to_time:
-        q = q.where(TelemetryMetric.timestamp <= to_time)
-    q = q.order_by(TelemetryMetric.timestamp.desc()).limit(limit)
+    if since:
+        q = q.where(TelemetryMetric.timestamp >= since)
+    if until:
+        q = q.where(TelemetryMetric.timestamp <= until)
+    q = q.order_by(TelemetryMetric.timestamp.desc(), TelemetryMetric.id.desc()).limit(limit).offset(offset)
     return db.execute(q).scalars().all()
 
 
 @app.get("/telemetry/metric-types", response_model=list[MetricTypeOut])
-def list_metric_types(user: OptionalAuth, db: DB):
+def list_metric_types(user: CurrentUser, db: DB):
     return db.execute(select(TelemetryMetricType)).scalars().all()
 
 
 @app.get("/telemetry/stats")
-def get_stats(user: CurrentUser, db: DB, query: StatsQuery = Depends()):
+def get_stats(
+    user: CurrentUser,
+    db: DB,
+    metric_type: str | None = None,
+    instance_id: str | None = None,
+    project_id: str | None = None,
+    hours: int = Query(1, ge=1, le=720),
+):
+    M = TelemetryMetric
     q = select(
-        TelemetryMetric.metric_type,
-        func.avg(TelemetryMetric.value).label("avg"),
-        func.min(TelemetryMetric.value).label("min"),
-        func.max(TelemetryMetric.value).label("max"),
+        M.metric_type, M.instance_id,
+        func.max(M.unit).label("unit"),
         func.count().label("count"),
-    )
-    if query.instance_id:
-        q = q.where(TelemetryMetric.instance_id == query.instance_id)
-    if query.project_id:
-        q = q.where(TelemetryMetric.project_id == query.project_id)
-    if query.metric_type:
-        q = q.where(TelemetryMetric.metric_type == query.metric_type)
-    if query.from_time:
-        q = q.where(TelemetryMetric.timestamp >= query.from_time)
-    if query.to_time:
-        q = q.where(TelemetryMetric.timestamp <= query.to_time)
-    q = q.group_by(TelemetryMetric.metric_type)
-    rows = db.execute(q).all()
-    return [{"metric_type": r.metric_type, "avg": r.avg, "min": r.min, "count": r.count} for r in rows]
+        func.avg(M.value).label("avg"),
+        func.min(M.value).label("min"),
+        func.max(M.value).label("max"),
+        pg_array_agg(aggregate_order_by(M.value, M.timestamp.desc()))[1].label("last"),
+        func.min(M.timestamp).label("first_ts"),
+        func.max(M.timestamp).label("last_ts"),
+    ).where(M.timestamp >= datetime.now(timezone.utc) - timedelta(hours=hours))
+    if metric_type:
+        q = q.where(M.metric_type == metric_type)
+    if instance_id:
+        q = q.where(M.instance_id == instance_id)
+    scope = _scope(user, project_id)
+    if scope:
+        q = q.where(M.project_id == scope)
+    q = q.group_by(M.metric_type, M.instance_id).order_by(M.metric_type, M.instance_id)
+    return [
+        {"metric_type": r.metric_type, "instance_id": r.instance_id, "unit": r.unit, "count": r.count,
+         "avg": r.avg, "min": r.min, "max": r.max, "last": r.last,
+         "first_ts": r.first_ts, "last_ts": r.last_ts}
+        for r in db.execute(q).all()
+    ]
+
+
+@app.get("/telemetry/series")
+def get_series(
+    user: CurrentUser,
+    db: DB,
+    metric_type: str,
+    instance_id: str,
+    hours: int = Query(1, ge=1, le=720),
+    granularity: Literal["raw", "minute", "hour", "day"] = "minute",
+    project_id: str | None = None,
+):
+    M = TelemetryMetric
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    if granularity == "raw":
+        q = select(M.timestamp.label("timestamp"), M.value.label("avg"), M.value.label("min"),
+                   M.value.label("max"), literal(1).label("count"))
+    else:
+        ts = func.date_trunc(granularity, M.timestamp).label("timestamp")
+        q = select(ts, func.avg(M.value).label("avg"), func.min(M.value).label("min"),
+                   func.max(M.value).label("max"), func.count().label("count")).group_by(ts)
+    q = q.where(M.metric_type == metric_type, M.instance_id == instance_id, M.timestamp >= cutoff)
+    scope = _scope(user, project_id)
+    if scope:
+        q = q.where(M.project_id == scope)
+    q = q.order_by(text("timestamp ASC"))
+    return [{"timestamp": r.timestamp, "avg": r.avg, "min": r.min, "max": r.max, "count": r.count}
+            for r in db.execute(q).all()]
 
 
 @app.get("/telemetry/instances/{instance_id}/stats")
@@ -244,7 +286,7 @@ def get_instance_stats(
     user: CurrentUser,
     db: DB,
     instance_id: str,
-    hours: int = Query(24),
+    hours: int = Query(24, ge=1, le=720),
     granularity: str = Query("1m"),
 ):
     q = select(
@@ -253,8 +295,16 @@ def get_instance_stats(
         func.min(TelemetryMetric.value).label("min"),
         func.max(TelemetryMetric.value).label("max"),
         func.count().label("count"),
-    ).where(TelemetryMetric.instance_id == instance_id).group_by(TelemetryMetric.metric_type)
-    rows = db.execute(q).all()
+    ).where(
+        TelemetryMetric.instance_id == instance_id,
+        TelemetryMetric.timestamp >= datetime.now(timezone.utc) - timedelta(hours=hours),
+    )
+    scope = _scope(user, None)
+    if scope:
+        q = q.where(TelemetryMetric.project_id == scope)
+    rows = db.execute(q.group_by(TelemetryMetric.metric_type)).all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="no metrics for instance")
     metrics_map = {}
     for r in rows:
         metrics_map[r.metric_type] = {
@@ -271,11 +321,12 @@ def prometheus_metrics(db: DB):
     from_time = datetime.now(timezone.utc) - timedelta(minutes=5)
     q = select(TelemetryMetric).where(TelemetryMetric.timestamp >= from_time)
     metrics = db.execute(q).scalars().all()
+    esc = lambda v: str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
     lines = []
     for m in metrics:
-        labels = f'instance_id="{m.instance_id}",metric_type="{m.metric_type}"'
+        labels = f'instance_id="{esc(m.instance_id)}",metric_type="{esc(m.metric_type)}"'
         if m.project_id:
-            labels += f',project_id="{m.project_id}"'
+            labels += f',project_id="{esc(m.project_id)}"'
         lines.append(f'cloudx_metric{{{labels}}} {m.value} {int(m.timestamp.timestamp() * 1000)}')
     return "\n".join(lines) + "\n" if lines else "# no metrics\n"
 

@@ -1,0 +1,20 @@
+[Unit]
+Description=CloudX Telemetry Worker (compute node)
+After=network.target libvirtd.service
+Wants=libvirtd.service
+
+[Service]
+EnvironmentFile=-/etc/cloudx/cloudx.env
+Environment=AUTH_API_URL=http://172.20.0.131:8005
+Environment=COMPUTE_API_URL=http://172.20.0.131:8003
+Environment=TELEMETRY_API_URL=http://172.20.0.131:8010
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/cloudx/services/telemetry_worker
+ExecStart=/opt/cloudx/venv/bin/python -m app.main
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
