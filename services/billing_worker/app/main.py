@@ -5,7 +5,7 @@ cloudx Billing Worker — Usage Aggregation & Invoice Generator
 
 Background worker service (Phase 5.2) that:
   • Collects resource usage data from the other services
-  • Calculates costs based on the Rating Sheet
+  • Sends it to billing-api, which prices it from the Rating Sheet and dedupes
   • Generates automatic monthly invoices
   • Cleans up old usage records
 
@@ -30,6 +30,7 @@ TELEMETRY_API_URL = os.getenv("TELEMETRY_API_URL", "http://telemetry-api:8010").
 COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
 BLOCK_STORE_API_URL = os.getenv("BLOCK_STORE_API_URL", "http://block-store-api:8000").rstrip("/")
 NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
+LOAD_BALANCER_API_URL = os.getenv("LOAD_BALANCER_API_URL", "http://load-balancer-api:8008").rstrip("/")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
 AUTH_ADMIN_PASSWORD = os.environ["AUTH_ADMIN_PASSWORD"]
@@ -58,7 +59,7 @@ def _get_svc_token() -> str | None:
             json={"username": AUTH_ADMIN_USERNAME, "password": AUTH_ADMIN_PASSWORD},
             timeout=10,
         )
-        if r.status_code == 200:
+        if r.status_code in (200, 201):
             _svc_token = r.json()["token"]
             return _svc_token
     except Exception as e:
@@ -74,269 +75,137 @@ def _api_headers() -> dict:
     return h
 
 
-# ── Rating Sheet Cache ────────────────────────────────────────────────────────
-_rating_cache: dict = {}
-_rating_cache_time: datetime | None = None
+def _request(method: str, url: str, **kw) -> requests.Response:
+    """requests with the service token; on 401 (expired token) clear the cache and retry once."""
+    global _svc_token
+    r = requests.request(method, url, headers=_api_headers(), **kw)
+    if r.status_code == 401:
+        _svc_token = None
+        r = requests.request(method, url, headers=_api_headers(), **kw)
+    return r
 
 
-def _get_rating_sheets() -> dict:
-    """Get active rating sheets with caching."""
-    global _rating_cache, _rating_cache_time
-    
-    now = datetime.now(timezone.utc)
-    if _rating_cache_time and (now - _rating_cache_time).seconds < 300:
-        return _rating_cache
-    
-    try:
-        r = requests.get(
-            f"{BILLING_API_URL}/billing/rating-sheets?active_only=true",
-            headers=_api_headers(),
-            timeout=10,
-        )
-        if r.status_code == 200:
-            _rating_cache = {}
-            for sheet in r.json():
-                key = sheet["resource_type"]
-                _rating_cache[key] = {
-                    "rate": Decimal(str(sheet["rate_per_unit"])),
-                    "unit": sheet["unit"],
-                    "currency": sheet.get("currency", "IDR"),
-                }
-            _rating_cache_time = now
-            return _rating_cache
-    except Exception as e:
-        log.error("Failed to fetch rating sheets: %s", e)
-    
-    return _rating_cache
+# ── Time math ─────────────────────────────────────────────────────────────────
+
+def _dt(v) -> datetime | None:
+    if not v:
+        return None
+    if isinstance(v, str):
+        v = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    return v if v.tzinfo else v.replace(tzinfo=timezone.utc)  # services emit naive UTC
+
+
+def overlap_hours(created, deleted, start, end) -> Decimal:
+    """Hours a resource (created..deleted; None = unknown/still alive) existed inside [start, end]."""
+    s, e, c, d = _dt(start), _dt(end), _dt(created), _dt(deleted)
+    lo = max(s, c) if c else s
+    hi = min(e, d) if d else e
+    secs = (hi - lo).total_seconds()
+    return Decimal(str(secs)) / Decimal("3600") if secs > 0 else Decimal("0")
 
 
 # ── Resource Discovery ────────────────────────────────────────────────────────
 
-def _get_active_servers() -> list[dict]:
-    """Get all active servers from compute-api."""
+def _list(url: str, key: str) -> list[dict]:
     try:
-        r = requests.get(
-            f"{COMPUTE_API_URL}/servers?all_tenants=true",
-            headers=_api_headers(),
-            timeout=10,
-        )
-        if r.status_code == 200:
-            return r.json().get("servers", [])
+        r = _request("GET", url, timeout=10)
+        if r.status_code in (200, 201):
+            data = r.json()
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                return data.get(key) or data.get('items') or data.get(key.replace('-', '_')) or []
+        log.error("GET %s -> %s", url, r.status_code)
     except Exception as e:
-        log.error("Failed to get servers: %s", e)
+        log.error("Failed to get %s: %s", key, e)
     return []
+
+
+def _get_active_servers() -> list[dict]:
+    return _list(f"{COMPUTE_API_URL}/servers?all_tenants=true", "servers")
 
 
 def _get_volumes() -> list[dict]:
-    """Get all volumes from block-store-api."""
-    try:
-        r = requests.get(
-            f"{BLOCK_STORE_API_URL}/volumes?all_tenants=true",
-            headers=_api_headers(),
-            timeout=10,
-        )
-        if r.status_code == 200:
-            return r.json().get("volumes", [])
-    except Exception as e:
-        log.error("Failed to get volumes: %s", e)
-    return []
+    return _list(f"{BLOCK_STORE_API_URL}/volumes?all_tenants=true", "volumes")
 
 
 def _get_floating_ips() -> list[dict]:
-    """Get all floating IPs from networking-api."""
-    try:
-        r = requests.get(
-            f"{NETWORKING_API_URL}/floatingips?all_tenants=true",
-            headers=_api_headers(),
-            timeout=10,
-        )
-        if r.status_code == 200:
-            return r.json().get("floatingips", [])
-    except Exception as e:
-        log.error("Failed to get floating IPs: %s", e)
-    return []
+    return _list(f"{NETWORKING_API_URL}/floating-ips?all_tenants=true", "floatingips")
 
 
 def _get_load_balancers() -> list[dict]:
-    """Get all load balancers."""
-    try:
-        r = requests.get(
-            f"{os.getenv('LOAD_BALANCER_API_URL', 'http://load-balancer-api:8008')}/loadbalancers?all_tenants=true",
-            headers=_api_headers(),
-            timeout=10,
-        )
-        if r.status_code == 200:
-            return r.json().get("loadbalancers", [])
-    except Exception as e:
-        log.error("Failed to get load balancers: %s", e)
-    return []
+    return _list(f"{LOAD_BALANCER_API_URL}/load-balancers?all_tenants=true", "loadbalancers")
 
 
 # ── Usage Aggregation ─────────────────────────────────────────────────────────
 
-def _aggregate_server_usage(servers: list[dict], ratings: dict) -> list[dict]:
-    """Calculate vCPU and RAM usage from active servers."""
-    records = []
-    period_start = datetime.now(timezone.utc) - timedelta(seconds=AGGREGATION_INTERVAL)
-    period_end = datetime.now(timezone.utc)
-    hours = Decimal(str(AGGREGATION_INTERVAL)) / Decimal("3600")
-    
-    vcpu_rate = ratings.get("vcpu", {}).get("rate", Decimal("0"))
-    ram_rate = ratings.get("ram", {}).get("rate", Decimal("0"))
-    
-    for server in servers:
-        if server.get("status") != "ACTIVE":
+def _rec(res: dict, rtype: str, per_hour, start, end, name=None) -> dict | None:
+    """Usage record for res over [start, end] (quantity = per_hour * overlap hours), None if no overlap."""
+    qty = Decimal(str(per_hour)) * overlap_hours(res.get("created_at"), res.get("deleted_at"), start, end)
+    if qty <= 0:
+        return None
+    return {
+        "project_id": res.get("project_id") or res.get("tenant_id") or res.get("os-vol-tenant-attr:tenant_id") or "unknown",
+        "resource_type": rtype,
+        "resource_id": res.get("id") or res.get("uuid"),
+        "resource_name": name or res.get("name"),
+        "quantity": str(qty.quantize(Decimal("0.0001"))),
+        "unit": "hour",
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+    }
+
+
+def _keep(recs) -> list[dict]:
+    return [r for r in recs if r]
+
+
+def _aggregate_server_usage(servers: list[dict], start, end) -> list[dict]:
+    out = []
+    for s in servers:
+        if s.get("status") != "ACTIVE":
             continue
-        
-        project_id = server.get("project_id", server.get("tenant_id", "unknown"))
-        flavor = server.get("flavor", {})
-        vcpus = flavor.get("vcpus", 1)
-        ram_mb = flavor.get("ram", 1024)
-        ram_gb = Decimal(str(ram_mb)) / Decimal("1024")
-        
-        # vCPU usage
-        if vcpu_rate > 0:
-            records.append({
-                "project_id": project_id,
-                "resource_type": "vcpu",
-                "resource_id": server.get("id", server.get("uuid")),
-                "quantity": Decimal(str(vcpus)) * hours,
-                "unit": "vcpu-hour",
-                "rate_per_unit": vcpu_rate,
-                "period_start": period_start.isoformat(),
-                "period_end": period_end.isoformat(),
-            })
-        
-        # RAM usage
-        if ram_rate > 0:
-            records.append({
-                "project_id": project_id,
-                "resource_type": "ram",
-                "resource_id": server.get("id", server.get("uuid")),
-                "quantity": ram_gb * hours,
-                "unit": "gb-hour",
-                "rate_per_unit": ram_rate,
-                "period_start": period_start.isoformat(),
-                "period_end": period_end.isoformat(),
-            })
-    
-    return records
+        flavor = s.get("flavor") if isinstance(s.get("flavor"), dict) else {}
+        vcpus = s.get("vcpus") or flavor.get("vcpus") or 1
+        ram_mb = s.get("ram_mb") or flavor.get("ram") or 1024
+        out += _keep([
+            _rec(s, "vcpu", vcpus, start, end),
+            _rec(s, "ram", Decimal(str(ram_mb)) / 1024, start, end),
+        ])
+    return out
 
 
-def _aggregate_volume_usage(volumes: list[dict], ratings: dict) -> list[dict]:
-    """Calculate volume storage usage."""
-    records = []
-    period_start = datetime.now(timezone.utc) - timedelta(seconds=AGGREGATION_INTERVAL)
-    period_end = datetime.now(timezone.utc)
-    hours = Decimal(str(AGGREGATION_INTERVAL)) / Decimal("3600")
-    
-    volume_rate = ratings.get("volume", {}).get("rate", Decimal("0"))
-    
-    for volume in volumes:
-        if volume.get("status") not in ("available", "in-use"):
-            continue
-        
-        project_id = volume.get("project_id", volume.get("tenant_id", "unknown"))
-        size_gb = volume.get("size", 0)
-        
-        if volume_rate > 0 and size_gb > 0:
-            records.append({
-                "project_id": project_id,
-                "resource_type": "volume",
-                "resource_id": volume.get("id"),
-                "quantity": Decimal(str(size_gb)) * hours,
-                "unit": "gb-hour",
-                "rate_per_unit": volume_rate,
-                "period_start": period_start.isoformat(),
-                "period_end": period_end.isoformat(),
-            })
-    
-    return records
+def _aggregate_volume_usage(volumes: list[dict], start, end) -> list[dict]:
+    return _keep(
+        _rec(v, "volume", v.get("size_gb") or v.get("size") or 0, start, end)
+        for v in volumes if v.get("status") in ("available", "in-use")
+    )
 
 
-def _aggregate_floating_ip_usage(fips: list[dict], ratings: dict) -> list[dict]:
-    """Calculate floating IP usage."""
-    records = []
-    period_start = datetime.now(timezone.utc) - timedelta(seconds=AGGREGATION_INTERVAL)
-    period_end = datetime.now(timezone.utc)
-    hours = Decimal(str(AGGREGATION_INTERVAL)) / Decimal("3600")
-    
-    fip_rate = ratings.get("floating_ip", {}).get("rate", Decimal("0"))
-    
-    for fip in fips:
-        if not fip.get("port_id"):
-            continue  # Not allocated
-        
-        project_id = fip.get("project_id", fip.get("tenant_id", "unknown"))
-        
-        if fip_rate > 0:
-            records.append({
-                "project_id": project_id,
-                "resource_type": "floating_ip",
-                "resource_id": fip.get("id"),
-                "quantity": hours,
-                "unit": "ip-hour",
-                "rate_per_unit": fip_rate,
-                "period_start": period_start.isoformat(),
-                "period_end": period_end.isoformat(),
-            })
-    
-    return records
+def _aggregate_floating_ip_usage(fips: list[dict], start, end) -> list[dict]:
+    return _keep(_rec(f, "floating_ip", 1, start, end, f.get("floating_ip_address")) for f in fips if f.get("port_id"))
 
 
-def _aggregate_load_balancer_usage(lbs: list[dict], ratings: dict) -> list[dict]:
-    """Calculate load balancer usage."""
-    records = []
-    period_start = datetime.now(timezone.utc) - timedelta(seconds=AGGREGATION_INTERVAL)
-    period_end = datetime.now(timezone.utc)
-    hours = Decimal(str(AGGREGATION_INTERVAL)) / Decimal("3600")
-    
-    lb_rate = ratings.get("load_balancer", {}).get("rate", Decimal("0"))
-    
-    for lb in lbs:
-        if lb.get("provisioning_status") != "ACTIVE":
-            continue
-        
-        project_id = lb.get("project_id", lb.get("tenant_id", "unknown"))
-        
-        if lb_rate > 0:
-            records.append({
-                "project_id": project_id,
-                "resource_type": "load_balancer",
-                "resource_id": lb.get("id"),
-                "quantity": hours,
-                "unit": "lb-hour",
-                "rate_per_unit": lb_rate,
-                "period_start": period_start.isoformat(),
-                "period_end": period_end.isoformat(),
-            })
-    
-    return records
+def _aggregate_load_balancer_usage(lbs: list[dict], start, end) -> list[dict]:
+    return _keep(_rec(lb, "load_balancer", 1, start, end) for lb in lbs if lb.get("provisioning_status") == "ACTIVE")
 
 
 # ── Send usage records ────────────────────────────────────────────────────────
 
 def _send_usage_records(records: list[dict]) -> bool:
-    """Send usage records to billing-api."""
+    """Send usage records to billing-api (it rates and dedupes them)."""
     if not records:
         return True
-    
     try:
-        r = requests.post(
-            f"{BILLING_API_URL}/billing/usage-records/batch",
-            headers=_api_headers(),
-            json=records,
-            timeout=30,
-        )
+        r = _request("POST", f"{BILLING_API_URL}/billing/usage-records/batch", json=records, timeout=30)
         if r.status_code in (200, 201):
-            log.info("Sent %d usage records", len(records))
+            res = r.json()
+            log.info("Usage records: %s created, skipped %s", res.get("created"), res.get("skipped"))
             return True
-        else:
-            log.warning("Failed to send usage records: %s %s", r.status_code, r.text)
-            return False
+        log.warning("Failed to send usage records: %s %s", r.status_code, r.text)
     except Exception as e:
         log.error("Error sending usage records: %s", e)
-        return False
+    return False
 
 
 # ── Invoice generation ────────────────────────────────────────────────────────
@@ -346,38 +215,23 @@ def _generate_monthly_invoices():
     now = datetime.now(timezone.utc)
     if now.day != INVOICE_GENERATION_DAY:
         return
-    
-    # Calculate previous month
-    if now.month == 1:
-        prev_year = now.year - 1
-        prev_month = 12
-    else:
-        prev_year = now.year
-        prev_month = now.month - 1
-    
+
+    prev_year, prev_month = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
     log.info("Generating invoices for %d-%02d", prev_year, prev_month)
-    
-    # Get all projects from auth-api
+
     try:
-        r = requests.get(
-            f"{AUTH_API_URL}/auth/projects",
-            headers=_api_headers(),
-            timeout=10,
-        )
+        r = _request("GET", f"{AUTH_API_URL}/auth/projects", timeout=10)
         if r.status_code != 200:
             log.error("Failed to get projects: %s", r.text)
             return
-        
-        projects = r.json().get("projects", [])
-        for project in projects:
+
+        for project in r.json().get("projects", []):
             project_id = project.get("id")
             if not project_id:
                 continue
-            
             try:
-                r = requests.post(
-                    f"{BILLING_API_URL}/billing/invoices",
-                    headers=_api_headers(),
+                r = _request(
+                    "POST", f"{BILLING_API_URL}/billing/invoices",
                     params={"project_id": project_id, "year": prev_year, "month": prev_month},
                     timeout=30,
                 )
@@ -389,7 +243,6 @@ def _generate_monthly_invoices():
                     log.warning("Failed to generate invoice for %s: %s", project_id, r.text)
             except Exception as e:
                 log.error("Error generating invoice for %s: %s", project_id, e)
-    
     except Exception as e:
         log.error("Error in invoice generation: %s", e)
 
@@ -399,12 +252,8 @@ def _generate_monthly_invoices():
 def _cleanup_old_records():
     """Clean up usage records older than retention period."""
     try:
-        r = requests.post(
-            f"{BILLING_API_URL}/billing/cleanup?days={CLEANUP_DAYS}",
-            headers=_api_headers(),
-            timeout=30,
-        )
-        if r.status_code == 200:
+        r = _request("POST", f"{BILLING_API_URL}/billing/cleanup?days={CLEANUP_DAYS}", timeout=30)
+        if r.status_code in (200, 201):
             log.info("Cleaned up old records: %s", r.json())
     except Exception as e:
         log.error("Cleanup error: %s", e)
@@ -413,59 +262,44 @@ def _cleanup_old_records():
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def aggregate_usage():
-    """Main aggregation cycle."""
-    ratings = _get_rating_sheets()
-    if not ratings:
-        log.warning("No rating sheets available, skipping aggregation")
-        return
-    
-    all_records = []
-    
-    # Aggregate each resource type
-    servers = _get_active_servers()
-    all_records.extend(_aggregate_server_usage(servers, ratings))
-    
-    volumes = _get_volumes()
-    all_records.extend(_aggregate_volume_usage(volumes, ratings))
-    
-    fips = _get_floating_ips()
-    all_records.extend(_aggregate_floating_ip_usage(fips, ratings))
-    
-    lbs = _get_load_balancers()
-    all_records.extend(_aggregate_load_balancer_usage(lbs, ratings))
-    
-    if all_records:
-        _send_usage_records(all_records)
-        log.info("Aggregated %d usage records", len(all_records))
+    """Bill the last complete interval. Boundaries are floored so a re-run yields identical (deduped) periods."""
+    t = int(time.time()) // AGGREGATION_INTERVAL * AGGREGATION_INTERVAL
+    end = datetime.fromtimestamp(t, timezone.utc)
+    start = end - timedelta(seconds=AGGREGATION_INTERVAL)
+
+    records = (
+        _aggregate_server_usage(_get_active_servers(), start, end)
+        + _aggregate_volume_usage(_get_volumes(), start, end)
+        + _aggregate_floating_ip_usage(_get_floating_ips(), start, end)
+        + _aggregate_load_balancer_usage(_get_load_balancers(), start, end)
+    )
+    _send_usage_records(records)
 
 
 def main_loop():
     """Main worker loop."""
     log.info("Billing Worker started (aggregation_interval=%ds, invoice_day=%d)",
              AGGREGATION_INTERVAL, INVOICE_GENERATION_DAY)
-    
+
     last_invoice_check = 0
     last_cleanup = 0
-    
+
     while True:
         try:
-            # Aggregate usage
             aggregate_usage()
-            
-            # Check for invoice generation (once per day)
+
             now = time.time()
             if now - last_invoice_check > 86400:
                 _generate_monthly_invoices()
                 last_invoice_check = now
-            
-            # Cleanup (once per day)
+
             if now - last_cleanup > 86400:
                 _cleanup_old_records()
                 last_cleanup = now
-        
+
         except Exception as e:
             log.exception("Error in main loop: %s", e)
-        
+
         time.sleep(AGGREGATION_INTERVAL)
 
 

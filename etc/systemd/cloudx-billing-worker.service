@@ -1,0 +1,23 @@
+[Unit]
+Description=CloudX Billing Worker
+After=network.target cloudx-billing-api.service
+
+[Service]
+EnvironmentFile=-/etc/cloudx/cloudx.env
+Environment=AUTH_API_URL=http://127.0.0.1:8005
+Environment=COMPUTE_API_URL=http://127.0.0.1:8003
+Environment=BLOCK_STORE_API_URL=http://127.0.0.1:8004
+Environment=NETWORKING_API_URL=http://127.0.0.1:8001
+Environment=LOAD_BALANCER_API_URL=http://127.0.0.1:8008
+Environment=BILLING_API_URL=http://127.0.0.1:8011
+Environment=TELEMETRY_API_URL=http://127.0.0.1:8010
+Type=simple
+User=cloudx
+Group=cloudx
+WorkingDirectory=/opt/cloudx/services/billing_worker
+ExecStart=/opt/cloudx/venv/bin/python -m app.main
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

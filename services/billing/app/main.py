@@ -23,7 +23,7 @@ from jinja2 import Template
 from pydantic import BaseModel
 from sqlalchemy import (
     Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text,
-    create_engine, select, text
+    create_engine, delete, func, select, text
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
@@ -135,6 +135,7 @@ def init_db():
         RatingSheet(resource_type="ram", unit="gb-hour", rate_per_unit=Decimal("50.0000"), description="RAM GB per hour", currency="IDR"),
         RatingSheet(resource_type="volume", unit="gb-hour", rate_per_unit=Decimal("25.0000"), description="Volume GB per hour", currency="IDR"),
         RatingSheet(resource_type="floating_ip", unit="hour", rate_per_unit=Decimal("500.0000"), description="Floating IP per hour", currency="IDR"),
+        RatingSheet(resource_type="load_balancer", unit="hour", rate_per_unit=Decimal("750.0000"), description="Load balancer per hour", currency="IDR"),
     ]
     with SessionLocal() as db:
         if db.get_bind().dialect.name == "postgresql":
@@ -208,6 +209,26 @@ class UsageRecordIn(BaseModel):
     period_end: datetime
 
 
+class RatingSheetPatch(BaseModel):
+    resource_type: str | None = None
+    unit: str | None = None
+    rate_per_unit: Decimal | None = None
+    currency: str | None = None
+    description: str | None = None
+    is_active: bool | None = None
+
+
+class UsageBatchItem(BaseModel):
+    project_id: str
+    resource_type: str
+    resource_id: str | None = None
+    resource_name: str | None = None
+    quantity: Decimal
+    unit: str | None = None
+    period_start: datetime
+    period_end: datetime
+
+
 class UsageRecordOut(BaseModel):
     id: int
     project_id: str
@@ -269,9 +290,24 @@ class BillingSummary(BaseModel):
     estimated_cost: Decimal = Decimal("0")
     total_cost: Decimal = Decimal("0")
     currency: str = "IDR"
+    by_resource: list[dict] = []
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _scope(user: dict, project_id: str | None) -> str | None:
+    """Admin may pick any project (or None = all); others are pinned to their own."""
+    if user.get("role") == "admin":
+        return project_id
+    return user.get("project_id") or "__none__"
+
+
+def _month_range(year: int, month: int) -> tuple[datetime, datetime]:
+    if not 1 <= month <= 12:
+        raise HTTPException(status_code=422, detail="month must be 1-12")
+    start = datetime(year, month, 1, tzinfo=timezone.utc)
+    end = datetime(year + (month == 12), month % 12 + 1, 1, tzinfo=timezone.utc)
+    return start, end
 
 def _next_invoice_number(db: Session) -> str:
     today = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -291,13 +327,16 @@ def create_rating_sheet(user: AdminUser, data: RatingSheetIn, db: DB):
 
 
 @app.get("/billing/rating-sheets", response_model=list[RatingSheetOut])
-def list_rating_sheets(user: CurrentUser, db: DB, active_only: bool = True, resource_type: str | None = None):
+def list_rating_sheets(
+    user: CurrentUser, db: DB, active_only: bool = True, resource_type: str | None = None,
+    limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
+):
     q = select(RatingSheet)
     if active_only:
         q = q.where(RatingSheet.is_active == True)
     if resource_type:
         q = q.where(RatingSheet.resource_type == resource_type)
-    return db.execute(q).scalars().all()
+    return db.execute(q.order_by(RatingSheet.id).limit(limit).offset(offset)).scalars().all()
 
 
 @app.get("/billing/rating-sheets/{sheet_id}", response_model=RatingSheetOut)
@@ -309,11 +348,11 @@ def get_rating_sheet(user: CurrentUser, sheet_id: int, db: DB):
 
 
 @app.patch("/billing/rating-sheets/{sheet_id}", response_model=RatingSheetOut)
-def update_rating_sheet(user: AdminUser, sheet_id: int, data: RatingSheetIn, db: DB):
+def update_rating_sheet(user: AdminUser, sheet_id: int, data: RatingSheetPatch, db: DB):
     rs = db.get(RatingSheet, sheet_id)
     if not rs:
         raise HTTPException(status_code=404, detail="Rating sheet not found")
-    for field, value in data.model_dump().items():
+    for field, value in data.model_dump(exclude_unset=True).items():
         setattr(rs, field, value)
     db.commit()
     db.refresh(rs)
@@ -323,13 +362,57 @@ def update_rating_sheet(user: AdminUser, sheet_id: int, data: RatingSheetIn, db:
 # ── Usage Records ─────────────────────────────────────────────────────────────
 
 @app.post("/billing/usage-records", response_model=UsageRecordOut, status_code=status.HTTP_201_CREATED)
-def create_usage_record(user: CurrentUser, data: UsageRecordIn, db: DB):
+def create_usage_record(user: AdminUser, data: UsageRecordIn, db: DB):
     total = data.quantity * data.rate_per_unit
     rec = UsageRecord(**data.model_dump(), total_cost=total)
     db.add(rec)
     db.commit()
     db.refresh(rec)
     return rec
+
+
+@app.post("/billing/usage-records/batch")
+def create_usage_records_batch(user: AdminUser, items: list[UsageBatchItem], db: DB):
+    sheets = {
+        s.resource_type: s
+        for s in db.execute(select(RatingSheet).where(RatingSheet.is_active == True).order_by(RatingSheet.id)).scalars()
+    }
+    created, skipped, seen = 0, [], set()
+    for i, it in enumerate(items):
+        rs = sheets.get(it.resource_type)
+        key = (it.project_id, it.resource_type, it.resource_id, it.period_start, it.period_end)
+        if not rs:
+            skipped.append({"index": i, "reason": "no active rating sheet"})
+            continue
+        dup = key in seen or db.execute(
+            select(UsageRecord.id).where(
+                UsageRecord.project_id == it.project_id,
+                UsageRecord.resource_type == it.resource_type,
+                UsageRecord.resource_id.is_(None) if it.resource_id is None else UsageRecord.resource_id == it.resource_id,
+                UsageRecord.period_start == it.period_start,
+                UsageRecord.period_end == it.period_end,
+            ).limit(1)
+        ).first()
+        if dup:
+            skipped.append({"index": i, "reason": "duplicate"})
+            continue
+        seen.add(key)
+        db.add(UsageRecord(
+            project_id=it.project_id, resource_type=it.resource_type, resource_id=it.resource_id,
+            quantity=it.quantity, unit=it.unit or rs.unit, rate_per_unit=rs.rate_per_unit,
+            total_cost=it.quantity * rs.rate_per_unit, period_start=it.period_start, period_end=it.period_end,
+        ))
+        created += 1
+    db.commit()
+    return {"created": created, "skipped": skipped}
+
+
+@app.post("/billing/cleanup")
+def cleanup_usage_records(user: AdminUser, db: DB, days: int = Query(365, ge=1)):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    res = db.execute(delete(UsageRecord).where(UsageRecord.period_end < cutoff))
+    db.commit()
+    return {"deleted": res.rowcount}
 
 
 @app.get("/billing/usage-records", response_model=list[UsageRecordOut])
@@ -341,8 +424,10 @@ def list_usage_records(
     period_start: datetime | None = None,
     period_end: datetime | None = None,
     limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
 ):
     q = select(UsageRecord)
+    project_id = _scope(user, project_id)
     if project_id:
         q = q.where(UsageRecord.project_id == project_id)
     if resource_type:
@@ -351,7 +436,7 @@ def list_usage_records(
         q = q.where(UsageRecord.period_start >= period_start)
     if period_end:
         q = q.where(UsageRecord.period_end <= period_end)
-    q = q.order_by(UsageRecord.created_at.desc()).limit(limit)
+    q = q.order_by(UsageRecord.created_at.desc(), UsageRecord.id.desc()).limit(limit).offset(offset)
     return db.execute(q).scalars().all()
 
 
@@ -368,10 +453,18 @@ def create_invoice(
     period_end: datetime | None = None,
     notes: str | None = None,
 ):
-    pid = project_id or (user.get("project_id") if isinstance(user, dict) else getattr(user, "project_id", "admin")) or "admin"
+    pid = _scope(user, project_id) or user.get("project_id") or "admin"
     now = datetime.now(timezone.utc)
-    p_start = period_start or (now - timedelta(days=30))
-    p_end = period_end or now
+    if year and month:
+        p_start, p_end = _month_range(year, month)
+    else:
+        p_start = period_start or (now - timedelta(days=30))
+        p_end = period_end or now
+
+    if db.execute(select(Invoice.id).where(
+        Invoice.project_id == pid, Invoice.period_start == p_start, Invoice.period_end == p_end
+    ).limit(1)).first():
+        raise HTTPException(status_code=409, detail="Invoice for this project and period already exists")
 
     # Aggregate usage for project in period
     usages = db.execute(
@@ -413,13 +506,11 @@ def create_invoice(
         status="draft",
         notes=notes,
     )
+    for it in items:
+        invoice.items.append(InvoiceItem(**it))
     db.add(invoice)
     db.commit()
     db.refresh(invoice)
-
-    for it in items:
-        db.add(InvoiceItem(invoice_id=invoice.id, **it))
-    db.commit()
 
     return {
         "id": invoice.id,
@@ -440,19 +531,30 @@ def create_invoice(
 
 
 @app.get("/billing/invoices", response_model=list[InvoiceOut])
-def list_invoices(user: CurrentUser, db: DB, project_id: str | None = None, status: str | None = None):
+def list_invoices(
+    user: CurrentUser, db: DB, project_id: str | None = None, status: str | None = None,
+    limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
+):
     q = select(Invoice)
+    project_id = _scope(user, project_id)
     if project_id:
         q = q.where(Invoice.project_id == project_id)
     if status:
         q = q.where(Invoice.status == status)
-    q = q.order_by(Invoice.created_at.desc())
+    q = q.order_by(Invoice.created_at.desc(), Invoice.id.desc()).limit(limit).offset(offset)
     return db.execute(q).scalars().all()
+
+
+def _own_invoice(db: Session, user: dict, invoice_id: int) -> Invoice:
+    inv = db.get(Invoice, invoice_id)
+    if not inv or (user.get("role") != "admin" and inv.project_id != user.get("project_id")):
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return inv
 
 
 @app.get("/billing/invoices/{invoice_id}", response_model=InvoiceDetailOut)
 def get_invoice(user: CurrentUser, invoice_id: int, db: DB):
-    inv = db.get(Invoice, invoice_id)
+    inv = _own_invoice(db, user, invoice_id)
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
     items = [{c.name: getattr(i, c.name) for c in i.__table__.columns} for i in inv.items]
@@ -476,9 +578,7 @@ def get_invoice(user: CurrentUser, invoice_id: int, db: DB):
 
 @app.post("/billing/invoices/{invoice_id}/pdf")
 def generate_invoice_pdf(user: CurrentUser, invoice_id: int, db: DB):
-    inv = db.get(Invoice, invoice_id)
-    if not inv:
-        raise HTTPException(status_code=404, detail="Invoice not found")
+    inv = _own_invoice(db, user, invoice_id)
     items = [{c.name: getattr(i, c.name) for c in i.__table__.columns} for i in inv.items]
 
     html = Template("""
@@ -515,7 +615,7 @@ def billing_summary(
     period_start: datetime | None = None,
     period_end: datetime | None = None,
 ):
-    pid = project_id or (user.get("project_id") if isinstance(user, dict) else getattr(user, "project_id", "admin")) or "admin"
+    pid = _scope(user, project_id) or user.get("project_id") or "admin"
     now = datetime.now(timezone.utc)
     p_start = period_start or (now - timedelta(days=30))
     p_end = period_end or now
@@ -540,6 +640,12 @@ def billing_summary(
             summary.total_volume_gb_hours += u.quantity
         elif u.resource_type == "floating_ip":
             summary.total_floating_ip_hours += u.quantity
+    by_res: dict[str, dict] = {}
+    for u in usages:
+        r = by_res.setdefault(u.resource_type, {"resource_type": u.resource_type, "quantity": Decimal("0"), "cost": Decimal("0")})
+        r["quantity"] += u.quantity
+        r["cost"] += u.total_cost
+    summary.by_resource = list(by_res.values())
     summary.estimated_cost = total_cost
     summary.total_cost = total_cost
     return summary
