@@ -6,8 +6,6 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from tests.live.test_telemetry import member  # noqa: F401  (fixture)
-
 BILLING_URL = os.getenv("BILLING_API_URL", "http://127.0.0.1:8011")
 
 

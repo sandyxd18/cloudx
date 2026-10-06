@@ -23,7 +23,7 @@ from sqlalchemy import DateTime, Float, Integer, String, create_engine, select, 
 from sqlalchemy.dialects.postgresql import array_agg as pg_array_agg, aggregate_order_by
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+from shared.auth_middleware import CurrentUser, AdminUser
 from shared.schema import require_schema
 
 from shared.request_id_middleware import RequestIDMiddleware

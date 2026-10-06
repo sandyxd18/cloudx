@@ -3,36 +3,9 @@ from __future__ import annotations
 import os
 import uuid
 
-import pytest
 import requests
 
-from tests.live.conftest import AUTH_URL
-
 TELEMETRY_URL = os.getenv("TELEMETRY_API_URL", "http://127.0.0.1:8010")
-
-
-@pytest.fixture(scope="module")
-def member(auth_headers):
-    """Member user in a fresh project (own token); skips if the auth API will not create one.
-    Reused by test_billing / test_events."""
-    tag = uuid.uuid4().hex[:8]
-    pr = requests.post(f"{AUTH_URL}/projects", headers=auth_headers, json={"name": f"scope-{tag}"}, timeout=10)
-    if pr.status_code not in (200, 201):
-        pytest.skip(f"cannot create second project: {pr.status_code}")
-    pid = pr.json()["id"]
-    ur = requests.post(f"{AUTH_URL}/users", headers=auth_headers, timeout=10, json={
-        "username": f"scope-{tag}", "email": f"scope-{tag}@example.com", "password": "Scope-pass-123", "project_id": pid})
-    try:
-        if ur.status_code not in (200, 201):
-            pytest.skip(f"cannot create second user: {ur.status_code}")
-        lr = requests.post(f"{AUTH_URL}/auth/tokens", json={"username": f"scope-{tag}", "password": "Scope-pass-123"}, timeout=10)
-        if lr.status_code not in (200, 201):
-            pytest.skip(f"cannot log in as second user: {lr.status_code}")
-        yield {"project_id": pid, "headers": {"Authorization": f"Bearer {lr.json()['token']}"}}
-    finally:
-        if ur.status_code in (200, 201):
-            requests.delete(f"{AUTH_URL}/users/{ur.json()['id']}", headers=auth_headers, timeout=10)
-        requests.delete(f"{AUTH_URL}/projects/{pid}", headers=auth_headers, timeout=10)
 
 
 class TestTelemetryAPI:

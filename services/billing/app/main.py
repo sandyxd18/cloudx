@@ -23,7 +23,7 @@ from jinja2 import Template
 from pydantic import BaseModel
 from sqlalchemy import (
     Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text,
-    create_engine, delete, func, select, text
+    create_engine, delete, select, text
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 

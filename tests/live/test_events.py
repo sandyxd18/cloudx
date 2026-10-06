@@ -6,8 +6,6 @@ import uuid
 import pytest
 import requests
 
-from tests.live.test_telemetry import member  # noqa: F401  (fixture)
-
 EVENT_URL = os.getenv("EVENT_API_URL", "http://127.0.0.1:8012")
 # the SSRF guard rejects non-public hosts unless EVENT_ALLOW_PRIVATE_WEBHOOKS=true on the server; this needs DNS
 WEBHOOK = "https://example.com/hook"
