@@ -174,29 +174,26 @@ def server_metadata_payload(server: Server) -> dict:
     }
 
 
-def _check_project_quota(project_id: str, requested_vcpus: int, requested_ram_mb: int):
-    """Enforce per-project quota limits against placement usages."""
+def _check_project_quota(db: Session, project_id: str, requested_vcpus: int, requested_ram_mb: int):
+    """Enforce per-project limits from auth-api against what this project's live servers already use.
+
+    Usage comes from compute's own servers table (placement allocations are not written by compute).
+    ponytail: if auth-api is unreachable the check is skipped (logged), not failed.
+    """
     try:
-        quota_resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=_svc_headers(), timeout=5)
-        if quota_resp.status_code == 200:
-            quota = quota_resp.json()
-            usage_resp = requests.get(f"{PLACEMENT_API_URL}/usages?project_id={project_id}", headers=_svc_headers(), timeout=5)
-            usages = usage_resp.json().get("usages", {}) if usage_resp.status_code == 200 else {}
-            curr_instances = usages.get("instances", 0)
-            curr_vcpus = usages.get("VCPU", 0)
-            curr_ram = usages.get("MEMORY_MB", 0)
-
-            max_inst = quota.get("max_instances", 10)
-            max_vcpu = quota.get("max_vcpus", 20)
-            max_ram = quota.get("max_ram_mb", 32768)
-
-            if curr_instances + 1 > max_inst:
-                raise HTTPException(status_code=413, detail=f"Quota exceeded: max_instances ({max_inst}) reached")
-            if curr_vcpus + requested_vcpus > max_vcpu:
-                raise HTTPException(status_code=413, detail=f"Quota exceeded: max_vcpus ({max_vcpu}) reached")
-            if curr_ram + requested_ram_mb > max_ram:
-                raise HTTPException(status_code=413, detail=f"Quota exceeded: max_ram_mb ({max_ram}) reached")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logging.getLogger("compute-api").warning("Quota check failed/skipped: %s", exc)
+        resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=_svc_headers(), timeout=5)
+        resp.raise_for_status()
+        quota = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logging.getLogger("compute-api").warning("Quota check skipped (auth-api): %s", exc)
+        return
+    live = db.scalars(select(Server).where(
+        Server.project_id == project_id, Server.status.in_({"BUILD", "ACTIVE", "SHUTOFF", "REBOOT", "PAUSED", "SUSPENDED", "RESCUE", "RESIZE", "VERIFY_RESIZE"}))).all()
+    checks = (
+        ("max_instances", len(live) + 1, quota.get("max_instances", 10)),
+        ("max_vcpus", sum(s.vcpus or 0 for s in live) + requested_vcpus, quota.get("max_vcpus", 20)),
+        ("max_ram_mb", sum(s.ram_mb or 0 for s in live) + requested_ram_mb, quota.get("max_ram_mb", 32768)),
+    )
+    for name, wanted, limit in checks:
+        if wanted > limit:
+            raise HTTPException(status_code=413, detail=f"Quota exceeded: {name} ({limit}) reached")

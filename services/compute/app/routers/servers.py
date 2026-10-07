@@ -43,7 +43,7 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
     keypair = require_keypair(db, keypair_ref) if keypair_ref else None
     flavor = require_flavor(db, payload.flavor)
     ensure_capacity(db, flavor)
-    _check_project_quota(current["project_id"], flavor.vcpus, flavor.ram_mb)
+    _check_project_quota(db, current["project_id"], flavor.vcpus, flavor.ram_mb)
     # Check server group anti-affinity
     sg_id = None
     if payload.server_group:
