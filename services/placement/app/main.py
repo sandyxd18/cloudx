@@ -286,7 +286,7 @@ app = FastAPI(title="cloudx placement-api", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

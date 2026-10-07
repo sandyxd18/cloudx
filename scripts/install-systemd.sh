@@ -78,6 +78,12 @@ for tok in METRICS_TOKEN INTERNAL_TOKEN; do
 done
 chmod 640 "${ENV_FILE}"
 
+# Prometheus scrapes /metrics with this token (prometheus.yml: credentials_file); only when Prometheus is installed here.
+if [[ -d /etc/prometheus ]]; then
+    ( umask 037; grep '^METRICS_TOKEN=' "${ENV_FILE}" | cut -d= -f2- | tr -d '\n' > /etc/prometheus/metrics_token )
+    chgrp prometheus /etc/prometheus/metrics_token 2>/dev/null || true
+fi
+
 chown -R "${CLOUDX_USER}:${CLOUDX_GROUP}" "${ETC_DIR}"
 chmod 750 "${ETC_DIR}"
 

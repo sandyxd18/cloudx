@@ -651,6 +651,12 @@ def billing_summary(
     return summary
 
 
+try:
+    from shared.metrics import setup_metrics
+    setup_metrics(app, "billing-api")
+except Exception:  # metrics are optional
+    pass
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "billing-api"}

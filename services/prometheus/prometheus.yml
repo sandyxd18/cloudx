@@ -32,6 +32,12 @@ scrape_configs:
           - "127.0.0.1:8006"   # placement-api
           - "127.0.0.1:8007"   # object-store-api
           - "127.0.0.1:8008"   # load-balancer-api
+          - "127.0.0.1:8010"   # telemetry-api
+          - "127.0.0.1:8011"   # billing-api
+          - "127.0.0.1:8012"   # event-api
+          - "127.0.0.1:8013"   # orchestration-api
+          - "127.0.0.1:8014"   # key-manager-api
+          - "127.0.0.1:8015"   # k8s-engine-api
         labels:
           group: control-plane
 

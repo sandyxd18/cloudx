@@ -129,7 +129,7 @@ async def _bad_name(_: Request, exc: PathEscape):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -541,6 +541,12 @@ def delete_object(name: str, key: str, current: CurrentUser, db: DB):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Health
 # ═══════════════════════════════════════════════════════════════════════════════
+
+try:
+    from shared.metrics import setup_metrics
+    setup_metrics(app, "object-store-api")
+except Exception:  # metrics are optional
+    pass
 
 @app.get("/health")
 def health():

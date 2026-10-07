@@ -462,6 +462,12 @@ def retry_delivery(user: CurrentUser, delivery_id: int, db: DB):
     return d
 
 
+try:
+    from shared.metrics import setup_metrics
+    setup_metrics(app, "event-api")
+except Exception:  # metrics are optional
+    pass
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "event-api"}

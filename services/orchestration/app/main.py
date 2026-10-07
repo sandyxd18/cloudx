@@ -133,7 +133,7 @@ if RequestIDMiddleware:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -397,6 +397,12 @@ def record_scaling_event(admin: AdminUser, group_id: str, data: ScalingEventIn, 
     db.commit()
     return {"status": "recorded"}
 
+
+try:
+    from shared.metrics import setup_metrics
+    setup_metrics(app, "orchestration-api")
+except Exception:  # metrics are optional
+    pass
 
 @app.get("/health")
 def health_check():

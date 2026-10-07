@@ -242,7 +242,7 @@ app = FastAPI(title="cloudx load-balancer-api", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -834,6 +834,12 @@ def sync_pool_members(pool_ref: str, current: CurrentUser, db: DB):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Health
 # ═══════════════════════════════════════════════════════════════════════════════
+
+try:
+    from shared.metrics import setup_metrics
+    setup_metrics(app, "load-balancer-api")
+except Exception:  # metrics are optional
+    pass
 
 @app.get("/health")
 def health():

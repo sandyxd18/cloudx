@@ -2,6 +2,7 @@ from shared.config import load_service_config
 
 load_service_config("networking-api")
 
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from shared.request_id_middleware import RequestIDMiddleware
@@ -31,7 +32,7 @@ app = FastAPI(title="cloudx networking-api", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

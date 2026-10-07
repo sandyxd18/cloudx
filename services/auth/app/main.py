@@ -2,6 +2,7 @@ from shared.config import load_service_config
 
 load_service_config("auth-api")
 
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from shared.request_id_middleware import RequestIDMiddleware
@@ -28,7 +29,7 @@ from .routers import (
 app = FastAPI(title="cloudx auth-api", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

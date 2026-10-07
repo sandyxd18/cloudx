@@ -61,6 +61,12 @@ def get_db():
 def startup():
     require_schema(engine, "k8s_engine")
 
+try:
+    from shared.metrics import setup_metrics
+    setup_metrics(app, "k8s-engine-api")
+except Exception:  # metrics are optional
+    pass
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "k8s-engine-api"}

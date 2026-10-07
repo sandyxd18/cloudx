@@ -8,6 +8,8 @@ Serves:
   - Instance identity: /openstack/latest/identity (JSON + HMAC signature)
   - Versioned EC2:   /{version}/meta-data/*, /{version}/user-data
 """
+import os
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -36,7 +38,7 @@ app = FastAPI(title="cloudx metadata-api", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

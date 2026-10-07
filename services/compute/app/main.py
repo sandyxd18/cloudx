@@ -2,6 +2,7 @@ from shared.config import load_service_config
 
 load_service_config("compute-api")
 
+import os
 import threading
 
 from fastapi import FastAPI
@@ -31,7 +32,7 @@ from .routers import (
 app = FastAPI(title="cloudx compute-api", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
