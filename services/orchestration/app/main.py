@@ -230,6 +230,13 @@ class ScalingHistoryOut(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+def _own_group(db, user, group_id: str) -> ScalingGroup:
+    group = db.get(ScalingGroup, group_id)
+    if not group or (user.get("role") != "admin" and group.project_id != user.get("project_id")):
+        raise HTTPException(status_code=404, detail="Scaling group not found")
+    return group
+
+
 @app.post("/scaling-groups", response_model=ScalingGroupOut, status_code=status.HTTP_201_CREATED)
 @app.post("/orchestration/scaling-groups", response_model=ScalingGroupOut, status_code=status.HTTP_201_CREATED)
 def create_scaling_group(user: CurrentUser, data: ScalingGroupIn, db: DB):
@@ -255,18 +262,14 @@ def list_scaling_groups(user: CurrentUser, db: DB, project_id: str | None = None
 @app.get("/scaling-groups/{group_id}", response_model=ScalingGroupOut)
 @app.get("/orchestration/scaling-groups/{group_id}", response_model=ScalingGroupOut)
 def get_scaling_group(user: CurrentUser, group_id: str, db: DB):
-    group = db.get(ScalingGroup, group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Scaling group not found")
+    group = _own_group(db, user, group_id)
     return group
 
 
 @app.patch("/scaling-groups/{group_id}", response_model=ScalingGroupOut)
 @app.patch("/orchestration/scaling-groups/{group_id}", response_model=ScalingGroupOut)
 def update_scaling_group(user: CurrentUser, group_id: str, data: ScalingGroupUpdate, db: DB):
-    group = db.get(ScalingGroup, group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Scaling group not found")
+    group = _own_group(db, user, group_id)
     for field, val in data.model_dump(exclude_unset=True).items():
         if val is not None:
             setattr(group, field, val)
@@ -278,9 +281,7 @@ def update_scaling_group(user: CurrentUser, group_id: str, data: ScalingGroupUpd
 @app.delete("/scaling-groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 @app.delete("/orchestration/scaling-groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_scaling_group(user: CurrentUser, group_id: str, db: DB):
-    group = db.get(ScalingGroup, group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Scaling group not found")
+    group = _own_group(db, user, group_id)
     db.delete(group)
     db.commit()
     return None
@@ -289,9 +290,7 @@ def delete_scaling_group(user: CurrentUser, group_id: str, db: DB):
 @app.post("/scaling-groups/{group_id}/scale-out", response_model=ScalingGroupInstanceOut)
 @app.post("/orchestration/scaling-groups/{group_id}/scale-out", response_model=ScalingGroupInstanceOut)
 def manual_scale_out(user: CurrentUser, group_id: str, db: DB):
-    group = db.get(ScalingGroup, group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Scaling group not found")
+    group = _own_group(db, user, group_id)
 
     count_before = len(group.instances)
     if count_before >= group.max_instances:
@@ -325,9 +324,7 @@ def manual_scale_out(user: CurrentUser, group_id: str, db: DB):
 @app.post("/scaling-groups/{group_id}/scale-in", status_code=status.HTTP_200_OK)
 @app.post("/orchestration/scaling-groups/{group_id}/scale-in", status_code=status.HTTP_200_OK)
 def manual_scale_in(user: CurrentUser, group_id: str, db: DB):
-    group = db.get(ScalingGroup, group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Scaling group not found")
+    group = _own_group(db, user, group_id)
 
     count_before = len(group.instances)
     if count_before <= group.min_instances:
@@ -355,15 +352,14 @@ def manual_scale_in(user: CurrentUser, group_id: str, db: DB):
 @app.get("/scaling-groups/{group_id}/instances", response_model=list[ScalingGroupInstanceOut])
 @app.get("/orchestration/scaling-groups/{group_id}/instances", response_model=list[ScalingGroupInstanceOut])
 def list_group_instances(user: CurrentUser, group_id: str, db: DB):
-    group = db.get(ScalingGroup, group_id)
-    if not group:
-        raise HTTPException(status_code=404, detail="Scaling group not found")
+    group = _own_group(db, user, group_id)
     return group.instances
 
 
 @app.get("/scaling-groups/{group_id}/history", response_model=list[ScalingHistoryOut])
 @app.get("/orchestration/scaling-groups/{group_id}/history", response_model=list[ScalingHistoryOut])
 def get_scaling_history(user: CurrentUser, group_id: str, db: DB):
+    _own_group(db, user, group_id)
     q = select(ScalingHistory).where(ScalingHistory.group_id == group_id).order_by(ScalingHistory.created_at.desc())
     return db.execute(q).scalars().all()
 

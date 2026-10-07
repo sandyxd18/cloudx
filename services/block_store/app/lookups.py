@@ -10,9 +10,14 @@ def get_volume(db: Session, ref: str):
     return db.get(Volume, ref) or db.scalar(select(Volume).where(Volume.name == ref))
 
 
-def require_volume(db: Session, ref: str) -> Volume:
+def can_access(project_id: str | None, current: dict | None) -> bool:
+    """Admins (and internal callers, current=None) see everything; others only their own project (or unowned rows)."""
+    return current is None or current.get("role") == "admin" or not project_id or project_id == current.get("project_id")
+
+
+def require_volume(db: Session, ref: str, current: dict | None = None) -> Volume:
     volume = get_volume(db, ref)
-    if not volume:
+    if not volume or not can_access(volume.project_id, current):
         raise HTTPException(status_code=404, detail=f"volume '{ref}' not found")
     return volume
 
@@ -21,8 +26,12 @@ def get_snapshot(db: Session, ref: str):
     return db.get(Snapshot, ref) or db.scalar(select(Snapshot).where(Snapshot.name == ref))
 
 
-def require_snapshot(db: Session, ref: str) -> Snapshot:
+def require_snapshot(db: Session, ref: str, current: dict | None = None) -> Snapshot:
     snapshot = get_snapshot(db, ref)
+    if snapshot and current is not None:  # snapshots have no project column: they follow their volume's project
+        vol = db.get(Volume, snapshot.volume_id)
+        if vol and not can_access(vol.project_id, current):
+            snapshot = None
     if not snapshot:
         raise HTTPException(status_code=404, detail=f"snapshot '{ref}' not found")
     return snapshot

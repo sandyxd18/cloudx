@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import CurrentUser, InternalAuth
 from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
@@ -239,13 +239,13 @@ def _delete_port_record(db: Session, port: Port) -> dict:
     db.commit()
     return {"status": "deleted", "id": port.id, "name": port.name}
 
-@router.delete("/internal/ports/{ref}", status_code=200)
+@router.delete("/internal/ports/{ref}", status_code=200, dependencies=[InternalAuth])
 def delete_port_internal(ref: str, db: DB):
     """Service-to-service port deletion — used by compute-worker on instance teardown."""
     port = require_by_ref(db, Port, ref, "port")
     return _delete_port_record(db, port)
 
-@router.post("/internal/ports/purge-orphaned")
+@router.post("/internal/ports/purge-orphaned", dependencies=[InternalAuth])
 def purge_orphaned_ports(db: DB):
     """Delete compute-owned ports whose server no longer exists, and release
     floating IPs pointing at ports that are already gone.

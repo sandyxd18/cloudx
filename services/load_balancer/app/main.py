@@ -27,7 +27,9 @@ from typing import Annotated
 import requests
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+import ipaddress
+
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import DateTime, ForeignKey, Integer, String, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -183,35 +185,43 @@ class LBCertificate(Base):
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
+NAME = Field(..., pattern=r"^[\w .-]{1,128}$")
+
+
 class LoadBalancerIn(BaseModel):
-    name: str
+    name: str = NAME
     lb_type: str = Field(..., pattern="^(NLB|ALB)$")
     vip_network_id: str
     vip_subnet_id: str | None = None
 
 
 class ListenerIn(BaseModel):
-    name: str
+    name: str = NAME
     protocol: str = Field(..., pattern="^(TCP|UDP|HTTP|HTTPS)$")
     protocol_port: int = Field(..., ge=1, le=65535)
     certificate_id: str | None = None
 
 
 class CertificateIn(BaseModel):
-    name: str
+    name: str = NAME
     certificate_pem: str
     private_key_pem: str
 
 
 class PoolMemberIn(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, pattern=r"^[\w .-]{1,128}$")
     address: str
     protocol_port: int | None = None
     instance_id: str | None = None
 
+    @field_validator("address")
+    @classmethod
+    def _v_addr(cls, v):
+        return str(ipaddress.ip_address(v))
+
 
 class PoolIn(BaseModel):
-    name: str
+    name: str = NAME
     lb_algorithm: str = Field(default="ROUND_ROBIN", pattern="^(ROUND_ROBIN|LEAST_CONNECTIONS|SOURCE_IP)$")
     server_group_id: str | None = None
     protocol_port: int = Field(..., ge=1, le=65535)
@@ -223,7 +233,7 @@ class HealthMonitorIn(BaseModel):
     delay: int = Field(default=5, ge=1)
     timeout: int = Field(default=5, ge=1)
     max_retries: int = Field(default=3, ge=1)
-    url_path: str = Field(default="/")
+    url_path: str = Field(default="/", pattern=r"^/[A-Za-z0-9._~/%?&=+-]{0,200}$")
 
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
@@ -417,9 +427,11 @@ def _listener_to_dict(ls: Listener, db: Session | None = None) -> dict:
         cert = db.get(LBCertificate, ls.certificate_id)
         if cert:
             cert_dir = Path("/tmp/antigravity/certs")
-            cert_dir.mkdir(parents=True, exist_ok=True)
+            cert_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             cert_file = cert_dir / f"{cert.id}.pem"
-            cert_file.write_text(f"{cert.certificate_pem}\n{cert.private_key_pem}")
+            fd = os.open(cert_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(f"{cert.certificate_pem}\n{cert.private_key_pem}")
             ssl_cert_path = str(cert_file)
 
     return {

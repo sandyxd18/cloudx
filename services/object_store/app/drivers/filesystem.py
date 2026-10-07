@@ -16,6 +16,10 @@ from .base import ObjectStoreDriver
 log = logging.getLogger("object-store-driver.filesystem")
 
 
+class PathEscape(ValueError):
+    """Bucket or key resolves outside its root."""
+
+
 class FilesystemDriver(ObjectStoreDriver):
     name = "filesystem"
 
@@ -23,11 +27,17 @@ class FilesystemDriver(ObjectStoreDriver):
         self.root = Path(config.get("root", "/var/lib/cloudx/object-store"))
         self.root.mkdir(parents=True, exist_ok=True)
 
+    def _inside(self, base: Path, p: Path) -> Path:
+        p = p.resolve()
+        if p == base or not p.is_relative_to(base):  # blocks '..', absolute keys and symlink escapes
+            raise PathEscape("invalid bucket or object name")
+        return p
+
     def _bucket_path(self, bucket_name: str) -> Path:
-        return self.root / bucket_name
+        return self._inside(self.root.resolve(), self.root / bucket_name)
 
     def _object_path(self, bucket_name: str, key: str) -> Path:
-        return self._bucket_path(bucket_name) / key
+        return self._inside(self._bucket_path(bucket_name), self._bucket_path(bucket_name) / key)
 
     # ── Bucket ────────────────────────────────────────────────────────────────
 

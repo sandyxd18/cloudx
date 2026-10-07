@@ -22,8 +22,8 @@ router = APIRouter()
 
 
 @router.get("/servers/{ref}/console")
-def console(ref: str, _: CurrentUser, db: DB):
-    server = require_server(db, ref)
+def console(ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     return {
         "server": server.name,
         "domain": server.libvirt_domain_name,
@@ -34,8 +34,8 @@ def console(ref: str, _: CurrentUser, db: DB):
 
 
 @router.get("/servers/{ref}/console-url")
-def console_url(ref: str, _: CurrentUser, db: DB):
-    server = require_server(db, ref)
+def console_url(ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     vnc = {
         "status": "auto-assigned-by-libvirt",
         "inspect": f"virsh -c qemu:///system dumpxml {server.libvirt_domain_name}",
@@ -58,14 +58,14 @@ def console_url(ref: str, _: CurrentUser, db: DB):
 
 
 @router.post("/servers/{ref}/remote-consoles")
-def remote_console(ref: str, payload: dict, _: CurrentUser, db: DB):
+def remote_console(ref: str, payload: dict, current: CurrentUser, db: DB):
     """
     OpenStack-compatible remote console endpoint.
     Returns a noVNC URL for in-browser VM console access.
 
     Request body: {"remote_console": {"type": "novnc", "protocol": "vnc"}}
     """
-    server = require_server(db, ref)
+    server = require_server(db, ref, current)
     if server.status != "ACTIVE":
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE to get a console (current: {server.status})")
 
@@ -112,7 +112,7 @@ def shelve_server(ref: str, current: CurrentUser, db: DB):
     Shelve a server: snapshot its state to an image, then stop and free resources.
     Status: ACTIVE/SHUTOFF → SHELVED_OFFLOADED
     """
-    server = require_server(db, ref)
+    server = require_server(db, ref, current)
     if server.locked and current.get("role") != "admin":
         raise HTTPException(status_code=409, detail="server is locked")
     if server.status not in ("ACTIVE", "SHUTOFF", "PAUSED", "SUSPENDED"):
@@ -136,7 +136,7 @@ def unshelve_server(ref: str, current: CurrentUser, db: DB):
     Unshelve a server: restore from shelved image and restart.
     Status: SHELVED_OFFLOADED → ACTIVE
     """
-    server = require_server(db, ref)
+    server = require_server(db, ref, current)
     if server.locked and current.get("role") != "admin":
         raise HTTPException(status_code=409, detail="server is locked")
     if server.status != "SHELVED_OFFLOADED":
@@ -157,13 +157,13 @@ _METRICS_TIME_RANGE_HOURS = {"1h": 1, "3h": 3, "6h": 6, "12h": 12, "24h": 24}
 
 
 @router.get("/servers/{ref}/metrics")
-def server_metrics(ref: str, _: CurrentUser, db: DB, time_range: str = "1h"):
+def server_metrics(ref: str, current: CurrentUser, db: DB, time_range: str = "1h"):
     """EC2-style instance monitoring: CPU/memory/network/disk samples from the hypervisor.
 
     Backed by compute-worker's in-memory ring buffer (see collect_metrics_loop);
     samples are taken every 10s and retained for up to 24h, reset on worker restart.
     """
-    server = require_server(db, ref)
+    server = require_server(db, ref, current)
     hours = _METRICS_TIME_RANGE_HOURS.get(time_range, 1)
     since_epoch = time.time() - hours * 3600
     try:
@@ -175,8 +175,8 @@ def server_metrics(ref: str, _: CurrentUser, db: DB, time_range: str = "1h"):
 
 
 @router.get("/servers/{ref}/logs")
-def logs(ref: str, _: CurrentUser, db: DB, lines: int = 50):
-    server = require_server(db, ref)
+def logs(ref: str, current: CurrentUser, db: DB, lines: int = 50):
+    server = require_server(db, ref, current)
     try:
         result = clients.call_worker("get_logs", {**server_worker_payload(server), "lines": lines}, timeout=RPC_CALL_TIMEOUT)
         return result
@@ -191,8 +191,8 @@ def logs(ref: str, _: CurrentUser, db: DB, lines: int = 50):
 
 
 @router.get("/servers/{ref}/ssh-info")
-def ssh_info(ref: str, _: CurrentUser, db: DB):
-    server = require_server(db, ref)
+def ssh_info(ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     command = None
     if server.ip_address and server.keypair_name:
         command = f"ssh -i <private-key-for-{server.keypair_name}> {DEFAULT_VM_USER}@{server.ip_address}"

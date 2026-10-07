@@ -31,8 +31,8 @@ router = APIRouter()
 
 
 @router.post("/servers/{ref}/start")
-def start_server(ref: str, db: DB):
-    server = require_server(db, ref)
+def start_server(ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     server.status = "STARTING"
     db.commit()
     clients.cast_to_worker("start", server_worker_payload(server))
@@ -41,8 +41,8 @@ def start_server(ref: str, db: DB):
 
 
 @router.post("/servers/{ref}/stop")
-def stop_server(ref: str, db: DB):
-    server = require_server(db, ref)
+def stop_server(ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     server.status = "STOPPING"
     db.commit()
     clients.cast_to_worker("stop", server_worker_payload(server))
@@ -51,8 +51,8 @@ def stop_server(ref: str, db: DB):
 
 
 @router.post("/servers/{ref}/reboot")
-def reboot_server(ref: str, payload: ServerRebootIn = None, _: CurrentUser = None, db: DB = None):
-    server = require_server(db, ref)
+def reboot_server(ref: str, current: CurrentUser, db: DB, payload: ServerRebootIn = None):
+    server = require_server(db, ref, current)
     rtype = payload.type if payload else "soft"
     server.status = "REBOOT"
     db.commit()
@@ -62,8 +62,8 @@ def reboot_server(ref: str, payload: ServerRebootIn = None, _: CurrentUser = Non
 
 
 @router.post("/servers/{ref}/pause")
-def pause_server(ref: str, _: CurrentUser, db: DB):
-    server = require_server(db, ref)
+def pause_server(ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     server.status = "PAUSING"
     db.commit()
     clients.cast_to_worker("pause", server_worker_payload(server))
@@ -72,8 +72,8 @@ def pause_server(ref: str, _: CurrentUser, db: DB):
 
 
 @router.post("/servers/{ref}/resume")
-def resume_server(ref: str, _: CurrentUser, db: DB):
-    server = require_server(db, ref)
+def resume_server(ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     server.status = "RESUMING"
     db.commit()
     clients.cast_to_worker("resume", server_worker_payload(server))
@@ -82,8 +82,8 @@ def resume_server(ref: str, _: CurrentUser, db: DB):
 
 
 @router.post("/servers/{ref}/suspend")
-def suspend_server(ref: str, _: CurrentUser, db: DB):
-    server = require_server(db, ref)
+def suspend_server(ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     server.status = "SUSPENDING"
     db.commit()
     clients.cast_to_worker("suspend", server_worker_payload(server))
@@ -92,8 +92,8 @@ def suspend_server(ref: str, _: CurrentUser, db: DB):
 
 
 @router.post("/servers/{ref}/resize")
-def resize_server(ref: str, payload: ServerResizeIn, _: CurrentUser, db: DB):
-    server = require_server(db, ref)
+def resize_server(ref: str, payload: ServerResizeIn, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     flavor = require_flavor(db, payload.flavor)
     # Snapshot original flavor for potential revert
     server.original_flavor = server.flavor
@@ -113,9 +113,9 @@ def resize_server(ref: str, payload: ServerResizeIn, _: CurrentUser, db: DB):
 
 
 @router.post("/servers/{ref}/confirmResize")
-def confirm_resize(ref: str, _: CurrentUser, db: DB):
+def confirm_resize(ref: str, current: CurrentUser, db: DB):
     """Confirm a completed resize, clearing the rollback snapshot."""
-    server = require_server(db, ref)
+    server = require_server(db, ref, current)
     if server.status not in ("VERIFY_RESIZE", "RESIZE", "ACTIVE"):
         raise HTTPException(status_code=409, detail=f"server is not in VERIFY_RESIZE status (current: {server.status})")
     # Clear backup state
@@ -129,9 +129,9 @@ def confirm_resize(ref: str, _: CurrentUser, db: DB):
 
 
 @router.post("/servers/{ref}/revertResize")
-def revert_resize(ref: str, _: CurrentUser, db: DB):
+def revert_resize(ref: str, current: CurrentUser, db: DB):
     """Revert a resize, restoring the original flavor."""
-    server = require_server(db, ref)
+    server = require_server(db, ref, current)
     if not server.original_flavor:
         raise HTTPException(status_code=409, detail="no resize snapshot found for this server")
     original_flavor = db.get(Flavor, server.original_flavor)
@@ -156,8 +156,8 @@ def revert_resize(ref: str, _: CurrentUser, db: DB):
 
 
 @router.post("/servers/{ref}/rebuild")
-def rebuild_server(ref: str, payload: ServerRebuildIn, _: CurrentUser, db: DB):
-    server = require_server(db, ref)
+def rebuild_server(ref: str, payload: ServerRebuildIn, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     image = clients.api_get(f"{IMAGE_API_URL}/images/{payload.image}")
     server.image_id = image["id"]
     server.status = "REBUILD"
@@ -168,8 +168,8 @@ def rebuild_server(ref: str, payload: ServerRebuildIn, _: CurrentUser, db: DB):
 
 
 @router.post("/servers/{ref}/rescue")
-def rescue_server(ref: str, payload: ServerRescueIn, _: CurrentUser, db: DB):
-    server = require_server(db, ref)
+def rescue_server(ref: str, payload: ServerRescueIn, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     rescue_image_id = server.image_id
     if payload.image:
         rescue_img = clients.api_get(f"{IMAGE_API_URL}/images/{payload.image}")
@@ -182,8 +182,8 @@ def rescue_server(ref: str, payload: ServerRescueIn, _: CurrentUser, db: DB):
 
 
 @router.post("/servers/{ref}/unrescue")
-def unrescue_server(ref: str, _: CurrentUser, db: DB):
-    server = require_server(db, ref)
+def unrescue_server(ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     server.status = "UNRESCUING"
     db.commit()
     clients.cast_to_worker("unrescue", server_worker_payload(server))
@@ -192,15 +192,15 @@ def unrescue_server(ref: str, _: CurrentUser, db: DB):
 
 
 @router.post("/servers/{ref}/password")
-def set_server_password(ref: str, payload: ServerPasswordIn, _: CurrentUser, db: DB):
-    server = require_server(db, ref)
+def set_server_password(ref: str, payload: ServerPasswordIn, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     clients.cast_to_worker("set_password", {**server_worker_payload(server), "password": payload.password})
     return {"server": server.name, "status": "password injection requested"}
 
 
 @router.delete("/servers/{ref}")
 def delete_server(ref: str, current: CurrentUser, db: DB, keep_root_volume: bool = False):
-    server = require_server(db, ref)
+    server = require_server(db, ref, current)
     # Locked guard
     if server.locked and current.get("role") != "admin":
         raise HTTPException(status_code=409, detail="server is locked; unlock it before deleting")
@@ -241,9 +241,9 @@ def delete_server(ref: str, current: CurrentUser, db: DB, keep_root_volume: bool
 
 
 @router.post("/servers/{ref}/live-migrate", status_code=202)
-def live_migrate_server(ref: str, payload: dict, _: CurrentUser, db: DB):
+def live_migrate_server(ref: str, payload: dict, current: CurrentUser, db: DB):
     """Live migrate a server to a target compute host (Phase 6.1)."""
-    server = require_server(db, ref)
+    server = require_server(db, ref, current)
     target_host = payload.get("target_host")
     if not target_host:
         raise HTTPException(status_code=400, detail="target_host is required")
@@ -261,9 +261,9 @@ def live_migrate_server(ref: str, payload: dict, _: CurrentUser, db: DB):
 
 
 @router.get("/servers/{ref}/migration-candidates")
-def list_migration_candidates(ref: str, _: CurrentUser, db: DB):
+def list_migration_candidates(ref: str, current: CurrentUser, db: DB):
     """List possible target hosts for live migration."""
-    server = require_server(db, ref)
+    server = require_server(db, ref, current)
     try:
         r = requests.get(
             f"{PLACEMENT_API_URL}/compute_nodes",
@@ -282,8 +282,8 @@ def list_migration_candidates(ref: str, _: CurrentUser, db: DB):
 
 
 @router.post("/servers/{ref}/snapshots", status_code=201)
-def create_server_snapshot(ref: str, payload: ServerSnapshotIn, db: DB):
-    server = require_server(db, ref)
+def create_server_snapshot(ref: str, payload: ServerSnapshotIn, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     if not server.root_volume_id:
         raise HTTPException(status_code=409, detail="server has no root volume")
     snap = clients.block_post(f"/volumes/{server.root_volume_id}/snapshots", {"name": f"{payload.name}-root"})
@@ -295,8 +295,8 @@ def create_server_snapshot(ref: str, payload: ServerSnapshotIn, db: DB):
 
 
 @router.post("/servers/{ref}/ports")
-def add_server_port(ref: str, payload: ServerPortIn, db: DB):
-    server = require_server(db, ref)
+def add_server_port(ref: str, payload: ServerPortIn, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     if server.status != "ACTIVE":
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE to add a port; current status is {server.status}")
     port = clients.api_get(f"{NETWORKING_API_URL}/ports/{payload.port}")
@@ -311,8 +311,8 @@ def add_server_port(ref: str, payload: ServerPortIn, db: DB):
 
 
 @router.delete("/servers/{ref}/ports/{port_ref}")
-def remove_server_port(ref: str, port_ref: str, db: DB):
-    server = require_server(db, ref)
+def remove_server_port(ref: str, port_ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     extra = comma_list(server.extra_port_ids)
     port = clients.api_get(f"{NETWORKING_API_URL}/ports/{port_ref}")
     if port["id"] not in extra:
@@ -325,8 +325,8 @@ def remove_server_port(ref: str, port_ref: str, db: DB):
 
 
 @router.post("/servers/{ref}/volumes/attach")
-def attach_volume(ref: str, payload: VolumeAttachIn, db: DB):
-    server = require_server(db, ref)
+def attach_volume(ref: str, payload: VolumeAttachIn, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     if server.status != "ACTIVE":
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE to attach volume; current status is {server.status}")
     clients.cast_to_worker("attach_volume", {**server_worker_payload(server), "volume": payload.model_dump()})
@@ -334,8 +334,8 @@ def attach_volume(ref: str, payload: VolumeAttachIn, db: DB):
 
 
 @router.post("/servers/{ref}/volumes/detach")
-def detach_volume(ref: str, payload: VolumeAttachIn, db: DB):
-    server = require_server(db, ref)
+def detach_volume(ref: str, payload: VolumeAttachIn, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     if server.status not in {"ACTIVE", "SHUTOFF"}:
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE or SHUTOFF to detach volume; current status is {server.status}")
     clients.cast_to_worker("detach_volume", {**server_worker_payload(server), "volume": payload.model_dump()})

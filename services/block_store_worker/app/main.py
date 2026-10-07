@@ -260,6 +260,10 @@ def handle_create_volume(args: dict) -> None:
             else:
                 path = nfs.clone(source_path, "", lv)
 
+        elif snapshot_id or source_volume_id:
+            # never fall through to a blank volume: the user asked for a copy
+            raise RuntimeError("clone requested but the source path is missing; refusing to create a blank volume")
+
         else:
             # Blank volume
             if backend == "lvm":

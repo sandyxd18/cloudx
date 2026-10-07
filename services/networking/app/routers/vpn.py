@@ -19,6 +19,14 @@ from ..serializers import require_by_ref
 router = APIRouter()
 
 
+def _own_conn(db, current: dict, conn_id: str) -> VPNSiteConnection:
+    conn = db.get(VPNSiteConnection, conn_id)
+    pid = current.get("project_id", current.get("tenant_id", "default"))
+    if not conn or (current.get("role") != "admin" and conn.project_id != pid):
+        raise HTTPException(status_code=404, detail="VPN site connection not found")
+    return conn
+
+
 @router.post("/vpn/ikepolicies", response_model=IKEPolicyOut, status_code=201)
 def create_ike_policy(payload: IKEPolicyIn, current: CurrentUser, db: DB):
     project_id = current.get("project_id", current.get("tenant_id", "default"))
@@ -165,10 +173,8 @@ def list_vpn_site_connections(current: CurrentUser, db: DB):
     ]
 
 @router.get("/vpn/site-connections/{conn_id}", response_model=VPNSiteConnectionOut)
-def get_vpn_site_connection(conn_id: str, db: DB):
-    conn = db.get(VPNSiteConnection, conn_id)
-    if not conn:
-        raise HTTPException(status_code=404, detail="VPN site connection not found")
+def get_vpn_site_connection(conn_id: str, current: CurrentUser, db: DB):
+    conn = _own_conn(db, current, conn_id)
     return {
         "id": conn.id,
         "name": conn.name,
@@ -185,18 +191,14 @@ def get_vpn_site_connection(conn_id: str, db: DB):
     }
 
 @router.delete("/vpn/site-connections/{conn_id}", status_code=204)
-def delete_vpn_site_connection(conn_id: str, db: DB):
-    conn = db.get(VPNSiteConnection, conn_id)
-    if not conn:
-        raise HTTPException(status_code=404, detail="VPN site connection not found")
+def delete_vpn_site_connection(conn_id: str, current: CurrentUser, db: DB):
+    conn = _own_conn(db, current, conn_id)
     db.delete(conn)
     db.commit()
 
 @router.post("/vpn/site-connections/{conn_id}/config")
-def generate_vpn_config(conn_id: str, db: DB):
-    conn = db.get(VPNSiteConnection, conn_id)
-    if not conn:
-        raise HTTPException(status_code=404, detail="VPN site connection not found")
+def generate_vpn_config(conn_id: str, current: CurrentUser, db: DB):
+    conn = _own_conn(db, current, conn_id)
     ike = db.get(IKEPolicy, conn.ikepolicy_id)
     ipsec = db.get(IPsecPolicy, conn.ipsecpolicy_id)
     cidrs = ", ".join(json.loads(conn.peer_cidrs_json))

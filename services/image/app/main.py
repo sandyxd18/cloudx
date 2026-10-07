@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy import DateTime, Integer, String, Text, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import CurrentUser, InternalAuth
 from shared.schema import require_schema
 
 # Import shared modules
@@ -409,7 +409,7 @@ def upload_image(
 
 
 
-@app.post("/images/import-path", status_code=201)
+@app.post("/images/import-path", status_code=201, dependencies=[InternalAuth])
 def import_image_from_path(payload: ImageImportIn, db: DB):
     if get_image(db, payload.name):
         raise HTTPException(status_code=409, detail="image already exists")
@@ -881,7 +881,7 @@ def list_tasks(current: CurrentUser, db: DB):
     return {"tasks": [_task_to_dict(t) for t in tasks]}
 
 
-@app.patch("/v2/tasks/{task_id}")
+@app.patch("/v2/tasks/{task_id}", dependencies=[InternalAuth])
 def update_task(task_id: str, payload: TaskPatchIn, db: DB):
     """Internal endpoint called by image-worker to update task status."""
     task = db.get(ImageTask, task_id)

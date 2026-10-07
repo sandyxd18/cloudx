@@ -1,6 +1,6 @@
 import requests
 from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth
 from sqlalchemy import select
 
 from .. import clients
@@ -62,12 +62,12 @@ def create_volume(payload: VolumeIn, current: CurrentUser, db: DB):
     return _create_volume_record(db, internal, project_id=project_id, multiattach=payload.multiattach)
 
 
-@router.post("/internal/volumes", status_code=201)
+@router.post("/internal/volumes", status_code=201, dependencies=[InternalAuth])
 def create_volume_internal(payload: VolumeInternalIn, db: DB):
     return _create_volume_record(db, payload, project_id=payload.project_id)
 
 
-@router.get("/internal/volumes/{ref}")
+@router.get("/internal/volumes/{ref}", dependencies=[InternalAuth])
 def get_volume_internal(ref: str, db: DB):
     """No-auth endpoint for internal services (e.g. compute-worker) to poll volume status."""
     volume = require_volume(db, ref)
@@ -85,7 +85,7 @@ def get_volume_internal(ref: str, db: DB):
     }
 
 
-@router.delete("/internal/volumes/{ref}", status_code=202)
+@router.delete("/internal/volumes/{ref}", status_code=202, dependencies=[InternalAuth])
 def delete_volume_internal(ref: str, db: DB):
     """No-auth endpoint for internal services (e.g. compute-worker) to delete root volumes."""
     volume = require_volume(db, ref)
@@ -110,13 +110,13 @@ def list_volumes(current: CurrentUser, db: DB):
 
 
 @router.get("/volumes/{ref}")
-def show_volume(ref: str, _: CurrentUser, db: DB):
-    return volume_to_os_dict(require_volume(db, ref))
+def show_volume(ref: str, current: CurrentUser, db: DB):
+    return volume_to_os_dict(require_volume(db, ref, current))
 
 
 @router.delete("/volumes/{ref}")
-def delete_volume(ref: str, _: CurrentUser, db: DB):
-    volume = require_volume(db, ref)
+def delete_volume(ref: str, current: CurrentUser, db: DB):
+    volume = require_volume(db, ref, current)
     if volume.status == "in-use":
         raise HTTPException(status_code=409, detail="detach volume before delete")
     volume.status = "deleting"
@@ -132,12 +132,12 @@ def delete_volume(ref: str, _: CurrentUser, db: DB):
 
 
 @router.post("/volumes/{ref}/extend")
-def extend_volume(ref: str, payload: dict, _: CurrentUser, db: DB):
-    volume = require_volume(db, ref)
+def extend_volume(ref: str, payload: dict, current: CurrentUser, db: DB):
+    volume = require_volume(db, ref, current)
     if volume.status == "in-use":
         raise HTTPException(status_code=409, detail="cannot extend an attached volume")
     new_size = payload.get("new_size") or payload.get("new_size_gb")
-    if not new_size or new_size <= volume.size_gb:
+    if not isinstance(new_size, int) or isinstance(new_size, bool) or new_size <= volume.size_gb:
         raise HTTPException(status_code=400, detail=f"new_size must be > current size ({volume.size_gb} GB)")
     volume.status = "extending"
     db.commit()
@@ -154,7 +154,7 @@ def extend_volume(ref: str, payload: dict, _: CurrentUser, db: DB):
 
 # ── Internal volume attachment (called by compute-worker) ──────────────────────
 
-@router.post("/internal/volumes/{ref}/attach-server")
+@router.post("/internal/volumes/{ref}/attach-server", dependencies=[InternalAuth])
 def internal_attach_server(ref: str, payload: InternalAttachIn, db: DB):
     """Called by compute-worker after spawning a VM to mark root volume as in-use."""
     volume = require_volume(db, ref)
@@ -173,7 +173,7 @@ def internal_attach_server(ref: str, payload: InternalAttachIn, db: DB):
     return obj_to_dict(volume)
 
 
-@router.post("/internal/volumes/{ref}/detach-server")
+@router.post("/internal/volumes/{ref}/detach-server", dependencies=[InternalAuth])
 def internal_detach_server(ref: str, db: DB):
     """Called by compute-worker to release a volume after VM destruction."""
     volume = require_volume(db, ref)
@@ -185,7 +185,7 @@ def internal_detach_server(ref: str, db: DB):
     return obj_to_dict(volume)
 
 
-@router.post("/servers/{server_id}/volumes/detach-all")
+@router.post("/servers/{server_id}/volumes/detach-all", dependencies=[InternalAuth])
 def detach_server_volumes(server_id: str, db: DB):
     """Release all volumes attached to a server (called during VM delete)."""
     volumes = db.scalars(select(Volume).where(Volume.attached_to_server_id == server_id)).all()
@@ -200,7 +200,7 @@ def detach_server_volumes(server_id: str, db: DB):
 
 
 @router.post("/volumes/{ref}/force-detach")
-def force_detach_volume(ref: str, db: DB):
+def force_detach_volume(ref: str, _: AdminUser, db: DB):
     volume = require_volume(db, ref)
     volume.attached_to_server_id = None
     volume.target_device = None
@@ -211,9 +211,9 @@ def force_detach_volume(ref: str, db: DB):
 
 
 @router.post("/volumes/{ref}/attach")
-def attach_volume(ref: str, payload: AttachIn, db: DB):
+def attach_volume(ref: str, payload: AttachIn, current: CurrentUser, db: DB):
     """Hotplug attach via compute-api → compute-worker (hotplug path)."""
-    volume = require_volume(db, ref)
+    volume = require_volume(db, ref, current)
     if volume.status == "in-use":
         raise HTTPException(status_code=409, detail="volume is already attached")
     server = get_server(payload.server)
@@ -235,6 +235,7 @@ def attach_volume(ref: str, payload: AttachIn, db: DB):
                 "host":        volume.host,
                 "target_dev":  target_device,
             },
+            headers=clients.service_client._headers(),
             timeout=60,
         )
         if resp.status_code >= 400:
@@ -251,12 +252,12 @@ def attach_volume(ref: str, payload: AttachIn, db: DB):
 
 
 @router.post("/volumes/{ref}/detach")
-def detach_volume(ref: str, db: DB):
+def detach_volume(ref: str, current: CurrentUser, db: DB):
     """Hotplug detach via compute-api → compute-worker (hotplug path).
     If compute-api returns 404 (the instance was already deleted), still
     release the attachment locally so the volume does not get stuck 'in-use'.
     """
-    volume = require_volume(db, ref)
+    volume = require_volume(db, ref, current)
     if volume.status != "in-use" or not volume.attached_to_server_id:
         raise HTTPException(status_code=409, detail="volume is not attached")
     try:
@@ -270,6 +271,7 @@ def detach_volume(ref: str, db: DB):
                 "host":        volume.host,
                 "target_dev":  volume.target_device,
             },
+            headers=clients.service_client._headers(),
             timeout=60,
         )
         if resp.status_code == 404:

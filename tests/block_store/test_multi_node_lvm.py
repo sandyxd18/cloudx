@@ -69,11 +69,15 @@ def test_snapshots_and_clones_stay_on_the_source_node(block):
     svc, db, casts = block
     svc.create_volume(svc.VolumeIn(name="v1", size_gb=5), USER, db)  # node-a
     svc.create_volume(svc.VolumeIn(name="filler", size_gb=1), USER, db)  # node-b, so node-b now has less space than node-a
-    db.get(svc.Volume, svc.require_volume(db, "v1").id).status = "available"
+    v = db.get(svc.Volume, svc.require_volume(db, "v1").id)
+    v.status, v.path = "available", "/dev/vg/v1"
     db.commit()
     casts.clear()
 
     snap = svc.create_volume_snapshot("v1", svc.SnapshotIn(name="s1"), USER, db)
+    s = db.get(svc.Snapshot, snap["id"])
+    s.status, s.path = "available", "/dev/vg/s1"  # the worker does this
+    db.commit()
     clone = svc.create_volume(svc.VolumeIn(name="clone", size_gb=5, source_volume="v1"), USER, db)
     from_snap = svc.create_volume(svc.VolumeIn(name="restored", size_gb=5, snapshot="s1"), USER, db)
     svc.delete_snapshot("s1", USER, db)

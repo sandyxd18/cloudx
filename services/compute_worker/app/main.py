@@ -32,6 +32,7 @@ from collections import deque
 import requests
 
 # Append parent so shared/ is importable
+from shared.internal import internal_headers  # noqa: E402
 from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
 from . import libvirt_driver, volume_manager, worker  # noqa: E402
@@ -52,7 +53,7 @@ def placement_registration_loop() -> None:
     url = f"{PLACEMENT_API_URL.rstrip('/')}/internal/resource_providers"
     while True:
         try:
-            r = requests.post(url, json={"name": COMPUTE_HOST}, timeout=5)
+            r = requests.post(url, json={"name": COMPUTE_HOST}, headers=internal_headers(), timeout=5)
             if r.status_code in (200, 201, 409):
                 log.info("[placement] node '%s' registered in Placement API", COMPUTE_HOST)
                 break
@@ -348,7 +349,7 @@ def handle_get_metrics(args: dict) -> dict:
 
 def _http_post(url: str, payload: dict, timeout: int = 60) -> dict | None:
     try:
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = requests.post(url, json=payload, headers=internal_headers(), timeout=timeout)
         if response.status_code < 400:
             return response.json()
         log.warning("HTTP POST %s → %d: %s", url, response.status_code, response.text[:200])
@@ -359,7 +360,7 @@ def _http_post(url: str, payload: dict, timeout: int = 60) -> dict | None:
 
 def _http_delete(url: str, timeout: int = 20) -> None:
     try:
-        resp = requests.delete(url, timeout=timeout)
+        resp = requests.delete(url, headers=internal_headers(), timeout=timeout)
         if resp.status_code >= 400:
             # Never swallow cleanup failures silently — a silent 401 here is
             # exactly how orphaned ports accumulated before /internal endpoints.
@@ -428,7 +429,7 @@ def wait_for_volume_ready(
              volume_id, timeout_sec, url)
     while time.time() < deadline:
         try:
-            resp = requests.get(url, timeout=10)
+            resp = requests.get(url, headers=internal_headers(), timeout=10)
             if resp.status_code == 200:
                 vol = resp.json()
                 status = vol.get("status", "")
@@ -698,7 +699,7 @@ def handle_get_console_info(args: dict) -> dict:
 
 def _volume_host(bs_url: str, volume_id: str) -> str | None:
     try:
-        return requests.get(f"{bs_url}/internal/volumes/{volume_id}", timeout=10).json().get("host")
+        return requests.get(f"{bs_url}/internal/volumes/{volume_id}", headers=internal_headers(), timeout=10).json().get("host")
     except (requests.RequestException, ValueError) as exc:
         log.warning("could not look up the storage node of volume %s: %s", volume_id, exc)
         return None
@@ -786,6 +787,7 @@ def handle_shelve(args: dict) -> None:
                 snap_resp = requests.post(
                     f"{bsu}/internal/volumes/{root_volume_id}/snapshots",
                     json={"name": f"shelved-{server_id}"},
+                    headers=internal_headers(),
                     timeout=60,
                 )
                 if snap_resp.status_code < 300:
@@ -841,7 +843,7 @@ def handle_unshelve(args: dict) -> None:
         if shelved_image_id and root_volume_id:
             try:
                 bsu = _probe_block_store_url(endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL", BLOCK_STORE_API_URL))
-                vol_resp = requests.get(f"{bsu}/internal/volumes/{root_volume_id}", timeout=10)
+                vol_resp = requests.get(f"{bsu}/internal/volumes/{root_volume_id}", headers=internal_headers(), timeout=10)
                 if vol_resp.status_code == 200:
                     vol = vol_resp.json()
                     vol_path = vol.get("path", "")

@@ -1,6 +1,8 @@
+import ipaddress
+import re
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class NetworkIn(BaseModel):
@@ -126,14 +128,39 @@ class VPCPeeringOut(BaseModel):
 # BGP Dynamic Gateway (Phase 6.3)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _ip(v: str) -> str:
+    return str(ipaddress.ip_address(v))
+
+def _host(v: str) -> str:
+    try:
+        return _ip(v)
+    except ValueError:
+        if not re.fullmatch(r"(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*", v):
+            raise ValueError("invalid address")
+        return v
+
+def _nets(v):
+    return v and [str(ipaddress.ip_network(c, strict=False)) for c in v]
+
 class BGPPeerIn(BaseModel):
-    name: str
+    # values end up in an FRR config snippet: keep them to a safe alphabet
+    name: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,64}$")
     router_id: str
     peer_ip: str
-    remote_as: int
-    local_as: int
-    auth_password: str | None = None
+    remote_as: int = Field(ge=1, le=4294967295)
+    local_as: int = Field(ge=1, le=4294967295)
+    auth_password: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.:!@%^*+=-]{1,80}$")
     advertised_prefixes: list[str] | None = None
+
+    @field_validator("peer_ip")
+    @classmethod
+    def _v_ip(cls, v):
+        return _ip(v)
+
+    @field_validator("advertised_prefixes")
+    @classmethod
+    def _v_pfx(cls, v):
+        return _nets(v)
 
 class BGPPeerOut(BaseModel):
     id: str
@@ -143,6 +170,7 @@ class BGPPeerOut(BaseModel):
     peer_ip: str
     remote_as: int
     local_as: int
+    has_password: bool = False
     advertised_prefixes: list[str] | None
     is_active: bool
     status: str
@@ -190,15 +218,26 @@ class IPsecPolicyOut(BaseModel):
     created_at: datetime
 
 class VPNSiteConnectionIn(BaseModel):
-    name: str
+    # values are interpolated into strongSwan ipsec.conf/ipsec.secrets: keep them to a safe alphabet
+    name: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,64}$")
     router_id: str
     peer_address: str
-    peer_id: str
+    peer_id: str = Field(pattern=r"^[A-Za-z0-9@._:-]{1,128}$")
     peer_cidrs: list[str]
-    psk: str
+    psk: str = Field(min_length=8, max_length=128, pattern=r"^[^\s\"'#{}\\]+$")
     ikepolicy_id: str
     ipsecpolicy_id: str
     admin_state_up: bool = True
+
+    @field_validator("peer_address")
+    @classmethod
+    def _v_addr(cls, v):
+        return _host(v)
+
+    @field_validator("peer_cidrs")
+    @classmethod
+    def _v_cidrs(cls, v):
+        return _nets(v)
 
 class VPNSiteConnectionOut(BaseModel):
     id: str

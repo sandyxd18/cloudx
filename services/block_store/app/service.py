@@ -83,6 +83,7 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
     bootable    = payload.bootable
     snapshot_id = None
     source_volume_id = None
+    snapshot_path = source_path = None  # device paths the worker copies from
 
     # Validate sources exist before creating record
     if image_ref:
@@ -90,14 +91,24 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
         bootable = True
     elif snapshot_ref:
         snap = require_snapshot(db, snapshot_ref)
+        if snap.status != "available" or not snap.path:
+            raise HTTPException(status_code=409, detail=f"snapshot is not available (status={snap.status})")
+        if payload.size_gb < snap.size_gb:
+            raise HTTPException(status_code=400, detail=f"size_gb must be >= snapshot size ({snap.size_gb} GB)")
         snapshot_id = snap.id
+        snapshot_path = snap.path
         source_type = "snapshot"
         backend = snap.backend or backend
         source = db.get(Volume, snap.volume_id)
         host = source.host if source else None
     elif source_vol_ref:
         src = require_volume(db, source_vol_ref)
+        if src.status != "available" or not src.path:
+            raise HTTPException(status_code=409, detail=f"source volume must be available to clone (status={src.status})")
+        if payload.size_gb < src.size_gb:
+            raise HTTPException(status_code=400, detail=f"size_gb must be >= source volume size ({src.size_gb} GB)")
         source_volume_id = src.id
+        source_path = src.path
         source_type = "volume"
         bootable = src.bootable
         backend = src.backend or backend
@@ -139,6 +150,8 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
         "image_ref":       image_ref,
         "snapshot_id":     snapshot_id,
         "source_volume_id": source_volume_id,
+        "snapshot_path":   snapshot_path,
+        "source_path":     source_path,
         "bootable":        bootable,
         "lvm_type":        getattr(vt, "lvm_type", "default"),
         "max_iops":        getattr(vt, "max_iops", None),       # Ceph QoS: IOPS limit
@@ -174,7 +187,7 @@ def _reconcile_orphan_volumes(db: DB):
         .where(Volume.attached_to_server_id.isnot(None))
     )
     try:
-        resp = requests.get(f"{COMPUTE_API_URL}/servers", timeout=5)
+        resp = requests.get(f"{COMPUTE_API_URL}/servers", headers=clients.service_client._headers(), timeout=5)
         if resp.status_code == 200:
             servers = resp.json().get("items", [])
             active_ids = {s.get("id") for s in servers}

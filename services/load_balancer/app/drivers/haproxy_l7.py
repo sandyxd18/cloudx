@@ -39,6 +39,14 @@ backend be_{lb_id}_{pool_id}
 """
 
 
+def _safe(value, what: str) -> str:
+    """Reject anything that could break out of a haproxy.cfg token (whitespace, control chars)."""
+    s = str(value)
+    if not s or any(c.isspace() or not c.isprintable() for c in s):
+        raise ValueError(f"unsafe {what} for haproxy config")
+    return s
+
+
 class HAProxyL7Driver(LoadBalancerDriver):
     name = "haproxy_l7"
     layer = "L7"
@@ -105,10 +113,10 @@ class HAProxyL7Driver(LoadBalancerDriver):
         members = members or []
         health_path = "/"
         for hm in listener.get("health_monitors", []):
-            health_path = hm.get("url_path", "/")
+            health_path = _safe(hm.get("url_path", "/"), "url_path")
 
         member_lines = "\n".join(
-            f"    server member_{m['id']} {m['address']}:{m['protocol_port']} check"
+            f"    server member_{_safe(m['id'], 'member id')} {_safe(m['address'], 'member address')}:{int(m['protocol_port'])} check"
             for m in members
             if m.get("operating_status", "ONLINE") == "ONLINE"
         )
@@ -117,14 +125,14 @@ class HAProxyL7Driver(LoadBalancerDriver):
 
         bind_opts = ""
         if listener.get("protocol") == "HTTPS" and listener.get("ssl_cert_path"):
-            bind_opts = f"ssl crt {listener['ssl_cert_path']}"
+            bind_opts = f"ssl crt {_safe(listener['ssl_cert_path'], 'ssl_cert_path')}"
 
         cfg = _HAPROXY_CFG_TEMPLATE.format(
-            lb_id=lb["id"],
-            vip=lb["vip_address"],
-            listener_port=listener["protocol_port"],
+            lb_id=_safe(lb["id"], "lb id"),
+            vip=_safe(lb["vip_address"], "vip"),
+            listener_port=int(listener["protocol_port"]),
             bind_opts=bind_opts,
-            pool_id=pool["id"],
+            pool_id=_safe(pool["id"], "pool id"),
             balance=self._balance(pool.get("lb_algorithm")),
             health_path=health_path,
             members=member_lines,

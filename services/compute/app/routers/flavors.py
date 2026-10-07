@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 @router.post("/flavors", status_code=201)
-def create_flavor(payload: FlavorIn, _: CurrentUser, db: DB):
+def create_flavor(payload: FlavorIn, _: AdminUser, db: DB):
     if get_flavor(db, payload.name):
         raise HTTPException(status_code=409, detail="flavor already exists")
     flavor = Flavor(**payload.model_dump())

@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from .. import clients
 from ..db import DB
-from ..lookups import require_volume
+from ..lookups import can_access, require_volume
 from ..models import Volume, VolumeBackup, new_id
 from ..schemas import BackupIn, RestoreIn
 from ..serializers import obj_to_dict
@@ -21,7 +21,7 @@ def backup_volume(ref: str, payload: BackupIn, current: CurrentUser, db: DB):
     entire volume image and uploads it to the backup bucket, so it survives
     loss of the storage node — mirroring Swift/S3 backup driver.
     """
-    volume = require_volume(db, ref)
+    volume = require_volume(db, ref, current)
     backup_id = new_id()
     name = payload.name or f"backup-{volume.name}"
     object_key = f"volumes/{volume.project_id or 'default'}/{backup_id}.raw"
@@ -64,17 +64,17 @@ def list_backups(current: CurrentUser, db: DB):
 
 
 @router.get("/backups/{backup_id}")
-def show_backup(backup_id: str, _: CurrentUser, db: DB):
+def show_backup(backup_id: str, current: CurrentUser, db: DB):
     b = db.get(VolumeBackup, backup_id)
-    if not b:
+    if not b or not can_access(b.project_id, current):
         raise HTTPException(status_code=404, detail=f"backup '{backup_id}' not found")
     return _backup_to_dict(b)
 
 
 @router.delete("/backups/{backup_id}", status_code=202)
-def delete_backup(backup_id: str, _: CurrentUser, db: DB):
+def delete_backup(backup_id: str, current: CurrentUser, db: DB):
     b = db.get(VolumeBackup, backup_id)
-    if not b:
+    if not b or not can_access(b.project_id, current):
         raise HTTPException(status_code=404, detail=f"backup '{backup_id}' not found")
     b.status = "deleting"
     db.commit()
@@ -89,7 +89,7 @@ def delete_backup(backup_id: str, _: CurrentUser, db: DB):
 def restore_backup(backup_id: str, payload: RestoreIn, current: CurrentUser, db: DB):
     """Restore a backup into a new volume."""
     b = db.get(VolumeBackup, backup_id)
-    if not b:
+    if not b or not can_access(b.project_id, current):
         raise HTTPException(status_code=404, detail=f"backup '{backup_id}' not found")
     if b.status != "available":
         raise HTTPException(status_code=409, detail=f"backup not available (status={b.status})")

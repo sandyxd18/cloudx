@@ -21,6 +21,7 @@ from pathlib import Path
 import requests
 
 # Append parent so shared/ is importable
+from shared.internal import internal_headers  # noqa: E402
 from shared.rpc import RPCConsumer  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -99,14 +100,14 @@ def _save_image(stream, object_name: str) -> tuple[int, str]:
 
 def _patch_task(task_id: str, payload: dict) -> None:
     try:
-        requests.patch(f"{IMAGE_API_URL}/v2/tasks/{task_id}", json=payload, timeout=10)
+        requests.patch(f"{IMAGE_API_URL}/v2/tasks/{task_id}", json=payload, headers=internal_headers(), timeout=10)
     except Exception as exc:
         log.warning("Failed to update task %s: %s", task_id, exc)
 
 
 def _patch_image(image_id: str, payload: dict) -> None:
     try:
-        requests.patch(f"{IMAGE_API_URL}/images/{image_id}", json=payload, timeout=10)
+        requests.patch(f"{IMAGE_API_URL}/images/{image_id}", json=payload, headers=internal_headers(), timeout=10)
     except Exception as exc:
         log.warning("Failed to update image %s: %s", image_id, exc)
 

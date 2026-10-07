@@ -18,8 +18,10 @@ Authentication methods (checked in order):
   3. X-Access-Key-Id + X-Secret-Access-Key  →  calls auth-api to exchange for token
 """
 
+import hmac
 import logging
 import os
+import time
 from typing import Annotated
 
 import requests
@@ -63,11 +65,42 @@ def _exchange_access_key(request: Request) -> str | None:
     return None
 
 
+_REVOKE_TTL = 30
+_ok_jti: dict[str, float] = {}  # jti -> until when "not revoked" is trusted
+
+
+def _check_revoked(token: str, claims: dict) -> None:
+    """Logout only writes to auth-api, so ask it (cached 30s) whether this token was revoked.
+
+    ponytail: fails open if auth-api is unreachable (an auth outage must not take every API down);
+    revocation latency is up to _REVOKE_TTL seconds. REVOCATION_CHECK=false skips it.
+    """
+    jti = claims.get("jti")
+    if not jti or os.getenv("REVOCATION_CHECK", "true").lower() == "false":
+        return
+    now = time.time()
+    if _ok_jti.get(jti, 0) > now:
+        return
+    try:
+        r = requests.get(f"{AUTH_API_URL}/auth/tokens/validate", headers={"Authorization": f"Bearer {token}"}, timeout=3)
+    except requests.RequestException as exc:
+        log.warning("revocation check skipped, auth-api unreachable: %s", exc)
+        return
+    if r.status_code == 401:
+        raise HTTPException(status_code=401, detail="token has been revoked")
+    if r.status_code < 400:
+        if len(_ok_jti) > 4096:
+            _ok_jti.clear()
+        _ok_jti[jti] = now + _REVOKE_TTL
+
+
 def _decode_jwt(token: str) -> dict:
     try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        claims = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError as e:
         raise HTTPException(status_code=401, detail=f"invalid token: {e}")
+    _check_revoked(token, claims)
+    return claims
 
 
 def require_auth(request: Request) -> dict:
@@ -86,6 +119,17 @@ def require_admin(current: dict = Depends(require_auth)) -> dict:
     return current
 
 
+def require_internal(request: Request) -> None:
+    """Service-to-service routes (/internal/*): `X-Internal-Token: $INTERNAL_TOKEN`, or an admin JWT.
+
+    ponytail: with INTERNAL_TOKEN unset the routes stay open (legacy installs); the installer generates one.
+    """
+    token = os.getenv("INTERNAL_TOKEN", "")
+    if not token or hmac.compare_digest(request.headers.get("X-Internal-Token", ""), token):
+        return
+    require_admin(require_auth(request))
+
+
 def optional_auth(request: Request) -> dict | None:
     """Returns payload if authenticated, None otherwise. For endpoints that work either way."""
     try:
@@ -97,3 +141,4 @@ def optional_auth(request: Request) -> dict | None:
 CurrentUser  = Annotated[dict, Depends(require_auth)]
 AdminUser    = Annotated[dict, Depends(require_admin)]
 OptionalAuth = Annotated[dict | None, Depends(optional_auth)]
+InternalAuth = Depends(require_internal)  # `dependencies=[InternalAuth]` on /internal routes

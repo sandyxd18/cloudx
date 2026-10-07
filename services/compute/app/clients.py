@@ -1,5 +1,6 @@
 import requests
 from fastapi import HTTPException
+from shared.internal import internal_headers
 from shared.rpc import RPCClient, host_queue
 
 from .config import (
@@ -126,7 +127,7 @@ def call_worker(method: str, payload: dict, timeout: int | None = None) -> dict:
 
 def release_server_volumes(server_id: str) -> dict | None:
     try:
-        response = requests.post(f"{BLOCK_STORE_API_URL}/servers/{server_id}/volumes/detach-all", timeout=20)
+        response = requests.post(f"{BLOCK_STORE_API_URL}/servers/{server_id}/volumes/detach-all", headers=internal_headers(), timeout=20)
     except requests.RequestException:
         return None
     if response.status_code >= 400:

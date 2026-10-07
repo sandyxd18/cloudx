@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from sqlalchemy import select
 
 from ..db import DB
+from ..deps import AdminUser, CurrentUser
 from ..models import AuditLog
 from ..schemas import AuditLogIn
 
@@ -9,11 +10,12 @@ router = APIRouter()
 
 
 @router.post("/audit-logs", status_code=201)
-def create_audit_log(payload: AuditLogIn, db: DB):
+def create_audit_log(payload: AuditLogIn, current: CurrentUser, db: DB):
+    admin = current.get("role") == "admin"
     log_entry = AuditLog(
-        user_id=payload.user_id,
-        username=payload.username,
-        project_id=payload.project_id,
+        user_id=payload.user_id if admin else current.get("sub"),
+        username=payload.username if admin else current.get("username"),
+        project_id=payload.project_id if admin else current.get("project_id"),
         action=payload.action,
         resource_type=payload.resource_type,
         resource_id=payload.resource_id,
@@ -37,6 +39,7 @@ def create_audit_log(payload: AuditLogIn, db: DB):
 
 @router.get("/audit-logs")
 def list_audit_logs(
+    current: AdminUser,
     db: DB,
     project_id: str | None = None,
     resource_type: str | None = None,

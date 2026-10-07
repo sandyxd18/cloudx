@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth
 from shared.schema import require_schema
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -328,7 +328,7 @@ def healthcheck(db: DB):
 
 
 # ── Resource Providers ─────────────────────────────────────────────────────────
-@app.post("/internal/resource_providers", status_code=201)
+@app.post("/internal/resource_providers", status_code=201, dependencies=[InternalAuth])
 def create_rp_internal(payload: RPIn, db: DB):
     if db.scalar(select(ResourceProvider).where(ResourceProvider.name == payload.name)):
         raise HTTPException(status_code=409, detail="resource provider already exists")
@@ -344,7 +344,7 @@ def create_rp_internal(payload: RPIn, db: DB):
     return _rp_to_dict(rp)
 
 
-@app.get("/internal/resource_providers")
+@app.get("/internal/resource_providers", dependencies=[InternalAuth])
 def list_rps_internal(
     db: DB,
     in_tree: str | None = None,
@@ -375,7 +375,7 @@ def list_rps_internal(
 
 
 @app.post("/resource_providers", status_code=201)
-def create_rp(payload: RPIn, _: CurrentUser, db: DB):
+def create_rp(payload: RPIn, _: AdminUser, db: DB):
     return create_rp_internal(payload, db)
 
 
@@ -483,7 +483,7 @@ def list_compute_nodes(_: CurrentUser, db: DB):
 
 
 @app.delete("/resource_providers/{rp_uuid}", status_code=204)
-def delete_rp(rp_uuid: str, _: CurrentUser, db: DB):
+def delete_rp(rp_uuid: str, _: AdminUser, db: DB):
     rp = _get_rp(db, rp_uuid)
     # like OpenStack placement: a provider that still serves instances or has child providers cannot be deleted
     if db.scalar(select(Allocation.id).where(Allocation.resource_provider_id == rp.uuid).limit(1)):
@@ -499,7 +499,7 @@ def delete_rp(rp_uuid: str, _: CurrentUser, db: DB):
 
 # ── Inventories ────────────────────────────────────────────────────────────────
 @app.put("/resource_providers/{rp_uuid}/inventories")
-def set_inventories(rp_uuid: str, payload: InventoriesIn, _: CurrentUser, db: DB):
+def set_inventories(rp_uuid: str, payload: InventoriesIn, _: AdminUser, db: DB):
     rp = _get_rp(db, rp_uuid)
     # Delete existing inventories
     existing = db.scalars(select(Inventory).where(Inventory.resource_provider_id == rp.uuid)).all()
@@ -694,7 +694,7 @@ def set_aggregates(rp_uuid: str, payload: dict, _: CurrentUser, db: DB):
 
 # ── Allocations ───────────────────────────────────────────────────────────────
 @app.post("/allocations", status_code=201)
-def create_allocations(payload: AllocationIn, _: CurrentUser, db: DB):
+def create_allocations(payload: AllocationIn, _: AdminUser, db: DB):
     """Claim resources for a consumer (server)."""
     # Delete any existing allocations for this consumer
     existing = db.scalars(
@@ -746,7 +746,7 @@ def get_allocations(consumer_uuid: str, _: CurrentUser, db: DB):
 
 
 @app.delete("/allocations/{consumer_uuid}", status_code=204)
-def delete_allocations(consumer_uuid: str, _: CurrentUser, db: DB):
+def delete_allocations(consumer_uuid: str, _: AdminUser, db: DB):
     """Release all resources for a consumer (server deleted)."""
     allocations = db.scalars(
         select(Allocation).where(Allocation.consumer_uuid == consumer_uuid)

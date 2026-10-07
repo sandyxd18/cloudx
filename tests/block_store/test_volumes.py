@@ -30,7 +30,7 @@ def test_block_store_detach_server_volumes(monkeypatch, tmp_path: Path):
     refreshed.status = "in-use"
     refreshed.attached_to_server_id = "deleted-server-id"
     db.commit()
-    forced = block_main.force_detach_volume("vol1", db)
+    forced = block_main.force_detach_volume("vol1", {"role": "admin"}, db)
     assert forced["status"] == "available"
     assert forced["attached_to_server_id"] is None
     db.close()
@@ -54,6 +54,9 @@ def test_block_store_snapshot_and_volume_from_snapshot(monkeypatch, tmp_path: Pa
     dummy_user = {"project_id": "proj-1", "role": "admin"}
     snap = block_main.create_volume_snapshot("vol1", block_main.SnapshotIn(name="snap1"), dummy_user, db)
     assert snap["name"] == "snap1"
+    s = db.get(block_main.Snapshot, snap["id"])
+    s.status, s.path = "available", str(volume_path)
+    db.commit()
 
     created = block_main.create_volume(block_main.VolumeIn(name="vol2", size_gb=1, snapshot="snap1"), dummy_user, db)
     assert created["snapshot_id"] == snap["id"]

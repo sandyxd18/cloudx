@@ -7,11 +7,41 @@ from sqlalchemy.orm import Session
 
 from .. import ovn_cli
 from ..db import DB
-from ..models import BGPPeer, Router, RouterInterface, Subnet, VPCPeering, stable_mac
+from ..models import BGPPeer, Network, Router, RouterInterface, Subnet, VPCPeering, stable_mac
 from ..schemas import BGPPeerIn, BGPPeerOut, VPCPeeringIn, VPCPeeringOut
 from ..serializers import require_by_ref
 
 router = APIRouter()
+
+
+def _pid(current: dict) -> str:
+    return current.get("project_id", current.get("tenant_id", "default"))
+
+
+def _own(obj, current: dict, label: str):
+    """404 (not 403) so ids of other projects are not leaked; admin is unrestricted."""
+    if not obj or (current.get("role") != "admin" and obj.project_id != _pid(current)):
+        raise HTTPException(status_code=404, detail=f"{label} not found")
+    return obj
+
+
+def _bgp_out(peer: BGPPeer) -> dict:
+    d = {k: v for k, v in peer.__dict__.items() if k not in ("_sa_instance_state", "auth_password")}
+    return {**d, "has_password": bool(peer.auth_password), "advertised_prefixes": json.loads(peer.advertised_prefixes or "[]")}
+
+
+def _check_router(db: Session, rtr: Router, current: dict) -> None:
+    # ponytail: Router has no project_id column; ownership is derived from the networks of its
+    # interfaces (router with no interfaces is unowned -> allowed). Add Router.project_id + migration to be strict.
+    if current.get("role") == "admin":
+        return
+    owners = db.scalars(
+        select(Network.project_id).join(Subnet, Subnet.network_id == Network.id)
+        .join(RouterInterface, RouterInterface.subnet_id == Subnet.id)
+        .where(RouterInterface.router_id == rtr.id)
+    ).all()
+    if any(p != _pid(current) for p in owners):
+        raise HTTPException(status_code=404, detail=f"router '{rtr.name}' not found")
 
 
 @router.post("/routers/{ref}/peering", response_model=VPCPeeringOut, status_code=201)
@@ -19,7 +49,17 @@ def create_vpc_peering(ref: str, payload: VPCPeeringIn, current: CurrentUser, db
     """Create a VPC peering between two routers."""
     requester = require_by_ref(db, Router, ref, "router")
     accepter = require_by_ref(db, Router, payload.accepter_router_id, "router")
-    project_id = current.get("project_id", current.get("tenant_id", "default"))
+    project_id = _pid(current)
+    _check_router(db, requester, current)
+    _check_router(db, accepter, current)
+    if requester.id == accepter.id:
+        raise HTTPException(status_code=400, detail="cannot peer a router with itself")
+    dup = db.scalar(select(VPCPeering).where(
+        ((VPCPeering.requester_router_id == requester.id) & (VPCPeering.accepter_router_id == accepter.id))
+        | ((VPCPeering.requester_router_id == accepter.id) & (VPCPeering.accepter_router_id == requester.id))
+    ))
+    if dup:
+        raise HTTPException(status_code=409, detail="VPC peering already exists")
 
     peering = VPCPeering(
         name=payload.name,
@@ -28,15 +68,19 @@ def create_vpc_peering(ref: str, payload: VPCPeeringIn, current: CurrentUser, db
         accepter_router_id=accepter.id,
         requester_router_name=requester.name,
         accepter_router_name=accepter.name,
-        status="active",
+        status="pending",
     )
     db.add(peering)
+    db.flush()  # assigns the id used for OVN port names; not committed until OVN succeeds
+
+    try:
+        _apply_peering_ovn(db, peering)
+    except Exception:
+        db.rollback()
+        raise
+    peering.status = "active"
     db.commit()
     db.refresh(peering)
-
-    # Create OVN logical switch ports to connect the two routers
-    _apply_peering_ovn(db, peering)
-
     return peering
 
 def _apply_peering_ovn(db: Session, peering: VPCPeering) -> None:
@@ -81,22 +125,19 @@ def list_vpc_peerings(
     project_id: str | None = None,
 ):
     q = select(VPCPeering)
+    if current.get("role") != "admin":
+        project_id = _pid(current)
     if project_id:
         q = q.where(VPCPeering.project_id == project_id)
     return db.execute(q).scalars().all()
 
 @router.get("/vpc-peerings/{peering_id}", response_model=VPCPeeringOut)
-def get_vpc_peering(peering_id: str, db: DB):
-    peering = db.get(VPCPeering, peering_id)
-    if not peering:
-        raise HTTPException(status_code=404, detail="VPC peering not found")
-    return peering
+def get_vpc_peering(peering_id: str, current: CurrentUser, db: DB):
+    return _own(db.get(VPCPeering, peering_id), current, "VPC peering")
 
 @router.delete("/vpc-peerings/{peering_id}", status_code=204)
-def delete_vpc_peering(peering_id: str, db: DB):
-    peering = db.get(VPCPeering, peering_id)
-    if not peering:
-        raise HTTPException(status_code=404, detail="VPC peering not found")
+def delete_vpc_peering(peering_id: str, current: CurrentUser, db: DB):
+    peering = _own(db.get(VPCPeering, peering_id), current, "VPC peering")
 
     # Remove OVN routes and ports
     req_router = db.get(Router, peering.requester_router_id)
@@ -124,7 +165,8 @@ def delete_vpc_peering(peering_id: str, db: DB):
 def create_bgp_peer(payload: BGPPeerIn, current: CurrentUser, db: DB):
     """Register a BGP peer for dynamic gateway advertisement."""
     router = require_by_ref(db, Router, payload.router_id, "router")
-    project_id = current.get("project_id", current.get("tenant_id", "default"))
+    project_id = _pid(current)
+    _check_router(db, router, current)
 
     peer = BGPPeer(
         project_id=project_id,
@@ -149,7 +191,7 @@ def create_bgp_peer(payload: BGPPeerIn, current: CurrentUser, db: DB):
         "peer_ip": peer.peer_ip,
         "remote_as": peer.remote_as,
         "local_as": peer.local_as,
-        "auth_password": peer.auth_password,
+        "has_password": bool(peer.auth_password),
         "advertised_prefixes": json.loads(peer.advertised_prefixes or "[]"),
         "is_active": peer.is_active,
         "status": peer.status,
@@ -165,6 +207,8 @@ def list_bgp_peers(
     project_id: str | None = None,
 ):
     q = select(BGPPeer)
+    if current.get("role") != "admin":
+        project_id = _pid(current)
     if router_id:
         q = q.where(BGPPeer.router_id == router_id)
     if project_id:
@@ -172,34 +216,25 @@ def list_bgp_peers(
     peers = db.execute(q).scalars().all()
     result = []
     for peer in peers:
-        result.append({
-            **peer.__dict__,
-            "advertised_prefixes": json.loads(peer.advertised_prefixes or "[]"),
-        })
+        result.append(_bgp_out(peer))
     return result
 
 @router.get("/bgp-peers/{peer_id}", response_model=BGPPeerOut)
-def get_bgp_peer(peer_id: str, db: DB):
-    peer = db.get(BGPPeer, peer_id)
-    if not peer:
-        raise HTTPException(status_code=404, detail="BGP peer not found")
-    return {**peer.__dict__, "advertised_prefixes": json.loads(peer.advertised_prefixes or "[]")}
+def get_bgp_peer(peer_id: str, current: CurrentUser, db: DB):
+    peer = _own(db.get(BGPPeer, peer_id), current, "BGP peer")
+    return _bgp_out(peer)
 
 @router.delete("/bgp-peers/{peer_id}", status_code=204)
-def delete_bgp_peer(peer_id: str, db: DB):
-    peer = db.get(BGPPeer, peer_id)
-    if not peer:
-        raise HTTPException(status_code=404, detail="BGP peer not found")
+def delete_bgp_peer(peer_id: str, current: CurrentUser, db: DB):
+    peer = _own(db.get(BGPPeer, peer_id), current, "BGP peer")
     db.delete(peer)
     db.commit()
     return None
 
 @router.post("/bgp-peers/{peer_id}/sync-config")
-def sync_bgp_config(peer_id: str, db: DB):
+def sync_bgp_config(peer_id: str, current: CurrentUser, db: DB):
     """Generate FRR configuration snippet for a BGP peer."""
-    peer = db.get(BGPPeer, peer_id)
-    if not peer:
-        raise HTTPException(status_code=404, detail="BGP peer not found")
+    peer = _own(db.get(BGPPeer, peer_id), current, "BGP peer")
 
     prefixes = json.loads(peer.advertised_prefixes or "[]")
     joined_prefixes = "\n".join(["  network " + p for p in prefixes])

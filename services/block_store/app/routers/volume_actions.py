@@ -27,7 +27,7 @@ def volume_action(ref: str, payload: dict, current: CurrentUser, db: DB):
     - os-extend_volume: Extend volume size.
       Payload: {"os-extend_volume": {"new_size": 20}}
     """
-    volume = require_volume(db, ref)
+    volume = require_volume(db, ref, current)
 
     # ── os-migrate_volume ──────────────────────────────────────────────────
     if "os-migrate_volume" in payload:

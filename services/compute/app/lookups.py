@@ -24,8 +24,11 @@ def server_port_name(server_name: str, server_id: str) -> str:
     return f"{server_name}-{server_id[:8]}-port"
 
 
-def require_server(db: Session, ref: str):
+def require_server(db: Session, ref: str, current: dict | None = None):
+    """current=None skips the project check (internal callers). Other projects' servers look like 404."""
     server = get_server(db, ref)
+    if server and current and current.get("role") != "admin" and server.project_id and server.project_id != current.get("project_id"):
+        server = None
     if not server:
         raise HTTPException(status_code=404, detail=f"server '{ref}' not found")
     return server

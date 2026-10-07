@@ -18,6 +18,9 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from .drivers.filesystem import PathEscape
 from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, Integer, String, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -106,7 +109,7 @@ class BucketTypeIn(BaseModel):
 
 
 class BucketIn(BaseModel):
-    name: str
+    name: str = Field(..., pattern=r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")  # no '.', '/', '..'
     bucket_type_id: str | None = None
     visibility: str = Field(default="private", pattern="^(private|public-read)$")
 
@@ -118,6 +121,11 @@ class BucketUpdateIn(BaseModel):
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(title="cloudx object-store-api", version="1.0.0")
+
+
+@app.exception_handler(PathEscape)
+async def _bad_name(_: Request, exc: PathEscape):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 app.add_middleware(
     CORSMiddleware,
@@ -161,11 +169,12 @@ _INTERNAL_CIDRS = [
 
 def _classify_source(request: Request) -> str:
     """Classify request source as INTERNAL or EXTERNAL based on IP."""
+    src_ip = request.client.host if request.client else "127.0.0.1"
     forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        src_ip = forwarded.split(",")[0].strip()
-    else:
-        src_ip = request.client.host if request.client else "127.0.0.1"
+    # Trust X-Forwarded-For only from a local proxy, and take the LAST hop (what the proxy appended;
+    # the first entries are client-supplied and can be spoofed).
+    if forwarded and src_ip.startswith(("127.", "::1")):
+        src_ip = forwarded.split(",")[-1].strip()
     for prefix in _INTERNAL_CIDRS:
         if src_ip.startswith(prefix):
             return "INTERNAL"
@@ -253,12 +262,13 @@ def create_bucket_type(payload: BucketTypeIn, _: AdminUser, db: DB):
 
 
 @app.get("/admin/bucket-types")
-def list_bucket_types(_: CurrentUser, db: DB):
+def list_bucket_types(current: CurrentUser, db: DB):
     rows = db.query(BucketType).all()
+    admin = current.get("role") == "admin"  # config may hold S3 credentials
     return {
         "bucket_types": [
             {"id": r.id, "name": r.name, "driver": r.driver,
-             "config": json.loads(r.config) if r.config else {},
+             "config": (json.loads(r.config) if r.config else {}) if admin else {},
              "description": r.description}
             for r in rows
         ]
@@ -266,13 +276,13 @@ def list_bucket_types(_: CurrentUser, db: DB):
 
 
 @app.get("/admin/bucket-types/{ref}")
-def show_bucket_type(ref: str, _: CurrentUser, db: DB):
+def show_bucket_type(ref: str, current: CurrentUser, db: DB):
     bt = db.query(BucketType).filter_by(id=ref).first()
     if not bt:
         raise HTTPException(status_code=404, detail="bucket type not found")
     return {
         "id": bt.id, "name": bt.name, "driver": bt.driver,
-        "config": json.loads(bt.config) if bt.config else {},
+        "config": (json.loads(bt.config) if bt.config else {}) if current.get("role") == "admin" else {},
         "description": bt.description,
     }
 

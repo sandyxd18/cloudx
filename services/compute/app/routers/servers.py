@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import CurrentUser, InternalAuth
 from sqlalchemy import select
 
 from .. import clients
@@ -222,7 +222,7 @@ def list_servers(
     return {"items": [server_to_dict(s) for s in db.scalars(q).all()]}
 
 
-@router.get("/servers/metadata-lookup")
+@router.get("/servers/metadata-lookup", dependencies=[InternalAuth])
 def metadata_lookup(
     db: DB,
     instance_id: str | None = None,
@@ -247,7 +247,7 @@ def metadata_lookup(
     return server_metadata_payload(server)
 
 
-@router.get("/internal/servers/by-instance/{instance_id}")
+@router.get("/internal/servers/by-instance/{instance_id}", dependencies=[InternalAuth])
 def internal_server_by_instance(instance_id: str, db: DB):
     server = db.scalar(select(Server).where(Server.id == instance_id, Server.status != "DELETED").order_by(Server.created_at.desc()))
     if not server:
@@ -255,7 +255,7 @@ def internal_server_by_instance(instance_id: str, db: DB):
     return server_metadata_payload(server)
 
 
-@router.get("/internal/servers/by-port/{port_id}")
+@router.get("/internal/servers/by-port/{port_id}", dependencies=[InternalAuth])
 def internal_server_by_port(port_id: str, db: DB):
     server = db.scalar(select(Server).where(Server.port_id == port_id, Server.status != "DELETED").order_by(Server.created_at.desc()))
     if not server:
@@ -263,7 +263,7 @@ def internal_server_by_port(port_id: str, db: DB):
     return server_metadata_payload(server)
 
 
-@router.get("/internal/servers/by-ip/{fixed_ip}")
+@router.get("/internal/servers/by-ip/{fixed_ip}", dependencies=[InternalAuth])
 def internal_server_by_ip(fixed_ip: str, db: DB):
     server = db.scalar(select(Server).where(Server.ip_address == fixed_ip, Server.status != "DELETED").order_by(Server.created_at.desc()))
     if not server:
@@ -273,26 +273,23 @@ def internal_server_by_ip(fixed_ip: str, db: DB):
 
 @router.get("/servers/{ref}")
 def show_server(ref: str, current: CurrentUser, db: DB):
-    server = require_server(db, ref)
-    if current.get("role") != "admin" and server.project_id and server.project_id != current["project_id"]:
-        raise HTTPException(status_code=403, detail="forbidden")
-    return server_to_dict(server)
+    return server_to_dict(require_server(db, ref, current))
 
 
 @router.get("/servers/{ref}/metadata")
-def server_metadata(ref: str, db: DB):
-    return server_metadata_payload(require_server(db, ref))
+def server_metadata(ref: str, current: CurrentUser, db: DB):
+    return server_metadata_payload(require_server(db, ref, current))
 
 
 @router.get("/servers/{ref}/user-data")
-def server_user_data(ref: str, db: DB):
-    server = require_server(db, ref)
+def server_user_data(ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     return {"server": server.name, "user_data": server.user_data or default_user_data(server)}
 
 
 @router.put("/servers/{ref}/user-data")
-def set_server_user_data(ref: str, payload: ServerUserDataIn, db: DB):
-    server = require_server(db, ref)
+def set_server_user_data(ref: str, payload: ServerUserDataIn, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
     server.user_data = payload.user_data
     db.commit()
     db.refresh(server)
