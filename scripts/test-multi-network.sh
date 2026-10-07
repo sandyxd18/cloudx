@@ -5,7 +5,7 @@ cd "$ROOT_DIR"
 
 # Old per-service CLIs (networking/compute/block-store) are now one `cloudx`; scripts parse JSON.
 cloudx() { command cloudx -o json "$@"; }
-INTERNAL_TOKEN="${INTERNAL_TOKEN:-$(sudo grep -s '^INTERNAL_TOKEN=' /etc/cloudx/cloudx.env | cut -d= -f2)}"
+INTERNAL_TOKEN="${INTERNAL_TOKEN:-$(sudo grep -s '^INTERNAL_TOKEN=' /etc/cloudx/cloudx.env 2>/dev/null | cut -d= -f2 || true)}"
 IMAGE_PATH=""
 PREFIX="test-mini-mnet-$(date +%s)"
 NET1="${PREFIX}-net1"; NET2="${PREFIX}-net2"
