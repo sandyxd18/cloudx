@@ -229,11 +229,17 @@ def server_port():
 
 @server_port.command("add")
 @click.argument("server_ref")
-@click.option("--network", required=True)
+@click.option("--network", help="Create a new port on this network and attach it")
+@click.option("--port", "port_ref", help="Attach an existing port")
 @click.pass_context
-def server_port_add(ctx, server_ref, network):
+def server_port_add(ctx, server_ref, network, port_ref):
+    if bool(network) == bool(port_ref):
+        raise click.UsageError("give exactly one of --network or --port")
+    if network:
+        port_ref = _api("post", f"{DEFAULT_URLS['network']}/ports", ctx.obj["profile"],
+                        json={"name": f"{server_ref}-port", "network": network})["id"]
     data = _api("post", f"{DEFAULT_URLS['compute']}/servers/{server_ref}/ports",
-                ctx.obj["profile"], json={"network": network})
+                ctx.obj["profile"], json={"port": port_ref})
     _output(data, ctx.obj["fmt"])
 
 

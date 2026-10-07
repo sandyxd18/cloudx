@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Old per-service CLIs (networking/compute/block-store) are now one `cloudx`; scripts parse JSON.
+cloudx() { command cloudx -o json "$@"; }
+INTERNAL_TOKEN="${INTERNAL_TOKEN:-$(sudo grep -s '^INTERNAL_TOKEN=' /etc/cloudx/cloudx.env | cut -d= -f2)}"
+
 IMAGE_PATH=""
 PREFIX="test-mini-$(date +%s)"
 NETWORK_NAME="${PREFIX}-net"
@@ -15,13 +19,13 @@ SERVER_NAME="${PREFIX}-server"
 
 cleanup() {
   set +e
-  compute server delete "$SERVER_NAME" >/dev/null 2>&1
-  block-store volume delete "${PREFIX}-vol" >/dev/null 2>&1
-  networking floating-ip delete "${PREFIX}-fip" >/dev/null 2>&1
-  networking router remove-interface "$ROUTER_NAME" --subnet "$SUBNET_NAME" >/dev/null 2>&1
-  networking router delete "$ROUTER_NAME" >/dev/null 2>&1
-  networking subnet delete "$SUBNET_NAME" >/dev/null 2>&1
-  networking network delete "$NETWORK_NAME" >/dev/null 2>&1
+  cloudx server delete "$SERVER_NAME" >/dev/null 2>&1
+  cloudx volume delete "${PREFIX}-vol" >/dev/null 2>&1
+  cloudx floating-ip delete "${PREFIX}-fip" >/dev/null 2>&1
+  cloudx router remove-interface "$ROUTER_NAME" "$SUBNET_NAME" >/dev/null 2>&1
+  cloudx router delete "$ROUTER_NAME" >/dev/null 2>&1
+  cloudx subnet delete "$SUBNET_NAME" >/dev/null 2>&1
+  cloudx network delete "$NETWORK_NAME" >/dev/null 2>&1
   rm -f "${KEY_NAME}.pem"
   scripts/cleanup-all.sh --force >/dev/null 2>&1 || true
 }
@@ -54,38 +58,40 @@ if [ -z "$IMAGE_PATH" ] || [ ! -f "$IMAGE_PATH" ]; then
   exit 2
 fi
 
-[ -e /dev/kvm ] || { echo "missing /dev/kvm; skipping real VM test" >&2; exit 1; }
-virsh -c "${LIBVIRT_URI:-qemu:///system}" list --all >/dev/null
-ovs-vsctl br-exists "${OVS_BRIDGE:-br-int}"
+# Hypervisor checks run on the compute node: COMPUTE_SSH="ssh -J jump compute" when the CLI host is not the hypervisor.
+hv() { if [ -n "${COMPUTE_SSH:-}" ]; then $COMPUTE_SSH "$@"; else "$@"; fi; }
+hv test -e /dev/kvm || { echo "missing /dev/kvm; skipping real VM test" >&2; exit 1; }
+hv virsh -c "${LIBVIRT_URI:-qemu:///system}" list --all >/dev/null
+hv ovs-vsctl br-exists "${OVS_BRIDGE:-br-int}"
 
-networking network create "$NETWORK_NAME" || true
-networking subnet create "$SUBNET_NAME" --network "$NETWORK_NAME" --cidr 10.42.0.0/24 --gateway 10.42.0.1 --dhcp || true
-networking router create "$ROUTER_NAME" || true
-networking router add-interface "$ROUTER_NAME" --subnet "$SUBNET_NAME" || true
-image upload "$IMAGE_NAME" --file "$IMAGE_PATH" --disk-format qcow2 || true
-compute keypair create "$KEY_NAME" > "${KEY_NAME}.pem" || true
+cloudx network create "$NETWORK_NAME" || true
+cloudx subnet create "$SUBNET_NAME" --network "$NETWORK_NAME" --cidr 10.42.0.0/24 --gateway 10.42.0.1 --dhcp || true
+cloudx router create "$ROUTER_NAME" || true
+cloudx router add-interface "$ROUTER_NAME" --subnet "$SUBNET_NAME" || true
+cloudx image upload "$IMAGE_NAME" --file "$IMAGE_PATH" --disk-format qcow2 || true
+cloudx keypair create "$KEY_NAME" || true
 chmod 600 "${KEY_NAME}.pem" || true
-compute server create "$SERVER_NAME" --image "$IMAGE_NAME" --flavor tiny --network "$NETWORK_NAME" --key-name "$KEY_NAME"
+cloudx server create "$SERVER_NAME" --image "$IMAGE_NAME" --flavor tiny --network "$NETWORK_NAME" --key-name "$KEY_NAME"
 
 for _ in $(seq 1 30); do
-  status="$(compute server show "$SERVER_NAME" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+  status="$(cloudx server show "$SERVER_NAME" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
   [ "$status" = "ACTIVE" ] && break
-  [ "$status" = "ERROR" ] && { compute server show "$SERVER_NAME"; exit 1; }
+  [ "$status" = "ERROR" ] && { cloudx server show "$SERVER_NAME"; exit 1; }
   sleep 2
 done
 
-virsh -c "${LIBVIRT_URI:-qemu:///system}" list --all
-ovs-vsctl show
-compute server ssh-info "$SERVER_NAME"
-server_id="$(compute server show "$SERVER_NAME" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-curl -fsS "http://localhost:8775/openstack/latest/meta_data.json?instance_id=${server_id}" >/dev/null
-compute server delete "$SERVER_NAME" || true
+hv virsh -c "${LIBVIRT_URI:-qemu:///system}" list --all
+hv ovs-vsctl show
+cloudx server ssh-info "$SERVER_NAME"
+server_id="$(cloudx server show "$SERVER_NAME" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+curl -fsS -H "X-Internal-Token: ${INTERNAL_TOKEN:-}" "http://localhost:8775/openstack/latest/meta_data.json?instance_id=${server_id}" >/dev/null
+cloudx server delete "$SERVER_NAME" || true
 
-if virsh -c "${LIBVIRT_URI:-qemu:///system}" list --all --name | grep -q "mini-os-${SERVER_NAME}"; then
+if hv virsh -c "${LIBVIRT_URI:-qemu:///system}" list --all --name | grep -q "mini-os-${SERVER_NAME}"; then
   echo "leftover libvirt domain detected for $SERVER_NAME" >&2
   exit 1
 fi
-if ovs-vsctl list-ports "${OVS_BRIDGE:-br-int}" 2>/dev/null | grep -q "^tap-mini-"; then
+if hv ovs-vsctl list-ports "${OVS_BRIDGE:-br-int}" 2>/dev/null | grep -q "^tap-mini-"; then
   echo "leftover tap-mini OVS port detected" >&2
   exit 1
 fi

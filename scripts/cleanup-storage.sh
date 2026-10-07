@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Old per-service CLIs (networking/compute/block-store) are now one `cloudx`; scripts parse JSON.
+cloudx() { command cloudx -o json "$@"; }
+INTERNAL_TOKEN="${INTERNAL_TOKEN:-$(sudo grep -s '^INTERNAL_TOKEN=' /etc/cloudx/cloudx.env | cut -d= -f2)}"
+
 DRY_RUN=true
 FORCE=false
 PREFIX="test-mini-"
@@ -33,17 +37,17 @@ run_or_echo() {
 }
 
 if command -v block-store >/dev/null 2>&1; then
-  snapshots="$(block-store snapshot list 2>/dev/null | python3 -c 'import json,sys; data=json.load(sys.stdin); print("\n".join(i["name"] for i in data.get("items", []) if i.get("name", "").startswith("test-mini-")))' || true)"
+  snapshots="$(cloudx snapshot list 2>/dev/null | python3 -c 'import json,sys; data=json.load(sys.stdin); print("\n".join(i["name"] for i in data.get("items", []) if i.get("name", "").startswith("test-mini-")))' || true)"
   while IFS= read -r item; do
     [ -z "$item" ] && continue
-    run_or_echo block-store snapshot delete "$item"
+    run_or_echo cloudx snapshot delete "$item"
   done <<< "$snapshots"
 
-  volumes="$(block-store volume list 2>/dev/null | python3 -c 'import json,sys; data=json.load(sys.stdin); print("\n".join(i["name"] for i in data.get("items", []) if i.get("name", "").startswith("test-mini-")))' || true)"
+  volumes="$(cloudx volume list 2>/dev/null | python3 -c 'import json,sys; data=json.load(sys.stdin); print("\n".join(i["name"] for i in data.get("items", []) if i.get("name", "").startswith("test-mini-")))' || true)"
   while IFS= read -r item; do
     [ -z "$item" ] && continue
-    run_or_echo block-store volume force-detach "$item"
-    run_or_echo block-store volume delete "$item"
+    run_or_echo cloudx volume detach "$item"
+    run_or_echo cloudx volume delete "$item"
   done <<< "$volumes"
 else
   echo "block-store CLI not found; skipping API storage cleanup"

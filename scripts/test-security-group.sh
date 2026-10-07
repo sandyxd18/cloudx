@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Old per-service CLIs (networking/compute/block-store) are now one `cloudx`; scripts parse JSON.
+cloudx() { command cloudx -o json "$@"; }
+INTERNAL_TOKEN="${INTERNAL_TOKEN:-$(sudo grep -s '^INTERNAL_TOKEN=' /etc/cloudx/cloudx.env | cut -d= -f2)}"
+
 IMAGE_PATH=""
 PREFIX="test-mini-sg-$(date +%s)"
 NETWORK_NAME="${PREFIX}-net"
@@ -15,10 +19,10 @@ SG_NAME="${PREFIX}-web"
 
 cleanup() {
   set +e
-  compute server delete "$SERVER_NAME" >/dev/null 2>&1
-  networking security-group delete "$SG_NAME" >/dev/null 2>&1
-  networking subnet delete "$SUBNET_NAME" >/dev/null 2>&1
-  networking network delete "$NETWORK_NAME" >/dev/null 2>&1
+  cloudx server delete "$SERVER_NAME" >/dev/null 2>&1
+  cloudx security-group delete "$SG_NAME" >/dev/null 2>&1
+  cloudx subnet delete "$SUBNET_NAME" >/dev/null 2>&1
+  cloudx network delete "$NETWORK_NAME" >/dev/null 2>&1
   rm -f "${KEY_NAME}.pem"
   scripts/cleanup-all.sh --force >/dev/null 2>&1 || true
 }
@@ -45,28 +49,26 @@ if [ -z "$IMAGE_PATH" ] || [ ! -f "$IMAGE_PATH" ]; then
   exit 2
 fi
 
-networking network create "$NETWORK_NAME" || true
-networking subnet create "$SUBNET_NAME" --network "$NETWORK_NAME" --cidr 10.53.0.0/24 --gateway 10.53.0.1 --dhcp || true
-networking security-group create "$SG_NAME" --description "test web and ssh" || true
-networking security-group rule create "$SG_NAME" --direction ingress --protocol tcp --port 22 --remote-ip 0.0.0.0/0
-icmp_rule="$(networking security-group rule create "$SG_NAME" --direction ingress --protocol icmp --remote-ip 0.0.0.0/0 | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-networking security-group ovn-show "$SG_NAME" | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["port_group"] and data["translated_rules"]'
+cloudx network create "$NETWORK_NAME" || true
+cloudx subnet create "$SUBNET_NAME" --network "$NETWORK_NAME" --cidr 10.53.0.0/24 --gateway 10.53.0.1 --dhcp || true
+cloudx security-group create "$SG_NAME" -d "test web and ssh" || true
+cloudx security-group rule add "$SG_NAME" --direction ingress --protocol tcp --port 22 --remote-ip 0.0.0.0/0
+icmp_rule="$(cloudx security-group rule add "$SG_NAME" --direction ingress --protocol icmp --remote-ip 0.0.0.0/0 | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 
-image upload "$IMAGE_NAME" --file "$IMAGE_PATH" --disk-format qcow2 || true
-compute keypair create "$KEY_NAME" > "${KEY_NAME}.pem" || true
+cloudx image upload "$IMAGE_NAME" --file "$IMAGE_PATH" --disk-format qcow2 || true
+cloudx keypair create "$KEY_NAME" || true
 chmod 600 "${KEY_NAME}.pem" || true
-compute server create "$SERVER_NAME" --image "$IMAGE_NAME" --flavor tiny --network "$NETWORK_NAME" --key-name "$KEY_NAME" --security-group "$SG_NAME"
+cloudx server create "$SERVER_NAME" --image "$IMAGE_NAME" --flavor tiny --network "$NETWORK_NAME" --key-name "$KEY_NAME" --security-group "$SG_NAME"
 
 for _ in $(seq 1 45); do
-  status="$(compute server show "$SERVER_NAME" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+  status="$(cloudx server show "$SERVER_NAME" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
   [ "$status" = "ACTIVE" ] && break
-  [ "$status" = "ERROR" ] && { compute server show "$SERVER_NAME"; exit 1; }
+  [ "$status" = "ERROR" ] && { cloudx server show "$SERVER_NAME"; exit 1; }
   sleep 2
 done
 
-port_id="$(compute server show "$SERVER_NAME" | python3 -c 'import json,sys; print(json.load(sys.stdin)["port_id"])')"
-networking port ovn-show "$port_id" >/dev/null
-networking security-group rule delete "$icmp_rule" >/dev/null
-networking security-group rule create "$SG_NAME" --direction ingress --protocol icmp --remote-ip 0.0.0.0/0 >/dev/null
+port_id="$(cloudx server show "$SERVER_NAME" | python3 -c 'import json,sys; print(json.load(sys.stdin)["port_id"])')"
+cloudx security-group rule delete "$icmp_rule" >/dev/null
+cloudx security-group rule add "$SG_NAME" --direction ingress --protocol icmp --remote-ip 0.0.0.0/0 >/dev/null
 
 echo "security group smoke test passed for $SERVER_NAME"

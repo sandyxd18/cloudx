@@ -22,14 +22,13 @@ LVM_VG_NAME = os.getenv("LVM_VG_NAME", "")
 LVM_PV_NAME = os.getenv("LVM_PV_NAME", "")   # comma-separated, e.g. "/dev/sdb,/dev/sdc"
 
 # LVM global config overrides for container environments:
-# - global/udev_sync=0: don't wait for udev events
-# - global/udev_rules=0: don't install udev rules
-# - activation/udev_sync=0: don't sync LV activation with udev
+# - activation/udev_sync=0: don't wait for udev events
+# - activation/udev_rules=0: don't install udev rules
 # These prevent 'device not cleared' and udev-related hangs inside Docker.
-# Format: global/key=0 is universally supported across LVM2 versions.
+# LVM 2.03 rejects these keys under global/ ("Configuration setting ... unknown"); they live under activation/.
 LVM_CONTAINER_CFG = [
     "--config",
-    "global/udev_sync=0 global/udev_rules=0 activation/udev_sync=0 activation/udev_rules=0",
+    "activation/udev_sync=0 activation/udev_rules=0",
 ]
 
 
@@ -293,5 +292,5 @@ def snapshot(volume_name: str, snapshot_name: str, size_gb: int) -> str:
     """
     vg = vg_name()
     _cleanup_stale_lv(snapshot_name, vg)
-    _run(["lvcreate", "-y", "-W", "y", "-L", f"{size_gb}G", "-s", "-n", snapshot_name, f"{vg}/{volume_name}"] + LVM_CONTAINER_CFG)
+    _run(["lvcreate", "-y", "-L", f"{size_gb}G", "-s", "-n", snapshot_name, f"{vg}/{volume_name}"] + LVM_CONTAINER_CFG)
     return f"/dev/{vg}/{snapshot_name}"
