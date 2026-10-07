@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy import DateTime, Integer, String, Text, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from shared.auth_middleware import CurrentUser, InternalAuth
+from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
 from shared.schema import require_schema
 
 # Import shared modules
@@ -445,7 +445,7 @@ def import_image_from_path(payload: ImageImportIn, db: DB):
 
 @app.get("/images")
 def list_images(
-    current: CurrentUser,
+    current: UserOrInternal,
     db: DB,
     visibility: str | None = None,
     status: str | None = None,
@@ -532,7 +532,7 @@ def download_image(ref: str, db: DB):
 
 
 @app.delete("/images/{ref}")
-def delete_image(ref: str, _: CurrentUser, db: DB):
+def delete_image(ref: str, _: UserOrInternal, db: DB):
     image = require_image(db, ref)
     if image.storage_backend == "minio":
         MinioStorageBackend().delete_image(image.object_name)
@@ -656,7 +656,7 @@ def prefetch_image(ref: str, _: CurrentUser, db: DB):
 
 
 @app.patch("/images/{ref}")
-def update_image(ref: str, payload: dict, _: CurrentUser, db: DB):
+def update_image(ref: str, payload: dict, _: UserOrInternal, db: DB):
     """Partially update image attributes (visibility, name, status, etc.). Also called by image-worker."""
     image = require_image(db, ref)
     allowed = {"visibility", "name", "disk_format", "container_format",

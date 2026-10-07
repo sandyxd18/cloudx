@@ -130,6 +130,14 @@ def require_internal(request: Request) -> None:
     require_admin(require_auth(request))
 
 
+def require_user_or_internal(request: Request) -> dict:
+    """User JWT, or a service holding INTERNAL_TOKEN (acts as admin). Unlike require_internal, never open."""
+    token = os.getenv("INTERNAL_TOKEN", "")
+    if token and hmac.compare_digest(request.headers.get("X-Internal-Token", ""), token):
+        return {"sub": "internal", "role": "admin"}
+    return require_auth(request)
+
+
 def optional_auth(request: Request) -> dict | None:
     """Returns payload if authenticated, None otherwise. For endpoints that work either way."""
     try:
@@ -141,4 +149,5 @@ def optional_auth(request: Request) -> dict | None:
 CurrentUser  = Annotated[dict, Depends(require_auth)]
 AdminUser    = Annotated[dict, Depends(require_admin)]
 OptionalAuth = Annotated[dict | None, Depends(optional_auth)]
+UserOrInternal = Annotated[dict, Depends(require_user_or_internal)]
 InternalAuth = Depends(require_internal)  # `dependencies=[InternalAuth]` on /internal routes

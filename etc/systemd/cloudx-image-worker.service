@@ -1,0 +1,18 @@
+[Unit]
+Description=CloudX Image Worker (async import, reconciler)
+After=network.target cloudx-image-api.service rabbitmq-server.service
+
+[Service]
+EnvironmentFile=-/etc/cloudx/cloudx.env
+Environment=IMAGE_API_URL=http://127.0.0.1:8002
+Type=simple
+User=cloudx
+Group=cloudx
+WorkingDirectory=/opt/cloudx/services/image_worker
+ExecStart=/opt/cloudx/venv/bin/python -m app.main
+ReadWritePaths=/var/lib/cloudx/images
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

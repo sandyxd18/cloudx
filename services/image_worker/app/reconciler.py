@@ -22,6 +22,8 @@ import time
 
 import requests
 
+from shared.internal import internal_headers
+
 log = logging.getLogger("image-reconciler")
 
 RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL_SECONDS", "60"))
@@ -74,6 +76,7 @@ def _patch_image_status(image_id: str, status: str, error_msg: str | None = None
         resp = requests.patch(
             f"{IMAGE_API_URL}/images/{image_id}",
             json=payload,
+            headers=internal_headers(),
             timeout=10,
         )
         if resp.status_code not in (200, 204):
@@ -87,6 +90,7 @@ def _delete_image_record(image_id: str) -> None:
     try:
         resp = requests.delete(
             f"{IMAGE_API_URL}/images/{image_id}",
+            headers=internal_headers(),
             timeout=10,
         )
         if resp.status_code not in (200, 204, 404):
@@ -105,6 +109,7 @@ def reconcile_images() -> None:
         resp = requests.get(
             f"{IMAGE_API_URL}/images",
             params={"limit": 10000},
+            headers=internal_headers(),
             timeout=15,
         )
         resp.raise_for_status()
@@ -113,7 +118,7 @@ def reconcile_images() -> None:
         log.warning("[reconcile] could not fetch image list: %s", exc)
         return
 
-    images = data.get("images", [])
+    images = data.get("items", [])
     if not images:
         return
 

@@ -23,13 +23,13 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import (
     Boolean, DateTime, ForeignKey, Integer, String, create_engine, select
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import AdminUser, CurrentUser
 from shared.schema import require_schema
 
 from shared.request_id_middleware import RequestIDMiddleware
@@ -253,9 +253,12 @@ def create_scaling_group(user: CurrentUser, data: ScalingGroupIn, db: DB):
 
 @app.get("/scaling-groups", response_model=list[ScalingGroupOut])
 @app.get("/orchestration/scaling-groups", response_model=list[ScalingGroupOut])
-def list_scaling_groups(user: CurrentUser, db: DB, project_id: str | None = None):
-    pid = project_id or (user.get("project_id", "admin") if isinstance(user, dict) else getattr(user, "project_id", "admin"))
-    q = select(ScalingGroup).where(ScalingGroup.project_id == pid)
+def list_scaling_groups(user: CurrentUser, db: DB, project_id: str | None = None, active_only: bool = False):
+    q = select(ScalingGroup)
+    if user.get("role") != "admin" or project_id:  # admin (the worker) sees all projects unless it filters
+        q = q.where(ScalingGroup.project_id == (project_id or user.get("project_id", "admin")))
+    if active_only:
+        q = q.where(ScalingGroup.is_active.is_(True))
     return db.execute(q).scalars().all()
 
 
@@ -362,6 +365,37 @@ def get_scaling_history(user: CurrentUser, group_id: str, db: DB):
     _own_group(db, user, group_id)
     q = select(ScalingHistory).where(ScalingHistory.group_id == group_id).order_by(ScalingHistory.created_at.desc())
     return db.execute(q).scalars().all()
+
+
+class ScalingEventIn(BaseModel):
+    action: str = Field(pattern="^(scale_out|scale_in)$")
+    reason: str | None = None
+    server_id: str | None = None
+    server_name: str | None = None
+    avg_cpu_before: float | None = None
+    instance_count_before: int | None = None
+    instance_count_after: int | None = None
+
+
+@app.post("/scaling-groups/{group_id}/history", status_code=status.HTTP_201_CREATED)
+@app.post("/orchestration/scaling-groups/{group_id}/history", status_code=status.HTTP_201_CREATED)
+def record_scaling_event(admin: AdminUser, group_id: str, data: ScalingEventIn, db: DB):
+    """Called by orchestration-worker after it scaled: logs history, syncs instances and cooldown timestamps."""
+    group = _own_group(db, admin, group_id)
+    now = datetime.now(timezone.utc)
+    if data.action == "scale_out":
+        group.last_scale_out_at = now
+        if data.server_id:
+            db.add(ScalingGroupInstance(group_id=group.id, server_id=data.server_id,
+                                        server_name=data.server_name or data.server_id, status="active"))
+    else:
+        group.last_scale_in_at = now
+        if data.server_id:
+            for inst in [i for i in group.instances if i.server_id == data.server_id]:
+                db.delete(inst)
+    db.add(ScalingHistory(group_id=group.id, **data.model_dump(exclude={"server_name"})))
+    db.commit()
+    return {"status": "recorded"}
 
 
 @app.get("/health")

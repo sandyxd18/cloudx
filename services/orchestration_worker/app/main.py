@@ -151,13 +151,10 @@ def _spawn_server(group: dict, name: str) -> dict | None:
     """Spawn a new server via compute-api."""
     payload = {
         "name": name,
-        "flavor_id": group["flavor_id"],
-        "image_id": group["image_id"],
-        "networks": [{"network_id": group["network_id"]}],
-        "project_id": group["project_id"],
+        "flavor": group["flavor_id"],
+        "image": group["image_id"],
+        "network": group["network_id"],
     }
-    if group.get("subnet_id"):
-        payload["networks"][0]["subnet_id"] = group["subnet_id"]
     
     try:
         r = requests.post(
@@ -194,29 +191,20 @@ def _add_member_to_pool(pool_id: str, server: dict) -> bool:
     if not pool_id:
         return True
     
-    # Extract IP address from server
-    ip_address = None
-    addresses = server.get("addresses", {})
-    for net_name, net_addresses in addresses.items():
-        for addr in net_addresses:
-            if isinstance(addr, dict) and addr.get("version") == 4:
-                ip_address = addr.get("addr")
-                break
-        if ip_address:
-            break
-    
+    ip_address = server.get("ip_address")
     if not ip_address:
         log.warning("No IP address found for server %s", server.get("id"))
         return False
     
     try:
         r = requests.post(
-            f"{LOAD_BALANCER_API_URL}/loadbalancers/pools/{pool_id}/members",
+            f"{LOAD_BALANCER_API_URL}/pools/{pool_id}/members",
             headers=_api_headers(),
             json={
                 "address": ip_address,
                 "protocol_port": 80,
                 "weight": 1,
+                "instance_id": server.get("id"),
             },
             timeout=30,
         )
@@ -233,7 +221,7 @@ def _remove_member_from_pool(pool_id: str, server_id: str) -> bool:
     
     try:
         r = requests.delete(
-            f"{LOAD_BALANCER_API_URL}/loadbalancers/pools/{pool_id}/members/{server_id}",
+            f"{LOAD_BALANCER_API_URL}/pools/{pool_id}/members/{server_id}",
             headers=_api_headers(),
             timeout=30,
         )
@@ -253,6 +241,7 @@ def _record_history(
     avg_cpu_before: float | None,
     instance_count_before: int,
     instance_count_after: int,
+    server_name: str | None = None,
 ):
     """Record scaling history via orchestration-api."""
     try:
@@ -263,6 +252,7 @@ def _record_history(
                 "action": action,
                 "reason": reason,
                 "server_id": server_id,
+                "server_name": server_name,
                 "avg_cpu_before": avg_cpu_before,
                 "instance_count_before": instance_count_before,
                 "instance_count_after": instance_count_after,
@@ -329,6 +319,7 @@ def _check_group(group: dict):
                     f"High CPU usage: {avg_cpu:.1f}%",
                     server_id, avg_cpu,
                     instance_count + i, instance_count + i + 1,
+                    server_name,
                 )
         
         return

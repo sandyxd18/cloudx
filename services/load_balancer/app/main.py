@@ -759,6 +759,48 @@ def create_health_monitor(pool_ref: str, payload: HealthMonitorIn, current: Curr
 # Sync members from Server Group
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class MemberIn(BaseModel):
+    address: str
+    protocol_port: int | None = Field(default=None, ge=1, le=65535)
+    weight: int = Field(default=1, ge=0, le=256)
+    instance_id: str | None = None
+
+
+def _own_pool(db, current, pool_ref: str):
+    pool = db.query(Pool).filter_by(id=pool_ref).first()
+    lb = pool and db.query(LoadBalancer).filter_by(id=pool.load_balancer_id).first()
+    if not pool or (lb and current.get("role") != "admin" and lb.project_id != _project_id(current)):
+        raise HTTPException(status_code=404, detail="pool not found")
+    return pool, lb
+
+
+@app.post("/pools/{pool_ref}/members", status_code=201)
+def add_pool_member(pool_ref: str, payload: MemberIn, current: CurrentUser, db: DB):
+    pool, lb = _own_pool(db, current, pool_ref)
+    m = Member(pool_id=pool.id, address=payload.address, weight=payload.weight,
+               instance_id=payload.instance_id, protocol_port=payload.protocol_port or 80)
+    db.add(m)
+    db.commit()
+    try:
+        _apply_lb_state(db, lb)
+    except Exception as exc:
+        log.error("Failed to apply LB after adding member: %s", exc)
+    return _member_to_dict(m)
+
+
+@app.delete("/pools/{pool_ref}/members/{instance_id}", status_code=204)
+def remove_pool_member(pool_ref: str, instance_id: str, current: CurrentUser, db: DB):
+    """Remove by member id or by instance_id (what the autoscaler knows)."""
+    pool, lb = _own_pool(db, current, pool_ref)
+    q = db.query(Member).filter(Member.pool_id == pool.id, (Member.id == instance_id) | (Member.instance_id == instance_id))
+    if not q.delete(synchronize_session=False):
+        raise HTTPException(status_code=404, detail="member not found")
+    db.commit()
+    try:
+        _apply_lb_state(db, lb)
+    except Exception as exc:
+        log.error("Failed to apply LB after removing member: %s", exc)
+
 @app.post("/pools/{pool_ref}/sync")
 def sync_pool_members(pool_ref: str, current: CurrentUser, db: DB):
     pool = db.query(Pool).filter_by(id=pool_ref).first()
