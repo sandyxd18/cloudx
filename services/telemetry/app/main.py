@@ -344,7 +344,7 @@ def cleanup_old_metrics(user: AdminUser, db: DB):
 try:
     from shared.metrics import setup_metrics
     setup_metrics(app, "telemetry-api")
-except Exception:  # metrics are optional
+except Exception:  # best-effort: /metrics is optional, the API must still start
     pass
 
 @app.get("/health")

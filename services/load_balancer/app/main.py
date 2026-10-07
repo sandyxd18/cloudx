@@ -838,7 +838,7 @@ def sync_pool_members(pool_ref: str, current: CurrentUser, db: DB):
 try:
     from shared.metrics import setup_metrics
     setup_metrics(app, "load-balancer-api")
-except Exception:  # metrics are optional
+except Exception:  # best-effort: /metrics is optional, the API must still start
     pass
 
 @app.get("/health")

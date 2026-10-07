@@ -150,7 +150,7 @@ class ContainerOut(BaseModel):
 try:
     from shared.metrics import setup_metrics
     setup_metrics(app, "key-manager-api")
-except Exception:  # metrics are optional
+except Exception:  # best-effort: /metrics is optional, the API must still start
     pass
 
 @app.get("/health")

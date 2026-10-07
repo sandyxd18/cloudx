@@ -545,7 +545,7 @@ def delete_object(name: str, key: str, current: CurrentUser, db: DB):
 try:
     from shared.metrics import setup_metrics
     setup_metrics(app, "object-store-api")
-except Exception:  # metrics are optional
+except Exception:  # best-effort: /metrics is optional, the API must still start
     pass
 
 @app.get("/health")

@@ -401,7 +401,7 @@ def record_scaling_event(admin: AdminUser, group_id: str, data: ScalingEventIn, 
 try:
     from shared.metrics import setup_metrics
     setup_metrics(app, "orchestration-api")
-except Exception:  # metrics are optional
+except Exception:  # best-effort: /metrics is optional, the API must still start
     pass
 
 @app.get("/health")
