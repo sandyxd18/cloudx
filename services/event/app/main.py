@@ -304,7 +304,7 @@ def emit_event(user: CurrentUser, data: EventEmitIn, db: DB):
     pid = user.get("project_id")
     if _is_admin(user) and data.project_id:
         pid = data.project_id
-    uid = user.get("user_id") or user.get("sub") or "system"
+    uid = user.get("sub") or "system"
     if _is_admin(user) and data.user_id:
         uid = data.user_id
     return persist_event(db, data.event_type, data.resource_type, data.resource_id, pid, uid, payload_str)

@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
@@ -24,6 +24,7 @@ from sqlalchemy.dialects.postgresql import array_agg as pg_array_agg, aggregate_
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from shared.auth_middleware import CurrentUser, AdminUser
+from shared.metrics import check_metrics_token
 from shared.schema import require_schema
 
 from shared.request_id_middleware import RequestIDMiddleware
@@ -317,7 +318,8 @@ def get_instance_stats(
 
 
 @app.get("/metrics", response_class=PlainTextResponse)
-def prometheus_metrics(db: DB):
+def prometheus_metrics(request: Request, db: DB):
+    check_metrics_token(request)
     from_time = datetime.now(timezone.utc) - timedelta(minutes=5)
     q = select(TelemetryMetric).where(TelemetryMetric.timestamp >= from_time)
     metrics = db.execute(q).scalars().all()

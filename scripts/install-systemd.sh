@@ -65,6 +65,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
             echo "AUTH_SECRET_KEY=$(openssl rand -hex 32)"
             echo "AUTH_ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=')"
             echo "KEY_MANAGER_MASTER_KEY=$(openssl rand -hex 32)"
+echo "METRICS_TOKEN=$(openssl rand -hex 24)"
         } > "${ENV_FILE}"
     )
     echo "    Admin password is stored in ${ENV_FILE}."

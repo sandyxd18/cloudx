@@ -232,7 +232,7 @@ def delete_server(ref: str, current: CurrentUser, db: DB, keep_root_volume: bool
             "server_id":  server.id,
             "name":       original_name,
             "project_id": server.project_id,
-            "user_id":    current.get("user_id") or current.get("sub"),
+            "user_id":    current.get("sub"),
             "status":     "DELETING",
         })
     except Exception as exc:

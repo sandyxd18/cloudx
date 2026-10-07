@@ -16,6 +16,7 @@ User=cloudx
 Group=cloudx
 WorkingDirectory=/opt/cloudx/services/billing_worker
 ExecStart=/opt/cloudx/venv/bin/python -m app.main
+StateDirectory=cloudx-billing
 Restart=always
 RestartSec=5s
 

@@ -60,3 +60,11 @@ def test_token_refreshed_once_on_401(w, monkeypatch):
     monkeypatch.setattr(w.requests, "request", fake)
     assert w._request("GET", "http://x").status_code == 200
     assert seen == ["Bearer t1", "Bearer t2"]
+
+def test_ghosts_billed_until_mid_interval(w):
+    state = {"servers": {"a": {"id": "a", "project_id": "p"}}}
+    out = w._with_ghosts("servers", [{"id": "b"}], state, S, E)
+    assert [r["id"] for r in out] == ["b", "a"] and out[1]["deleted_at"] == "2026-10-01T10:30:00+00:00"
+    assert w.overlap_hours(None, out[1]["deleted_at"], S, E) == Decimal("0.5")
+    assert list(state["servers"]) == ["b"]  # next run forgets "a" -> billed once
+    assert w._with_ghosts("servers", None, state, S, E) == [] and list(state["servers"]) == ["b"]  # API error keeps snapshot

@@ -20,7 +20,7 @@ def _publish_net_event(event_type: str, payload: dict) -> None:
 def _actor(current: dict | None) -> dict:
     c = current or {}
     out = {"project_id": c.get("project_id")}
-    uid = c.get("user_id") or c.get("sub")
+    uid = c.get("sub")
     if uid:
         out["user_id"] = uid
     return {k: v for k, v in out.items() if v}

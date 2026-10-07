@@ -19,6 +19,9 @@ scrape_configs:
   # In multi-node, replace 127.0.0.1 with the CONTROLLER_IP(s) or use file_sd.
   - job_name: cloudx-apis
     metrics_path: /metrics
+    # METRICS_TOKEN from /etc/cloudx/cloudx.env, written to this file (mode 640)
+    authorization:
+      credentials_file: /etc/prometheus/metrics_token
     static_configs:
       - targets:
           - "127.0.0.1:8005"   # auth-api

@@ -13,6 +13,7 @@ Database: cloudx_billing (isolated from the other services)
 """
 
 
+import json
 import logging
 import os
 import time
@@ -38,6 +39,7 @@ AUTH_ADMIN_PASSWORD = os.environ["AUTH_ADMIN_PASSWORD"]
 AGGREGATION_INTERVAL = int(os.getenv("AGGREGATION_INTERVAL", "3600"))  # 1 hour
 INVOICE_GENERATION_DAY = int(os.getenv("INVOICE_GENERATION_DAY", "1"))  # Day of month
 CLEANUP_DAYS = int(os.getenv("CLEANUP_DAYS", "90"))
+STATE_FILE = os.getenv("BILLING_STATE_FILE", "/var/lib/cloudx-billing/seen.json")
 
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
@@ -106,7 +108,7 @@ def overlap_hours(created, deleted, start, end) -> Decimal:
 
 # ── Resource Discovery ────────────────────────────────────────────────────────
 
-def _list(url: str, key: str) -> list[dict]:
+def _list(url: str, key: str) -> list[dict] | None:
     try:
         r = _request("GET", url, timeout=10)
         if r.status_code in (200, 201):
@@ -118,22 +120,22 @@ def _list(url: str, key: str) -> list[dict]:
         log.error("GET %s -> %s", url, r.status_code)
     except Exception as e:
         log.error("Failed to get %s: %s", key, e)
-    return []
+    return None
 
 
-def _get_active_servers() -> list[dict]:
+def _get_active_servers() -> list[dict] | None:
     return _list(f"{COMPUTE_API_URL}/servers?all_tenants=true", "servers")
 
 
-def _get_volumes() -> list[dict]:
+def _get_volumes() -> list[dict] | None:
     return _list(f"{BLOCK_STORE_API_URL}/volumes?all_tenants=true", "volumes")
 
 
-def _get_floating_ips() -> list[dict]:
+def _get_floating_ips() -> list[dict] | None:
     return _list(f"{NETWORKING_API_URL}/floating-ips?all_tenants=true", "floatingips")
 
 
-def _get_load_balancers() -> list[dict]:
+def _get_load_balancers() -> list[dict] | None:
     return _list(f"{LOAD_BALANCER_API_URL}/load-balancers?all_tenants=true", "loadbalancers")
 
 
@@ -261,20 +263,56 @@ def _cleanup_old_records():
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
+def _load_state() -> dict:
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_state(state: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+        with open(STATE_FILE + ".tmp", "w") as f:
+            json.dump(state, f)
+        os.replace(STATE_FILE + ".tmp", STATE_FILE)
+    except OSError as e:
+        log.warning("Cannot save state %s: %s", STATE_FILE, e)
+
+
+def _with_ghosts(kind: str, listed: list[dict] | None, state: dict, start, end) -> list[dict]:
+    """Add resources seen last run but gone now (deleted; the APIs have no deleted_at), alive until mid-interval.
+    ponytail: half-interval estimate (error <= interval/2); exact if the APIs ever return deleted_at.
+    A failed listing (None) keeps the old snapshot so nothing is billed as deleted by mistake."""
+    if listed is None:
+        return []
+    old = state.get(kind, {})
+    now = {str(r.get("id") or r.get("uuid")): r for r in listed}
+    died = start + (end - start) / 2
+    state[kind] = now
+    return listed + [{**r, "deleted_at": died.isoformat()} for k, r in old.items() if k not in now]
+
+
 def aggregate_usage():
     """Bill the last complete interval. Boundaries are floored so a re-run yields identical (deduped) periods."""
     t = int(time.time()) // AGGREGATION_INTERVAL * AGGREGATION_INTERVAL
     end = datetime.fromtimestamp(t, timezone.utc)
     start = end - timedelta(seconds=AGGREGATION_INTERVAL)
 
+    state = _load_state()
+    servers = _with_ghosts("servers", _get_active_servers(), state, start, end)
+    volumes = _with_ghosts("volumes", _get_volumes(), state, start, end)
+    fips = _with_ghosts("fips", _get_floating_ips(), state, start, end)
+    lbs = _with_ghosts("lbs", _get_load_balancers(), state, start, end)
     records = (
-        _aggregate_server_usage(_get_active_servers(), start, end)
-        + _aggregate_volume_usage(_get_volumes(), start, end)
-        + _aggregate_floating_ip_usage(_get_floating_ips(), start, end)
-        + _aggregate_load_balancer_usage(_get_load_balancers(), start, end)
+        _aggregate_server_usage(servers, start, end)
+        + _aggregate_volume_usage(volumes, start, end)
+        + _aggregate_floating_ip_usage(fips, start, end)
+        + _aggregate_load_balancer_usage(lbs, start, end)
     )
-    _send_usage_records(records)
-
+    if _send_usage_records(records):
+        _save_state(state)
 
 def main_loop():
     """Main worker loop."""

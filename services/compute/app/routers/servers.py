@@ -168,7 +168,7 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
                 "server_id": server.id,
                 "name":      server.name,
                 "project_id": server.project_id,
-                "user_id":   current.get("user_id") or current.get("sub"),
+                "user_id":   current.get("sub"),
                 "flavor":    server.flavor,
                 "status":    "BUILD",
             })
