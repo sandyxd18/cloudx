@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import os
 import time
 from fastapi import HTTPException, Request
 
@@ -43,6 +44,11 @@ def lookup_metadata(
     header_port = headers.get("X-Port-ID")
     forwarded_for = _first_forwarded_for(headers.get("X-Forwarded-For"))
     client_ip = client.host if client else None
+
+    # Identity hints are only believed from the metadata-proxy (X-Internal-Token); a VM could forge them.
+    token = os.getenv("INTERNAL_TOKEN", "")
+    if token and not hmac.compare_digest(headers.get("X-Internal-Token", ""), token):
+        header_instance = header_port = query_instance = query_port = query_ip = forwarded_for = None
 
     candidates = [
         ("instance_id", header_instance),

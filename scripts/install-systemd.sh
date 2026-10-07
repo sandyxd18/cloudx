@@ -65,12 +65,17 @@ if [[ ! -f "${ENV_FILE}" ]]; then
             echo "AUTH_SECRET_KEY=$(openssl rand -hex 32)"
             echo "AUTH_ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=')"
             echo "KEY_MANAGER_MASTER_KEY=$(openssl rand -hex 32)"
-echo "METRICS_TOKEN=$(openssl rand -hex 24)"
+            echo "METRICS_TOKEN=$(openssl rand -hex 24)"
+            echo "INTERNAL_TOKEN=$(openssl rand -hex 24)"
         } > "${ENV_FILE}"
     )
     echo "    Admin password is stored in ${ENV_FILE}."
     echo "    Multi-node: copy this file to every other node (same path, mode 640) BEFORE running the installer there."
 fi
+# Upgrades: add tokens introduced later (INTERNAL_TOKEN guards /internal/*); copy the file to other nodes afterwards.
+for tok in METRICS_TOKEN INTERNAL_TOKEN; do
+    grep -q "^${tok}=" "${ENV_FILE}" || echo "${tok}=$(openssl rand -hex 24)" >> "${ENV_FILE}"
+done
 chmod 640 "${ENV_FILE}"
 
 chown -R "${CLOUDX_USER}:${CLOUDX_GROUP}" "${ETC_DIR}"

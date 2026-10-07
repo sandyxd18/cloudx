@@ -3,6 +3,7 @@ import os
 import requests
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
+from shared.internal import internal_headers
 
 METADATA_API_URL = os.getenv("METADATA_API_URL", "http://metadata-api:8775").rstrip("/")
 NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
@@ -16,10 +17,12 @@ def health():
 
 
 def source_ip(request: Request) -> str | None:
+    peer = request.client.host if request.client else None
     forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else None
+    # only a local forwarder (haproxy/ns-proxy) may speak for the VM; take its last hop
+    if forwarded and peer and (peer.startswith("127.") or peer == "::1"):
+        return forwarded.split(",")[-1].strip()
+    return peer
 
 
 def lookup_port(ip: str | None) -> dict:
@@ -39,7 +42,7 @@ def lookup_port(ip: str | None) -> dict:
 def forward(path: str, request: Request) -> Response:
     ip = source_ip(request)
     port = lookup_port(ip)
-    headers = {"X-Forwarded-For": ip or ""}
+    headers = {"X-Forwarded-For": ip or "", **internal_headers()}
     if port.get("id"):
         headers["X-Port-ID"] = port["id"]
     if port.get("device_id"):
