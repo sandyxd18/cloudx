@@ -62,7 +62,7 @@ fi
 hv() { if [ -n "${COMPUTE_SSH:-}" ]; then $COMPUTE_SSH "$@"; else "$@"; fi; }
 hv test -e /dev/kvm || { echo "missing /dev/kvm; skipping real VM test" >&2; exit 1; }
 hv virsh -c "${LIBVIRT_URI:-qemu:///system}" list --all >/dev/null
-hv ovs-vsctl br-exists "${OVS_BRIDGE:-br-int}"
+hv ${OVS_SUDO:-} ovs-vsctl br-exists "${OVS_BRIDGE:-br-int}"
 
 cloudx network create "$NETWORK_NAME" || true
 cloudx subnet create "$SUBNET_NAME" --network "$NETWORK_NAME" --cidr 10.42.0.0/24 --gateway 10.42.0.1 --dhcp || true
@@ -81,17 +81,21 @@ for _ in $(seq 1 30); do
 done
 
 hv virsh -c "${LIBVIRT_URI:-qemu:///system}" list --all
-hv ovs-vsctl show
+hv ${OVS_SUDO:-} ovs-vsctl show
 cloudx server ssh-info "$SERVER_NAME"
 server_id="$(cloudx server show "$SERVER_NAME" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-curl -fsS -H "X-Internal-Token: ${INTERNAL_TOKEN:-}" "http://localhost:8775/openstack/latest/meta_data.json?instance_id=${server_id}" >/dev/null
+curl -fsS -H "X-Internal-Token: ${INTERNAL_TOKEN:-}" "${METADATA_API_URL:-http://localhost:8775}/openstack/latest/meta_data.json?instance_id=${server_id}" >/dev/null
 cloudx server delete "$SERVER_NAME" || true
 
-if hv virsh -c "${LIBVIRT_URI:-qemu:///system}" list --all --name | grep -q "mini-os-${SERVER_NAME}"; then
+# server delete is asynchronous (the worker tears the domain down): allow up to 60s
+domains() { hv virsh -c "${LIBVIRT_URI:-qemu:///system}" list --all --name; }
+for _ in $(seq 1 30); do [[ "$(domains)" == *"mini-os-${SERVER_NAME}"* ]] || break; sleep 2; done
+if [[ "$(domains)" == *"mini-os-${SERVER_NAME}"* ]]; then
   echo "leftover libvirt domain detected for $SERVER_NAME" >&2
   exit 1
 fi
-if hv ovs-vsctl list-ports "${OVS_BRIDGE:-br-int}" 2>/dev/null | grep -q "^tap-mini-"; then
+if [[ "$(hv ${OVS_SUDO:-} ovs-vsctl list-ports "${OVS_BRIDGE:-br-int}" 2>/dev/null)" == *tap-mini-* ]]; then
   echo "leftover tap-mini OVS port detected" >&2
   exit 1
 fi
+echo "real VM smoke test passed"
