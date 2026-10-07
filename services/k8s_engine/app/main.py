@@ -44,7 +44,7 @@ class K8sCluster(Base):
     project_id = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-app = FastAPI(title="CloudX Kubernetes Engine Service API", version="1.0.0")
+app = FastAPI(title="CloudX Kubernetes Engine Service API (EXPERIMENTAL: control-plane records only, no real cluster is provisioned)", version="1.0.0")
 
 def project_id(current: CurrentUser) -> str:
     return current["project_id"]

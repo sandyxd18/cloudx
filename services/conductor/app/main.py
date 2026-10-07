@@ -457,6 +457,28 @@ def handle_mark_snapshot_error(args: dict) -> dict:
     return {"ok": True}
 
 
+def handle_create_snapshot_record(args: dict) -> dict:
+    """Insert a snapshot row (worker-created, e.g. per-volume snapshots of a CG snapshot)."""
+    with SessionLocal() as db:
+        db.execute(
+            text("INSERT INTO block_store_snapshots (id, name, volume_id, size_gb, status, path, backend, created_at) "
+                 "VALUES (:id, :name, :vol, :size, :status, :path, :backend, now()) ON CONFLICT (id) DO NOTHING"),
+            {"id": args["snapshot_id"], "name": args["name"], "vol": args["volume_id"], "size": args.get("size_gb", 1),
+             "status": args.get("status", "available"), "path": args.get("path", ""), "backend": args.get("backend", "lvm")},
+        )
+        db.commit()
+    return {"ok": True}
+
+
+def handle_update_cgsnapshot(args: dict) -> dict:
+    """Set the status of a consistency-group snapshot."""
+    with SessionLocal() as db:
+        db.execute(text("UPDATE block_store_cgsnapshots SET status = :s WHERE id = :id"),
+                   {"s": args["status"], "id": args["cgsnapshot_id"]})
+        db.commit()
+    return {"ok": True}
+
+
 # ─── Volume Backup Handlers ──────────────────────────────────────────────────
 
 ALLOWED_BACKUP_FIELDS = {"status", "object_key", "error_message"}
@@ -539,6 +561,8 @@ HANDLERS = {
     "update_snapshot":       handle_update_snapshot,
     "delete_snapshot_record": handle_delete_snapshot_record,
     "mark_snapshot_error":   handle_mark_snapshot_error,
+    "create_snapshot_record": handle_create_snapshot_record,
+    "update_cgsnapshot":     handle_update_cgsnapshot,
     # Volume backups
     "update_backup":         handle_update_backup,
     "delete_backup_record":  handle_delete_backup_record,
