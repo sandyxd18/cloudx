@@ -3,7 +3,9 @@ from shared.config import load_service_config
 load_service_config("image-api")
 
 import hashlib
+import json
 import logging
+from shared import proc
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -18,7 +20,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import DateTime, Integer, String, Text, create_engine, select, text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
@@ -103,6 +105,12 @@ class Image(Base):
     visibility: Mapped[str] = mapped_column(String, default="private")
     project_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    min_ram_mb: Mapped[int] = mapped_column(Integer, default=0)
+    protected: Mapped[bool] = mapped_column(Boolean, default=False)
+    virtual_size: Mapped[int | None] = mapped_column(Integer, nullable=True)  # from qemu-img info
+    os_hash_algo: Mapped[str | None] = mapped_column(String, nullable=True)
+    os_hash_value: Mapped[str | None] = mapped_column(String, nullable=True)
+    properties: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON object of custom properties
 
 
 
@@ -316,7 +324,38 @@ def storage_backend() -> StorageBackend:
 
 
 def obj_to_dict(obj):
-    return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+    d = {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+    if "properties" in d:
+        d["properties"] = json.loads(d["properties"] or "{}")
+    return d
+
+
+class _Hashed:
+    """File wrapper that also computes the multihash (sha512) Glance exposes as os_hash_value."""
+
+    def __init__(self, file):
+        self.file, self.sha512 = file, hashlib.sha512()
+
+    def read(self, n=-1):
+        chunk = self.file.read(n)
+        self.sha512.update(chunk)
+        return chunk
+
+
+def _inspect(path: Path, disk_format: str) -> int | None:
+    """Verify the file really is `disk_format` (qemu-img info) and return its virtual size.
+
+    ponytail: file backend only; skipped when qemu-img is missing. Minio objects are not inspected.
+    """
+    out = proc.run(["qemu-img", "info", "--output=json", str(path)], check=False, timeout=60)
+    if out.returncode in (proc.NOT_FOUND, proc.TIMED_OUT):
+        return None
+    if out.returncode != 0:
+        raise HTTPException(status_code=400, detail=f"not a valid disk image: {out.stderr.strip()[:200]}")
+    info = json.loads(out.stdout)
+    if disk_format in ("qcow2", "raw", "vdi", "vmdk", "vhd") and info.get("format") != {"vhd": "vpc"}.get(disk_format, disk_format):
+        raise HTTPException(status_code=400, detail=f"disk_format is '{disk_format}' but the file is '{info.get('format')}'")
+    return info.get("virtual-size")
 
 
 def get_image(db: Session, ref: str):
@@ -372,10 +411,6 @@ def upload_image(
     image_id = new_id()
     object_name = f"{image_id}-{Path(file.filename or name).name}"
     backend = storage_backend()
-    try:
-        size, checksum = backend.save_image(file.file, object_name)
-    except ClientError as exc:
-        raise HTTPException(status_code=502, detail=f"minio upload failed: {exc}") from exc
     image = Image(
         id=image_id,
         name=name,
@@ -384,14 +419,29 @@ def upload_image(
         object_name=object_name,
         disk_format=disk_format,
         container_format=container_format,
-        size=size,
-        checksum=checksum,
-        status="ACTIVE",
+        size=0,
+        checksum="",
+        status="saving",
         visibility=visibility,
         project_id=current["project_id"],
     )
     db.add(image)
     db.commit()
+    stream = _Hashed(file.file)
+    try:
+        image.size, image.checksum = backend.save_image(stream, object_name)
+        image.os_hash_algo, image.os_hash_value = "sha512", stream.sha512.hexdigest()
+        if backend.name == "file":
+            image.virtual_size = _inspect(IMAGE_STORE_PATH / object_name, disk_format)
+        image.status = "ACTIVE"
+        db.commit()
+    except Exception as exc:
+        backend.delete_image(object_name)
+        db.delete(image)
+        db.commit()
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=502, detail=f"image upload failed: {exc}") from exc
     db.refresh(image)
     try:
         if _rpc:
@@ -534,6 +584,8 @@ def download_image(ref: str, db: DB):
 @app.delete("/images/{ref}")
 def delete_image(ref: str, _: UserOrInternal, db: DB):
     image = require_image(db, ref)
+    if image.protected:
+        raise HTTPException(status_code=403, detail="image is protected; clear 'protected' first")
     if image.storage_backend == "minio":
         MinioStorageBackend().delete_image(image.object_name)
     else:
@@ -659,11 +711,16 @@ def prefetch_image(ref: str, _: CurrentUser, db: DB):
 def update_image(ref: str, payload: dict, _: UserOrInternal, db: DB):
     """Partially update image attributes (visibility, name, status, etc.). Also called by image-worker."""
     image = require_image(db, ref)
-    allowed = {"visibility", "name", "disk_format", "container_format",
+    allowed = {"visibility", "name", "disk_format", "container_format", "min_ram_mb", "protected",
                "status", "size", "checksum", "object_name", "filename", "storage_backend"}
     for key, value in payload.items():
         if key in allowed:
             setattr(image, key, value)
+    if "properties" in payload:  # merge; a null value removes the key (like Glance's replace/remove)
+        props = json.loads(image.properties or "{}")
+        for k, v in (payload["properties"] or {}).items():
+            props.pop(k, None) if v is None else props.__setitem__(k, v)
+        image.properties = json.dumps(props)
     db.commit()
     _cache_invalidate(image.id)  # evict stale cached entry
     return obj_to_dict(image)

@@ -3,6 +3,7 @@ from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 
 from .. import ovn_cli
+from ..access import own
 from ..db import DB, SessionLocal
 from ..models import FloatingIP, PortForwarding, Router
 from ..schemas import PortForwardingIn
@@ -51,9 +52,9 @@ def _apply_pf_ovn_rule(fip: FloatingIP, pf: PortForwarding, delete: bool = False
         db_temp.close()
 
 @router.post("/floatingips/{fip_ref}/port_forwardings", status_code=201)
-def create_port_forwarding(fip_ref: str, payload: PortForwardingIn, _: CurrentUser, db: DB):
+def create_port_forwarding(fip_ref: str, payload: PortForwardingIn, current: CurrentUser, db: DB):
     """Create a DNAT port forwarding rule on a floating IP."""
-    fip = require_floating_ip(db, fip_ref)
+    fip = own(current, require_floating_ip(db, fip_ref), "floating-ip")
     if payload.protocol not in {"tcp", "udp"}:
         raise HTTPException(status_code=400, detail="protocol must be tcp or udp")
     if not (1 <= payload.external_port <= 65535) or not (1 <= payload.internal_port <= 65535):
@@ -84,27 +85,27 @@ def create_port_forwarding(fip_ref: str, payload: PortForwardingIn, _: CurrentUs
     return _pf_to_dict(pf)
 
 @router.get("/floatingips/{fip_ref}/port_forwardings")
-def list_port_forwardings(fip_ref: str, _: CurrentUser, db: DB):
+def list_port_forwardings(fip_ref: str, current: CurrentUser, db: DB):
     """List all port forwarding rules for a floating IP."""
-    fip = require_floating_ip(db, fip_ref)
+    fip = own(current, require_floating_ip(db, fip_ref), "floating-ip")
     pfs = db.scalars(
         select(PortForwarding).where(PortForwarding.floatingip_id == fip.id).order_by(PortForwarding.created_at)
     ).all()
     return {"port_forwardings": [_pf_to_dict(pf) for pf in pfs]}
 
 @router.get("/floatingips/{fip_ref}/port_forwardings/{pf_id}")
-def show_port_forwarding(fip_ref: str, pf_id: str, _: CurrentUser, db: DB):
+def show_port_forwarding(fip_ref: str, pf_id: str, current: CurrentUser, db: DB):
     """Get a specific port forwarding rule."""
-    fip = require_floating_ip(db, fip_ref)
+    fip = own(current, require_floating_ip(db, fip_ref), "floating-ip")
     pf = db.get(PortForwarding, pf_id)
     if not pf or pf.floatingip_id != fip.id:
         raise HTTPException(status_code=404, detail="port forwarding not found")
     return _pf_to_dict(pf)
 
 @router.delete("/floatingips/{fip_ref}/port_forwardings/{pf_id}", status_code=204)
-def delete_port_forwarding(fip_ref: str, pf_id: str, _: CurrentUser, db: DB):
+def delete_port_forwarding(fip_ref: str, pf_id: str, current: CurrentUser, db: DB):
     """Delete a port forwarding rule and remove OVN DNAT entry."""
-    fip = require_floating_ip(db, fip_ref)
+    fip = own(current, require_floating_ip(db, fip_ref), "floating-ip")
     pf = db.get(PortForwarding, pf_id)
     if not pf or pf.floatingip_id != fip.id:
         raise HTTPException(status_code=404, detail="port forwarding not found")

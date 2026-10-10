@@ -1,4 +1,6 @@
 from __future__ import annotations
+from shared.config import load_service_config
+load_service_config("image-worker")
 """
 cloudx Image Worker — AMQP Consumer (Image Import Worker)
 ==============================================================

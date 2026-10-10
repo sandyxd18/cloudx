@@ -8,6 +8,9 @@ Serves:
   - Instance identity: /openstack/latest/identity (JSON + HMAC signature)
   - Versioned EC2:   /{version}/meta-data/*, /{version}/user-data
 """
+from shared.config import load_service_config
+load_service_config("metadata-api")
+
 import os
 
 from fastapi import FastAPI, HTTPException, Request

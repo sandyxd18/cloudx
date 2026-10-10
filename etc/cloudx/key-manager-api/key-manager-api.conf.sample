@@ -1,13 +1,3 @@
+# Overrides for key-manager-api only; shared settings (secrets, service URLs, RabbitMQ) live in /etc/cloudx/cloudx.conf.
 [DEFAULT]
-host = 127.0.0.1
-port = 8014
-log_level = info
-
-[database]
-url = postgresql+psycopg2://cloudx:cloudx@127.0.0.1:5432/cloudx_key_manager
-
-[security]
-master_key = cloudx-master-secret-key-32bytes!
-
-[service_urls]
-auth_url = http://127.0.0.1:8005
+database_url = postgresql+psycopg2://cloudx:cloudx@127.0.0.1:5432/cloudx_key_manager

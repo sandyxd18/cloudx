@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import shutil
@@ -9,7 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import clients
-from .clients import _svc_headers
+from .clients import _svc_headers, response_detail
+from shared.internal import internal_headers
 from .config import (
     AUTH_API_URL,
     COMPUTE_BACKEND,
@@ -19,7 +21,7 @@ from .config import (
     PLACEMENT_API_URL,
     log,
 )
-from .models import Flavor, Server
+from .models import Aggregate, AggregateHost, ComputeService, Flavor, Server, ServerAction, ServerGroup
 from .serializers import obj_to_dict
 
 
@@ -78,10 +80,73 @@ def schedule_host(db: Session, hosts: list[str] | None = None) -> str | None:
     return min(hosts, key=lambda h: counts.get(h, 0))  # min() keeps the first host on ties
 
 
-def ensure_capacity(db: Session, flavor: Flavor) -> None:
-    inv = placement_inventory(db)
-    if flavor.vcpus > inv["free_vcpu"] or flavor.ram_mb > inv["free_ram_mb"] or flavor.disk_gb > inv["free_disk_gb"]:
-        raise HTTPException(status_code=409, detail={"message": "Insufficient resources", "inventory": inv})
+def _constraints(db: Session, flavor, group=None, az=None, host=None, avoid=()) -> tuple[list[str], list[str] | None]:
+    """(exclude, only) host lists from disabled services, AZ, flavor extra_specs vs aggregate metadata, server group."""
+    exclude = set(avoid) | {s.host for s in db.scalars(select(ComputeService)) if s.disabled or s.forced_down}
+    only = set(COMPUTE_HOSTS) if COMPUTE_HOSTS else None
+    wanted = {k.split(":", 1)[1]: v for k, v in json.loads(flavor.extra_specs or "{}").items()
+              if k.startswith("aggregate_instance_extra_specs:")}
+    if az or wanted:
+        aggs = db.scalars(select(Aggregate)).all()
+        if az:
+            aggs = [a for a in aggs if a.availability_zone == az]
+            if not aggs:
+                raise HTTPException(status_code=400, detail=f"unknown availability zone {az}")
+        for k, v in wanted.items():
+            aggs = [a for a in aggs if str(json.loads(a.extra_metadata or "{}").get(k)) == str(v)]
+        ids = {a.id for a in aggs}
+        in_aggs = {h for (h,) in db.execute(select(AggregateHost.host).where(AggregateHost.aggregate_id.in_(ids)))}
+        only = in_aggs if only is None else only & in_aggs
+    if group:
+        used = [h for (h,) in db.execute(select(Server.host).where(
+            Server.server_group_id == group.id, Server.status != "DELETED", Server.host.is_not(None)))]
+        if group.policy == "anti-affinity":
+            exclude |= set(used)
+        elif group.policy == "affinity" and used:
+            only = {used[0]} if only is None else only & {used[0]}
+    if host:
+        only = {host} if only is None else only & {host}
+    if only is not None:
+        only -= exclude
+        if not only:
+            raise HTTPException(status_code=409, detail="No valid host was found")
+    return sorted(exclude), None if only is None else sorted(only)
+
+
+def fallback_host(db: Session, flavor, **kw) -> str | None:
+    """Least-servers choice that still honours the filters (used when placement cannot decide)."""
+    exclude, only = _constraints(db, flavor, **kw)
+    hosts = [h for h in (only if only is not None else compute_hosts()) if h not in exclude]
+    return schedule_host(db, hosts) if hosts else None
+
+
+def claim_host(db: Session, server_id: str, project_id: str, flavor: Flavor, disk_gb: int = 0,
+               group: "ServerGroup | None" = None, az: str | None = None, host: str | None = None,
+               avoid: tuple = ()) -> str | None:
+    """Placement picks a node and records the allocation. Returns the host, or None to use the legacy
+    least-servers path (placement down, or no node has reported inventory yet)."""
+    exclude, only = _constraints(db, flavor, group, az, host, avoid)
+    resources = {"VCPU": flavor.vcpus, "MEMORY_MB": flavor.ram_mb}
+    try:
+        r = requests.post(f"{PLACEMENT_API_URL}/internal/claim", headers=internal_headers(), timeout=10, json={
+            "consumer_uuid": server_id, "project_id": project_id, "resources": resources,
+            "exclude_hosts": exclude, "only_hosts": only})
+    except requests.RequestException as exc:
+        log.warning("placement unreachable (%s): falling back to least-servers scheduling", exc)
+        return None
+    if r.status_code == 503:
+        return None
+    if r.status_code == 409:
+        raise HTTPException(status_code=409, detail={"message": "No valid host was found", "detail": response_detail(r)})
+    r.raise_for_status()
+    return r.json()["host"]
+
+
+def release_allocation(server_id: str) -> None:
+    try:
+        requests.delete(f"{PLACEMENT_API_URL}/internal/allocations/{server_id}", headers=internal_headers(), timeout=5)
+    except requests.RequestException as exc:
+        log.warning("could not release placement allocation of %s: %s", server_id, exc)
 
 
 def selected_backend(requested: str | None) -> str:
@@ -174,6 +239,9 @@ def server_metadata_payload(server: Server) -> dict:
     }
 
 
+LIVE_STATES = {"BUILD", "ACTIVE", "SHUTOFF", "REBOOT", "PAUSED", "SUSPENDED", "RESCUE", "RESIZE", "VERIFY_RESIZE"}
+
+
 def _check_project_quota(db: Session, project_id: str, requested_vcpus: int, requested_ram_mb: int):
     """Enforce per-project limits from auth-api against what this project's live servers already use.
 
@@ -188,7 +256,7 @@ def _check_project_quota(db: Session, project_id: str, requested_vcpus: int, req
         logging.getLogger("compute-api").warning("Quota check skipped (auth-api): %s", exc)
         return
     live = db.scalars(select(Server).where(
-        Server.project_id == project_id, Server.status.in_({"BUILD", "ACTIVE", "SHUTOFF", "REBOOT", "PAUSED", "SUSPENDED", "RESCUE", "RESIZE", "VERIFY_RESIZE"}))).all()
+        Server.project_id == project_id, Server.status.in_(LIVE_STATES))).all()
     checks = (
         ("max_instances", len(live) + 1, quota.get("max_instances", 10)),
         ("max_vcpus", sum(s.vcpus or 0 for s in live) + requested_vcpus, quota.get("max_vcpus", 20)),
@@ -197,3 +265,23 @@ def _check_project_quota(db: Session, project_id: str, requested_vcpus: int, req
     for name, wanted, limit in checks:
         if wanted > limit:
             raise HTTPException(status_code=413, detail=f"Quota exceeded: {name} ({limit}) reached")
+
+
+def record_action(db: Session, server_id: str, action: str, current: dict) -> None:
+    db.add(ServerAction(server_id=server_id, action=action, user_id=current.get("sub"), project_id=current.get("project_id")))
+    db.commit()
+
+
+def project_limits(db: Session, project_id: str) -> dict:
+    """Nova-style absolute limits: quota from auth-api (None if unreachable) + usage from the servers table."""
+    try:
+        resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=_svc_headers(), timeout=5)
+        resp.raise_for_status()
+        quota = resp.json()
+    except (requests.RequestException, ValueError):
+        quota = {}
+    live = db.scalars(select(Server).where(Server.project_id == project_id, Server.status.in_(LIVE_STATES))).all()
+    return {"absolute": {
+        "maxTotalInstances": quota.get("max_instances"), "totalInstancesUsed": len(live),
+        "maxTotalCores": quota.get("max_vcpus"), "totalCoresUsed": sum(s.vcpus or 0 for s in live),
+        "maxTotalRAMSize": quota.get("max_ram_mb"), "totalRAMUsed": sum(s.ram_mb or 0 for s in live)}}

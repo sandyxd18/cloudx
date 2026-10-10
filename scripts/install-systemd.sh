@@ -28,6 +28,7 @@ SERVICES=(
     "auth-api"
     "compute-api"
     "conductor"
+    "block-store-worker"
     "networking-api"
     "image-api"
     "block-store-api"
@@ -52,38 +53,47 @@ for svc in "${SERVICES[@]}"; do
     fi
 done
 
-# Upgrade: old samples shipped a default auth_secret_key that would override cloudx.env at startup.
+# Upgrade: old samples shipped a default auth_secret_key that would override cloudx.conf at startup.
 sed -i "/^auth_secret_key *= *cloudx-secret-key-change-in-production/d" "${ETC_DIR}"/*/*.conf 2>/dev/null || true
 
-# Shared secrets, generated once and never overwritten. Services refuse to start without them.
-ENV_FILE="${ETC_DIR}/cloudx.env"
-if [[ ! -f "${ENV_FILE}" ]]; then
-    echo "Generating ${ENV_FILE} (auth secret, admin password, key-manager master key)..."
-    (
-        umask 077
-        {
-            echo "AUTH_SECRET_KEY=$(openssl rand -hex 32)"
-            echo "AUTH_ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=')"
-            echo "KEY_MANAGER_MASTER_KEY=$(openssl rand -hex 32)"
-            echo "METRICS_TOKEN=$(openssl rand -hex 24)"
-            echo "INTERNAL_TOKEN=$(openssl rand -hex 24)"
-        } > "${ENV_FILE}"
-    )
-    echo "    Admin password is stored in ${ENV_FILE}."
+# Shared settings (secrets, service URLs, broker), OpenStack-style: one INI file, never overwritten. Services refuse to
+# start without the secrets. Per-service overrides go in /etc/cloudx/<service>/<service>.conf. Keys are the lowercase
+# names of the settings (auth_secret_key, auth_api_url, ...).
+CONF_FILE="${ETC_DIR}/cloudx.conf"
+if [[ ! -f "${CONF_FILE}" ]]; then
+    echo "Generating ${CONF_FILE} (secrets, service URLs)..."
+    ( umask 077; cp "${SCRIPT_DIR}/etc/cloudx/cloudx.conf.sample" "${CONF_FILE}" )
+    # Upgrade from the old env file: carry its values over (KEY=VAL -> key = val).
+    if [[ -f "${ETC_DIR}/cloudx.env" ]]; then
+        echo "    Migrating ${ETC_DIR}/cloudx.env into ${CONF_FILE}..."
+        while IFS='=' read -r k v; do
+            [[ "${k}" =~ ^[A-Za-z_]+$ ]] || continue
+            k="$(echo "${k}" | tr 'A-Z' 'a-z')"
+            sed -i "/^${k} *=/d" "${CONF_FILE}"
+            sed -i "/^\[DEFAULT\]/a ${k} = ${v}" "${CONF_FILE}"
+        done < "${ETC_DIR}/cloudx.env"
+        mv "${ETC_DIR}/cloudx.env" "${ETC_DIR}/cloudx.env.migrated"
+    fi
     echo "    Multi-node: copy this file to every other node (same path, mode 640) BEFORE running the installer there."
 fi
-# Upgrades: add tokens introduced later (INTERNAL_TOKEN guards /internal/*); copy the file to other nodes afterwards.
-for tok in METRICS_TOKEN INTERNAL_TOKEN; do
-    grep -q "^${tok}=" "${ENV_FILE}" || echo "${tok}=$(openssl rand -hex 24)" >> "${ENV_FILE}"
-done
-chmod 640 "${ENV_FILE}"
+# Secrets: generate any that are missing or still empty (also covers tokens added in later releases).
+gen() { # key command
+    grep -Eq "^$1 *= *[^ ]" "${CONF_FILE}" && return 0
+    sed -i "/^$1 *=/d" "${CONF_FILE}"
+    sed -i "/^\[DEFAULT\]/a $1 = $(eval "$2")" "${CONF_FILE}"
+}
+gen auth_secret_key "openssl rand -hex 32"
+gen auth_admin_password "openssl rand -base64 18 | tr -d '/+='"
+gen key_manager_master_key "openssl rand -hex 32"
+gen metrics_token "openssl rand -hex 24"
+gen internal_token "openssl rand -hex 24"
+chmod 640 "${CONF_FILE}"
 
 # Prometheus scrapes /metrics with this token (prometheus.yml: credentials_file); only when Prometheus is installed here.
 if [[ -d /etc/prometheus ]]; then
-    ( umask 037; grep '^METRICS_TOKEN=' "${ENV_FILE}" | cut -d= -f2- | tr -d '\n' > /etc/prometheus/metrics_token )
+    ( umask 037; grep '^metrics_token' "${CONF_FILE}" | cut -d= -f2- | tr -d ' \n' > /etc/prometheus/metrics_token )
     chgrp prometheus /etc/prometheus/metrics_token 2>/dev/null || true
 fi
-
 chown -R "${CLOUDX_USER}:${CLOUDX_GROUP}" "${ETC_DIR}"
 chmod 750 "${ETC_DIR}"
 

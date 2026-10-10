@@ -1,9 +1,13 @@
+import ipaddress
+
 from fastapi import APIRouter, HTTPException
 from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 
 from .. import ovn_cli
+from ..access import own, require_owned, scope
 from ..db import DB
+from ..quota import check_quota
 from ..ipam import parse_id_list
 from ..models import Port, SecurityGroup, SecurityGroupRule, now
 from ..ovn_cli import (
@@ -23,6 +27,7 @@ router = APIRouter()
 def create_security_group(payload: SecurityGroupIn, current: CurrentUser, db: DB):
     if get_by_ref(db, SecurityGroup, payload.name):
         raise HTTPException(status_code=409, detail="security-group already exists")
+    check_quota(db, current.get("project_id"), SecurityGroup, "security_groups")
     group = SecurityGroup(name=payload.name, description=payload.description, project_id=current.get("project_id"))
     db.add(group)
     db.commit()
@@ -71,16 +76,16 @@ PRESET_SECURITY_GROUPS = {
 }
 
 @router.get("/security-groups/presets")
-def get_security_group_presets(_: CurrentUser):
+def get_security_group_presets(current: CurrentUser):
     return {"presets": PRESET_SECURITY_GROUPS}
 
 @router.post("/security-groups/{ref}/apply-preset")
-def apply_security_group_preset(ref: str, payload: dict, _: CurrentUser, db: DB):
+def apply_security_group_preset(ref: str, payload: dict, current: CurrentUser, db: DB):
     preset_key = payload.get("preset")
     if not preset_key or preset_key not in PRESET_SECURITY_GROUPS:
         raise HTTPException(status_code=400, detail=f"Invalid preset key '{preset_key}'. Allowed: {list(PRESET_SECURITY_GROUPS.keys())}")
 
-    group = require_by_ref(db, SecurityGroup, ref, "security-group")
+    group = require_owned(current, db, SecurityGroup, ref, "security-group")
     preset = PRESET_SECURITY_GROUPS[preset_key]
     created_rules = []
 
@@ -105,16 +110,16 @@ def apply_security_group_preset(ref: str, payload: dict, _: CurrentUser, db: DB)
 
 @router.get("/security-groups")
 def list_security_groups(current: CurrentUser, db: DB):
-    return {"items": [sg_to_os_dict(db, group, current, include_rules=False) for group in db.scalars(select(SecurityGroup).order_by(SecurityGroup.created_at)).all()]}
+    return {"items": [sg_to_os_dict(db, group, current, include_rules=False) for group in db.scalars(scope(select(SecurityGroup), SecurityGroup, current).order_by(SecurityGroup.created_at)).all()]}
 
 @router.get("/security-groups/{ref}")
 def show_security_group(ref: str, current: CurrentUser, db: DB):
-    group = require_by_ref(db, SecurityGroup, ref, "security-group")
+    group = require_owned(current, db, SecurityGroup, ref, "security-group")
     return sg_to_os_dict(db, group, current, include_rules=True)
 
 @router.delete("/security-groups/{ref}")
-def delete_security_group(ref: str, _: CurrentUser, db: DB):
-    group = require_by_ref(db, SecurityGroup, ref, "security-group")
+def delete_security_group(ref: str, current: CurrentUser, db: DB):
+    group = require_owned(current, db, SecurityGroup, ref, "security-group")
     in_use = [p.name for p in db.scalars(select(Port).where(Port.security_group_ids.is_not(None))).all() if group.id in parse_id_list(p.security_group_ids)]
     if in_use:
         raise HTTPException(status_code=409, detail=f"security-group is still attached to ports: {', '.join(in_use)}")
@@ -126,12 +131,21 @@ def delete_security_group(ref: str, _: CurrentUser, db: DB):
     return {"status": "deleted", "id": group.id, "name": group.name}
 
 @router.post("/security-groups/{ref}/rules", status_code=201)
-def create_security_group_rule(ref: str, payload: SecurityGroupRuleIn, _: CurrentUser, db: DB):
-    group = require_by_ref(db, SecurityGroup, ref, "security-group")
+def create_security_group_rule(ref: str, payload: SecurityGroupRuleIn, current: CurrentUser, db: DB):
+    group = require_owned(current, db, SecurityGroup, ref, "security-group")
     if payload.direction not in {"ingress", "egress"}:
         raise HTTPException(status_code=400, detail="direction must be ingress or egress")
     if payload.protocol not in {"tcp", "udp", "icmp", "any"}:
         raise HTTPException(status_code=400, detail="protocol must be tcp, udp, icmp, or any")
+    if payload.ethertype not in {"IPv4", "IPv6"}:
+        raise HTTPException(status_code=400, detail="ethertype must be IPv4 or IPv6")
+    if payload.remote_ip_prefix:
+        try:
+            version = ipaddress.ip_network(payload.remote_ip_prefix, strict=False).version
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if version != (6 if payload.ethertype == "IPv6" else 4):
+            raise HTTPException(status_code=400, detail="remote_ip_prefix does not match ethertype")
     rule = SecurityGroupRule(
         security_group_id=group.id,
         direction=payload.direction,
@@ -151,14 +165,16 @@ def create_security_group_rule(ref: str, payload: SecurityGroupRuleIn, _: Curren
     return obj_to_dict(rule)
 
 @router.get("/security-groups/{ref}/rules")
-def list_security_group_rules(ref: str, _: CurrentUser, db: DB):
-    group = require_by_ref(db, SecurityGroup, ref, "security-group")
+def list_security_group_rules(ref: str, current: CurrentUser, db: DB):
+    group = require_owned(current, db, SecurityGroup, ref, "security-group")
     return {"items": [obj_to_dict(rule) for rule in db.scalars(select(SecurityGroupRule).where(SecurityGroupRule.security_group_id == group.id).order_by(SecurityGroupRule.created_at)).all()]}
 
 @router.delete("/security-group-rules/{rule_id}")
-def delete_security_group_rule(rule_id: str, _: CurrentUser, db: DB):
+def delete_security_group_rule(rule_id: str, current: CurrentUser, db: DB):
     rule = require_by_ref(db, SecurityGroupRule, rule_id, "security-group-rule")
     group = db.get(SecurityGroup, rule.security_group_id)
+    if group:
+        own(current, group, "security-group-rule")
     db.delete(rule)
     if group:
         group.updated_at = now()
@@ -168,8 +184,8 @@ def delete_security_group_rule(rule_id: str, _: CurrentUser, db: DB):
     return {"status": "deleted", "id": rule_id}
 
 @router.get("/security-groups/{ref}/ovn")
-def security_group_ovn_show(ref: str, db: DB):
-    group = require_by_ref(db, SecurityGroup, ref, "security-group")
+def security_group_ovn_show(ref: str, current: CurrentUser, db: DB):
+    group = require_owned(current, db, SecurityGroup, ref, "security-group")
     pg = ensure_security_group_port_group(group)
     members = []
     for port in db.scalars(select(Port).where(Port.security_group_ids.is_not(None)).order_by(Port.created_at)).all():

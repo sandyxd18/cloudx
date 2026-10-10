@@ -18,11 +18,13 @@ from ..schemas import ServerIn, ServerUserDataIn
 from ..serializers import obj_to_dict, server_to_dict
 from ..service import (
     _check_project_quota,
+    claim_host,
     default_user_data,
-    ensure_capacity,
     flavor_snapshot,
     format_comma_list,
-    schedule_host,
+    release_allocation,
+    fallback_host,
+    record_action,
     selected_backend,
     server_metadata_payload,
     server_worker_payload,
@@ -42,22 +44,14 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
     keypair_ref = payload.key_name or payload.keypair
     keypair = require_keypair(db, keypair_ref) if keypair_ref else None
     flavor = require_flavor(db, payload.flavor)
-    ensure_capacity(db, flavor)
     _check_project_quota(db, current["project_id"], flavor.vcpus, flavor.ram_mb)
-    # Check server group anti-affinity
-    sg_id = None
+    sg = None
     if payload.server_group:
         sg = db.get(ServerGroup, payload.server_group) or db.scalar(
             select(ServerGroup).where(ServerGroup.name == payload.server_group,
                                        ServerGroup.project_id == current["project_id"]))
         if not sg:
             raise HTTPException(status_code=404, detail="server group not found")
-        sg_id = sg.id
-        if sg.policy == "anti-affinity":
-            members = [m for m in (sg.members or "").split(",") if m]
-            if len(members) >= 1:
-                raise HTTPException(status_code=409,
-                    detail=f"Server group '{sg.name}' anti-affinity policy violated: {len(members)} member(s) already exist")
     network = clients.api_get(f"{NETWORKING_API_URL}/networks/{payload.network}")
     server_id = new_id()
     root_volume = None
@@ -66,7 +60,12 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
     boot_source = "volume"
     created_ports: list[dict] = []
     project_id = current["project_id"]
+    claimed = False
     try:
+        host = claim_host(db, server_id, project_id, flavor, group=sg, az=payload.availability_zone)
+        claimed = host is not None
+        if host is None:
+            host = fallback_host(db, flavor, group=sg, az=payload.availability_zone)
         if payload.image:
             image = clients.api_get(f"{IMAGE_API_URL}/images/{payload.image}")
             image_id = image["id"]
@@ -124,7 +123,8 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
         snapshot = flavor_snapshot(flavor)
         server = Server(
             id=server_id,
-            host=schedule_host(db),
+            host=host,
+            server_group_id=sg.id if sg else None,
             name=payload.name,
             image_id=image_id,
             root_volume_id=root_volume["id"],
@@ -152,6 +152,7 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
         db.add(server)
         db.commit()
         db.refresh(server)
+        record_action(db, server.id, "create", current)
         # ── Async via RabbitMQ ──────────────────────────────────────────────
         # Cast build_instance to compute-worker queue. Worker will:
         #   1. Spawn VM (libvirt)
@@ -177,6 +178,8 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
         # API returns immediately with status=BUILD
 
     except Exception as exc:
+        if claimed:
+            release_allocation(server_id)
         for created in created_ports:
             clients.api_delete(f"{NETWORKING_API_URL}/ports/{created['id']}")
         if auto_root_volume and root_volume:

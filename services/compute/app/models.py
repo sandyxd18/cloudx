@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .config import ONLY_BACKEND
@@ -80,7 +80,29 @@ class Flavor(Base):
     ephemeral_gb: Mapped[int] = mapped_column(Integer, default=0)
     swap_mb: Mapped[int] = mapped_column(Integer, default=0)
     is_public: Mapped[bool] = mapped_column(Boolean, default=True)
+    extra_specs: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON object
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class ServerAction(Base):
+    """Instance action log (os-instance-actions): one row per action request."""
+    __tablename__ = "compute_server_actions"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    server_id: Mapped[str] = mapped_column(String, index=True)
+    action: Mapped[str] = mapped_column(String)
+    user_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    start_time: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class ComputeService(Base):
+    """Operator state per compute host (os-services)."""
+    __tablename__ = "compute_services"
+    host: Mapped[str] = mapped_column(String, primary_key=True)
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    disabled_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    forced_down: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 

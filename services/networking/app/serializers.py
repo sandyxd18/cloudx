@@ -1,4 +1,5 @@
 import ipaddress
+import json
 from datetime import datetime
 
 from fastapi import HTTPException
@@ -24,6 +25,9 @@ def _fmt_ts(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def network_mtu(network: Network) -> int:
+    return network.mtu or (1500 if network.external else 1442)
 
 def _ip_version(cidr: str) -> int:
     try:
@@ -54,10 +58,10 @@ def network_to_os_dict(db: Session, network: Network, current: dict | None = Non
         "ipv6_address_scope": None,
         "is_default": True if network.external else None,
         "is_vlan_transparent": False,
-        "mtu": 1500 if network.external else 1442,
+        "mtu": network_mtu(network),
         "name": network.name,
         "port_security_enabled": True,
-        "project_id": current.get("project_id") if current else None,
+        "project_id": network.project_id,
         "provider:network_type": network.network_type or ("flat" if network.external else "geneve"),
         "provider:physical_network": network.physical_network,
         "provider:segmentation_id": None,
@@ -98,7 +102,7 @@ def subnet_to_os_dict(db: Session, subnet: Subnet, current: dict | None = None) 
         "ipv6_ra_mode": None,
         "name": subnet.name,
         "network_id": subnet.network_id,
-        "project_id": current.get("project_id") if current else None,
+        "project_id": subnet.project_id,
         "revision_number": 0,
         "router:external": bool(network.external) if network else False,
         "segment_id": None,
@@ -158,9 +162,9 @@ def router_to_os_dict(db: Session, router: Router, current: dict | None = None) 
         "id": router.id,
         "interfaces_info": interfaces_info,
         "name": router.name,
-        "project_id": current.get("project_id") if current else None,
+        "project_id": router.project_id,
         "revision_number": 4,
-        "routes": [],
+        "routes": json.loads(router.routes or "[]"),
         "status": "ACTIVE",
         "tags": [],
         "updated_at": _fmt_ts(router.created_at),
@@ -190,7 +194,7 @@ def port_to_os_dict(db: Session, port: Port, current: dict | None = None) -> dic
 
     return {
         "admin_state_up": "UP",
-        "allowed_address_pairs": [],
+        "allowed_address_pairs": json.loads(port.allowed_address_pairs or "[]"),
         "binding_host_id": "",
         "binding_profile": {},
         "binding_vif_details": {},
@@ -217,7 +221,7 @@ def port_to_os_dict(db: Session, port: Port, current: dict | None = None) -> dic
         "numa_affinity_policy": None,
         "port_security_enabled": port.port_security_enabled,
         "qos_policy": {"max_kbps": port.qos_max_kbps, "burst_kbps": port.qos_burst_kbps} if (port.qos_max_kbps or port.qos_burst_kbps) else None,
-        "project_id": current.get("project_id") if current else None,
+        "project_id": port.project_id,
         "propagate_uplink_status": None,
         "resource_request": None,
         "revision_number": 2,
@@ -255,7 +259,7 @@ def fip_to_os_dict(db: Session, fip: FloatingIP, current: dict | None = None) ->
         "name": fip.name,
         "port_details": None,
         "port_id": fip.port_id or fip.fixed_port_id,
-        "project_id": current.get("project_id") if current else None,
+        "project_id": fip.project_id,
         "qos_policy_id": None,
         "revision_number": 0,
         "router_id": fip.router_id,

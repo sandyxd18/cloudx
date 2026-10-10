@@ -1,4 +1,6 @@
 from __future__ import annotations
+from shared.config import load_service_config
+load_service_config("block-store-worker")
 """
 cloudx block-store-worker — AMQP Consumer (Block Store Volume Worker)
 =====================================================================
@@ -339,6 +341,17 @@ def handle_extend_volume(args: dict) -> None:
         log.info("Volume %s extended to %dGB", volume_id, new_size_gb)
     except Exception as exc:
         log.error("Failed to extend volume %s: %s", volume_id, exc, exc_info=True)
+        conductor_mark_volume_error(volume_id, str(exc))
+
+
+def handle_revert_volume(args: dict) -> None:
+    volume_id = args["volume_id"]
+    log.info("Reverting volume %s from %s", volume_id, args["snapshot_path"])
+    try:
+        run(["dd", f"if={args['snapshot_path']}", f"of={args['volume_path']}", "bs=4M", "conv=fsync", "status=none"], timeout=None)
+        conductor_update_volume(volume_id, {"status": "available", "error_message": None})
+    except Exception as exc:
+        log.error("Failed to revert volume %s: %s", volume_id, exc, exc_info=True)
         conductor_mark_volume_error(volume_id, str(exc))
 
 
@@ -719,6 +732,7 @@ HANDLERS = {
     "create_volume":    handle_create_volume,
     "delete_volume":    handle_delete_volume,
     "extend_volume":    handle_extend_volume,
+    "revert_volume":    handle_revert_volume,
     "migrate_volume":   handle_migrate_volume,
     "create_snapshot":  handle_create_snapshot,
     "delete_snapshot":  handle_delete_snapshot,

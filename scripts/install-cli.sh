@@ -56,11 +56,11 @@ echo "✓ Installed CLI commands to $bin_dir"
 # Auto-configure ~/.cloudx/credentials if auth-api is running and credentials don't exist
 CREDS_FILE="${HOME}/.cloudx/credentials"
 ADMIN_PW="${AUTH_ADMIN_PASSWORD:-}"
-if [ -z "$ADMIN_PW" ] && [ -r /etc/cloudx/cloudx.env ]; then
-  ADMIN_PW="$(grep -E '^AUTH_ADMIN_PASSWORD=' /etc/cloudx/cloudx.env | cut -d= -f2-)"
+if [ -z "$ADMIN_PW" ] && [ -r /etc/cloudx/cloudx.conf ]; then
+  ADMIN_PW="$(grep -E '^auth_admin_password' /etc/cloudx/cloudx.conf | cut -d= -f2- | tr -d ' ')"
 fi
 if [ ! -f "$CREDS_FILE" ] && [ -z "$ADMIN_PW" ]; then
-  echo "Skipping credential auto-setup: set AUTH_ADMIN_PASSWORD (see /etc/cloudx/cloudx.env on the controller), or run: cloudx auth configure"
+  echo "Skipping credential auto-setup: set AUTH_ADMIN_PASSWORD (see /etc/cloudx/cloudx.conf on the controller), or run: cloudx auth configure"
 elif [ ! -f "$CREDS_FILE" ]; then
   mkdir -p "${HOME}/.cloudx"
   echo "Setting up initial credentials in $CREDS_FILE..."

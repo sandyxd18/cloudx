@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import ALGORITHM, SECRET_KEY, TOKEN_EXPIRE_H
-from .models import ServiceCatalogEntry, ServiceEndpoint, User, utcnow
+from .models import RoleAssignment, ServiceCatalogEntry, ServiceEndpoint, User, utcnow
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -37,11 +37,18 @@ def _verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+def project_role(db: Session, user: User, project_id: str) -> str:
+    """Role of the user inside a project: explicit assignment, else the user's default role."""
+    a = db.get(RoleAssignment, (user.id, project_id))
+    return a.role if a else user.role
+
+
 def _create_token(
     user: User,
     scope_type: str = "project",
     extra_roles: list[str] | None = None,
     project_name: str | None = None,
+    role: str | None = None,
 ) -> str:
     """Create a JWT token.
 
@@ -50,6 +57,7 @@ def _create_token(
         scope_type: 'project' (default) | 'domain' | 'system'.
         extra_roles: additional roles from an Application Credential (overrides user.role).
         project_name: active project name to include in payload.
+        role: role in the active project (defaults to user.role).
     """
     jti = str(uuid.uuid4())
     payload = {
@@ -58,8 +66,8 @@ def _create_token(
         "username":     user.username,
         "project_id":   user.project_id,
         "project_name": project_name or "",
-        "role":         (extra_roles[0] if extra_roles else user.role),
-        "roles":        (extra_roles if extra_roles else [user.role]),
+        "role":         (extra_roles[0] if extra_roles else (role or user.role)),
+        "roles":        (extra_roles if extra_roles else [role or user.role]),
         "scope_type":   scope_type,
         "exp":          utcnow() + timedelta(hours=TOKEN_EXPIRE_H),
         "iat":          utcnow(),

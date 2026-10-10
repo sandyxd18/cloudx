@@ -4,9 +4,6 @@ After=network.target cloudx-metadata-api.service
 Wants=cloudx-metadata-api.service
 
 [Service]
-EnvironmentFile=-/etc/cloudx/cloudx.env
-Environment=METADATA_API_URL=http://127.0.0.1:8775
-Environment=NETWORKING_API_URL=http://127.0.0.1:8001
 Type=simple
 User=root
 Group=root

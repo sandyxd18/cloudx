@@ -25,7 +25,7 @@ from ..schemas import (
     VolumeAttachIn,
 )
 from ..serializers import obj_to_dict
-from ..service import comma_list, format_comma_list, server_worker_payload
+from ..service import comma_list, format_comma_list, release_allocation, server_worker_payload
 
 router = APIRouter()
 
@@ -213,6 +213,7 @@ def delete_server(ref: str, current: CurrentUser, db: DB, keep_root_volume: bool
             sg.members = ",".join(members) or None
     server.status = "DELETING"
     db.commit()
+    release_allocation(server.id)
     # Cast delete to worker — worker will:
     # 1. Destroy libvirt domain
     # 2. Cleanup ports and volumes via HTTP

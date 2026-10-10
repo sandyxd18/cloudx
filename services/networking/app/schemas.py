@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 class NetworkIn(BaseModel):
     name: str
     external: bool = False
+    mtu: int | None = Field(default=None, ge=68, le=9216)
 
 class SubnetIn(BaseModel):
     name: str
@@ -26,6 +27,32 @@ class SubnetIn(BaseModel):
 class RouterIn(BaseModel):
     name: str
 
+class Route(BaseModel):
+    destination: str
+    nexthop: str
+
+    @field_validator("destination")
+    @classmethod
+    def _v_dest(cls, v):
+        return str(ipaddress.ip_network(v, strict=False))
+
+    @field_validator("nexthop")
+    @classmethod
+    def _v_hop(cls, v):
+        return str(ipaddress.ip_address(v))
+
+class RouterUpdate(BaseModel):
+    routes: list[Route] | None = None
+
+class AddressPair(BaseModel):
+    ip_address: str
+    mac_address: str | None = Field(default=None, pattern=r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+
+    @field_validator("ip_address")
+    @classmethod
+    def _v_ip(cls, v):
+        return str(ipaddress.ip_interface(v).network if "/" in v else ipaddress.ip_address(v))
+
 class RouterInterfaceIn(BaseModel):
     subnet: str
 
@@ -42,9 +69,11 @@ class PortIn(BaseModel):
     dns_name: str | None = None    # optional DNS hostname registered in OVN
     qos_max_kbps: int | None = None
     qos_burst_kbps: int | None = None
+    allowed_address_pairs: list[AddressPair] = Field(default_factory=list)
 
 class PortUpdate(BaseModel):
     name: str | None = None
+    allowed_address_pairs: list[AddressPair] | None = None
     qos_max_kbps: int | None = None
     qos_burst_kbps: int | None = None
 

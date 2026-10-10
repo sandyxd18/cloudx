@@ -69,24 +69,22 @@ act systemctl enable --now iscsid
 act systemctl enable --now rtslib-fb-targetctl 2>/dev/null || act systemctl enable --now target
 
 echo "===> Per-node settings for cloudx-block-store-worker"
-dropin=/etc/systemd/system/cloudx-block-store-worker.service.d
-act mkdir -p "$dropin"
+conf=/etc/cloudx/block-store-worker/block-store-worker.conf
+act mkdir -p "$(dirname "$conf")"
 if (( DRY )); then
-    echo "+ write ${dropin}/node.conf"
+    echo "+ write ${conf}"
 else
-    cat > "${dropin}/node.conf" <<EOF
-[Service]
-Environment=BLOCK_STORE_HOST=${HOST_NAME}
-Environment=ISCSI_EXPORT=true
-Environment=ISCSI_PORTAL_IP=${PORTAL_IP}
-Environment=STORAGE_LVM_DRIVER=true
-Environment=STORAGE_NFS_DRIVER=false
-Environment=LVM_PV_NAME=${DEVICE}
-Environment=LVM_VG_NAME=${VG}
+    cat > "$conf" <<EOF
+[DEFAULT]
+block_store_host = ${HOST_NAME}
+iscsi_export = true
+iscsi_portal_ip = ${PORTAL_IP}
+storage_lvm_driver = true
+storage_nfs_driver = false
+lvm_pv_name = ${DEVICE}
+lvm_vg_name = ${VG}
 EOF
-    systemctl daemon-reload
 fi
-
 echo
 echo "Done. The volume group ${VG} is created by the worker on its first start (it needs ${DEVICE} empty)."
 echo "Next: set BLOCK_STORE_LVM_HOSTS on the controller to the names of all storage nodes, then"

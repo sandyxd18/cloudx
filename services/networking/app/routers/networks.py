@@ -3,13 +3,15 @@ from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 
 from .. import ovn_cli
+from ..access import require_owned, scope
 from ..db import DB
+from ..quota import check_quota
 from ..events import _actor, _publish_net_event
 from ..ipam import allocation_bounds_for_network
 from ..models import Network, Port, Subnet
 from ..ovn_cli import ensure_provider_ovn, external_network_defaults
 from ..schemas import NetworkIn
-from ..serializers import get_by_ref, network_to_os_dict, obj_to_dict, require_by_ref
+from ..serializers import get_by_ref, network_to_os_dict, obj_to_dict
 
 router = APIRouter()
 
@@ -18,6 +20,7 @@ router = APIRouter()
 def create_network(payload: NetworkIn, current: CurrentUser, db: DB):
     if get_by_ref(db, Network, payload.name):
         raise HTTPException(status_code=409, detail="network already exists")
+    check_quota(db, current.get("project_id"), Network, "networks")
     provider_defaults = external_network_defaults(payload.name) if payload.external else {}
     allocation_start = provider_defaults.get("allocation_start")
     allocation_end = provider_defaults.get("allocation_end")
@@ -36,6 +39,7 @@ def create_network(payload: NetworkIn, current: CurrentUser, db: DB):
         allocation_start=allocation_start,
         allocation_end=allocation_end,
         project_id=current.get("project_id"),
+        mtu=payload.mtu,
     )
     if payload.external:
         ensure_provider_ovn(payload.name, provider_defaults["physical_network"], provider_defaults["provider_bridge"])
@@ -55,29 +59,16 @@ def create_network(payload: NetworkIn, current: CurrentUser, db: DB):
 
 @router.get("/networks")
 def list_networks(current: CurrentUser, db: DB):
-    project_id = current.get("project_id")
-    if current.get("role") == "admin":
-        # Admin sees all networks
-        q = select(Network).order_by(Network.created_at)
-    else:
-        # Non-admin sees: own project's networks + shared networks
-        from sqlalchemy import or_
-        q = select(Network).where(
-            or_(
-                Network.project_id == project_id,
-                Network.shared == True,
-                Network.external == True,
-            )
-        ).order_by(Network.created_at)
+    q = scope(select(Network), Network, current).order_by(Network.created_at)
     return {"items": [network_to_os_dict(db, n, current) for n in db.scalars(q).all()]}
 
 @router.get("/networks/{ref}")
 def show_network(ref: str, current: CurrentUser, db: DB):
-    return network_to_os_dict(db, require_by_ref(db, Network, ref, "network"), current)
+    return network_to_os_dict(db, require_owned(current, db, Network, ref, "network"), current)
 
 @router.delete("/networks/{ref}")
-def delete_network(ref: str, _: CurrentUser, db: DB):
-    network = require_by_ref(db, Network, ref, "network")
+def delete_network(ref: str, current: CurrentUser, db: DB):
+    network = require_owned(current, db, Network, ref, "network")
     # check before touching OVN: removing the logical switch and then failing on the database leaves them out of sync
     if db.scalar(select(Subnet.id).where(Subnet.network_id == network.id).limit(1)):
         raise HTTPException(status_code=409, detail="network still has subnets; delete them first")

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
+from shared.auth_middleware import InternalAuth
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -104,17 +105,24 @@ def _get_or_create_quota(db: Session, project_id: str) -> ProjectQuota:
     return quota
 
 
+QUOTA_FIELDS = ("max_instances", "max_vcpus", "max_ram_mb", "max_volume_gb", "max_networks", "max_subnets", "max_ports", "max_routers", "max_floating_ips", "max_security_groups")
+
+
+def _quota_dict(project_id: str, q) -> dict:
+    return {"project_id": project_id, **{f: getattr(q, f) for f in QUOTA_FIELDS}}
+
+
+@router.get("/internal/projects/{ref}/quota", dependencies=[InternalAuth])
+def internal_project_quota(ref: str, db: DB):
+    p = _get_project_by_ref(db, ref)
+    return _quota_dict(p.id, _get_or_create_quota(db, p.id))
+
+
 @router.get("/projects/{ref}/quota")
 def get_project_quota(ref: str, _: CurrentUser, db: DB):
     p = _get_project_by_ref(db, ref)
     q = _get_or_create_quota(db, p.id)
-    return {
-        "project_id": p.id,
-        "max_instances": q.max_instances,
-        "max_vcpus": q.max_vcpus,
-        "max_ram_mb": q.max_ram_mb,
-        "max_volume_gb": q.max_volume_gb,
-    }
+    return _quota_dict(p.id, q)
 
 
 @router.put("/projects/{ref}/quota")
@@ -126,10 +134,4 @@ def update_project_quota(ref: str, payload: QuotaUpdate, _: AdminUser, db: DB):
     q.updated_at = utcnow()
     db.commit()
     db.refresh(q)
-    return {
-        "project_id": p.id,
-        "max_instances": q.max_instances,
-        "max_vcpus": q.max_vcpus,
-        "max_ram_mb": q.max_ram_mb,
-        "max_volume_gb": q.max_volume_gb,
-    }
+    return _quota_dict(p.id, q)

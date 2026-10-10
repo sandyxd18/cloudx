@@ -48,7 +48,7 @@ Rules to keep in mind:
 `shared.rpc.host_queue(service, host)` gives the routing key of one node (`compute.<host>`, `block-store.<host>`; just
 `service` when the host is unknown). Workers consume their own queue plus the shared one; the APIs address a message to
 `server.host` / `volume.host` (`compute.clients.worker_queue`, `block_store.clients.worker_host`). Per-node settings
-(`COMPUTE_HOST`, `BLOCK_STORE_HOST`) live in a systemd drop-in, not in the shared `cloudx.env`. LVM volumes are
+(`COMPUTE_HOST`, `BLOCK_STORE_HOST`) live in a systemd drop-in, not in the shared `/etc/cloudx/cloudx.conf`. LVM volumes are
 local to their node and reach other nodes over iSCSI (`block_store_worker/drivers/iscsi.py` exports,
 `compute_worker/iscsi.py` logs in); see `two-node-lvm-lab.md`.
 
@@ -71,7 +71,7 @@ tests/
 - `pytest` (or `make test`): unit tests only, no lab needed, about a minute. This is what CI runs
   (`.github/workflows/tests.yml`, together with `make lint`). Dependencies: `pip install -r requirements-dev.txt`.
 - `pytest --live tests/live` (or `make test-live`): API tests against the lab. Needs `AUTH_ADMIN_PASSWORD` and
-  `AUTH_SECRET_KEY` (see `/etc/cloudx/cloudx.env` on the controller); service URLs can be overridden with
+  `AUTH_SECRET_KEY` (see `/etc/cloudx/cloudx.conf` on the controller); service URLs can be overridden with
   `<SERVICE>_API_URL` (default `127.0.0.1`, for example through an SSH tunnel). At the end of the session,
   `tests/live/cleanup.py` removes the resources the tests created (routers, networks, keypairs, fake resource
   providers, and so on); it can also be run manually.

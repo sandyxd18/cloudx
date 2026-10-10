@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Old per-service CLIs (networking/compute/block-store) are now one `cloudx`; scripts parse JSON.
 cloudx() { command cloudx -o json "$@"; }
-INTERNAL_TOKEN="${INTERNAL_TOKEN:-$(sudo grep -s '^INTERNAL_TOKEN=' /etc/cloudx/cloudx.env 2>/dev/null | cut -d= -f2 || true)}"
+INTERNAL_TOKEN="${INTERNAL_TOKEN:-$(sudo grep -s '^internal_token' /etc/cloudx/cloudx.conf 2>/dev/null | cut -d= -f2- | tr -d ' ' || true)}"
 
 NETWORKING_API_URL="${NETWORKING_API_URL:-http://localhost:8001}"
 IMAGE_API_URL="${IMAGE_API_URL:-http://localhost:8002}"

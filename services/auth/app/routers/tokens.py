@@ -6,12 +6,22 @@ from sqlalchemy import select
 from ..config import TOKEN_EXPIRE_H
 from ..db import DB
 from ..deps import CurrentUser
-from ..models import AccessKey, Group, GroupMember, Project, RevokedToken, User
+from ..models import AccessKey, Group, GroupMember, Project, RevokedToken, RoleAssignment, User
 from ..schemas import LoginIn, SwitchProjectIn
 from ..serializers import _project_to_dict, _user_to_dict
-from ..tokens import _build_catalog, _create_token, _verify_password
+from ..tokens import _build_catalog, _create_token, _verify_password, project_role
 
 router = APIRouter()
+
+
+def _member_projects(db, user: User) -> set[str]:
+    """Home project + projects of the user's groups + projects with an explicit role assignment."""
+    ids = {user.project_id} if user.project_id else set()
+    ids.update(db.scalars(
+        select(Group.project_id).join(GroupMember, Group.id == GroupMember.group_id).where(GroupMember.user_id == user.id)
+    ).all())
+    ids.update(db.scalars(select(RoleAssignment.project_id).where(RoleAssignment.user_id == user.id)).all())
+    return ids
 
 
 # ── Auth / Tokens ──────────────────────────────────────────────────────────────
@@ -32,12 +42,7 @@ def login(payload: LoginIn, db: DB):
         if not req_proj or not req_proj.enabled:
             raise HTTPException(status_code=404, detail="project not found or disabled")
         if user.role != "admin" and user.project_id != req_proj.id:
-            group_pids = db.scalars(
-                select(Group.project_id)
-                .join(GroupMember, Group.id == GroupMember.group_id)
-                .where(GroupMember.user_id == user.id)
-            ).all()
-            if req_proj.id not in group_pids:
+            if req_proj.id not in _member_projects(db, user):
                 raise HTTPException(status_code=403, detail="you are not a member of that project")
         target_project_id = req_proj.id
 
@@ -47,7 +52,7 @@ def login(payload: LoginIn, db: DB):
 
     orig_project = user.project_id
     user.project_id = target_project_id
-    token = _create_token(user, project_name=proj.name)
+    token = _create_token(user, project_name=proj.name, role=project_role(db, user, proj.id))
     user.project_id = orig_project
 
     return {
@@ -77,7 +82,13 @@ def login_with_access_key(
     user = db.get(User, ak.user_id)
     if not user or not user.enabled:
         raise HTTPException(status_code=403, detail="user disabled")
-    token = _create_token(user)
+    proj = db.get(Project, ak.project_id)
+    if not proj or not proj.enabled:
+        raise HTTPException(status_code=403, detail="project disabled")
+    orig_project = user.project_id
+    user.project_id = proj.id
+    token = _create_token(user, project_name=proj.name, role=project_role(db, user, proj.id))
+    user.project_id = orig_project
     return {"token": token, "expires_in": TOKEN_EXPIRE_H * 3600}
 
 
@@ -111,19 +122,12 @@ def switch_project(payload: SwitchProjectIn, current: CurrentUser, db: DB):
         raise HTTPException(status_code=404, detail="project not found or disabled")
     # Admin can switch to any project; regular users can only switch to their assigned projects
     if current.get("role") != "admin":
-        allowed = {user.project_id} if user.project_id else set()
-        group_pids = db.scalars(
-            select(Group.project_id)
-            .join(GroupMember, Group.id == GroupMember.group_id)
-            .where(GroupMember.user_id == user.id)
-        ).all()
-        allowed.update(group_pids)
-        if proj.id not in allowed:
+        if proj.id not in _member_projects(db, user):
             raise HTTPException(status_code=403, detail="you are not a member of that project")
     # Temporarily set the user's active project for token generation
     orig_project = user.project_id
     user.project_id = proj.id
-    token = _create_token(user, project_name=proj.name)
+    token = _create_token(user, project_name=proj.name, role=project_role(db, user, proj.id))
     user.project_id = orig_project  # don't persist the change
     return {
         "token": token,

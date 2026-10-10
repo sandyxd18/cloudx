@@ -103,6 +103,17 @@ def _decode_jwt(token: str) -> dict:
     return claims
 
 
+READ_ONLY_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def check_reader(claims: dict, request: Request) -> dict:
+    """`reader` role (OpenStack's read-only role): may call safe methods only. Logout stays allowed."""
+    if claims.get("role") == "reader" and request.method not in READ_ONLY_METHODS \
+            and not request.url.path.startswith("/auth/tokens"):
+        raise HTTPException(status_code=403, detail="reader role is read-only")
+    return claims
+
+
 def require_auth(request: Request) -> dict:
     """FastAPI dependency — returns JWT payload dict."""
     token = _extract_token(request)
@@ -110,7 +121,7 @@ def require_auth(request: Request) -> dict:
         token = _exchange_access_key(request)
     if not token:
         raise HTTPException(status_code=401, detail="authentication required: provide X-Auth-Token or access key headers")
-    return _decode_jwt(token)
+    return check_reader(_decode_jwt(token), request)
 
 
 def require_admin(current: dict = Depends(require_auth)) -> dict:

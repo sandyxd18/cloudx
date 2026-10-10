@@ -1,0 +1,2 @@
+[DEFAULT]
+database_url = postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx

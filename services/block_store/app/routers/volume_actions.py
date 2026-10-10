@@ -1,10 +1,12 @@
 from fastapi import APIRouter, HTTPException
 from shared.auth_middleware import CurrentUser
+from sqlalchemy import select
 
 from .. import clients
 from ..config import log
 from ..db import DB
-from ..lookups import require_volume
+from ..lookups import _resolve_volume_type, require_snapshot, require_volume
+from ..models import Snapshot
 from ..serializers import obj_to_dict
 
 router = APIRouter()
@@ -99,6 +101,38 @@ def volume_action(ref: str, payload: dict, current: CurrentUser, db: DB):
             "new_size_gb": new_size,
         })
         db.refresh(volume)
+        return obj_to_dict(volume)
+
+    # ── revert (to the latest snapshot, like Cinder) ───────────────────────
+    elif "revert" in payload:
+        snap = require_snapshot(db, payload["revert"].get("snapshot_id") or "", current)
+        if snap.volume_id != volume.id:
+            raise HTTPException(status_code=400, detail="snapshot does not belong to this volume")
+        if volume.status != "available" or snap.status != "available":
+            raise HTTPException(status_code=409, detail="volume and snapshot must be 'available'")
+        if volume.backend != "lvm":
+            raise HTTPException(status_code=400, detail="revert is only supported on the lvm backend")
+        newest = db.scalar(select(Snapshot).where(Snapshot.volume_id == volume.id).order_by(Snapshot.created_at.desc()))
+        if newest.id != snap.id:
+            raise HTTPException(status_code=409, detail="can only revert to the most recent snapshot")
+        volume.status = "reverting"
+        db.commit()
+        clients.cast_to_worker("revert_volume", {
+            "volume_id": volume.id, "volume_path": volume.path, "snapshot_path": snap.path,
+        })
+        return {"status": "reverting", "id": volume.id, "snapshot_id": snap.id}
+
+    # ── os-retype ──────────────────────────────────────────────────────────
+    elif "os-retype" in payload:
+        data = payload["os-retype"]
+        if volume.status not in ("available", "in-use"):
+            raise HTTPException(status_code=409, detail=f"cannot retype a volume in '{volume.status}'")
+        vt = _resolve_volume_type(db, data.get("new_type"))
+        if vt.backend != volume.backend:
+            # ponytail: no data copy; a backend change needs os-migrate_volume first.
+            raise HTTPException(status_code=409, detail=f"type '{vt.name}' uses backend '{vt.backend}', volume is on '{volume.backend}'")
+        volume.volume_type = vt.name
+        db.commit()
         return obj_to_dict(volume)
 
     else:

@@ -1,4 +1,6 @@
 from __future__ import annotations
+from shared.config import load_service_config
+load_service_config("telemetry-worker")
 """
 cloudx Telemetry Worker — Metrics Collector
 ============================================

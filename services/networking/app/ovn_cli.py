@@ -183,7 +183,7 @@ def ensure_provider_ovn(network_name: str, physnet: str, bridge: str) -> None:
         ovn(*command)
     ensure_ovn_bridge_mapping(physnet, bridge)
 
-def dhcp_options_args(cidr: str, gateway: str, dns_nameservers: list[str], server_mac: str = "02:00:00:00:00:01") -> list[str]:
+def dhcp_options_args(cidr: str, gateway: str, dns_nameservers: list[str], server_mac: str = "02:00:00:00:00:01", mtu: int | None = None) -> list[str]:
     args = [
         "create",
         "DHCP_Options",
@@ -194,6 +194,8 @@ def dhcp_options_args(cidr: str, gateway: str, dns_nameservers: list[str], serve
         f"options:server_mac={server_mac}",
         "options:lease_time=3600",
     ]
+    if mtu:
+        args.append(f"options:mtu={mtu}")
     if dns_nameservers:
         args.append(f"options:dns_server={{{','.join(dns_nameservers)}}}")
     return args
@@ -275,11 +277,13 @@ def port_group_name(security_group_id: str) -> str:
 
 def acl_match(security_group_id: str, rule: SecurityGroupRule) -> str:
     port_field = "outport" if rule.direction == "ingress" else "inport"
-    remote_field = "ip4.src" if rule.direction == "ingress" else "ip4.dst"
-    parts = [f"{port_field} == @{port_group_name(security_group_id)}", "ip4"]
+    v6 = rule.ethertype == "IPv6"
+    ip = "ip6" if v6 else "ip4"
+    remote_field = f"{ip}.src" if rule.direction == "ingress" else f"{ip}.dst"
+    parts = [f"{port_field} == @{port_group_name(security_group_id)}", ip]
     protocol = rule.protocol or "any"
     if protocol == "icmp":
-        parts.append("icmp4")
+        parts.append("icmp6" if v6 else "icmp4")
     elif protocol != "any":
         parts.append(protocol)
     if protocol in {"tcp", "udp"} and rule.port_min:
@@ -318,6 +322,8 @@ def apply_security_group_acls(db: Session, group: SecurityGroup) -> None:
         action = "allow-related" if rule.action == "allow" else rule.action
         ovn("--type=port-group", "--may-exist", "acl-add", pg, direction, acl_priority(rule), acl_match(group.id, rule), action)
     ovn("--type=port-group", "--may-exist", "acl-add", pg, "to-lport", "1001", f"outport == @{pg} && ip4", "drop")
+    # !nd keeps neighbor discovery working; everything else IPv6 needs an explicit rule
+    ovn("--type=port-group", "--may-exist", "acl-add", pg, "to-lport", "1001", f"outport == @{pg} && ip6 && !nd", "drop")
 
 def get_lsp_uuid(logical_port_name: str) -> str | None:
     """Resolve a Logical_Switch_Port name to its OVN NB UUID.

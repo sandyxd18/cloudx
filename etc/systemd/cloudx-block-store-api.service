@@ -4,13 +4,6 @@ After=network.target postgresql.service rabbitmq-server.service
 Wants=postgresql.service rabbitmq-server.service
 
 [Service]
-EnvironmentFile=/etc/cloudx/cloudx.env
-Environment=STORAGE_LVM_DRIVER=true
-Environment=LVM_VG_NAME=vg-cloudx
-Environment=AUTH_API_URL=http://127.0.0.1:8005
-Environment=COMPUTE_API_URL=http://127.0.0.1:8003
-Environment=IMAGE_API_URL=http://127.0.0.1:8002
-Environment=RABBITMQ_URL=amqp://cloudx:cloudx@127.0.0.1:5672/
 Type=simple
 User=root
 Group=root

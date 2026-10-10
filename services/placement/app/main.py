@@ -732,6 +732,53 @@ def create_allocations(payload: AllocationIn, _: AdminUser, db: DB):
     return {"consumer_uuid": payload.consumer_uuid, "status": "allocated"}
 
 
+class ClaimIn(BaseModel):
+    consumer_uuid: str
+    project_id: str
+    resources: dict[str, int]
+    exclude_hosts: list[str] = []
+    only_hosts: list[str] | None = None
+
+
+@app.post("/internal/claim", dependencies=[InternalAuth])
+def claim(payload: ClaimIn, db: DB):
+    """Scheduler: pick the provider with most free MEMORY_MB that fits every requested class, and allocate there."""
+    best, best_free, seen_inventory = None, -1, False
+    for rp in db.scalars(select(ResourceProvider)):
+        if rp.name in payload.exclude_hosts or (payload.only_hosts is not None and rp.name not in payload.only_hosts):
+            continue
+        inv = {i.resource_class: i for i in db.scalars(select(Inventory).where(Inventory.resource_provider_id == rp.uuid))}
+        if not inv:
+            continue
+        seen_inventory = True
+        free = {rc: int((i.total - i.reserved) * i.allocation_ratio) - _get_used(db, rp.uuid, rc) for rc, i in inv.items()}
+        if all(rc in free and free[rc] >= amt for rc, amt in payload.resources.items()):
+            if free.get("MEMORY_MB", 0) > best_free:
+                best, best_free = rp, free.get("MEMORY_MB", 0)
+    if not best:
+        # 503 = nothing reports inventory yet (caller falls back); 409 = real capacity/filter failure
+        raise HTTPException(status_code=409 if seen_inventory else 503, detail="No valid host: insufficient resources or filtered out")
+    for a in db.scalars(select(Allocation).where(Allocation.consumer_uuid == payload.consumer_uuid)):
+        db.delete(a)
+    for rc, amt in payload.resources.items():
+        db.add(Allocation(consumer_uuid=payload.consumer_uuid, project_id=payload.project_id,
+                          resource_provider_id=best.uuid, resource_class=rc, used=amt))
+    db.commit()
+    return {"host": best.name, "resource_provider": best.uuid}
+
+
+@app.delete("/internal/allocations/{consumer_uuid}", status_code=204, dependencies=[InternalAuth])
+def release_allocations(consumer_uuid: str, db: DB):
+    for a in db.scalars(select(Allocation).where(Allocation.consumer_uuid == consumer_uuid)):
+        db.delete(a)
+    db.commit()
+
+
+@app.put("/internal/resource_providers/{name}/inventories", dependencies=[InternalAuth])
+def set_inventories_internal(name: str, payload: InventoriesIn, db: DB):
+    return set_inventories(name, payload, None, db)
+
+
 @app.get("/allocations/{consumer_uuid}")
 def get_allocations(consumer_uuid: str, _: CurrentUser, db: DB):
     allocations = db.scalars(

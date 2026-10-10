@@ -5,7 +5,7 @@ load_service_config("compute-api")
 import os
 import threading
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from shared.request_id_middleware import RequestIDMiddleware
 from shared.schema import require_schema
@@ -22,6 +22,7 @@ from .routers import (
     flavors,
     host,
     keypairs,
+    ops,
     server_actions,
     server_groups,
     server_meta,
@@ -93,7 +94,8 @@ app.include_router(host.router)
 app.include_router(flavors.router)
 app.include_router(server_groups.router)
 app.include_router(servers.router)
-app.include_router(server_actions.router)
+app.include_router(server_actions.router, dependencies=[Depends(ops.log_action)])
+app.include_router(ops.router)
 app.include_router(server_ops.router)
 app.include_router(keypairs.router)
 app.include_router(server_meta.router)

@@ -95,51 +95,28 @@ else
 fi
 
 echo "===> [5/5] Generating Multi-Node Environment & Config Files..."
-mkdir -p /etc/cloudx/compute-worker /var/lib/cloudx/compute
+mkdir -p /var/lib/cloudx/compute
 
-cat <<EOF > /etc/cloudx/compute-worker/compute-worker.conf
+# /etc/cloudx/cloudx.conf (copied from the controller) holds the secrets; this node's services point at the controller.
+# The compute worker names itself after this node (placement provider, server.host, its own RPC queue). Two compute
+# nodes must never share a name, so it is set per node here.
+for svc in compute-worker metadata-proxy telemetry-worker; do
+    mkdir -p "/etc/cloudx/${svc}"
+    cat > "/etc/cloudx/${svc}/${svc}.conf" <<EOF
 [DEFAULT]
+compute_host = ${NODE_NAME}
 node_name = ${NODE_NAME}
 host_ip = ${NODE_IP}
-log_level = info
-
-[transport]
 rabbitmq_url = amqp://cloudx:cloudx@${CONTROLLER_IP}:5672/
-
-[database]
-url = postgresql+psycopg2://cloudx:cloudx@${CONTROLLER_IP}:5432/cloudx
-
-[service_urls]
-auth_url = http://${CONTROLLER_IP}:8005
-placement_url = http://${CONTROLLER_IP}:8006
-networking_url = http://${CONTROLLER_IP}:8001
-conductor_url = http://${CONTROLLER_IP}:8003
-image_url = http://${CONTROLLER_IP}:8002
+database_url = postgresql+psycopg2://cloudx:cloudx@${CONTROLLER_IP}:5432/cloudx
+auth_api_url = http://${CONTROLLER_IP}:8005
+placement_api_url = http://${CONTROLLER_IP}:8006
+networking_api_url = http://${CONTROLLER_IP}:8001
+compute_api_url = http://${CONTROLLER_IP}:8003
+image_api_url = http://${CONTROLLER_IP}:8002
+telemetry_api_url = http://${CONTROLLER_IP}:8010
 EOF
-
-cat <<EOF > .env.multinode
-# CloudX Multi-Node Environment Override
-CONTROLLER_IP=${CONTROLLER_IP}
-NODE_IP=${NODE_IP}
-NODE_NAME=${NODE_NAME}
-DATABASE_URL=postgresql+psycopg2://cloudx:cloudx@${CONTROLLER_IP}:5432/cloudx
-RABBITMQ_URL=amqp://cloudx:cloudx@${CONTROLLER_IP}:5672/
-AUTH_API_URL=http://${CONTROLLER_IP}:8005
-PLACEMENT_API_URL=http://${CONTROLLER_IP}:8006
-NETWORKING_API_URL=http://${CONTROLLER_IP}:8001
-COMPUTE_API_URL=http://${CONTROLLER_IP}:8003
-EOF
-
-# The compute worker names itself after this node (placement provider, server.host, its own RPC queue). Two compute
-# nodes must never share a name, so it is set per node here instead of relying on the default.
-mkdir -p /etc/systemd/system/cloudx-compute-worker.service.d
-cat <<EOF > /etc/systemd/system/cloudx-compute-worker.service.d/node.conf
-[Service]
-Environment=COMPUTE_HOST=${NODE_NAME}
-Environment=NODE_NAME=${NODE_NAME}
-EOF
-systemctl daemon-reload
-
+done
 echo ""
 echo "✓ Compute Node Setup Complete! (COMPUTE_HOST=${NODE_NAME})"
 echo "Next Steps:"

@@ -5,11 +5,13 @@ from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 
 from .. import ovn_cli
+from ..access import require_owned, scope
 from ..db import DB
+from ..quota import check_quota
 from ..models import Network, Port, RouterInterface, Subnet
 from ..ovn_cli import _ensure_dhcpv6_options, dhcp_options_args
 from ..schemas import SubnetIn
-from ..serializers import get_by_ref, obj_to_dict, require_by_ref, subnet_to_os_dict
+from ..serializers import get_by_ref, network_mtu, obj_to_dict, subnet_to_os_dict
 
 router = APIRouter()
 
@@ -18,7 +20,8 @@ router = APIRouter()
 def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
     if get_by_ref(db, Subnet, payload.name):
         raise HTTPException(status_code=409, detail="subnet already exists")
-    network = require_by_ref(db, Network, payload.network, "network")
+    check_quota(db, current.get("project_id"), Subnet, "subnets")
+    network = require_owned(current, db, Network, payload.network, "network")
     gateway = payload.gateway_ip or payload.gateway
     ip_version = payload.ip_version
 
@@ -57,7 +60,7 @@ def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
 
     if payload.enable_dhcp:
         if ip_version == 4:
-            dhcp_id = ovn_cli.ovn(*dhcp_options_args(payload.cidr, gateway, payload.dns_nameservers)) if gateway else None
+            dhcp_id = ovn_cli.ovn(*dhcp_options_args(payload.cidr, gateway, payload.dns_nameservers, mtu=network_mtu(network))) if gateway else None
         elif ip_version == 6:
             # IPv6: set up DHCPv6 options or RA mode in OVN
             dhcp_id = _ensure_dhcpv6_options(
@@ -79,6 +82,7 @@ def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
         ip_version=ip_version,
         ipv6_ra_mode=payload.ipv6_ra_mode,
         ipv6_address_mode=payload.ipv6_address_mode,
+        project_id=current.get("project_id"),
     )
     db.add(subnet)
     if network.external:
@@ -94,15 +98,15 @@ def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
 
 @router.get("/subnets")
 def list_subnets(current: CurrentUser, db: DB):
-    return {"items": [subnet_to_os_dict(db, s, current) for s in db.scalars(select(Subnet).order_by(Subnet.created_at)).all()]}
+    return {"items": [subnet_to_os_dict(db, s, current) for s in db.scalars(scope(select(Subnet), Subnet, current).order_by(Subnet.created_at)).all()]}
 
 @router.get("/subnets/{ref}")
 def show_subnet(ref: str, current: CurrentUser, db: DB):
-    return subnet_to_os_dict(db, require_by_ref(db, Subnet, ref, "subnet"), current)
+    return subnet_to_os_dict(db, require_owned(current, db, Subnet, ref, "subnet"), current)
 
 @router.delete("/subnets/{ref}")
-def delete_subnet(ref: str, _: CurrentUser, db: DB):
-    subnet = require_by_ref(db, Subnet, ref, "subnet")
+def delete_subnet(ref: str, current: CurrentUser, db: DB):
+    subnet = require_owned(current, db, Subnet, ref, "subnet")
     if db.scalar(select(Port.id).where(Port.subnet_id == subnet.id).limit(1)):
         raise HTTPException(status_code=409, detail="subnet still has ports; delete them first")
     if db.scalar(select(RouterInterface.id).where(RouterInterface.subnet_id == subnet.id).limit(1)):

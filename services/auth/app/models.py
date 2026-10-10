@@ -43,6 +43,12 @@ class ProjectQuota(Base):
     max_vcpus:     Mapped[int] = mapped_column(Integer, default=20)
     max_ram_mb:    Mapped[int] = mapped_column(Integer, default=32768)
     max_volume_gb: Mapped[int] = mapped_column(Integer, default=100)
+    max_networks: Mapped[int] = mapped_column(Integer, default=100, server_default="100")
+    max_subnets: Mapped[int] = mapped_column(Integer, default=100, server_default="100")
+    max_ports: Mapped[int] = mapped_column(Integer, default=500, server_default="500")
+    max_routers: Mapped[int] = mapped_column(Integer, default=10, server_default="10")
+    max_floating_ips: Mapped[int] = mapped_column(Integer, default=50, server_default="50")
+    max_security_groups: Mapped[int] = mapped_column(Integer, default=20, server_default="20")
     updated_at:    Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -53,7 +59,7 @@ class User(Base):
     email:         Mapped[str] = mapped_column(String, unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String)
     project_id:    Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id"))
-    role:          Mapped[str] = mapped_column(String, default="member")   # admin | member
+    role:          Mapped[str] = mapped_column(String, default="member")   # admin | member | reader
     enabled:       Mapped[bool] = mapped_column(Boolean, default=True)
     created_at:    Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -156,3 +162,11 @@ class AuditLog(Base):
     resource_id:   Mapped[str | None] = mapped_column(String, nullable=True)
     details:       Mapped[str | None] = mapped_column(Text, nullable=True)
     timestamp:     Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+class RoleAssignment(Base):
+    """Per-project role of a user; overrides User.role (the default) inside that project."""
+    __tablename__ = "auth_role_assignments"
+    user_id:    Mapped[str] = mapped_column(String, ForeignKey("auth_users.id", ondelete="CASCADE"), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id", ondelete="CASCADE"), primary_key=True)
+    role:       Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

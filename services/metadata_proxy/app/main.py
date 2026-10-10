@@ -1,3 +1,6 @@
+from shared.config import load_service_config
+load_service_config("metadata-proxy")
+
 import os
 
 import requests

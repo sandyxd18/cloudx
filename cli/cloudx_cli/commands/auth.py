@@ -228,7 +228,7 @@ def auth_user():
 @click.option("--email", required=True)
 @click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True)
 @click.option("--project", required=True)
-@click.option("--role", type=click.Choice(["admin", "member"]), default="member")
+@click.option("--role", type=click.Choice(["admin", "member", "reader"]), default="member")
 @click.pass_context
 def user_create(ctx, username, email, password, project, role):
     data = _api("post", f"{DEFAULT_URLS['auth']}/users", ctx.obj["profile"],
@@ -254,7 +254,7 @@ def user_show(ctx, ref):
 
 @auth_user.command("set")
 @click.argument("ref")
-@click.option("--role", type=click.Choice(["admin", "member"]))
+@click.option("--role", type=click.Choice(["admin", "member", "reader"]))
 @click.option("--email")
 @click.option("--password")
 @click.option("--enable/--disable", default=None)

@@ -35,6 +35,7 @@ class Network(Base):
     bridge_mapping: Mapped[str | None] = mapped_column(String, nullable=True)
     provider_bridge: Mapped[str | None] = mapped_column(String, nullable=True)
     provider_cidr: Mapped[str | None] = mapped_column(String, nullable=True)
+    mtu: Mapped[int | None] = mapped_column(Integer, nullable=True)  # NULL = 1442 (geneve) / 1500 (external)
     gateway_ip: Mapped[str | None] = mapped_column(String, nullable=True)
     allocation_start: Mapped[str | None] = mapped_column(String, nullable=True)
     allocation_end: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -59,6 +60,7 @@ class Subnet(Base):
     ip_version: Mapped[int] = mapped_column(Integer, default=4)
     ipv6_ra_mode: Mapped[str | None] = mapped_column(String, nullable=True)      # slaac | dhcpv6-stateful | dhcpv6-stateless
     ipv6_address_mode: Mapped[str | None] = mapped_column(String, nullable=True) # slaac | dhcpv6-stateful | dhcpv6-stateless
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 class Router(Base):
@@ -67,6 +69,8 @@ class Router(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String, unique=True, index=True)
     external_network_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    routes: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON [{"destination","nexthop"}]
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 class RouterInterface(Base):
@@ -98,10 +102,12 @@ class Port(Base):
     device_id: Mapped[str | None] = mapped_column(String, nullable=True)
     device_owner: Mapped[str | None] = mapped_column(String, nullable=True)
     security_group_ids: Mapped[str | None] = mapped_column(String, nullable=True)
+    allowed_address_pairs: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
     port_security_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     qos_max_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     qos_burst_kbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 class FloatingIP(Base):
@@ -118,6 +124,7 @@ class FloatingIP(Base):
     external_network_id: Mapped[str | None] = mapped_column(String, nullable=True)
     router_id: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="DOWN")
+    project_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 class VPCPeering(Base):

@@ -6,7 +6,9 @@ from sqlalchemy import select
 
 from .. import ovn_cli
 from ..config import log
+from ..access import own, require_owned, scope
 from ..db import DB
+from ..quota import check_quota
 from ..events import _actor, _publish_net_event
 from ..ipam import allocate_floating_ip, find_router_for_fip, resolve_association_port
 from ..models import FloatingIP, Network, Port, Router
@@ -16,7 +18,6 @@ from ..serializers import (
     fip_to_os_dict,
     get_by_ref,
     obj_to_dict,
-    require_by_ref,
     require_floating_ip,
 )
 
@@ -27,8 +28,9 @@ router = APIRouter()
 def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
     if payload.name and get_by_ref(db, FloatingIP, payload.name):
         raise HTTPException(status_code=409, detail="floating-ip already exists")
+    check_quota(db, current.get("project_id"), FloatingIP, "floating_ips")
     ext_net_ref = payload.external_network or payload.network
-    external_network = require_by_ref(db, Network, ext_net_ref, "network") if ext_net_ref else None
+    external_network = require_owned(current, db, Network, ext_net_ref, "network") if ext_net_ref else None
     if external_network and not external_network.external:
         raise HTTPException(status_code=400, detail="floating IP network must be external")
     floating_ip = payload.floating_ip or (allocate_floating_ip(db, external_network) if external_network else None)
@@ -39,7 +41,7 @@ def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
         if payload.name:
             raise HTTPException(status_code=409, detail="floating-ip already exists")
         name = f"fip-{floating_ip.replace('.', '-')}-{uuid.uuid4().hex[:4]}"
-    port = require_by_ref(db, Port, payload.fixed_port, "port") if payload.fixed_port else None
+    port = require_owned(current, db, Port, payload.fixed_port, "port") if payload.fixed_port else None
     router = None
     if port:
         try:
@@ -61,6 +63,7 @@ def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
         external_network_id=external_network.id if external_network else None,
         router_id=router.id if router else None,
         status="ACTIVE" if port else "DOWN",
+        project_id=current.get("project_id"),
     )
     db.add(fip)
     db.commit()
@@ -71,15 +74,15 @@ def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
 
 @router.get("/floating-ips")
 def list_floating_ips(current: CurrentUser, db: DB):
-    return {"items": [fip_to_os_dict(db, f, current) for f in db.scalars(select(FloatingIP).order_by(FloatingIP.created_at)).all()]}
+    return {"items": [fip_to_os_dict(db, f, current) for f in db.scalars(scope(select(FloatingIP), FloatingIP, current).order_by(FloatingIP.created_at)).all()]}
 
 @router.get("/floating-ips/{ref}")
 def show_floating_ip(ref: str, current: CurrentUser, db: DB):
-    return fip_to_os_dict(db, require_floating_ip(db, ref), current)
+    return fip_to_os_dict(db, own(current, require_floating_ip(db, ref), "floating-ip"), current)
 
 @router.post("/floating-ips/{ref}/associate")
 def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, current: CurrentUser, db: DB):
-    fip = require_floating_ip(db, ref)
+    fip = own(current, require_floating_ip(db, ref), "floating-ip")
     port = resolve_association_port(db, payload)
     router = find_router_for_fip(db, payload.router)
     fixed_ip = port.fixed_ip or port.ip_address
@@ -101,7 +104,7 @@ def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, current: Cur
 
 @router.post("/floating-ips/{ref}/disassociate")
 def disassociate_floating_ip(ref: str, current: CurrentUser, db: DB):
-    fip = require_floating_ip(db, ref)
+    fip = own(current, require_floating_ip(db, ref), "floating-ip")
     old_server_id = fip.server_id
     router = db.get(Router, fip.router_id) if fip.router_id else None
     if router and fip.floating_ip:
@@ -121,7 +124,7 @@ def disassociate_floating_ip(ref: str, current: CurrentUser, db: DB):
 
 @router.delete("/floating-ips/{ref}")
 def delete_floating_ip(ref: str, current: CurrentUser, db: DB):
-    fip = require_floating_ip(db, ref)
+    fip = own(current, require_floating_ip(db, ref), "floating-ip")
     if fip.router_id and fip.floating_ip:
         router = db.get(Router, fip.router_id)
         if router:

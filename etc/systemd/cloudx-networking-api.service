@@ -4,7 +4,6 @@ After=network.target postgresql.service ovn-central.service
 Wants=postgresql.service ovn-central.service
 
 [Service]
-EnvironmentFile=/etc/cloudx/cloudx.env
 Type=simple
 User=cloudx
 Group=cloudx

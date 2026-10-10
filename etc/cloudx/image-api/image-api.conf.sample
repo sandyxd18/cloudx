@@ -1,14 +1,4 @@
+# Overrides for image-api only; shared settings (secrets, service URLs, RabbitMQ) live in /etc/cloudx/cloudx.conf.
 [DEFAULT]
-host = 127.0.0.1
-port = 8002
-log_level = info
-
-[database]
-url = postgresql+psycopg2://cloudx:cloudx@127.0.0.1:5432/cloudx
-
-[storage]
-backend = local
-data_dir = /var/lib/cloudx/images
-
-[service_urls]
-auth_url = http://127.0.0.1:8005
+image_storage_backend = file
+image_store_path = /var/lib/cloudx/images

@@ -47,15 +47,29 @@ RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
 LOG_LEVEL    = os.getenv("LOG_LEVEL", "INFO")
 PLACEMENT_API_URL = os.getenv("PLACEMENT_API_URL", "http://192.168.10.10:8006")
 
+def _meminfo_mb() -> int:
+    with open("/proc/meminfo") as f:
+        return int(f.readline().split()[1]) // 1024  # MemTotal is the first line, in kB
+
+
 def placement_registration_loop() -> None:
     """Background daemon loop — registers compute node in Placement API."""
     log.info("[placement] node registration loop started (host=%s)", COMPUTE_HOST)
-    url = f"{PLACEMENT_API_URL.rstrip('/')}/internal/resource_providers"
+    base = f"{PLACEMENT_API_URL.rstrip('/')}/internal/resource_providers"
     while True:
         try:
-            r = requests.post(url, json={"name": COMPUTE_HOST}, headers=internal_headers(), timeout=5)
+            r = requests.post(base, json={"name": COMPUTE_HOST}, headers=internal_headers(), timeout=5)
             if r.status_code in (200, 201, 409):
-                log.info("[placement] node '%s' registered in Placement API", COMPUTE_HOST)
+                # Inventory is refreshed on every start; allocation ratios follow the OpenStack defaults.
+                ram_mb = int(os.getenv("PLACEMENT_TOTAL_RAM_MB") or _meminfo_mb())
+                vcpu = int(os.getenv("PLACEMENT_TOTAL_VCPU") or os.cpu_count() or 1)
+                inv = {
+                    "VCPU": {"total": vcpu, "max_unit": vcpu, "allocation_ratio": float(os.getenv("CPU_ALLOCATION_RATIO", "16"))},
+                    "MEMORY_MB": {"total": ram_mb, "reserved": int(os.getenv("RESERVED_HOST_MEMORY_MB", "512")),
+                                  "max_unit": ram_mb, "allocation_ratio": float(os.getenv("RAM_ALLOCATION_RATIO", "1.5"))},
+                }
+                requests.put(f"{base}/{COMPUTE_HOST}/inventories", json={"inventories": inv}, headers=internal_headers(), timeout=5).raise_for_status()
+                log.info("[placement] node '%s' registered in Placement API (%s)", COMPUTE_HOST, inv)
                 break
         except Exception as exc:
             log.debug("[placement] registration retry for '%s': %s", COMPUTE_HOST, exc)
@@ -598,6 +612,21 @@ def handle_delete_instance(args: dict) -> None:
         conductor_mark_error(server_id, f"delete failed: {exc}")
 
 
+def handle_relocate_out(args: dict) -> None:
+    """Cold migrate, source side: drop the domain and the iSCSI session, free the volume, then cast the build to the target."""
+    server_id, root_volume_id = args.get("id"), args.get("_root_volume_id")
+    try:
+        worker.delete_server(server_id, args)
+        bs_url = _probe_block_store_url(endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL", BLOCK_STORE_API_URL))
+        if root_volume_id:
+            _disconnect_volume(root_volume_id, _volume_host(bs_url, root_volume_id))
+        _http_post(f"{bs_url}/servers/{server_id}/volumes/detach-all", {})
+        _rpc.cast(host_queue("compute", args["_target_host"]), "build_instance", args["_build"])
+    except Exception as exc:
+        log.error("relocate_out %s failed: %s", server_id, exc, exc_info=True)
+        conductor_mark_error(server_id, f"migrate failed: {exc}")
+
+
 def _simple_action(method_name: str, success_status: str, args: dict) -> None:
     """Generic handler for simple lifecycle actions (start/stop/etc.)."""
     server_id = args.get("id")
@@ -957,6 +986,7 @@ HANDLERS = {
     # Lifecycle (Cast)
     "build_instance":   handle_build_instance,
     "delete_instance":  handle_delete_instance,
+    "relocate_out":     handle_relocate_out,
     "start":            handle_start,
     "stop":             handle_stop,
     "reboot":           handle_reboot,

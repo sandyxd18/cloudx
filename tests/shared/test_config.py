@@ -48,3 +48,15 @@ def test_load_service_config_fallback_to_env(tmp_path: Path, monkeypatch):
 
     assert config.get("database_url") == "sqlite:///:memory:"
     assert config.get("port") == "8003"
+
+
+def test_shared_conf_is_overridden_by_service_conf(tmp_path: Path, monkeypatch):
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "cloudx.conf").write_text("[DEFAULT]\nauth_api_url = http://shared:1\ninternal_token = a%b\n")
+    (tmp_path / "svc" / "svc.conf").write_text("[DEFAULT]\nauth_api_url = http://svc:2\n")
+    monkeypatch.setattr("services.shared.config.ETC_CLOUDX_DIR", tmp_path)
+    for k in ("AUTH_API_URL", "INTERNAL_TOKEN"):
+        monkeypatch.delenv(k, raising=False)
+    load_service_config("svc")
+    assert os.environ["AUTH_API_URL"] == "http://svc:2"
+    assert os.environ["INTERNAL_TOKEN"] == "a%b"

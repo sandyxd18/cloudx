@@ -5,6 +5,9 @@ All /api/* requests are proxied to the appropriate backend service.
 Auth token is passed through from the client's Authorization header.
 WebSocket /ws/events broadcasts live status events from RabbitMQ.
 """
+from shared.config import load_service_config
+load_service_config("dashboard")
+
 import asyncio
 import datetime
 import fcntl

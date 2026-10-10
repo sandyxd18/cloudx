@@ -14,6 +14,7 @@ class ServerIn(BaseModel):
     user_data: str | None = None
     security_groups: list[str] = Field(default_factory=list)
     server_group: str | None = None   # server group id or name
+    availability_zone: str | None = None
     volume_size: int | None = None    # root volume size override (GB)
     volume_type: str | None = None    # root volume type override (gp2, gp3, io1, sc1)
 
@@ -55,6 +56,17 @@ class FlavorIn(BaseModel):
     ephemeral_gb: int = Field(default=0, ge=0)
     swap_mb: int = Field(default=0, ge=0)
     is_public: bool = True
+    extra_specs: dict[str, str] = Field(default_factory=dict)
+
+
+class ServiceUpdateIn(BaseModel):
+    disabled: bool | None = None
+    disabled_reason: str | None = None
+    forced_down: bool | None = None
+
+
+class MoveIn(BaseModel):
+    host: str | None = None
 
 
 class KeypairIn(BaseModel):
@@ -91,6 +103,10 @@ class AggregateIn(BaseModel):
 class AggregateUpdateIn(BaseModel):
     name: str | None = None
     availability_zone: str | None = None
+
+
+class AggregateMetadataIn(BaseModel):
+    metadata: dict[str, str | None]  # null value removes the key
 
 
 class AggregateActionIn(BaseModel):

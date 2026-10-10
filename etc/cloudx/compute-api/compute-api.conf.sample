@@ -1,22 +1,5 @@
+# Overrides for compute-api only; shared settings (secrets, service URLs, RabbitMQ) live in /etc/cloudx/cloudx.conf.
 [DEFAULT]
-host = 127.0.0.1
-port = 8003
-log_level = info
-workers = 4
-
-[database]
-url = postgresql+psycopg2://cloudx:cloudx@127.0.0.1:5432/cloudx
-
-[transport]
-rabbitmq_url = amqp://cloudx:cloudx@127.0.0.1:5672/
-
 # Compute nodes that may receive new servers (the COMPUTE_HOST of each compute-worker). Without it, the nodes
 # registered in the placement API are used.
 # compute_hosts = cloudx-compute-01,cloudx-storage-01
-
-[service_urls]
-auth_url = http://127.0.0.1:8005
-placement_url = http://127.0.0.1:8006
-networking_url = http://127.0.0.1:8001
-block_store_url = http://127.0.0.1:8004
-image_url = http://127.0.0.1:8002

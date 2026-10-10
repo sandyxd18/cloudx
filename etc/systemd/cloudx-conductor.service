@@ -4,9 +4,6 @@ After=network.target postgresql.service rabbitmq-server.service
 Wants=postgresql.service rabbitmq-server.service
 
 [Service]
-EnvironmentFile=-/etc/cloudx/cloudx.env
-Environment=DATABASE_URL=postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx
-Environment=RABBITMQ_URL=amqp://cloudx:cloudx@127.0.0.1:5672/
 Type=simple
 User=cloudx
 Group=cloudx

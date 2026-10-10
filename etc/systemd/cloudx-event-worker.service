@@ -3,9 +3,6 @@ Description=CloudX Event Webhook Worker
 After=network.target cloudx-event-api.service
 
 [Service]
-EnvironmentFile=-/etc/cloudx/cloudx.env
-Environment=AUTH_API_URL=http://127.0.0.1:8005
-Environment=EVENT_API_URL=http://127.0.0.1:8012
 Type=simple
 User=cloudx
 Group=cloudx

@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, HTTPException
 from shared.auth_middleware import CurrentUser, InternalAuth
 from sqlalchemy import or_, select, text
@@ -5,7 +7,9 @@ from sqlalchemy.orm import Session
 
 from .. import ovn_cli
 from ..config import log
+from ..access import require_owned, scope
 from ..db import DB
+from ..quota import check_quota
 from ..events import _actor, _publish_net_event
 from ..ipam import allocate_fixed_ip, format_id_list, parse_id_list
 from ..models import FloatingIP, Network, Port, Router, SecurityGroup, Subnet, mac
@@ -16,11 +20,25 @@ from ..serializers import get_by_ref, port_to_dict, require_by_ref
 router = APIRouter()
 
 
+def _pairs_json(pairs) -> str | None:
+    return json.dumps([p.model_dump(exclude_none=True) for p in pairs]) if pairs else None
+
+
+def _lsp_addresses(port: Port) -> list[str]:
+    """OVN addresses of a port: "mac ip..." plus its allowed address pairs (same-MAC pairs join the main entry,
+    pairs with their own MAC get one entry each), so a VIP is answered by ARP/ND."""
+    pairs = json.loads(port.allowed_address_pairs or "[]")
+    main = [port.mac_address, *filter(None, [port.fixed_ip, port.ipv6_address])]
+    main += [p["ip_address"] for p in pairs if p.get("mac_address") in (None, port.mac_address)]
+    return [" ".join(main)] + [f'{p["mac_address"]} {p["ip_address"]}' for p in pairs if p.get("mac_address") not in (None, port.mac_address)]
+
+
 @router.post("/ports", status_code=201)
 def create_port(payload: PortIn, current: CurrentUser, db: DB):
     if get_by_ref(db, Port, payload.name):
         raise HTTPException(status_code=409, detail="port already exists")
-    network = require_by_ref(db, Network, payload.network, "network")
+    check_quota(db, current.get("project_id"), Port, "ports")
+    network = require_owned(current, db, Network, payload.network, "network")
     subnet = db.scalar(select(Subnet).where(Subnet.network_id == network.id).where(Subnet.ip_version == 4).order_by(Subnet.created_at))
     requested_ip = payload.fixed_ip or payload.ip_address
 
@@ -40,7 +58,7 @@ def create_port(payload: PortIn, current: CurrentUser, db: DB):
     logical_switch_name = network.name
     logical_port_name = payload.name
     security_group_ids = payload.security_group_ids or ["default"]
-    groups = [require_by_ref(db, SecurityGroup, group_id, "security-group") for group_id in security_group_ids]
+    groups = [require_owned(current, db, SecurityGroup, group_id, "security-group") for group_id in security_group_ids]
 
     # Dual-stack: look for an IPv6 subnet on the same network if fixed_ips requests it
     ipv6_address: str | None = None
@@ -70,6 +88,8 @@ def create_port(payload: PortIn, current: CurrentUser, db: DB):
         port_security_enabled=payload.port_security_enabled,
         qos_max_kbps=payload.qos_max_kbps,
         qos_burst_kbps=payload.qos_burst_kbps,
+        allowed_address_pairs=_pairs_json(payload.allowed_address_pairs),
+        project_id=current.get("project_id"),
     )
     ovn_cli.ovn("--may-exist", "lsp-add", network.name, port.name)
     ovn_cli.ovn("set", "logical_switch_port", port.name, "external_ids:cloudx=true")
@@ -79,12 +99,7 @@ def create_port(payload: PortIn, current: CurrentUser, db: DB):
         ovn_cli.ovn("set", "logical_switch_port", port.name, f"external_ids:device_owner={payload.device_owner}")
 
     # Build OVN address string — include both IPv4 and IPv6 if dual-stack
-    addr_parts = [port_mac]
-    if fixed_ip:
-        addr_parts.append(fixed_ip)
-    if ipv6_address:
-        addr_parts.append(ipv6_address)
-    ovn_cli.ovn("lsp-set-addresses", port.name, " ".join(addr_parts))
+    ovn_cli.ovn("lsp-set-addresses", port.name, *_lsp_addresses(port))
 
     if subnet and subnet.dhcp_options_id:
         ovn_cli.ovn("lsp-set-dhcpv4-options", port.name, subnet.ovn_dhcp_options_uuid or subnet.dhcp_options_id)
@@ -110,17 +125,17 @@ def create_port(payload: PortIn, current: CurrentUser, db: DB):
     return port_to_dict(db, port)
 
 @router.get("/ports")
-def list_ports(_: CurrentUser, db: DB):
-    return {"items": [port_to_dict(db, p) for p in db.scalars(select(Port).order_by(Port.created_at)).all()]}
+def list_ports(current: CurrentUser, db: DB):
+    return {"items": [port_to_dict(db, p) for p in db.scalars(scope(select(Port), Port, current).order_by(Port.created_at)).all()]}
 
 @router.get("/ports/{ref}")
-def show_port(ref: str, _: CurrentUser, db: DB):
-    return port_to_dict(db, require_by_ref(db, Port, ref, "port"))
+def show_port(ref: str, current: CurrentUser, db: DB):
+    return port_to_dict(db, require_owned(current, db, Port, ref, "port"))
 
 @router.post("/ports/{ref}/security-groups")
-def set_port_security_groups(ref: str, payload: PortSecurityGroupsIn, _: CurrentUser, db: DB):
-    port = require_by_ref(db, Port, ref, "port")
-    groups = [require_by_ref(db, SecurityGroup, item, "security-group") for item in payload.security_group_ids]
+def set_port_security_groups(ref: str, payload: PortSecurityGroupsIn, current: CurrentUser, db: DB):
+    port = require_owned(current, db, Port, ref, "port")
+    groups = [require_owned(current, db, SecurityGroup, item, "security-group") for item in payload.security_group_ids]
     port.security_group_ids = format_id_list([group.id for group in groups])
     db.commit()
     db.refresh(port)
@@ -128,8 +143,8 @@ def set_port_security_groups(ref: str, payload: PortSecurityGroupsIn, _: Current
     return port_to_dict(db, port)
 
 @router.post("/ports/{ref}/security-groups/clear")
-def clear_port_security_groups(ref: str, _: CurrentUser, db: DB):
-    port = require_by_ref(db, Port, ref, "port")
+def clear_port_security_groups(ref: str, current: CurrentUser, db: DB):
+    port = require_owned(current, db, Port, ref, "port")
     port.security_group_ids = None
     db.commit()
     db.refresh(port)
@@ -137,8 +152,8 @@ def clear_port_security_groups(ref: str, _: CurrentUser, db: DB):
     return port_to_dict(db, port)
 
 @router.post("/ports/{ref}/security/enable")
-def enable_port_security(ref: str, db: DB):
-    port = require_by_ref(db, Port, ref, "port")
+def enable_port_security(ref: str, current: CurrentUser, db: DB):
+    port = require_owned(current, db, Port, ref, "port")
     port.port_security_enabled = True
     if not parse_id_list(port.security_group_ids):
         default_group = get_by_ref(db, SecurityGroup, "default")
@@ -150,8 +165,8 @@ def enable_port_security(ref: str, db: DB):
     return port_to_dict(db, port)
 
 @router.post("/ports/{ref}/security/disable")
-def disable_port_security(ref: str, db: DB):
-    port = require_by_ref(db, Port, ref, "port")
+def disable_port_security(ref: str, current: CurrentUser, db: DB):
+    port = require_owned(current, db, Port, ref, "port")
     port.port_security_enabled = False
     db.commit()
     db.refresh(port)
@@ -160,21 +175,24 @@ def disable_port_security(ref: str, db: DB):
 
 @router.patch("/ports/{ref}")
 @router.put("/ports/{ref}")
-def update_port(ref: str, payload: PortUpdate, _: CurrentUser, db: DB):
-    port = require_by_ref(db, Port, ref, "port")
+def update_port(ref: str, payload: PortUpdate, current: CurrentUser, db: DB):
+    port = require_owned(current, db, Port, ref, "port")
     if payload.name is not None:
         port.name = payload.name
     if payload.qos_max_kbps is not None:
         port.qos_max_kbps = payload.qos_max_kbps
     if payload.qos_burst_kbps is not None:
         port.qos_burst_kbps = payload.qos_burst_kbps
+    if payload.allowed_address_pairs is not None:
+        port.allowed_address_pairs = _pairs_json(payload.allowed_address_pairs)
+        ovn_cli.ovn("lsp-set-addresses", port.name, *_lsp_addresses(port))
     db.commit()
     db.refresh(port)
     return port_to_dict(db, port)
 
 @router.get("/ports/{ref}/ovn")
-def port_ovn_show(ref: str, db: DB):
-    port = require_by_ref(db, Port, ref, "port")
+def port_ovn_show(ref: str, current: CurrentUser, db: DB):
+    port = require_owned(current, db, Port, ref, "port")
     groups = []
     for group_id in parse_id_list(port.security_group_ids):
         group = db.get(SecurityGroup, group_id)
@@ -188,8 +206,8 @@ def port_ovn_show(ref: str, db: DB):
     }
 
 @router.delete("/ports/{ref}")
-def delete_port(ref: str, _: CurrentUser, db: DB):
-    port = require_by_ref(db, Port, ref, "port")
+def delete_port(ref: str, current: CurrentUser, db: DB):
+    port = require_owned(current, db, Port, ref, "port")
     port.security_group_ids = None
     apply_security_groups(db, port)
     ovn_cli.ovn("--if-exists", "lsp-del", port.name)

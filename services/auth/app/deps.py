@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
+from shared.auth_middleware import check_reader
 
 from .db import DB
 from .models import RevokedToken
@@ -18,7 +19,7 @@ def _require_token(request: Request, db: DB) -> dict:
     revoked = db.get(RevokedToken, jti)
     if revoked:
         raise HTTPException(status_code=401, detail="token has been revoked")
-    return payload
+    return check_reader(payload, request)
 
 
 def _require_admin(payload: dict = Depends(_require_token)) -> dict:

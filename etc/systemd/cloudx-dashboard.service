@@ -4,25 +4,6 @@ After=network.target cloudx-auth-api.service cloudx-compute-api.service cloudx-n
 Wants=cloudx-auth-api.service cloudx-compute-api.service cloudx-networking-api.service
 
 [Service]
-EnvironmentFile=/etc/cloudx/cloudx.env
-Environment=HOST=0.0.0.0
-Environment=PORT=8080
-Environment=MEMCACHED_URL=127.0.0.1:11211
-Environment=RABBITMQ_URL=amqp://cloudx:cloudx@127.0.0.1:5672/
-Environment=AUTH_API_URL=http://127.0.0.1:8005
-Environment=COMPUTE_API_URL=http://127.0.0.1:8003
-Environment=NETWORKING_API_URL=http://127.0.0.1:8001
-Environment=IMAGE_API_URL=http://127.0.0.1:8002
-Environment=BLOCK_STORE_API_URL=http://127.0.0.1:8004
-Environment=PLACEMENT_API_URL=http://127.0.0.1:8006
-Environment=OBJECT_STORE_API_URL=http://127.0.0.1:8007
-Environment=LOAD_BALANCER_API_URL=http://127.0.0.1:8008
-Environment=TELEMETRY_API_URL=http://127.0.0.1:8010
-Environment=BILLING_API_URL=http://127.0.0.1:8011
-Environment=EVENT_API_URL=http://127.0.0.1:8012
-Environment=ORCHESTRATION_API_URL=http://127.0.0.1:8013
-Environment=KEY_MANAGER_API_URL=http://127.0.0.1:8014
-Environment=K8S_ENGINE_API_URL=http://127.0.0.1:8015
 Type=simple
 User=root
 Group=root

@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, HTTPException
 from shared.auth_middleware import AdminUser, CurrentUser
 from sqlalchemy import select
@@ -134,5 +136,27 @@ def aggregate_action(agg_ref: str, payload: dict, _: AdminUser, db: DB):
         db.commit()
         return {"aggregate": _aggregate_to_dict(db, agg)}
 
+    elif "set_metadata" in payload:
+        meta = json.loads(agg.extra_metadata or "{}")
+        for k, v in (payload["set_metadata"].get("metadata") or {}).items():
+            if v is None:
+                meta.pop(k, None)
+            else:
+                meta[k] = str(v)
+        agg.extra_metadata = json.dumps(meta)
+        agg.updated_at = now()
+        db.commit()
+        return {"aggregate": _aggregate_to_dict(db, agg)}
+
     else:
         raise HTTPException(status_code=400, detail=f"unknown action: {list(payload.keys())}")
+
+
+@router.get("/os-availability-zone")
+def availability_zones(_: CurrentUser, db: DB):
+    zones = {}
+    for a in db.scalars(select(Aggregate).where(Aggregate.availability_zone.is_not(None))):
+        zones.setdefault(a.availability_zone, set()).update(
+            h for (h,) in db.execute(select(AggregateHost.host).where(AggregateHost.aggregate_id == a.id)))
+    return {"availabilityZoneInfo": [{"zoneName": z, "zoneState": {"available": True}, "hosts": sorted(h)}
+                                     for z, h in sorted(zones.items())]}

@@ -21,6 +21,7 @@ from .routers import (
     groups,
     policy,
     projects,
+    role_assignments,
     tokens,
     users,
 )
@@ -74,6 +75,7 @@ def healthcheck(db: DB):
 app.include_router(tokens.router)
 app.include_router(projects.router)
 app.include_router(users.router)
+app.include_router(role_assignments.router)
 app.include_router(groups.router)
 app.include_router(access_keys.router)
 app.include_router(app_credentials.router)

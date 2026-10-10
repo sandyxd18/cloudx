@@ -18,6 +18,21 @@ class QuotaUpdate(BaseModel):
     max_vcpus: int | None = Field(default=None, ge=0)
     max_ram_mb: int | None = Field(default=None, ge=0)
     max_volume_gb: int | None = Field(default=None, ge=0)
+    max_networks: int | None = Field(default=None, ge=0)
+    max_subnets: int | None = Field(default=None, ge=0)
+    max_ports: int | None = Field(default=None, ge=0)
+    max_routers: int | None = Field(default=None, ge=0)
+    max_floating_ips: int | None = Field(default=None, ge=0)
+    max_security_groups: int | None = Field(default=None, ge=0)
+
+
+ROLES = ("admin", "member", "reader")
+
+
+def _valid_role(v: str | None) -> str | None:
+    if v is not None and v not in ROLES:
+        raise ValueError(f"role must be one of: {', '.join(ROLES)}")
+    return v
 
 
 class UserIn(BaseModel):
@@ -27,12 +42,7 @@ class UserIn(BaseModel):
     project_id: str  # project name or id
     role: str = "member"
 
-    @field_validator("role")
-    @classmethod
-    def _valid_role(cls, v: str) -> str:
-        if v not in ("admin", "member"):
-            raise ValueError("role must be 'admin' or 'member'")
-        return v
+    _check_role = field_validator("role")(_valid_role)
 
 
 class UserUpdate(BaseModel):
@@ -40,6 +50,8 @@ class UserUpdate(BaseModel):
     password: str | None = None
     role:     str | None = None
     enabled:  bool | None = None
+
+    _check_role = field_validator("role")(_valid_role)
 
 
 class GroupIn(BaseModel):

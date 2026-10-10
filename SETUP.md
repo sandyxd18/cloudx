@@ -154,8 +154,8 @@ sudo chown -R cloudx:cloudx /opt/cloudx /var/lib/cloudx /etc/cloudx
 sudo systemctl daemon-reload
 
 # 5. (Controller) Create the shared secrets. Copy the SAME file to every other node that runs an API service
-sudo install -m 640 -o root -g cloudx /dev/null /etc/cloudx/cloudx.env
-{ echo "AUTH_SECRET_KEY=$(openssl rand -hex 32)"; echo "AUTH_ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=')"; echo "KEY_MANAGER_MASTER_KEY=$(openssl rand -hex 32)"; } | sudo tee /etc/cloudx/cloudx.env >/dev/null
+sudo install -m 640 -o root -g cloudx /dev/null /etc/cloudx/cloudx.conf
+{ echo "AUTH_SECRET_KEY=$(openssl rand -hex 32)"; echo "AUTH_ADMIN_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=')"; echo "KEY_MANAGER_MASTER_KEY=$(openssl rand -hex 32)"; } | sudo tee /etc/cloudx/cloudx.conf >/dev/null
 
 # 6. (Controller) Create the database schema of all services. Safe to repeat; mandatory before the services start
 sudo CLOUDX_SERVICES_DIR=/opt/cloudx/services /opt/cloudx/venv/bin/cloudx-db-migrate
@@ -184,15 +184,15 @@ sudo systemctl enable --now \
 ```
 
 ### 2.6 Setting the Admin User Password
-The administrator account (`admin`) is created automatically by `cloudx-auth-api` the first time it runs. Its password has **no default value**: it is read from `AUTH_ADMIN_PASSWORD` in `/etc/cloudx/cloudx.env`, which `scripts/install-systemd.sh` (or step 5 above) generates randomly.
+The administrator account (`admin`) is created automatically by `cloudx-auth-api` the first time it runs. Its password has **no default value**: it is read from `AUTH_ADMIN_PASSWORD` in `/etc/cloudx/cloudx.conf`, which `scripts/install-systemd.sh` (or step 5 above) generates randomly.
 
 #### Option A: View or set the initial admin password
 ```bash
-sudo grep AUTH_ADMIN_PASSWORD /etc/cloudx/cloudx.env     # show the current password
-sudoedit /etc/cloudx/cloudx.env                          # (optional) change the value, then:
+sudo grep AUTH_ADMIN_PASSWORD /etc/cloudx/cloudx.conf     # show the current password
+sudoedit /etc/cloudx/cloudx.conf                          # (optional) change the value, then:
 sudo systemctl restart cloudx-auth-api
 ```
-`auth-api` hashes that password (bcrypt) and sets it as the `admin` account's password **on every restart**. A password changed through the CLI/Dashboard (Option B) is therefore overwritten on restart unless the value in `cloudx.env` is changed too.
+`auth-api` hashes that password (bcrypt) and sets it as the `admin` account's password **on every restart**. A password changed through the CLI/Dashboard (Option B) is therefore overwritten on restart unless the value in `/etc/cloudx/cloudx.conf` is changed too.
 
 #### Option B: Change the admin password at any time after the system is running (runtime)
 If the system is already installed and running, you can update the admin user's password at any time with one of these methods:
@@ -221,7 +221,7 @@ Run the following on the Controller node (or any node with a configured `cloudx`
 
 ```bash
 # 1. Log in as Admin
-cloudx auth login --username admin --password "<AUTH_ADMIN_PASSWORD from /etc/cloudx/cloudx.env>" --auth-url http://127.0.0.1:8005
+cloudx auth login --username admin --password "<AUTH_ADMIN_PASSWORD from /etc/cloudx/cloudx.conf>" --auth-url http://127.0.0.1:8005
 
 # 2. Create the external provider network (connected to br-ex / physnet1 on the provider NIC)
 cloudx network create public-net --external
@@ -670,6 +670,6 @@ cloudx auth user set devuser --password "NewUserSecretPassword123!"
 Once all services are active:
 * **URL**: `http://192.168.10.10:8080/`
 * **Username**: `admin`
-* **Password**: the value of `AUTH_ADMIN_PASSWORD` in `/etc/cloudx/cloudx.env` on the Controller (or the one you set yourself, see 2.6)
+* **Password**: the value of `AUTH_ADMIN_PASSWORD` in `/etc/cloudx/cloudx.conf` on the Controller (or the one you set yourself, see 2.6)
 
 The dashboard provides real-time visualisation of the cluster topology, compute node CPU/RAM utilisation, storage node disk quota, and the instance VNC console.

@@ -22,7 +22,7 @@ def test_prepare_lvm_node_dry_run_writes_the_per_node_worker_settings():
     )
     assert result.returncode == 0, result.stderr
     assert "apt-get install -y -qq lvm2 targetcli-fb open-iscsi" in result.stdout
-    assert "cloudx-block-store-worker.service.d/node.conf" in result.stdout
+    assert "block-store-worker/block-store-worker.conf" in result.stdout
 
 
 def test_prepare_lvm_node_needs_a_host_name_and_portal_address():
@@ -32,4 +32,4 @@ def test_prepare_lvm_node_needs_a_host_name_and_portal_address():
 
 def test_setup_compute_node_names_the_worker_after_the_node():
     script = (ROOT / "scripts" / "setup-compute-node.sh").read_text(encoding="utf-8")
-    assert "Environment=COMPUTE_HOST=${NODE_NAME}" in script
+    assert "compute_host = ${NODE_NAME}" in script

@@ -63,6 +63,21 @@ libvirt/QEMU/KVM, OVN/OVS, LVM, Ceph RBD, MinIO — not mocks or simulators.
 
 ---
 
+## Fase 1: milestone core service (v0.7.10 - v0.7.13)
+
+> **Catatan:** Commit, push, dan release hanya dilakukan **sekali** pada versi **v0.7.13**. Milestone **v0.7.10** hingga **v0.7.12** merupakan milestone internal tanpa git tag.
+
+| Versi | Sub-fase / Area | Deskripsi Perubahan | Status |
+|---|---|---|:---:|
+| **v0.7.10** | 1a Keamanan & Isolasi | • Scheduler Placement + role reader + config `.conf` (SELESAI)<br>• `project_id` & ownership di Neutron (Router, Subnet, Port, FloatingIP, PortForwarding, SG rule; nama unik per project)<br>• Role table + role assignments Keystone<br>• Token access-key memakai `AccessKey.project_id`<br>• Fix rule SG IPv6 (ACL `ovn_cli` hanya ip4) | SELESAI |
+| **v0.7.11** | 1b Data Plane | • Neutron `allowed_address_pairs`, router update + extra routes, MTU, quota<br>• Cinder `revert-to-snapshot` & `retype`<br>• Glance status machine (`queued`/`saving`/`active`), inspeksi `qemu-img`, properties kustom, `os_hash_algo`/`os_hash_value` | SELESAI (diuji di VM) |
+| **v0.7.12** | 1c Operasional Nova | • Flavor `extra_specs`, aggregates/AZ, `/limits` & `quota-sets`<br>• Instance actions, `os-services`, cold migrate & evacuate | SELESAI (diuji di VM) |
+| **v0.7.13** | 1d Conformance | • Script e2e per service + dokumen parity<br>• Commit, push, tag, dan release | Release Tag |
+
+> **Catatan:** Gap di luar Fase 1 tetap dialokasikan pada Fase 2/3 (orchestration, LB L7, alarms, K8s, VPNaaS, dsb).
+
+---
+
 ## 2. Identity — `auth-api` (Currently: ~65%)
 
 ### Current State of the Code
