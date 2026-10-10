@@ -1,8 +1,11 @@
 """
-Abstract load-balancer driver.
+Load-balancer driver interface.
 
-Concrete drivers translate Octavia-like LB objects into real data-plane
-rules (OVN native LBs, HAProxy configs, etc.).
+A driver gets the whole desired state of one LB and makes the data plane match it (reconcile, not incremental calls).
+`listeners` is a list of dicts:
+  {id, protocol, protocol_port, certificate_id, default_pool_id,
+   pools: [{id, lb_algorithm, members: [{id, address, protocol_port, weight, operating_status}], health_monitor: {...}|None}],
+   policies: [{action, redirect_pool_id, position, rules: [{type, compare_type, value}]}]}
 """
 from __future__ import annotations
 
@@ -10,42 +13,19 @@ from abc import ABC, abstractmethod
 
 
 class LoadBalancerDriver(ABC):
-    """Base interface for ALB / NLB drivers."""
-
     name: str = ""
     layer: str = ""  # "L4" or "L7"
 
     @abstractmethod
-    def __init__(self, config: dict) -> None:
-        """Initialise driver with backend-specific config."""
+    def __init__(self, config: dict) -> None: ...
 
     @abstractmethod
-    def create_load_balancer(self, lb: dict) -> None:
-        """Provision a load balancer and assign VIP."""
+    def apply(self, lb: dict, listeners: list[dict]) -> None:
+        """Make the data plane match this LB."""
 
     @abstractmethod
-    def delete_load_balancer(self, lb: dict) -> None:
-        """De-provision a load balancer and release VIP."""
-
-    @abstractmethod
-    def apply_listener(self, lb: dict, listener: dict) -> None:
-        """Create or update a listener on the data plane."""
-
-    @abstractmethod
-    def delete_listener(self, lb: dict, listener: dict) -> None:
-        """Remove a listener from the data plane."""
-
-    @abstractmethod
-    def apply_pool(self, lb: dict, listener: dict, pool: dict, members: list[dict]) -> None:
-        """Create/update pool and members."""
-
-    @abstractmethod
-    def delete_pool(self, lb: dict, pool: dict) -> None:
-        """Remove pool."""
-
-    @abstractmethod
-    def update_members(self, lb: dict, listener: dict, pool: dict, members: list[dict]) -> None:
-        """Refresh pool member list without recreating the listener."""
+    def delete(self, lb: dict) -> None:
+        """Remove everything of this LB from the data plane."""
 
     @abstractmethod
     def health(self) -> dict:

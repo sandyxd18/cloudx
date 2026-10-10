@@ -53,6 +53,15 @@ def create_router(payload: RouterIn, current: CurrentUser, db: DB):
 def update_router(ref: str, payload: RouterUpdate, current: CurrentUser, db: DB):
     router = require_owned(current, db, Router, ref, "router")
     if payload.routes is not None:
+        nets = [ipaddress.ip_network(s.cidr, strict=False) for s in db.scalars(
+            select(Subnet).join(RouterInterface, RouterInterface.subnet_id == Subnet.id)
+            .where(RouterInterface.router_id == router.id))]
+        gw = db.get(Network, router.external_network_id) if router.external_network_id else None
+        if gw and gw.provider_cidr:
+            nets.append(ipaddress.ip_network(gw.provider_cidr, strict=False))
+        for r in payload.routes:  # like Neutron: the next hop must be directly reachable from the router
+            if not any(ipaddress.ip_address(r.nexthop) in n for n in nets):
+                raise HTTPException(status_code=400, detail=f"nexthop {r.nexthop} is not in a subnet connected to the router")
         old = {(r["destination"], r["nexthop"]) for r in json.loads(router.routes or "[]")}
         new = {(r.destination, r.nexthop) for r in payload.routes}
         for dest, hop in old - new:

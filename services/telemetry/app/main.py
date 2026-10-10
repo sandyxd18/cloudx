@@ -12,14 +12,18 @@ Service Phase 5.1: mengumpulkan dan mengekspos metrik real-time per VM/tenant.
 
 
 import logging
+import operator
+import threading
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
-from sqlalchemy import DateTime, Float, Integer, String, create_engine, select, text, func, literal
+from pydantic import BaseModel, Field
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, create_engine, delete, select, text, func, literal
 from sqlalchemy.dialects.postgresql import array_agg as pg_array_agg, aggregate_order_by
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -32,7 +36,9 @@ from shared.request_id_middleware import RequestIDMiddleware
 log = logging.getLogger("telemetry-api")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx")
-METRICS_RETENTION_DAYS = int(os.getenv("METRICS_RETENTION_DAYS", "7"))
+METRICS_RETENTION_DAYS = int(os.getenv("METRICS_RETENTION_DAYS", "7"))      # raw samples
+ROLLUP_RETENTION_DAYS = int(os.getenv("ROLLUP_RETENTION_DAYS", "365"))       # hourly rollups
+ALARM_INTERVAL = int(os.getenv("ALARM_INTERVAL", "30"))                      # seconds between evaluations
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -64,6 +70,40 @@ class TelemetryMetricType(Base):
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
     default_enabled: Mapped[bool] = mapped_column(default=True)
+
+
+class TelemetryRollup(Base):
+    """Hourly aggregate of raw samples that aged out of METRICS_RETENTION_DAYS. Several rows may share a bucket
+    (a late sample, a re-run); readers merge them with sum(avg*samples)/sum(samples)."""
+    __tablename__ = "telemetry_rollups"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    instance_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    project_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    metric_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    bucket: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    avg_value: Mapped[float] = mapped_column(Float, nullable=False)
+    min_value: Mapped[float] = mapped_column(Float, nullable=False)
+    max_value: Mapped[float] = mapped_column(Float, nullable=False)
+    samples: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class TelemetryAlarm(Base):
+    """Threshold alarm: avg(metric) over the last `period` seconds <comparison> threshold -> state `alarm`."""
+    __tablename__ = "telemetry_alarms"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    instance_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # None = every instance of the project
+    comparison: Mapped[str] = mapped_column(String(2), nullable=False)
+    threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    period: Mapped[int] = mapped_column(Integer, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="insufficient_data")
+    state_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    state_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False,
+                                                 default=lambda: datetime.now(timezone.utc))
 
 
 def get_db():
@@ -118,6 +158,7 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     init_db()
+    threading.Thread(target=_alarm_loop, daemon=True, name="alarm-loop").start()
     log.info("Telemetry API started")
 
 
@@ -335,10 +376,168 @@ def prometheus_metrics(request: Request, db: DB):
 
 @app.delete("/telemetry/metrics/cleanup", status_code=status.HTTP_204_NO_CONTENT)
 def cleanup_old_metrics(user: AdminUser, db: DB):
-    cutoff = datetime.now(timezone.utc) - timedelta(days=METRICS_RETENTION_DAYS)
-    db.execute(text("DELETE FROM telemetry_metrics WHERE timestamp < :cutoff"), {"cutoff": cutoff})
-    db.commit()
+    rollup_and_prune(db)
     return None
+
+
+def rollup_and_prune(db: Session, now: datetime | None = None) -> None:
+    """Fold raw samples older than the retention (cut on an hour boundary) into hourly rollups, then delete them."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=METRICS_RETENTION_DAYS)).replace(minute=0, second=0, microsecond=0)
+    # ponytail: Python-side grouping, fine for one hour of backlog per run; use SQL date_trunc if backlog grows
+    if db.get_bind().dialect.name == "postgresql":  # serialize concurrent callers so one hour is not rolled twice
+        db.execute(text("SELECT pg_advisory_xact_lock(724001)"))
+    groups: dict[tuple, list[float]] = {}
+    for m in db.execute(select(TelemetryMetric).where(TelemetryMetric.timestamp < cutoff).execution_options(synchronize_session=False)).scalars():
+        ts = m.timestamp if m.timestamp.tzinfo else m.timestamp.replace(tzinfo=timezone.utc)
+        key = (m.instance_id, m.project_id, m.metric_type, ts.replace(minute=0, second=0, microsecond=0))
+        groups.setdefault(key, []).append(m.value)
+    for (inst, proj, mt, bucket), vals in groups.items():
+        db.add(TelemetryRollup(instance_id=inst, project_id=proj, metric_type=mt, bucket=bucket,
+                               avg_value=sum(vals) / len(vals), min_value=min(vals), max_value=max(vals),
+                               samples=len(vals)))
+    db.execute(delete(TelemetryMetric).where(TelemetryMetric.timestamp < cutoff).execution_options(synchronize_session=False))
+    db.execute(delete(TelemetryRollup).where(TelemetryRollup.bucket < now - timedelta(days=ROLLUP_RETENTION_DAYS)).execution_options(synchronize_session=False))
+    db.commit()
+
+
+@app.get("/telemetry/rollups")
+def list_rollups(user: CurrentUser, db: DB, metric_type: str, instance_id: str | None = None,
+                 days: int = Query(30, ge=1, le=3650), granularity: Literal["hour", "day"] = "hour"):
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    q = select(TelemetryRollup).where(TelemetryRollup.metric_type == metric_type, TelemetryRollup.bucket >= since)
+    if user.get("role") != "admin":
+        q = q.where(TelemetryRollup.project_id == user.get("project_id"))
+    if instance_id:
+        q = q.where(TelemetryRollup.instance_id == instance_id)
+    out: dict[datetime, dict] = {}
+    for r in db.execute(q.order_by(TelemetryRollup.bucket)).scalars():
+        b = r.bucket if granularity == "hour" else r.bucket.replace(hour=0)
+        o = out.setdefault(b, {"bucket": b, "sum": 0.0, "min": r.min_value, "max": r.max_value, "samples": 0})
+        o["sum"] += r.avg_value * r.samples
+        o["samples"] += r.samples
+        o["min"], o["max"] = min(o["min"], r.min_value), max(o["max"], r.max_value)
+    return [{"bucket": o["bucket"], "avg": o["sum"] / o["samples"], "min": o["min"], "max": o["max"],
+             "samples": o["samples"]} for o in out.values()]
+
+
+# ── Alarms ────────────────────────────────────────────────────────────────────
+
+_OPS = {">": operator.gt, ">=": operator.ge, "<": operator.lt, "<=": operator.le}
+_rpc = None
+
+
+class AlarmIn(BaseModel):
+    name: str
+    metric_type: str
+    instance_id: str | None = None
+    comparison: Literal[">", ">=", "<", "<="]
+    threshold: float
+    period: int = Field(300, ge=30, le=86400)
+    enabled: bool = True
+    project_id: str | None = None  # admin only
+
+
+def alarm_dict(a: TelemetryAlarm) -> dict:
+    return {c.name: getattr(a, c.name) for c in TelemetryAlarm.__table__.columns}
+
+
+def _publish(a: TelemetryAlarm, old: str, value: float | None) -> None:
+    global _rpc
+    try:
+        from shared.rpc import RPCClient
+        _rpc = _rpc or RPCClient(os.getenv("RABBITMQ_URL"))
+        _rpc.publish_event("telemetry.alarm.state_changed", {
+            "alarm_id": a.id, "name": a.name, "project_id": a.project_id, "metric_type": a.metric_type,
+            "instance_id": a.instance_id, "old_state": old, "state": a.state, "value": value,
+            "comparison": a.comparison, "threshold": a.threshold})
+    except Exception as exc:  # best-effort: a broker outage must not stop evaluation
+        log.warning("alarm event publish failed: %s", exc)
+
+
+def evaluate_alarms(db: Session, now: datetime | None = None) -> int:
+    """Re-evaluate every enabled alarm; publish an event per state change. Returns the number of changes."""
+    now = now or datetime.now(timezone.utc)
+    changed: list[tuple[TelemetryAlarm, str, float | None]] = []
+    for a in db.execute(select(TelemetryAlarm).where(TelemetryAlarm.enabled.is_(True))).scalars().all():
+        q = select(func.avg(TelemetryMetric.value), func.count()).where(
+            TelemetryMetric.metric_type == a.metric_type, TelemetryMetric.project_id == a.project_id,
+            TelemetryMetric.timestamp >= now - timedelta(seconds=a.period))
+        if a.instance_id:
+            q = q.where(TelemetryMetric.instance_id == a.instance_id)
+        avg, n = db.execute(q).one()
+        new = "insufficient_data" if not n else ("alarm" if _OPS[a.comparison](avg, a.threshold) else "ok")
+        if new != a.state:
+            old, a.state, a.state_updated_at = a.state, new, now
+            a.state_reason = f"avg={avg:.2f} over {a.period}s" if n else f"no samples in {a.period}s"
+            changed.append((a, old, avg))
+    db.commit()
+    for a, old, avg in changed:
+        _publish(a, old, avg)
+    return len(changed)
+
+
+def _alarm_loop() -> None:
+    while True:
+        time.sleep(ALARM_INTERVAL)
+        try:
+            with SessionLocal() as db:
+                if db.get_bind().dialect.name == "postgresql":  # one gunicorn worker per tick
+                    if not db.execute(text("SELECT pg_try_advisory_lock(724002)")).scalar():
+                        continue
+                    try:
+                        evaluate_alarms(db)
+                    finally:
+                        db.execute(text("SELECT pg_advisory_unlock(724002)"))
+                        db.commit()
+                else:
+                    evaluate_alarms(db)
+        except Exception:  # best-effort: keep the loop alive
+            log.exception("alarm evaluation failed")
+
+
+def _alarm_or_404(db: Session, alarm_id: str, user: dict) -> TelemetryAlarm:
+    a = db.get(TelemetryAlarm, alarm_id)
+    if not a or (user.get("role") != "admin" and a.project_id != user.get("project_id")):
+        raise HTTPException(404, "alarm not found")
+    return a
+
+
+@app.post("/telemetry/alarms", status_code=status.HTTP_201_CREATED)
+def create_alarm(user: CurrentUser, data: AlarmIn, db: DB):
+    if not db.execute(select(TelemetryMetricType).where(TelemetryMetricType.name == data.metric_type)).first():
+        raise HTTPException(400, f"unknown metric_type {data.metric_type}")
+    project = data.project_id if user.get("role") == "admin" and data.project_id else user.get("project_id")
+    if not project:
+        raise HTTPException(400, "project_id required")
+    a = TelemetryAlarm(**data.model_dump(exclude={"project_id"}), project_id=project)
+    db.add(a)
+    db.commit()
+    return alarm_dict(a)
+
+
+@app.get("/telemetry/alarms")
+def list_alarms(user: CurrentUser, db: DB):
+    q = select(TelemetryAlarm).order_by(TelemetryAlarm.created_at)
+    if user.get("role") != "admin":
+        q = q.where(TelemetryAlarm.project_id == user.get("project_id"))
+    return [alarm_dict(a) for a in db.execute(q).scalars()]
+
+
+@app.get("/telemetry/alarms/{alarm_id}")
+def get_alarm(alarm_id: str, user: CurrentUser, db: DB):
+    return alarm_dict(_alarm_or_404(db, alarm_id, user))
+
+
+@app.delete("/telemetry/alarms/{alarm_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_alarm(alarm_id: str, user: CurrentUser, db: DB):
+    db.delete(_alarm_or_404(db, alarm_id, user))
+    db.commit()
+
+
+@app.post("/telemetry/alarms/evaluate")
+def evaluate_now(user: AdminUser, db: DB):
+    return {"changed": evaluate_alarms(db)}
 
 
 try:

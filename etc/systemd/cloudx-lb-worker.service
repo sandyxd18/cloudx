@@ -1,0 +1,16 @@
+[Unit]
+Description=CloudX LB Worker (haproxy for ALBs) (compute node)
+After=network.target libvirtd.service
+Wants=libvirtd.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/cloudx/services/lb_worker
+ExecStart=/opt/cloudx/venv/bin/python -m app.main
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

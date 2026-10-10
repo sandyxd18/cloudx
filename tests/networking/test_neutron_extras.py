@@ -45,6 +45,9 @@ def test_allowed_address_pair_update_and_validation(api):
 
 def test_router_routes_add_and_remove(api):
     api.client.post("/routers", json={"name": "r"})
+    sub = api.client.post("/subnets", json={"name": "rs", "network": "net", "cidr": "10.0.0.0/24", "gateway_ip": "10.0.0.1"}).json()["id"]
+    assert api.client.post("/routers/r/interfaces", json={"subnet": sub}).status_code in (200, 201)
+    assert api.client.patch("/routers/r", json={"routes": [{"destination": "192.168.9.0/24", "nexthop": "172.99.0.9"}]}).status_code == 400
     api.calls.clear()
     res = api.client.patch("/routers/r", json={"routes": [{"destination": "192.168.9.0/24", "nexthop": "10.0.0.9"}]})
     assert res.status_code == 200 and res.json()["routes"] == [{"destination": "192.168.9.0/24", "nexthop": "10.0.0.9"}]

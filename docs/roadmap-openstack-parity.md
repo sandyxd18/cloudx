@@ -76,6 +76,16 @@ libvirt/QEMU/KVM, OVN/OVS, LVM, Ceph RBD, MinIO — not mocks or simulators.
 
 > **Catatan:** Gap di luar Fase 1 tetap dialokasikan pada Fase 2/3 (orchestration, LB L7, alarms, K8s, VPNaaS, dsb).
 
+## Fase 2: milestone advanced (v0.7.14 - v0.7.16)
+
+> **Catatan:** Commit, push, dan release hanya dilakukan **sekali** pada **v0.7.16**. **v0.7.14** dan **v0.7.15** adalah milestone internal tanpa git tag. Fase 3 menyusul setelahnya.
+
+| Versi | Sub-fase / Area | Deskripsi Perubahan | Status |
+|---|---|---|:---:|
+| **v0.7.14** | 2a Orchestration (Heat-like) | • Saat ini hanya ada Auto-Scaling Group; **engine stack (Heat) dibangun dari nol** (tabel `stacks`, `stack_resources`, `stack_events`)<br>• Perbaiki bug ASG: `scale-out` manual hanya membuat record dengan `server_id` palsu, tanpa membuat VM<br>• Template: parameters, outputs, `get_param`/`get_attr`/`get_resource`<br>• Resource: Server, Volume, Network, Subnet, Router, FloatingIP, SecurityGroup<br>• Dependency graph, update, rollback, suspend/resume, preview<br>• Tidak termasuk: autoscaling group, nested stack | Rencana |
+| **v0.7.15** | 2b Load Balancer | • Data plane ganda: **OVN LB untuk L4**, **HAProxy untuk L7**<br>• Listener, pool, member, health monitor; algoritma round-robin / least-connections / source-ip<br>• L7 policy & rule (path/host) via HAProxy<br>• VIP lewat port Neutron / floating IP<br> **Status:** ALB (HAProxy di netns compute-node via `lb-worker`, L7 policy path, health check) terbukti dengan trafik nyata. NLB (OVN) juga terbukti: klien di jaringan lain lewat router terdistribusi ke 2 backend (driver memasang LB ke switch VIP, router, dan switch non-gateway router, seperti ovn-octavia-provider). Klien di L2 yang sama dengan VIP belum bisa (hairpin tanpa SNAT). Round-robin/least-connections sejati hanya di ALB | Selesai |
+| **v0.7.16** | 2c Telemetry, Alarms, Billing | • Alarm berbasis threshold + aksi webhook/event (exchange `cloudx.events`)<br>• Retensi & agregasi metrik<br>• Tarif billing per resource dari konfigurasi (termasuk tarif LB)<br>• Commit, push, tag, dan release<br> **Status:** alarm (`/telemetry/alarms`, event `telemetry.alarm.state_changed` ke `cloudx.events` → webhook subscription), rollup per jam (`/telemetry/rollups`), tarif seed via `billing_rate_<type>` terbukti di VM | Selesai |
+
 ---
 
 ## 2. Identity — `auth-api` (Currently: ~65%)

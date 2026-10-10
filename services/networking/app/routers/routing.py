@@ -6,8 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import ovn_cli
+from ..access import own
 from ..db import DB
-from ..models import BGPPeer, Network, Router, RouterInterface, Subnet, VPCPeering, stable_mac
+from ..models import BGPPeer, Router, RouterInterface, Subnet, VPCPeering, stable_mac
 from ..schemas import BGPPeerIn, BGPPeerOut, VPCPeeringIn, VPCPeeringOut
 from ..serializers import require_by_ref
 
@@ -31,17 +32,7 @@ def _bgp_out(peer: BGPPeer) -> dict:
 
 
 def _check_router(db: Session, rtr: Router, current: dict) -> None:
-    # ponytail: Router has no project_id column; ownership is derived from the networks of its
-    # interfaces (router with no interfaces is unowned -> allowed). Add Router.project_id + migration to be strict.
-    if current.get("role") == "admin":
-        return
-    owners = db.scalars(
-        select(Network.project_id).join(Subnet, Subnet.network_id == Network.id)
-        .join(RouterInterface, RouterInterface.subnet_id == Subnet.id)
-        .where(RouterInterface.router_id == rtr.id)
-    ).all()
-    if any(p != _pid(current) for p in owners):
-        raise HTTPException(status_code=404, detail=f"router '{rtr.name}' not found")
+    own(current, rtr, "router")
 
 
 @router.post("/routers/{ref}/peering", response_model=VPCPeeringOut, status_code=201)

@@ -56,7 +56,7 @@ apt-get update -qq
 apt-get install -y -qq \
     qemu-kvm libvirt-daemon-system libvirt-clients \
     openvswitch-switch ovn-host qemu-utils qemu-guest-agent \
-    genisoimage cloud-image-utils \
+    genisoimage cloud-image-utils haproxy \
     libvirt-dev pkg-config build-essential python3-dev \
     python3-venv python3-pip curl jq bridge-utils >/dev/null
 # genisoimage/cloud-image-utils build the cloud-init config drive; libvirt-python is what the compute worker drives
@@ -65,6 +65,7 @@ if [[ -x /opt/cloudx/venv/bin/pip ]]; then
     /opt/cloudx/venv/bin/pip install -q libvirt-python
 fi
 
+systemctl disable --now haproxy 2>/dev/null || true  # lb-worker runs its own haproxy per ALB
 echo "===> [2/5] Ensuring libvirtd service is active..."
 systemctl enable --now libvirtd || true
 systemctl enable --now openvswitch-switch || true
@@ -100,7 +101,7 @@ mkdir -p /var/lib/cloudx/compute
 # /etc/cloudx/cloudx.conf (copied from the controller) holds the secrets; this node's services point at the controller.
 # The compute worker names itself after this node (placement provider, server.host, its own RPC queue). Two compute
 # nodes must never share a name, so it is set per node here.
-for svc in compute-worker metadata-proxy telemetry-worker; do
+for svc in compute-worker metadata-proxy telemetry-worker lb-worker; do
     mkdir -p "/etc/cloudx/${svc}"
     cat > "/etc/cloudx/${svc}/${svc}.conf" <<EOF
 [DEFAULT]
@@ -115,6 +116,7 @@ networking_api_url = http://${CONTROLLER_IP}:8001
 compute_api_url = http://${CONTROLLER_IP}:8003
 image_api_url = http://${CONTROLLER_IP}:8002
 telemetry_api_url = http://${CONTROLLER_IP}:8010
+load_balancer_api_url = http://${CONTROLLER_IP}:8008
 EOF
 done
 echo ""

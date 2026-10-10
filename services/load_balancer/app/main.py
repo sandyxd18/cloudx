@@ -16,11 +16,9 @@ automatically from active instances in that group.
 """
 
 import logging
-import socket
 import threading
 import time
 import uuid
-from pathlib import Path
 from datetime import datetime
 from typing import Annotated
 
@@ -34,7 +32,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, create_engine, tex
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import CurrentUser, InternalAuth
 from shared.schema import require_schema
 from shared.request_id_middleware import RequestIDMiddleware
 
@@ -115,6 +113,13 @@ class LoadBalancer(Base):
     vip_network_id:  Mapped[str | None] = mapped_column(String, nullable=True)
     vip_port_id:     Mapped[str | None] = mapped_column(String, nullable=True)
     vip_floating_ip_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    vip_floating_ip: Mapped[str | None] = mapped_column(String, nullable=True)
+    vip_mac:         Mapped[str | None] = mapped_column(String, nullable=True)
+    vip_port_name:   Mapped[str | None] = mapped_column(String, nullable=True)
+    vip_switch:      Mapped[str | None] = mapped_column(String, nullable=True)
+    vip_prefix:      Mapped[int | None] = mapped_column(Integer, nullable=True)
+    vip_gateway:     Mapped[str | None] = mapped_column(String, nullable=True)
+    host:            Mapped[str | None] = mapped_column(String, nullable=True)  # compute node running the ALB haproxy
     provisioning_status: Mapped[str] = mapped_column(String, default="PENDING_CREATE")
     operating_status:    Mapped[str] = mapped_column(String, default="OFFLINE")
     created_at:      Mapped[datetime] = mapped_column(DateTime, default=now)
@@ -172,6 +177,29 @@ class HealthMonitor(Base):
     created_at:  Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class L7Policy(Base):
+    __tablename__ = "lb_l7policies"
+
+    id:               Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    listener_id:      Mapped[str] = mapped_column(String, ForeignKey("lb_listeners.id"))
+    name:             Mapped[str] = mapped_column(String)
+    action:           Mapped[str] = mapped_column(String)  # REDIRECT_TO_POOL | REJECT
+    position:         Mapped[int] = mapped_column(Integer, default=1)
+    redirect_pool_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at:       Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
+class L7Rule(Base):
+    __tablename__ = "lb_l7rules"
+
+    id:           Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    policy_id:    Mapped[str] = mapped_column(String, ForeignKey("lb_l7policies.id"))
+    type:         Mapped[str] = mapped_column(String)          # PATH | HOST_NAME
+    compare_type: Mapped[str] = mapped_column(String)          # STARTS_WITH | ENDS_WITH | EQUAL_TO
+    value:        Mapped[str] = mapped_column(String)
+    created_at:   Mapped[datetime] = mapped_column(DateTime, default=now)
+
+
 class LBCertificate(Base):
     __tablename__ = "lb_certificates"
 
@@ -193,6 +221,7 @@ class LoadBalancerIn(BaseModel):
     lb_type: str = Field(..., pattern="^(NLB|ALB)$")
     vip_network_id: str
     vip_subnet_id: str | None = None
+    floating_network: str | None = None  # also give the VIP a floating IP from this external network
 
 
 class ListenerIn(BaseModel):
@@ -226,6 +255,23 @@ class PoolIn(BaseModel):
     server_group_id: str | None = None
     protocol_port: int = Field(..., ge=1, le=65535)
     members: list[PoolMemberIn] | None = None
+
+
+class PoolUpdate(BaseModel):
+    lb_algorithm: str = Field(pattern="^(ROUND_ROBIN|LEAST_CONNECTIONS|SOURCE_IP)$")
+
+
+class L7PolicyIn(BaseModel):
+    name: str = NAME
+    action: str = Field(default="REDIRECT_TO_POOL", pattern="^(REDIRECT_TO_POOL|REJECT)$")
+    position: int = Field(default=1, ge=1, le=1000)
+    redirect_pool_id: str | None = None
+
+
+class L7RuleIn(BaseModel):
+    type: str = Field(pattern="^(PATH|HOST_NAME)$")
+    compare_type: str = Field(default="STARTS_WITH", pattern="^(STARTS_WITH|ENDS_WITH|EQUAL_TO)$")
+    value: str = Field(pattern=r"^[A-Za-z0-9._~/%?&=+*:-]{1,200}$")
 
 
 class HealthMonitorIn(BaseModel):
@@ -263,75 +309,39 @@ def get_db():
 DB = Annotated[Session, Depends(get_db)]
 
 
-_health_probe_failures: dict[str, int] = {}
+def _sync_nlb_status():
+    """NLB members: OVN (ovn-controller) probes them and publishes the result as Service_Monitor rows in the SB DB.
+
+    ALB members are reported by lb-worker instead (it reads haproxy's own health checks).
+    """
+    from .drivers.ovn_l4 import service_monitor_status
+
+    status = service_monitor_status()  # {(ip, port): "online"|"offline"}
+    if not status:
+        return
+    with SessionLocal() as db:
+        lb_ids = [r.id for r in db.query(LoadBalancer.id).filter_by(lb_type="NLB")]
+        rows = db.query(Member).join(Pool, Member.pool_id == Pool.id).filter(Pool.load_balancer_id.in_(lb_ids)).all()
+        for m in rows:
+            s = status.get((m.address, m.protocol_port))
+            if s and m.operating_status != s.upper():
+                m.operating_status = s.upper()
+        db.commit()
 
 
-def _probe_member(member: Member, hm: HealthMonitor) -> bool:
-    try:
-        if hm.type.upper() in ("PING", "TCP"):
-            with socket.create_connection((member.address, member.protocol_port), timeout=min(hm.timeout, 5)):
-                return True
-        elif hm.type.upper() in ("HTTP", "HTTPS"):
-            proto = "https" if hm.type.upper() == "HTTPS" else "http"
-            url = f"{proto}://{member.address}:{member.protocol_port}{hm.url_path}"
-            resp = requests.get(url, timeout=min(hm.timeout, 5))
-            return resp.status_code < 400
-    except Exception as exc:
-        log.debug("health probe failed: %s", exc)
-        return False
-    return False
-
-
-def _run_health_monitors():
-    db = SessionLocal()
-    try:
-        monitors = db.query(HealthMonitor).all()
-        for hm in monitors:
-            pool = db.get(Pool, hm.pool_id)
-            if not pool:
-                continue
-            lb = db.get(LoadBalancer, pool.load_balancer_id)
-            if not lb or lb.provisioning_status == "DELETED":
-                continue
-
-            members = db.query(Member).filter_by(pool_id=pool.id).all()
-            status_changed = False
-            for m in members:
-                success = _probe_member(m, hm)
-                if success:
-                    _health_probe_failures[m.id] = 0
-                    if m.operating_status != "ONLINE":
-                        m.operating_status = "ONLINE"
-                        status_changed = True
-                else:
-                    fails = _health_probe_failures.get(m.id, 0) + 1
-                    _health_probe_failures[m.id] = fails
-                    if fails >= hm.max_retries and m.operating_status != "OFFLINE":
-                        m.operating_status = "OFFLINE"
-                        status_changed = True
-
-            if status_changed:
-                db.commit()
-                try:
-                    _apply_lb_state(db, lb)
-                except Exception as exc:
-                    log.warning("Failed to re-apply LB state after health check: %s", exc)
-    except Exception as exc:
-        log.warning("Error running health monitors: %s", exc)
-    finally:
-        db.close()
-
-
-def _health_monitor_loop():
+def _status_loop():
     while True:
-        time.sleep(5)
-        _run_health_monitors()
+        time.sleep(10)
+        try:
+            _sync_nlb_status()
+        except Exception as exc:  # best-effort: status is informational, the loop must survive
+            log.debug("nlb status sync failed: %s", exc)
 
 
 @app.on_event("startup")
 def startup():
     require_schema(engine, "load_balancer")
-    threading.Thread(target=_health_monitor_loop, daemon=True).start()
+    threading.Thread(target=_status_loop, daemon=True).start()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -351,31 +361,48 @@ from shared.service_client import ServiceClient
 service_client = ServiceClient(service_name="service_load_balancer")
 
 
+def _net(method: str, path: str, **kw) -> dict:
+    r = service_client.request(method, f"{NETWORKING_API_URL}{path}", timeout=15, **kw)
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+
 def _allocate_vip(network_id: str, subnet_id: str | None) -> dict:
-    """Allocate a fixed port/IP from networking-api."""
+    """Allocate the VIP port and look up what the data plane needs to answer for it (switch, mask, gateway)."""
     try:
-        payload = {"name": f"lb-vip-{new_id()}", "network": network_id}
+        payload = {"name": f"lb-vip-{new_id()}", "network": network_id, "device_owner": "cloudx:loadbalancer"}
         if subnet_id:
             payload["fixed_ips"] = [{"subnet_id": subnet_id}]
-        resp = service_client.post(
-            f"{NETWORKING_API_URL}/ports",
-            json=payload,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        port = _net("POST", "/ports", json=payload)
+        fixed = port["fixed_ips"][0]
+        subnet = _net("GET", f"/subnets/{fixed['subnet_id']}")
+        net = _net("GET", f"/networks/{port['network_id']}")
+        return {**port, "ip": fixed["ip_address"], "switch": net["name"],
+                "prefix": int(subnet["cidr"].split("/")[1]), "gateway": subnet.get("gateway_ip")}
     except Exception as exc:
         log.error("VIP allocation failed: %s", exc)
         raise HTTPException(status_code=502, detail=f"VIP allocation failed: {exc}")
 
 
-def _release_vip(port_id: str | None):
-    if not port_id:
-        return
+def _port_names() -> dict[str, str]:
+    """fixed ip -> OVN logical port name, so OVN health checks know which port a backend lives on."""
     try:
-        service_client.delete(f"{NETWORKING_API_URL}/ports/{port_id}", timeout=10)
+        items = _net("GET", "/ports").get("items", [])
+        return {p["fixed_ip"]: p["logical_port_name"] for p in items if p.get("fixed_ip") and p.get("logical_port_name")}
     except Exception as exc:
-        log.warning("Failed to release VIP port %s: %s", port_id, exc)
+        log.warning("port lookup failed: %s", exc)
+        return {}
+
+
+def _release_vip(lb: LoadBalancer):
+    for path in ([f"/floating-ips/{lb.vip_floating_ip_id}"] if lb.vip_floating_ip_id else []) + \
+                ([f"/ports/{lb.vip_port_id}"] if lb.vip_port_id else []):
+        try:
+            if "floating" in path:
+                _net("POST", path + "/disassociate", json={})
+            _net("DELETE", path)
+        except Exception as exc:
+            log.warning("Failed to release %s: %s", path, exc)
 
 
 def _fetch_server_group_members(server_group_id: str, project_id: str) -> list[dict]:
@@ -415,25 +442,28 @@ def _lb_to_dict(lb: LoadBalancer) -> dict:
         "vip_network_id": lb.vip_network_id,
         "vip_port_id": lb.vip_port_id,
         "vip_floating_ip_id": lb.vip_floating_ip_id,
+        "vip_floating_ip": lb.vip_floating_ip,
+        "vip_mac": lb.vip_mac,
+        "vip_port_name": lb.vip_port_name,
+        "vip_switch": lb.vip_switch,
+        "vip_prefix": lb.vip_prefix,
+        "vip_gateway": lb.vip_gateway,
+        "host": lb.host,
         "provisioning_status": lb.provisioning_status,
         "operating_status": lb.operating_status,
         "created_at": lb.created_at.isoformat() if lb.created_at else None,
     }
 
 
-def _listener_to_dict(ls: Listener, db: Session | None = None) -> dict:
-    ssl_cert_path = None
+def _listener_to_dict(ls: Listener, db: Session | None = None, with_pem: bool = False) -> dict:
+    # ssl_cert_path is where lb-worker keeps the PEM on its own node; the PEM itself only leaves through /internal/lb-agent
+    ssl_cert_path = pem = None
     if ls.certificate_id and db:
         cert = db.get(LBCertificate, ls.certificate_id)
         if cert:
-            cert_dir = Path("/tmp/antigravity/certs")
-            cert_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            cert_file = cert_dir / f"{cert.id}.pem"
-            fd = os.open(cert_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as fh:
-                fh.write(f"{cert.certificate_pem}\n{cert.private_key_pem}")
-            ssl_cert_path = str(cert_file)
-
+            ssl_cert_path = f"/var/lib/cloudx/lb/{ls.load_balancer_id}/{cert.id}.pem"
+            if with_pem:
+                pem = f"{cert.certificate_pem}\n{cert.private_key_pem}"
     return {
         "id": ls.id,
         "load_balancer_id": ls.load_balancer_id,
@@ -443,6 +473,7 @@ def _listener_to_dict(ls: Listener, db: Session | None = None) -> dict:
         "default_pool_id": ls.default_pool_id,
         "certificate_id": ls.certificate_id,
         "ssl_cert_path": ssl_cert_path,
+        **({"ssl_pem": pem} if pem else {}),
         "created_at": ls.created_at.isoformat() if ls.created_at else None,
     }
 
@@ -472,26 +503,47 @@ def _member_to_dict(m: Member) -> dict:
     }
 
 
-def _apply_lb_state(db: Session, lb: LoadBalancer):
-    """Push current DB state to the data-plane driver."""
-    driver = _get_driver(lb)
-    listeners = db.query(Listener).filter_by(load_balancer_id=lb.id).all()
-    driver.create_load_balancer(_lb_to_dict(lb))
-    for ls in listeners:
-        pool = db.query(Pool).filter_by(listener_id=ls.id).first()
-        members = []
-        if pool:
-            members = db.query(Member).filter_by(pool_id=pool.id).all()
-            members = [_member_to_dict(m) for m in members]
-        driver.apply_listener(_lb_to_dict(lb), {**_listener_to_dict(ls, db), "members": members})
-        if pool:
-            driver.apply_pool(
-                _lb_to_dict(lb),
-                _listener_to_dict(ls, db),
-                _pool_to_dict(pool),
-                members,
-            )
+def _pick_host() -> str | None:
+    """Compute node that will run an ALB's haproxy: the first enabled one."""
+    try:
+        r = service_client.get(f"{COMPUTE_API_URL}/os-services", timeout=10)
+        r.raise_for_status()
+        return next((s["host"] for s in r.json()["services"] if s["status"] == "enabled" and not s.get("forced_down")), None)
+    except Exception as exc:
+        log.warning("could not pick a compute host: %s", exc)
+        return None
 
+
+def lb_state(db: Session, lb: LoadBalancer, with_pem: bool = False) -> list[dict]:
+    """The whole desired state of one LB as a tree (see drivers/base.py); drivers and lb-worker both consume it."""
+    out = []
+    pools = {p.id: p for p in db.query(Pool).filter_by(load_balancer_id=lb.id)}
+    names = _port_names() if lb.lb_type == "NLB" else {}
+    for ls in db.query(Listener).filter_by(load_balancer_id=lb.id).order_by(Listener.created_at):
+        d = {**_listener_to_dict(ls, db, with_pem), "pools": [], "policies": []}
+        wanted = {p for p in [ls.default_pool_id] if p}
+        for pol in db.query(L7Policy).filter_by(listener_id=ls.id):
+            rules = [{"type": r.type, "compare_type": r.compare_type, "value": r.value}
+                     for r in db.query(L7Rule).filter_by(policy_id=pol.id)]
+            d["policies"].append({"action": pol.action, "redirect_pool_id": pol.redirect_pool_id,
+                                  "position": pol.position, "rules": rules})
+            if pol.redirect_pool_id:
+                wanted.add(pol.redirect_pool_id)
+        for pid in wanted:
+            p = pools.get(pid)
+            if not p:
+                continue
+            hm = db.query(HealthMonitor).filter_by(pool_id=p.id).first()
+            members = [{**_member_to_dict(m), "port_name": names.get(m.address)}
+                       for m in db.query(Member).filter_by(pool_id=p.id)]
+            d["pools"].append({**_pool_to_dict(p), "members": members, "health_monitor": _hm_to_dict(hm) if hm else None})
+        out.append(d)
+    return out
+
+
+def _apply_lb_state(db: Session, lb: LoadBalancer):
+    """Reconcile the data plane with the DB. NLB: OVN now. ALB: validate now, lb-worker applies it on its node."""
+    _get_driver(lb).apply(_lb_to_dict(lb), lb_state(db, lb))
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Load Balancers
@@ -502,21 +554,37 @@ def create_load_balancer(payload: LoadBalancerIn, current: CurrentUser, db: DB):
     project_id = _project_id(current)
 
     vip = _allocate_vip(payload.vip_network_id, payload.vip_subnet_id)
-    vip_address = vip.get("fixed_ips", [{}])[0].get("ip_address")
-    vip_port_id = vip.get("id")
-
     lb = LoadBalancer(
         name=payload.name,
         project_id=project_id,
         lb_type=payload.lb_type,
-        vip_address=vip_address,
+        vip_address=vip["ip"],
         vip_network_id=payload.vip_network_id,
-        vip_port_id=vip_port_id,
+        vip_port_id=vip["id"],
+        vip_port_name=vip["name"],
+        vip_mac=vip["mac_address"],
+        vip_switch=vip["switch"],
+        vip_prefix=vip["prefix"],
+        vip_gateway=vip["gateway"],
+        host=_pick_host() if payload.lb_type == "ALB" else None,
         provisioning_status="ACTIVE",
         operating_status="ONLINE",
     )
+    if payload.lb_type == "ALB" and not lb.host:
+        _release_vip(lb.__class__(vip_port_id=vip["id"]))
+        raise HTTPException(status_code=503, detail="no enabled compute node to run the ALB on")
     db.add(lb)
     db.commit()
+    if payload.floating_network:
+        try:
+            fip = _net("POST", "/floating-ips", json={"external_network": payload.floating_network})
+            lb.vip_floating_ip_id, lb.vip_floating_ip = fip["id"], fip["floating_ip_address"]
+            _net("POST", f"/floating-ips/{fip['id']}/associate", json={"port": vip["id"]})
+            db.commit()
+        except Exception as exc:
+            log.error("floating ip for LB %s failed: %s", lb.id, exc)
+            lb.provisioning_status = "ERROR"
+            db.commit()
 
     try:
         _apply_lb_state(db, lb)
@@ -551,18 +619,22 @@ def delete_load_balancer(ref: str, current: CurrentUser, db: DB):
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
 
-    driver = _get_driver(lb)
     try:
-        driver.delete_load_balancer(_lb_to_dict(lb))
+        _get_driver(lb).delete(_lb_to_dict(lb))
     except Exception as exc:
         log.warning("Driver delete failed for %s: %s", ref, exc)
 
-    _release_vip(lb.vip_port_id)
-    db.query(Member).filter(Member.pool_id.in_(
-        db.query(Pool.id).filter_by(load_balancer_id=lb.id)
-    )).delete(synchronize_session=False)
+    _release_vip(lb)
+    pool_ids = db.query(Pool.id).filter_by(load_balancer_id=lb.id)
+    db.query(Member).filter(Member.pool_id.in_(pool_ids)).delete(synchronize_session=False)
+    db.query(HealthMonitor).filter(HealthMonitor.pool_id.in_(pool_ids)).delete(synchronize_session=False)
+    ls_ids = db.query(Listener.id).filter_by(load_balancer_id=lb.id)
+    pol_ids = db.query(L7Policy.id).filter(L7Policy.listener_id.in_(ls_ids))
+    db.query(L7Rule).filter(L7Rule.policy_id.in_(pol_ids)).delete(synchronize_session=False)
+    db.query(L7Policy).filter(L7Policy.listener_id.in_(ls_ids)).delete(synchronize_session=False)
     db.query(Pool).filter_by(load_balancer_id=lb.id).delete()
     db.query(Listener).filter_by(load_balancer_id=lb.id).delete()
+    db.query(LBCertificate).filter_by(load_balancer_id=lb.id).delete()
     db.delete(lb)
     db.commit()
     return {"status": "deleted", "id": ref}
@@ -618,8 +690,7 @@ def create_listener(lb_ref: str, payload: ListenerIn, current: CurrentUser, db: 
     db.commit()
 
     try:
-        driver = _get_driver(lb)
-        driver.apply_listener(_lb_to_dict(lb), {**_listener_to_dict(ls, db), "members": []})
+        _apply_lb_state(db, lb)
     except Exception as exc:
         log.error("Failed to apply listener %s: %s", ls.id, exc)
 
@@ -659,14 +730,14 @@ def create_pool(ls_ref: str, payload: PoolIn, current: CurrentUser, db: DB):
         server_group_id=payload.server_group_id,
     )
     db.add(pool)
-    ls.default_pool_id = pool.id
+    db.flush()  # assigns pool.id
+    ls.default_pool_id = ls.default_pool_id or pool.id  # later pools are targets for L7 policies
     db.commit()
 
     members: list[dict] = []
     if payload.members:
-        for idx, item in enumerate(payload.members):
+        for item in payload.members:
             m_dict = {
-                "name": item.name or f"member-{idx+1}",
                 "address": item.address,
                 "protocol_port": item.protocol_port or payload.protocol_port,
                 "instance_id": item.instance_id,
@@ -686,10 +757,7 @@ def create_pool(ls_ref: str, payload: PoolIn, current: CurrentUser, db: DB):
         db.commit()
 
     try:
-        driver = _get_driver(lb)
-        hms = db.query(HealthMonitor).filter_by(pool_id=pool.id).all()
-        ls_dict = {**_listener_to_dict(ls), "health_monitors": [_hm_to_dict(h) for h in hms]}
-        driver.apply_pool(_lb_to_dict(lb), ls_dict, _pool_to_dict(pool), members)
+        _apply_lb_state(db, lb)
     except Exception as exc:
         log.error("Failed to apply pool %s: %s", pool.id, exc)
 
@@ -830,6 +898,168 @@ def sync_pool_members(pool_ref: str, current: CurrentUser, db: DB):
 
     return {"members": members}
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Pool update, deletes, L7 policies and rules
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _reapply(db, lb):
+    try:
+        _apply_lb_state(db, lb)
+    except Exception as exc:
+        log.error("Failed to apply LB %s: %s", lb.id, exc)
+
+
+def _own_lb(db, current, lb_ref: str) -> LoadBalancer:
+    lb = db.query(LoadBalancer).filter_by(id=lb_ref).first()
+    if not lb or (current.get("role") != "admin" and lb.project_id != _project_id(current)):
+        raise HTTPException(status_code=404, detail="load balancer not found")
+    return lb
+
+
+def _own_listener(db, current, ls_ref: str):
+    ls = db.query(Listener).filter_by(id=ls_ref).first()
+    if not ls:
+        raise HTTPException(status_code=404, detail="listener not found")
+    return ls, _own_lb(db, current, ls.load_balancer_id)
+
+
+@app.put("/pools/{pool_ref}")
+def update_pool(pool_ref: str, payload: PoolUpdate, current: CurrentUser, db: DB):
+    pool, lb = _own_pool(db, current, pool_ref)
+    pool.lb_algorithm = payload.lb_algorithm
+    db.commit()
+    _reapply(db, lb)
+    return _pool_to_dict(pool)
+
+
+@app.delete("/pools/{pool_ref}", status_code=204)
+def delete_pool(pool_ref: str, current: CurrentUser, db: DB):
+    pool, lb = _own_pool(db, current, pool_ref)
+    if db.query(L7Policy).filter_by(redirect_pool_id=pool.id).first():
+        raise HTTPException(status_code=409, detail="pool is the target of an L7 policy")
+    db.query(Listener).filter_by(default_pool_id=pool.id).update({"default_pool_id": None})
+    db.query(Member).filter_by(pool_id=pool.id).delete()
+    db.query(HealthMonitor).filter_by(pool_id=pool.id).delete()
+    db.delete(pool)
+    db.commit()
+    _reapply(db, lb)
+
+
+@app.delete("/pools/{pool_ref}/health-monitors", status_code=204)
+def delete_health_monitor(pool_ref: str, current: CurrentUser, db: DB):
+    pool, lb = _own_pool(db, current, pool_ref)
+    if not db.query(HealthMonitor).filter_by(pool_id=pool.id).delete():
+        raise HTTPException(status_code=404, detail="pool has no health monitor")
+    db.commit()
+    _reapply(db, lb)
+
+
+@app.delete("/listeners/{ls_ref}", status_code=204)
+def delete_listener(ls_ref: str, current: CurrentUser, db: DB):
+    ls, lb = _own_listener(db, current, ls_ref)
+    if db.query(Pool).filter_by(listener_id=ls.id).first():
+        raise HTTPException(status_code=409, detail="delete the listener's pools first")
+    pol_ids = db.query(L7Policy.id).filter_by(listener_id=ls.id)
+    db.query(L7Rule).filter(L7Rule.policy_id.in_(pol_ids)).delete(synchronize_session=False)
+    db.query(L7Policy).filter_by(listener_id=ls.id).delete()
+    db.delete(ls)
+    db.commit()
+    _reapply(db, lb)
+
+
+@app.post("/listeners/{ls_ref}/l7policies", status_code=201)
+def create_l7policy(ls_ref: str, payload: L7PolicyIn, current: CurrentUser, db: DB):
+    ls, lb = _own_listener(db, current, ls_ref)
+    if lb.lb_type != "ALB" or ls.protocol not in ("HTTP", "HTTPS"):
+        raise HTTPException(status_code=400, detail="L7 policies need an ALB with an HTTP/HTTPS listener")
+    if payload.action == "REDIRECT_TO_POOL":
+        pool = payload.redirect_pool_id and db.query(Pool).filter_by(id=payload.redirect_pool_id, load_balancer_id=lb.id).first()
+        if not pool:
+            raise HTTPException(status_code=400, detail="redirect_pool_id must be a pool of this load balancer")
+    pol = L7Policy(listener_id=ls.id, name=payload.name, action=payload.action, position=payload.position,
+                   redirect_pool_id=payload.redirect_pool_id if payload.action == "REDIRECT_TO_POOL" else None)
+    db.add(pol)
+    db.commit()
+    _reapply(db, lb)
+    return {"id": pol.id, "listener_id": ls.id, "name": pol.name, "action": pol.action, "position": pol.position,
+            "redirect_pool_id": pol.redirect_pool_id}
+
+
+def _policy(db, current, pol_ref: str):
+    pol = db.query(L7Policy).filter_by(id=pol_ref).first()
+    if not pol:
+        raise HTTPException(status_code=404, detail="l7 policy not found")
+    ls, lb = _own_listener(db, current, pol.listener_id)
+    return pol, lb
+
+
+@app.get("/listeners/{ls_ref}/l7policies")
+def list_l7policies(ls_ref: str, current: CurrentUser, db: DB):
+    ls, _ = _own_listener(db, current, ls_ref)
+    out = []
+    for p in db.query(L7Policy).filter_by(listener_id=ls.id).order_by(L7Policy.position):
+        rules = [{"id": r.id, "type": r.type, "compare_type": r.compare_type, "value": r.value}
+                 for r in db.query(L7Rule).filter_by(policy_id=p.id)]
+        out.append({"id": p.id, "name": p.name, "action": p.action, "position": p.position,
+                    "redirect_pool_id": p.redirect_pool_id, "rules": rules})
+    return {"l7policies": out}
+
+
+@app.delete("/l7policies/{pol_ref}", status_code=204)
+def delete_l7policy(pol_ref: str, current: CurrentUser, db: DB):
+    pol, lb = _policy(db, current, pol_ref)
+    db.query(L7Rule).filter_by(policy_id=pol.id).delete()
+    db.delete(pol)
+    db.commit()
+    _reapply(db, lb)
+
+
+@app.post("/l7policies/{pol_ref}/rules", status_code=201)
+def create_l7rule(pol_ref: str, payload: L7RuleIn, current: CurrentUser, db: DB):
+    pol, lb = _policy(db, current, pol_ref)
+    rule = L7Rule(policy_id=pol.id, type=payload.type, compare_type=payload.compare_type, value=payload.value)
+    db.add(rule)
+    db.commit()
+    _reapply(db, lb)
+    return {"id": rule.id, "policy_id": pol.id, "type": rule.type, "compare_type": rule.compare_type, "value": rule.value}
+
+
+@app.delete("/l7policies/{pol_ref}/rules/{rule_id}", status_code=204)
+def delete_l7rule(pol_ref: str, rule_id: str, current: CurrentUser, db: DB):
+    pol, lb = _policy(db, current, pol_ref)
+    if not db.query(L7Rule).filter_by(id=rule_id, policy_id=pol.id).delete():
+        raise HTTPException(status_code=404, detail="l7 rule not found")
+    db.commit()
+    _reapply(db, lb)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# lb-worker (runs haproxy for ALBs on a compute node) -- internal
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class MemberStatusIn(BaseModel):
+    statuses: dict[str, str]  # member id -> ONLINE | OFFLINE
+
+
+@app.get("/internal/lb-agent/{host}", dependencies=[InternalAuth])
+def lb_agent_state(host: str, db: DB):
+    """Everything lb-worker on `host` must be running: one entry per ALB placed there."""
+    out = []
+    for lb in db.query(LoadBalancer).filter_by(lb_type="ALB", host=host):
+        if lb.provisioning_status == "ERROR" and not lb.vip_address:
+            continue
+        out.append({"lb": _lb_to_dict(lb), "listeners": lb_state(db, lb, with_pem=True)})
+    return {"load_balancers": out}
+
+
+@app.post("/internal/lb-agent/{host}/members", dependencies=[InternalAuth])
+def lb_agent_report(host: str, payload: MemberStatusIn, db: DB):
+    for mid, st in payload.statuses.items():
+        if st in ("ONLINE", "OFFLINE"):
+            db.query(Member).filter_by(id=mid).update({"operating_status": st})
+    db.commit()
+    return {"updated": len(payload.statuses)}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Health

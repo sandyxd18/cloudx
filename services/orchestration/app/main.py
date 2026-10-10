@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import (
@@ -230,6 +230,17 @@ class ScalingHistoryOut(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+def _compute(request: Request | None, method: str, path: str, body: dict | None = None) -> dict:
+    """Call compute-api as the caller, so a manual scale really creates or deletes the VM."""
+    from .engine import Api, ResourceFailure
+    if request is None or not request.headers.get("Authorization"):
+        raise HTTPException(status_code=401, detail="Authorization header required")
+    try:
+        return Api(request.headers["Authorization"]).call("compute", method, path, body, ok=(200, 201, 202, 204, 404))
+    except ResourceFailure as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 def _own_group(db, user, group_id: str) -> ScalingGroup:
     group = db.get(ScalingGroup, group_id)
     if not group or (user.get("role") != "admin" and group.project_id != user.get("project_id")):
@@ -292,15 +303,16 @@ def delete_scaling_group(user: CurrentUser, group_id: str, db: DB):
 
 @app.post("/scaling-groups/{group_id}/scale-out", response_model=ScalingGroupInstanceOut)
 @app.post("/orchestration/scaling-groups/{group_id}/scale-out", response_model=ScalingGroupInstanceOut)
-def manual_scale_out(user: CurrentUser, group_id: str, db: DB):
+def manual_scale_out(user: CurrentUser, group_id: str, db: DB, request: Request = None):
     group = _own_group(db, user, group_id)
 
     count_before = len(group.instances)
     if count_before >= group.max_instances:
         raise HTTPException(status_code=400, detail="Scaling group already at max_instances limit")
 
-    server_id = str(uuid.uuid4())
     server_name = f"{group.name}-asg-{count_before + 1}"
+    server_id = _compute(request, "POST", "/servers", {"name": server_name, "image": group.image_id,
+                                                      "flavor": group.flavor_id, "network": group.network_id})["id"]
     inst = ScalingGroupInstance(
         group_id=group.id,
         server_id=server_id,
@@ -326,7 +338,7 @@ def manual_scale_out(user: CurrentUser, group_id: str, db: DB):
 
 @app.post("/scaling-groups/{group_id}/scale-in", status_code=status.HTTP_200_OK)
 @app.post("/orchestration/scaling-groups/{group_id}/scale-in", status_code=status.HTTP_200_OK)
-def manual_scale_in(user: CurrentUser, group_id: str, db: DB):
+def manual_scale_in(user: CurrentUser, group_id: str, db: DB, request: Request = None):
     group = _own_group(db, user, group_id)
 
     count_before = len(group.instances)
@@ -335,6 +347,7 @@ def manual_scale_in(user: CurrentUser, group_id: str, db: DB):
 
     inst_to_remove = group.instances[-1]
     server_id = inst_to_remove.server_id
+    _compute(request, "DELETE", f"/servers/{server_id}")
     db.delete(inst_to_remove)
 
     group.last_scale_in_at = datetime.now(timezone.utc)
@@ -397,6 +410,9 @@ def record_scaling_event(admin: AdminUser, group_id: str, data: ScalingEventIn, 
     db.commit()
     return {"status": "recorded"}
 
+
+from . import stacks  # noqa: E402  (stacks imports Base/DB from here, so it must come last)
+app.include_router(stacks.router)
 
 try:
     from shared.metrics import setup_metrics

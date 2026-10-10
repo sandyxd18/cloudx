@@ -1,4 +1,4 @@
-﻿import importlib
+import importlib
 
 import pytest
 from fastapi import HTTPException
@@ -12,6 +12,7 @@ def test_scaling_group_is_project_scoped(monkeypatch, tmp_path):
     import services.orchestration.app.main as m
 
     m = importlib.reload(m)
+    importlib.reload(m.stacks)  # re-register its tables on the fresh Base
     m.Base.metadata.create_all(bind=m.engine)
     with m.SessionLocal() as db:
         g = m.create_scaling_group(A, m.ScalingGroupIn(name="g", image_id="i", flavor_id="f", network_id="n"), db)

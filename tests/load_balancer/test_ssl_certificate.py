@@ -1,5 +1,4 @@
 import importlib
-from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -43,4 +42,14 @@ def test_load_balancer_ssl_certificate(monkeypatch, tmp_path):
     data = res_ls.json()
     assert data["certificate_id"] == cert_id
     assert data["ssl_cert_path"] is not None
-    assert Path(data["ssl_cert_path"]).exists()
+    assert "FAKE_KEY" not in res_ls.text  # the key never appears in the public API
+
+    # lb-worker gets the PEM through the internal endpoint and writes it at ssl_cert_path itself
+    from shared.auth_middleware import require_internal
+    lb_main.app.dependency_overrides[require_internal] = lambda: {}
+    with lb_main.SessionLocal() as db:
+        db.query(lb_main.LoadBalancer).filter_by(id="lb-ssl-1").update({"host": "n1"})
+        db.commit()
+    got = client.get("/internal/lb-agent/n1").json()["load_balancers"][0]["listeners"][0]
+    assert got["ssl_cert_path"] == data["ssl_cert_path"] and "FAKE_KEY" in got["ssl_pem"]
+    assert client.delete("/load-balancers/lb-ssl-1").status_code == 200  # cert rows must not block the delete

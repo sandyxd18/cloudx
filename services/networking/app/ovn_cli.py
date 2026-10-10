@@ -93,24 +93,12 @@ def ovs(*args: str, check: bool = True) -> str:
     return proc.stdout.strip()
 
 def get_local_chassis_id() -> str | None:
-    """Get the chassis ID of the local OVN chassis from SB DB (the node running ovn-controller)."""
-    try:
-        OVN_SB_DB = os.environ.get("OVN_SB_DB", "tcp:127.0.0.1:6642")
-        cmd = ["ovn-sbctl", f"--db={OVN_SB_DB}", "--timeout=8", "--format=list", "--columns=name", "find", "Chassis"]
-        proc = run(cmd, check=False, timeout=OVN_TIMEOUT)
-        if proc.returncode != 0 or not proc.stdout.strip():
-            return None
-        # Returns lines like: name : "ddec5957-..."
-        # Must strip surrounding quotes from the value (ovn-sbctl --format=list wraps strings in "")
-        for line in proc.stdout.strip().splitlines():
-            if line.startswith("name"):
-                raw = line.split(":", 1)[-1].strip()
-                return raw.strip('"')  # Remove surrounding quotes e.g. "uuid" → uuid
-        return None
-    except Exception as exc:
-        print(f"get_local_chassis_id failed: {exc}", flush=True)
-        return None
-
+    """Chassis to pin the gateway to: this node's own (OVS system-id) if it runs ovn-controller, else the first one in SB."""
+    proc = run(["ovn-sbctl", f"--db={os.environ.get('OVN_SB_DB', 'tcp:127.0.0.1:6642')}", "--timeout=8", "--bare",
+                "--columns=name", "find", "Chassis"], check=False, timeout=OVN_TIMEOUT)
+    names = [n.strip('"') for n in proc.stdout.split()] if proc.returncode == 0 else []
+    local = ovs("get", "open_vswitch", ".", "external_ids:system-id", check=False).strip('"') if _OVS_VSCTL else ""
+    return local if local in names else (names[0] if names else None)
 def localnet_port_name(network_name: str) -> str:
     return f"{network_name}-localnet"
 

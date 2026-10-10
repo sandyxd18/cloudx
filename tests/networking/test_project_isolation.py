@@ -74,3 +74,14 @@ def test_ipv6_rule_with_ipv4_prefix_rejected(api):
     res = api.client.post("/security-groups/sg-a/rules", json={"direction": "ingress", "protocol": "tcp",
                                                                 "ethertype": "IPv6", "remote_ip_prefix": "10.0.0.0/8"})
     assert res.status_code == 400
+
+def test_trunk_vpn_and_peering_are_project_scoped(api):
+    c = api.client
+    assert c.post("/trunks", json={"name": "t", "port_id": "p-b"}).status_code == 404          # foreign parent port
+    assert c.post("/routers/rtr-b/peering", json={"name": "x", "accepter_router_id": "r-a"}).status_code == 404
+    assert c.post("/vpn/ikepolicies", json={"name": "ike"}).status_code == 201
+    pid = c.get("/vpn/ikepolicies").json()[0]["id"]
+    api.user["project_id"] = "proj-b"
+    assert c.get(f"/vpn/ikepolicies/{pid}").status_code == 404
+    assert c.delete(f"/vpn/ikepolicies/{pid}").status_code == 404
+    assert c.get("/vpn/ikepolicies").json() == []

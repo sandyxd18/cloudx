@@ -137,6 +137,8 @@ def init_db():
         RatingSheet(resource_type="floating_ip", unit="hour", rate_per_unit=Decimal("500.0000"), description="Floating IP per hour", currency="IDR"),
         RatingSheet(resource_type="load_balancer", unit="hour", rate_per_unit=Decimal("750.0000"), description="Load balancer per hour", currency="IDR"),
     ]
+    for d in defaults:  # BILLING_RATE_<TYPE> (billing.conf: billing_rate_<type>) overrides the seed; runtime edits: PATCH rating-sheets
+        d.rate_per_unit = Decimal(os.getenv(f"BILLING_RATE_{d.resource_type.upper()}", str(d.rate_per_unit)))
     with SessionLocal() as db:
         if db.get_bind().dialect.name == "postgresql":
             # every gunicorn worker runs init_db at startup; without the lock they all see an empty table and seed it

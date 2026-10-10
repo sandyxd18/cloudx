@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 
+from ..access import own
 from ..db import DB
 from ..models import IKEPolicy, IPsecPolicy, Router, VPNSiteConnection
 from ..schemas import (
@@ -18,6 +19,12 @@ from ..serializers import require_by_ref
 
 router = APIRouter()
 
+
+def _pol(db, current: dict, model, pid: str, label: str):
+    obj = db.get(model, pid)
+    if not obj:
+        raise HTTPException(status_code=404, detail=f"{label} not found")
+    return own(current, obj, label)
 
 def _own_conn(db, current: dict, conn_id: str) -> VPNSiteConnection:
     conn = db.get(VPNSiteConnection, conn_id)
@@ -52,17 +59,13 @@ def list_ike_policies(current: CurrentUser, db: DB):
     return db.scalars(q).all()
 
 @router.get("/vpn/ikepolicies/{policy_id}", response_model=IKEPolicyOut)
-def get_ike_policy(policy_id: str, db: DB):
-    ike = db.get(IKEPolicy, policy_id)
-    if not ike:
-        raise HTTPException(status_code=404, detail="IKE policy not found")
+def get_ike_policy(policy_id: str, current: CurrentUser, db: DB):
+    ike = _pol(db, current, IKEPolicy, policy_id, "IKE policy")
     return ike
 
 @router.delete("/vpn/ikepolicies/{policy_id}", status_code=204)
-def delete_ike_policy(policy_id: str, db: DB):
-    ike = db.get(IKEPolicy, policy_id)
-    if not ike:
-        raise HTTPException(status_code=404, detail="IKE policy not found")
+def delete_ike_policy(policy_id: str, current: CurrentUser, db: DB):
+    ike = _pol(db, current, IKEPolicy, policy_id, "IKE policy")
     db.delete(ike)
     db.commit()
 
@@ -91,30 +94,22 @@ def list_ipsec_policies(current: CurrentUser, db: DB):
     return db.scalars(q).all()
 
 @router.get("/vpn/ipsecpolicies/{policy_id}", response_model=IPsecPolicyOut)
-def get_ipsec_policy(policy_id: str, db: DB):
-    ipsec = db.get(IPsecPolicy, policy_id)
-    if not ipsec:
-        raise HTTPException(status_code=404, detail="IPsec policy not found")
+def get_ipsec_policy(policy_id: str, current: CurrentUser, db: DB):
+    ipsec = _pol(db, current, IPsecPolicy, policy_id, "IPsec policy")
     return ipsec
 
 @router.delete("/vpn/ipsecpolicies/{policy_id}", status_code=204)
-def delete_ipsec_policy(policy_id: str, db: DB):
-    ipsec = db.get(IPsecPolicy, policy_id)
-    if not ipsec:
-        raise HTTPException(status_code=404, detail="IPsec policy not found")
+def delete_ipsec_policy(policy_id: str, current: CurrentUser, db: DB):
+    ipsec = _pol(db, current, IPsecPolicy, policy_id, "IPsec policy")
     db.delete(ipsec)
     db.commit()
 
 @router.post("/vpn/site-connections", response_model=VPNSiteConnectionOut, status_code=201)
 def create_vpn_site_connection(payload: VPNSiteConnectionIn, current: CurrentUser, db: DB):
     project_id = current.get("project_id", current.get("tenant_id", "default"))
-    router = require_by_ref(db, Router, payload.router_id, "router")
-    ike = db.get(IKEPolicy, payload.ikepolicy_id)
-    if not ike:
-        raise HTTPException(status_code=404, detail="IKE policy not found")
-    ipsec = db.get(IPsecPolicy, payload.ipsecpolicy_id)
-    if not ipsec:
-        raise HTTPException(status_code=404, detail="IPsec policy not found")
+    router = own(current, require_by_ref(db, Router, payload.router_id, "router"), "router")
+    ike = _pol(db, current, IKEPolicy, payload.ikepolicy_id, "IKE policy")
+    ipsec = _pol(db, current, IPsecPolicy, payload.ipsecpolicy_id, "IPsec policy")
 
     conn = VPNSiteConnection(
         name=payload.name,
