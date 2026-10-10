@@ -68,3 +68,16 @@ def test_ghosts_billed_until_mid_interval(w):
     assert w.overlap_hours(None, out[1]["deleted_at"], S, E) == Decimal("0.5")
     assert list(state["servers"]) == ["b"]  # next run forgets "a" -> billed once
     assert w._with_ghosts("servers", None, state, S, E) == [] and list(state["servers"]) == ["b"]  # API error keeps snapshot
+
+
+def test_load_balancer_per_type_rates(w):
+    lbs = [
+        {"id": "lb1", "project_id": "p", "provisioning_status": "ACTIVE", "lb_type": "NLB", "created_at": "2026-10-01T10:00:00"},
+        {"id": "lb2", "project_id": "p", "provisioning_status": "ACTIVE", "lb_type": "ALB", "created_at": "2026-10-01T10:00:00"},
+        {"id": "lb3", "project_id": "p", "provisioning_status": "ACTIVE", "created_at": "2026-10-01T10:00:00"},
+    ]
+    recs = w._aggregate_load_balancer_usage(lbs, S, E)
+    assert len(recs) == 3
+    assert recs[0]["resource_type"] == "load_balancer_nlb"
+    assert recs[1]["resource_type"] == "load_balancer_alb"
+    assert recs[2]["resource_type"] == "load_balancer"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+from shared.db import get_db_url
 from shared.config import load_service_config
 load_service_config("key-manager-api")
 
@@ -33,10 +34,11 @@ from shared.auth_middleware import require_auth
 from shared.schema import require_schema
 
 from shared.request_id_middleware import RequestIDMiddleware
+from shared.cors import cors_origins
 
 log = logging.getLogger("key-manager-api")
 
-DATABASE_URL = os.getenv("KEY_MANAGER_DATABASE_URL", os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx_key_manager"))
+DATABASE_URL = get_db_url("cloudx_key_manager", "KEY_MANAGER_DATABASE_URL")
 MASTER_KEY = os.environ["KEY_MANAGER_MASTER_KEY"]
 
 # Derive a 32-byte urlsafe base64 Fernet key from MASTER_KEY
@@ -93,7 +95,7 @@ if RequestIDMiddleware:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
+    allow_origins=cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

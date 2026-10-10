@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os
+from shared.db import get_db_url
 from shared.config import load_service_config
 load_service_config("orchestration-api")
 
@@ -33,10 +33,11 @@ from shared.auth_middleware import AdminUser, CurrentUser
 from shared.schema import require_schema
 
 from shared.request_id_middleware import RequestIDMiddleware
+from shared.cors import cors_origins
 
 log = logging.getLogger("orchestration-api")
 
-DATABASE_URL = os.getenv("ORCHESTRATION_DATABASE_URL", os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx_orchestration"))
+DATABASE_URL = get_db_url("cloudx_orchestration", "ORCHESTRATION_DATABASE_URL")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -133,7 +134,7 @@ if RequestIDMiddleware:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
+    allow_origins=cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -143,6 +144,8 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     init_db()
+    with SessionLocal() as db:
+        stacks.recover_stuck_stacks(db)
     log.info("Orchestration API started")
 
 

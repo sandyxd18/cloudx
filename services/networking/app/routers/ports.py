@@ -35,7 +35,7 @@ def _lsp_addresses(port: Port) -> list[str]:
 
 @router.post("/ports", status_code=201)
 def create_port(payload: PortIn, current: CurrentUser, db: DB):
-    if get_by_ref(db, Port, payload.name):
+    if get_by_ref(db, Port, payload.name, current=current):
         raise HTTPException(status_code=409, detail="port already exists")
     check_quota(db, current.get("project_id"), Port, "ports")
     network = require_owned(current, db, Network, payload.network, "network")
@@ -156,7 +156,7 @@ def enable_port_security(ref: str, current: CurrentUser, db: DB):
     port = require_owned(current, db, Port, ref, "port")
     port.port_security_enabled = True
     if not parse_id_list(port.security_group_ids):
-        default_group = get_by_ref(db, SecurityGroup, "default")
+        default_group = get_by_ref(db, SecurityGroup, "default", current=current)
         if default_group:
             port.security_group_ids = format_id_list([default_group.id])
     db.commit()

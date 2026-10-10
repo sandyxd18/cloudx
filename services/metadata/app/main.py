@@ -11,11 +11,10 @@ Serves:
 from shared.config import load_service_config
 load_service_config("metadata-api")
 
-import os
-
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
+from shared.cors import cors_origins
 
 from .metadata_service import (
     default_user_data,
@@ -41,7 +40,7 @@ app = FastAPI(title="cloudx metadata-api", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
+    allow_origins=cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )

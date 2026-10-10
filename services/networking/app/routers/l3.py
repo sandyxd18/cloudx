@@ -36,7 +36,7 @@ def _snat(router_name: str, router_ip: str, port_ip: str) -> None:
 
 @router.post("/routers", status_code=201)
 def create_router(payload: RouterIn, current: CurrentUser, db: DB):
-    if get_by_ref(db, Router, payload.name):
+    if get_by_ref(db, Router, payload.name, current=current):
         raise HTTPException(status_code=409, detail="router already exists")
     check_quota(db, current.get("project_id"), Router, "routers")
     router = Router(name=payload.name, project_id=current.get("project_id"))

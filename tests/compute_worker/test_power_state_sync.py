@@ -103,3 +103,29 @@ def test_sync_power_states_recovers_shutoff_to_active(monkeypatch):
     main.sync_power_states()
 
     assert updates == [("srv-1", {"status": "ACTIVE"})]
+
+
+def test_reconcile_stale_domains_destroys_domain_when_api_host_differs(monkeypatch):
+    """When local hypervisor has domain for an instance whose host in API is another node, destroy it."""
+    fastapi = pytest.importorskip("fastapi")
+    assert fastapi
+    from services.compute_worker.app import main
+
+    local_domains = {"mini-os-evac-123": "RUNNING", "mini-os-local-456": "RUNNING"}
+    monkeypatch.setattr(main.libvirt_driver, "get_all_domain_states", lambda: local_domains)
+
+    class FakeResponse:
+        status_code = 200
+        def json(self):
+            return {"servers": [
+                {"id": "s1", "host": "other-host", "libvirt_domain_name": "mini-os-evac-123", "status": "ACTIVE"},
+                {"id": "s2", "host": main.COMPUTE_HOST, "libvirt_domain_name": "mini-os-local-456", "status": "ACTIVE"},
+            ]}
+
+    monkeypatch.setattr(main.requests, "get", lambda url, **kw: FakeResponse())
+    deleted_domains = []
+    monkeypatch.setattr(main.libvirt_driver, "delete", lambda name: deleted_domains.append(name))
+
+    main.reconcile_stale_domains()
+
+    assert deleted_domains == ["mini-os-evac-123"]

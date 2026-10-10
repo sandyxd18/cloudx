@@ -266,16 +266,70 @@ def _del(svc, path):
     return lambda api, pid: api.call(svc, "DELETE", f"{path}/{pid}", ok=(200, 202, 204, 404))
 
 
+def _server_u(api, pid, old_p, new_p):
+    if old_p.get("user_data") != new_p.get("user_data"):
+        api.call("compute", "PUT", f"/servers/{pid}/user-data", {"user_data": new_p.get("user_data", "")})
+    return pid, {}
+
+
+def _router_u(api, pid, old_p, new_p):
+    if old_p.get("routes") != new_p.get("routes"):
+        api.call("net", "PUT", f"/routers/{pid}", {"routes": new_p.get("routes", [])})
+    return pid, {}
+
+
+def _asg_c(api, p):
+    size = int(p.get("size", 1))
+    prefix = p.get("name", "asg")
+    server_ids = []
+    for i in range(size):
+        sp = {**p, "name": f"{prefix}-{i}"}
+        sid, _ = _server_c(api, sp)
+        server_ids.append(sid)
+    return ",".join(server_ids), {"size": size, "server_ids": server_ids}
+
+
+def _asg_d(api, pid):
+    if not pid:
+        return
+    for sid in pid.split(","):
+        if sid.strip():
+            _server_d(api, sid.strip())
+
+
+def _asg_u(api, pid, old_p, new_p):
+    old_ids = [x.strip() for x in (pid or "").split(",") if x.strip()]
+    old_size = len(old_ids)
+    new_size = int(new_p.get("size", 1))
+    prefix = new_p.get("name", "asg")
+
+    if new_size > old_size:
+        new_ids = list(old_ids)
+        for i in range(old_size, new_size):
+            sp = {**new_p, "name": f"{prefix}-{i}"}
+            sid, _ = _server_c(api, sp)
+            new_ids.append(sid)
+        return ",".join(new_ids), {"size": new_size, "server_ids": new_ids}
+    elif new_size < old_size:
+        keep_ids = old_ids[:new_size]
+        drop_ids = old_ids[new_size:]
+        for sid in drop_ids:
+            _server_d(api, sid)
+        return ",".join(keep_ids), {"size": new_size, "server_ids": keep_ids}
+    return pid, {"size": new_size, "server_ids": old_ids}
+
+
 TYPES = {
-    "OS::Neutron::Net": (_net_c, _del("net", "/networks")),
-    "OS::Neutron::Subnet": (_subnet_c, _del("net", "/subnets")),
-    "OS::Neutron::Router": (_router_c, _router_d),
-    "OS::Neutron::RouterInterface": (_iface_c, _iface_d),
-    "OS::Neutron::FloatingIP": (_fip_c, _del("net", "/floating-ips")),
-    "OS::Neutron::FloatingIPAssociation": (_fipassoc_c, _fipassoc_d),
-    "OS::Neutron::SecurityGroup": (_sg_c, _del("net", "/security-groups")),
-    "OS::Cinder::Volume": (_vol_c, _vol_d),
-    "OS::Nova::Server": (_server_c, _server_d),
+    "OS::Neutron::Net": (_net_c, _del("net", "/networks"), None),
+    "OS::Neutron::Subnet": (_subnet_c, _del("net", "/subnets"), None),
+    "OS::Neutron::Router": (_router_c, _router_d, _router_u),
+    "OS::Neutron::RouterInterface": (_iface_c, _iface_d, None),
+    "OS::Neutron::FloatingIP": (_fip_c, _del("net", "/floating-ips"), None),
+    "OS::Neutron::FloatingIPAssociation": (_fipassoc_c, _fipassoc_d, None),
+    "OS::Neutron::SecurityGroup": (_sg_c, _del("net", "/security-groups"), None),
+    "OS::Cinder::Volume": (_vol_c, _vol_d, None),
+    "OS::Nova::Server": (_server_c, _server_d, _server_u),
+    "Cloudx::AutoScalingGroup": (_asg_c, _asg_d, _asg_u),
 }
 
 
@@ -325,3 +379,92 @@ def create(template, params, stack_name, api, record, rollback=True, state=None)
 
 def dumps(v) -> str:
     return json.dumps(v, default=str)
+
+
+def _can_update_inplace(rtype: str, old_p: dict, new_p: dict) -> bool:
+    if rtype == "OS::Nova::Server":
+        diff_keys = {k for k in set(old_p) | set(new_p) if old_p.get(k) != new_p.get(k)}
+        return diff_keys.issubset({"user_data"})
+    elif rtype == "OS::Neutron::Router":
+        diff_keys = {k for k in set(old_p) | set(new_p) if old_p.get(k) != new_p.get(k)}
+        return diff_keys.issubset({"routes", "name"})
+    elif rtype == "Cloudx::AutoScalingGroup":
+        diff_keys = {k for k in set(old_p) | set(new_p) if old_p.get(k) != new_p.get(k)}
+        return diff_keys.issubset({"size", "name", "image", "flavor", "network"})
+    return False
+
+
+def update(old_template: dict, old_params: dict, new_template: dict, new_params: dict, stack_name: str, api, record, state=None):
+    """Update stack resources. In-place update where supported, replace (delete + create) where required."""
+    state = dict(state or {})
+    before = {r["name"]: r for r in preview(old_template, old_params)}
+    after = {r["name"]: r for r in preview(new_template, new_params)}
+
+    old_names = set(before)
+    new_names = set(after)
+
+    gone = [n for n in reversed(order(old_template)) if n not in new_names]
+    common = [n for n in order(new_template) if n in old_names]
+
+    inplace_updates = []
+    replaces = []
+
+    for n in common:
+        if before[n] != after[n]:
+            rtype = new_template["resources"][n]["type"]
+            old_p = before[n]["properties"]
+            new_p = after[n]["properties"]
+            if _can_update_inplace(rtype, old_p, new_p):
+                inplace_updates.append((n, rtype, old_p, new_p))
+            else:
+                replaces.append(n)
+
+    to_delete = [n for n in reversed(order(old_template)) if n in gone or n in replaces]
+    for n in to_delete:
+        if n in state and state[n].get("id"):
+            pid = state[n]["id"]
+            rtype = old_template["resources"][n]["type"]
+            record(n, rtype, "DELETE_IN_PROGRESS")
+            try:
+                TYPES[rtype][1](api, pid)
+                record(n, rtype, "DELETE_COMPLETE")
+            except Exception as exc:
+                record(n, rtype, "DELETE_FAILED", str(exc)[:250])
+                return f"{n}: {exc}", state
+            del state[n]
+
+    for n, rtype, old_p, new_p in inplace_updates:
+        if n in state and state[n].get("id"):
+            pid = state[n]["id"]
+            record(n, rtype, "UPDATE_IN_PROGRESS", props=new_p)
+            try:
+                handler = TYPES[rtype][2]
+                res = handler(api, pid, old_p, new_p) if (len(TYPES[rtype]) > 2 and TYPES[rtype][2]) else (pid, {})
+                new_pid, attrs = res if isinstance(res, tuple) else (pid, res or {})
+                if new_pid:
+                    state[n]["id"] = new_pid
+                if attrs:
+                    state[n].update(attrs)
+                record(n, rtype, "UPDATE_COMPLETE", pid=state[n]["id"], props=new_p, attrs=state[n])
+            except Exception as exc:
+                record(n, rtype, "UPDATE_FAILED", str(exc)[:250])
+                return f"{n}: {exc}", state
+
+    for n in order(new_template):
+        if n in state:
+            continue
+        res = new_template["resources"][n]
+        rtype = res["type"]
+        try:
+            props = resolve(res.get("properties", {}), new_params, state)
+            props.setdefault("name", f"{stack_name}-{n}")
+            record(n, rtype, "CREATE_IN_PROGRESS", props=props)
+            pid, attrs = TYPES[rtype][0](api, props)
+        except Exception as exc:
+            err = f"{n}: {exc}"
+            record(n, rtype, "CREATE_FAILED", str(exc)[:250])
+            return err, state
+        state[n] = {"id": pid, **attrs}
+        record(n, rtype, "CREATE_COMPLETE", pid=pid, attrs=state[n])
+
+    return None, state

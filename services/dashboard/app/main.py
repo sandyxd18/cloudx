@@ -34,6 +34,7 @@ from pymemcache.client.base import PooledClient as MemcacheClient
 
 # Import shared RPC EventConsumer
 from shared.rpc import EventConsumer
+from shared.cors import cors_origins
 
 log = logging.getLogger("dashboard")
 
@@ -79,7 +80,7 @@ app = FastAPI(title="cloudx dashboard", version="1.0.0", docs_url=None, redoc_ur
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
+    allow_origins=cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,

@@ -2,10 +2,10 @@ from shared.config import load_service_config
 
 load_service_config("auth-api")
 
-import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from shared.request_id_middleware import RequestIDMiddleware
+from shared.cors import cors_origins
 from sqlalchemy import text
 
 from .bootstrap import _bootstrap
@@ -30,7 +30,7 @@ from .routers import (
 app = FastAPI(title="cloudx auth-api", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
+    allow_origins=cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )

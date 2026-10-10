@@ -35,4 +35,4 @@ def scope(q, model, current: dict):
 def require_owned(current: dict, db, model, ref: str, label: str):
     from .serializers import require_by_ref
 
-    return own(current, require_by_ref(db, model, ref, label), label)
+    return own(current, require_by_ref(db, model, ref, label, current=current), label)

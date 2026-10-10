@@ -317,28 +317,69 @@ def port_to_dict(db: Session, port: Port, current: dict | None = None) -> dict:
     """Alias that returns OS-compatible port dict (replaces old port_to_dict)."""
     return port_to_os_dict(db, port, current)
 
-def get_by_ref(db: Session, model, ref: str):
+def get_by_ref(db: Session, model, ref: str, current: dict | None = None):
     obj = db.get(model, ref)
     if obj:
         return obj
-    return db.scalar(select(model).where(model.name == ref))
 
-def get_floating_ip(db: Session, ref: str):
+    if not hasattr(model, "name"):
+        return None
+
+    matches = db.scalars(select(model).where(model.name == ref)).all()
+    if not matches:
+        return None
+
+    pid = current.get("project_id", current.get("tenant_id")) if current else None
+    role = current.get("role") if current else None
+
+    if pid:
+        proj_matches = [m for m in matches if getattr(m, "project_id", None) == pid]
+        if len(proj_matches) == 1:
+            return proj_matches[0]
+        if len(proj_matches) > 1:
+            lbl = getattr(model, "__tablename__", "resource")
+            raise HTTPException(status_code=409, detail=f"multiple {lbl} found with name '{ref}' in project")
+
+        fallback = [
+            m for m in matches
+            if getattr(m, "project_id", None) is None
+            or getattr(m, "shared", False)
+            or getattr(m, "external", False)
+        ]
+        if len(fallback) == 1:
+            return fallback[0]
+        if len(fallback) > 1:
+            lbl = getattr(model, "__tablename__", "resource")
+            raise HTTPException(status_code=409, detail=f"multiple {lbl} found with name '{ref}'")
+        if role != "admin":
+            return None
+
+    if len(matches) == 1:
+        return matches[0]
+
+    lbl = getattr(model, "__tablename__", "resource")
+    raise HTTPException(status_code=409, detail=f"multiple {lbl} found with name '{ref}'; specify ID instead")
+
+def get_floating_ip(db: Session, ref: str, current: dict | None = None):
+    fip = db.get(FloatingIP, ref)
+    if fip:
+        return fip
+    fip = get_by_ref(db, FloatingIP, ref, current=current)
+    if fip:
+        return fip
     return (
-        db.get(FloatingIP, ref)
-        or db.scalar(select(FloatingIP).where(FloatingIP.name == ref))
-        or db.scalar(select(FloatingIP).where(FloatingIP.floating_ip == ref))
+        db.scalar(select(FloatingIP).where(FloatingIP.floating_ip == ref))
         or db.scalar(select(FloatingIP).where(FloatingIP.floating_ip_address == ref))
     )
 
-def require_floating_ip(db: Session, ref: str):
-    fip = get_floating_ip(db, ref)
+def require_floating_ip(db: Session, ref: str, current: dict | None = None):
+    fip = get_floating_ip(db, ref, current=current)
     if not fip:
         raise HTTPException(status_code=404, detail=f"floating-ip '{ref}' not found")
     return fip
 
-def require_by_ref(db: Session, model, ref: str, label: str):
-    obj = get_by_ref(db, model, ref)
+def require_by_ref(db: Session, model, ref: str, label: str, current: dict | None = None):
+    obj = get_by_ref(db, model, ref, current=current)
     if not obj:
         raise HTTPException(status_code=404, detail=f"{label} '{ref}' not found")
     return obj

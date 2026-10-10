@@ -2,7 +2,7 @@ import secrets
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -24,9 +24,10 @@ def stable_mac(seed: str) -> str:
 
 class Network(Base):
     __tablename__ = "networking_networks"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_networking_networks_project_id_name"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
     external: Mapped[bool] = mapped_column(Boolean, default=False)
     shared: Mapped[bool] = mapped_column(Boolean, default=False)
     provider: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -44,9 +45,10 @@ class Network(Base):
 
 class Subnet(Base):
     __tablename__ = "networking_subnets"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_networking_subnets_project_id_name"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
     network_id: Mapped[str] = mapped_column(String, ForeignKey("networking_networks.id"))
     cidr: Mapped[str] = mapped_column(String)
     gateway: Mapped[str] = mapped_column(String)
@@ -65,9 +67,10 @@ class Subnet(Base):
 
 class Router(Base):
     __tablename__ = "networking_routers"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_networking_routers_project_id_name"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
     external_network_id: Mapped[str | None] = mapped_column(String, nullable=True)
     routes: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON [{"destination","nexthop"}]
     project_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
@@ -87,9 +90,10 @@ class RouterInterface(Base):
 
 class Port(Base):
     __tablename__ = "networking_ports"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_networking_ports_project_id_name"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
     network_id: Mapped[str] = mapped_column(String, ForeignKey("networking_networks.id"))
     subnet_id: Mapped[str | None] = mapped_column(String, ForeignKey("networking_subnets.id"), nullable=True)
     mac_address: Mapped[str] = mapped_column(String)
@@ -112,9 +116,10 @@ class Port(Base):
 
 class FloatingIP(Base):
     __tablename__ = "networking_floating_ips"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_networking_floating_ips_project_id_name"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
     floating_ip: Mapped[str] = mapped_column(String)
     floating_ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
     fixed_ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -130,9 +135,10 @@ class FloatingIP(Base):
 class VPCPeering(Base):
     """VPC Peering connection between two routers (Phase 6.3)."""
     __tablename__ = "networking_vpc_peerings"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_networking_vpc_peerings_project_id_name"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
     project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     requester_router_id: Mapped[str] = mapped_column(String, ForeignKey("networking_routers.id"), nullable=False)
     accepter_router_id: Mapped[str] = mapped_column(String, ForeignKey("networking_routers.id"), nullable=False)
@@ -145,10 +151,11 @@ class VPCPeering(Base):
 class BGPPeer(Base):
     """BGP peer configuration for dynamic gateway (Phase 6.3)."""
     __tablename__ = "networking_bgp_peers"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_networking_bgp_peers_project_id_name"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
     router_id: Mapped[str] = mapped_column(String, ForeignKey("networking_routers.id"), nullable=False)
     peer_ip: Mapped[str] = mapped_column(String, nullable=False)
     remote_as: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -219,9 +226,10 @@ class PortForwarding(Base):
 
 class SecurityGroup(Base):
     __tablename__ = "networking_security_groups"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_networking_security_groups_project_id_name"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
     description: Mapped[str | None] = mapped_column(String, nullable=True)
     project_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
@@ -245,8 +253,9 @@ class SecurityGroupRule(Base):
 class QosPolicy(Base):
     """QoS policy (Networking QoS extension)."""
     __tablename__ = "networking_qos_policies"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_networking_qos_policies_project_id_name"),)
     id:          Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    name:        Mapped[str] = mapped_column(String, unique=True, index=True)
+    name:        Mapped[str] = mapped_column(String, index=True)
     description: Mapped[str | None] = mapped_column(String, nullable=True)
     shared:      Mapped[bool] = mapped_column(Boolean, default=False)
     project_id:  Mapped[str | None] = mapped_column(String, nullable=True)
@@ -265,8 +274,9 @@ class QosBandwidthLimitRule(Base):
 class SubnetPool(Base):
     """Pre-defined CIDR pool from which subnets can be auto-allocated."""
     __tablename__ = "networking_subnet_pools"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_networking_subnet_pools_project_id_name"),)
     id:              Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    name:            Mapped[str] = mapped_column(String, unique=True, index=True)
+    name:            Mapped[str] = mapped_column(String, index=True)
     prefixes:        Mapped[str] = mapped_column(String)       # comma-separated CIDR list
     default_prefixlen: Mapped[int] = mapped_column(Integer, default=24)
     min_prefixlen:   Mapped[int] = mapped_column(Integer, default=8)
@@ -278,8 +288,9 @@ class SubnetPool(Base):
 class Trunk(Base):
     """Trunk port — a parent port that carries multiple VLANs via sub-ports."""
     __tablename__ = "networking_trunks"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_networking_trunks_project_id_name"),)
     id:          Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    name:        Mapped[str] = mapped_column(String, unique=True, index=True)
+    name:        Mapped[str] = mapped_column(String, index=True)
     description: Mapped[str | None] = mapped_column(String, nullable=True)
     port_id:     Mapped[str] = mapped_column(String, ForeignKey("networking_ports.id", ondelete="CASCADE"))
     status:      Mapped[str] = mapped_column(String, default="ACTIVE")

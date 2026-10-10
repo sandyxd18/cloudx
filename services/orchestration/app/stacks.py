@@ -15,7 +15,7 @@ from typing import Annotated
 from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, select
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from shared.auth_middleware import CurrentUser
 
@@ -226,6 +226,18 @@ def stack_events(user: CurrentUser, ref: str, db: DB):
                         "resource_status_reason": e.reason, "event_time": e.created_at} for e in rows]}
 
 
+def recover_stuck_stacks(db: Session) -> int:
+    stuck = db.scalars(select(Stack).where(Stack.status.like("%_IN_PROGRESS"))).all()
+    for s in stuck:
+        target = s.status.replace("_IN_PROGRESS", "_FAILED") if s.status.endswith("_IN_PROGRESS") else f"{s.status}_FAILED"
+        s.status = target
+        s.status_reason = "interrupted by service restart"
+        db.add(StackEvent(stack_id=s.id, status=target, reason="interrupted by service restart"))
+    if stuck:
+        db.commit()
+    return len(stuck)
+
+
 @router.put("/stacks/{ref}", status_code=202)
 def update_stack(user: CurrentUser, ref: str, data: StackUpdate, request: Request, db: DB):
     api = _api(request)
@@ -234,11 +246,6 @@ def update_stack(user: CurrentUser, ref: str, data: StackUpdate, request: Reques
     if s.status.startswith("ROLLBACK") or s.status == "CREATE_FAILED":
         raise HTTPException(status_code=409, detail=f"Stack is {s.status}; delete it and create it again")
     old, (new, p) = json.loads(s.template), _parse(data.template, data.parameters)
-    before = {r["name"]: r for r in eng.preview(old, json.loads(s.parameters))}
-    after = {r["name"]: r for r in eng.preview(new, p)}
-    changed = [n for n in before if n in after and before[n] != after[n]]
-    if changed:  # ponytail: no in-place update/replace; add and remove resources only
-        raise HTTPException(status_code=400, detail=f"Changing existing resources is not supported: {changed}")
     sid = s.id
     s.status = "UPDATE_IN_PROGRESS"
     db.add(StackEvent(stack_id=sid, status=s.status))
@@ -248,14 +255,11 @@ def update_stack(user: CurrentUser, ref: str, data: StackUpdate, request: Reques
         with SessionLocal() as db2:
             st = db2.get(Stack, sid)
             rec = _recorder(db2, st.id)
-            err, state = eng.create(new, p, st.name, api, rec, state=_state(db2, st.id))
+            err, state = eng.update(old, json.loads(st.parameters), new, p, st.name, api, rec, state=_state(db2, st.id))
             if err:
                 return _set(db2, st, "UPDATE_FAILED", err)
-            gone = [n for n in reversed(eng.order(old)) if n not in new["resources"]]
-            rows = {r.name: r for r in db2.scalars(select(StackResource).where(StackResource.stack_id == st.id))}
-            failed = eng.destroy([(n, rows[n].type, rows[n].physical_id) for n in gone if n in rows and rows[n].physical_id], api, rec)
             st.template, st.parameters, st.outputs = eng.dumps(new), eng.dumps(p), eng.dumps(eng.outputs(new, p, state))
-            _set(db2, st, "UPDATE_FAILED" if failed else "UPDATE_COMPLETE", "; ".join(failed))
+            _set(db2, st, "UPDATE_COMPLETE")
     _run(job)
     return {"id": sid, "stack_status": "UPDATE_IN_PROGRESS"}
 

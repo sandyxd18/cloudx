@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import shutil
+from datetime import datetime
 
 import requests
 from fastapi import HTTPException
@@ -267,9 +268,34 @@ def _check_project_quota(db: Session, project_id: str, requested_vcpus: int, req
             raise HTTPException(status_code=413, detail=f"Quota exceeded: {name} ({limit}) reached")
 
 
-def record_action(db: Session, server_id: str, action: str, current: dict) -> None:
-    db.add(ServerAction(server_id=server_id, action=action, user_id=current.get("sub"), project_id=current.get("project_id")))
+def record_action(db: Session, server_id: str, action: str, current: dict, result: str | None = None, message: str | None = None, finish: bool = False) -> ServerAction:
+    now_dt = datetime.utcnow()
+    sa_row = ServerAction(
+        server_id=server_id,
+        action=action,
+        user_id=current.get("sub"),
+        project_id=current.get("project_id"),
+        start_time=now_dt,
+        result=result if finish else None,
+        message=message if finish else None,
+        finish_time=now_dt if finish else None,
+    )
+    db.add(sa_row)
     db.commit()
+    return sa_row
+
+
+def finish_action(db: Session, server_id: str, result: str = "success", message: str | None = None, action: str | None = None) -> None:
+    stmt = select(ServerAction).where(ServerAction.server_id == server_id, ServerAction.finish_time.is_(None))
+    if action:
+        stmt = stmt.where(ServerAction.action == action)
+    stmt = stmt.order_by(ServerAction.start_time.desc())
+    row = db.scalar(stmt)
+    if row:
+        row.result = result
+        row.message = message
+        row.finish_time = datetime.utcnow()
+        db.commit()
 
 
 def project_limits(db: Session, project_id: str) -> dict:

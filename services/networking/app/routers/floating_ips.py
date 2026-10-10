@@ -26,7 +26,7 @@ router = APIRouter()
 
 @router.post("/floating-ips", status_code=201)
 def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
-    if payload.name and get_by_ref(db, FloatingIP, payload.name):
+    if payload.name and get_by_ref(db, FloatingIP, payload.name, current=current):
         raise HTTPException(status_code=409, detail="floating-ip already exists")
     check_quota(db, current.get("project_id"), FloatingIP, "floating_ips")
     ext_net_ref = payload.external_network or payload.network
@@ -37,7 +37,7 @@ def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
     if not floating_ip:
         raise HTTPException(status_code=400, detail="floating_ip or external_network is required")
     name = payload.name or f"fip-{floating_ip.replace('.', '-')}"
-    if get_by_ref(db, FloatingIP, name):
+    if get_by_ref(db, FloatingIP, name, current=current):
         if payload.name:
             raise HTTPException(status_code=409, detail="floating-ip already exists")
         name = f"fip-{floating_ip.replace('.', '-')}-{uuid.uuid4().hex[:4]}"

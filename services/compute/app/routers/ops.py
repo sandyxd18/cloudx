@@ -3,7 +3,7 @@ from datetime import datetime
 
 import requests
 from fastapi import APIRouter, HTTPException, Request
-from shared.auth_middleware import AdminUser, CurrentUser
+from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth
 from sqlalchemy import select
 
 from .. import clients
@@ -11,9 +11,9 @@ from ..clients import _svc_headers, response_detail
 from ..config import AUTH_API_URL, BLOCK_STORE_API_URL, NETWORKING_API_URL
 from ..db import DB
 from ..lookups import get_flavor, get_server, require_server
-from ..models import ComputeService, Flavor, ServerAction
+from ..models import ComputeService, Flavor, Server, ServerAction
 from ..schemas import MoveIn, ServiceUpdateIn
-from ..service import claim_host, compute_hosts, fallback_host, project_limits, record_action, server_worker_payload
+from ..service import claim_host, compute_hosts, fallback_host, finish_action, project_limits, record_action, server_worker_payload
 
 router = APIRouter()
 
@@ -39,7 +39,34 @@ def instance_actions(ref: str, current: CurrentUser, db: DB):
     rows = db.scalars(select(ServerAction).where(ServerAction.server_id == server.id).order_by(ServerAction.start_time.desc())).all()
     return {"instanceActions": [{"request_id": r.id, "instance_uuid": r.server_id, "action": r.action,
                                  "user_id": r.user_id, "project_id": r.project_id,
-                                 "start_time": r.start_time.isoformat()} for r in rows]}
+                                 "start_time": r.start_time.isoformat() if r.start_time else None,
+                                 "result": r.result, "message": r.message,
+                                 "finish_time": r.finish_time.isoformat() if r.finish_time else None} for r in rows]}
+
+
+@router.get("/servers/{ref}/os-instance-actions/{request_id}")
+def show_instance_action(ref: str, request_id: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
+    r = db.scalar(select(ServerAction).where(ServerAction.server_id == server.id, ServerAction.id == request_id))
+    if not r:
+        raise HTTPException(status_code=404, detail="instance action not found")
+    return {"instanceAction": {"request_id": r.id, "instance_uuid": r.server_id, "action": r.action,
+                               "user_id": r.user_id, "project_id": r.project_id,
+                               "start_time": r.start_time.isoformat() if r.start_time else None,
+                               "result": r.result, "message": r.message,
+                               "finish_time": r.finish_time.isoformat() if r.finish_time else None}}
+
+
+@router.post("/internal/servers/{server_id}/actions/finish", dependencies=[InternalAuth])
+def internal_finish_action(server_id: str, payload: dict, db: DB):
+    finish_action(db, server_id, result=payload.get("result", "success"), message=payload.get("message"), action=payload.get("action"))
+    return {"ok": True}
+
+
+@router.get("/internal/servers", dependencies=[InternalAuth])
+def internal_list_servers(db: DB):
+    rows = db.scalars(select(Server).where(Server.status != "DELETED")).all()
+    return {"servers": [{"id": s.id, "host": s.host, "libvirt_domain_name": s.libvirt_domain_name, "status": s.status} for s in rows]}
 
 
 @router.get("/limits")
@@ -123,14 +150,15 @@ def _relocate(ref: str, host: str | None, current: dict, db, evacuate: bool) -> 
     if not server.root_volume_id or not server.host:
         raise HTTPException(status_code=409, detail="server has no root volume or host")
     old = server.host
+    orig_status = server.status
+    target_status = orig_status if orig_status in ("ACTIVE", "SHUTOFF") else "ACTIVE"
     if evacuate:
         svc = db.get(ComputeService, old)
         if not (svc and svc.forced_down):
             raise HTTPException(status_code=409, detail=f"host {old} must be forced down first (PUT /os-services/{old} forced_down=true)")
     extra = [v for v in clients.block_get("/volumes").get("items", [])
              if v.get("attached_to_server_id") == server.id and v["id"] != server.root_volume_id]
-    if extra:
-        raise HTTPException(status_code=409, detail="detach data volumes before moving the server")
+    data_vols = [{"id": v["id"], "target_device": (v.get("target_device") or v.get("mountpoint") or "sdb").split("/")[-1]} for v in extra]
     flavor = _flavor_of(db, server)
     port = clients.api_get(f"{NETWORKING_API_URL}/ports/{server.port_id}")
     ports = [port] + [clients.api_get(f"{NETWORKING_API_URL}/ports/{p}") for p in (server.extra_port_ids or "").split(",") if p]
@@ -145,6 +173,9 @@ def _relocate(ref: str, host: str | None, current: dict, db, evacuate: bool) -> 
     db.commit()
     build = server_worker_payload(server, port, ports, root)
     build["_root_volume_id"], build["_block_store_url"] = server.root_volume_id, BLOCK_STORE_API_URL
+    build["_target_status"] = target_status
+    if data_vols:
+        build["_data_volumes"] = data_vols
     record_action(db, server.id, "evacuate" if evacuate else "migrate", current)
     if evacuate:  # source is down: free the volume record here, nothing to tear down
         clients.release_server_volumes(server.id)

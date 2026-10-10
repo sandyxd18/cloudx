@@ -7,6 +7,7 @@ from .. import ovn_cli
 from ..db import DB
 from ..models import Port, QosBandwidthLimitRule, QosPolicy
 from ..schemas import QosBwLimitRuleIn, QosPolicyIn
+from ..serializers import get_by_ref
 
 router = APIRouter()
 
@@ -32,7 +33,7 @@ def _qos_to_dict(policy: QosPolicy, rules: list) -> dict:
 
 @router.post("/qos/policies", status_code=201)
 def create_qos_policy(payload: QosPolicyIn, current: CurrentUser, db: DB):
-    if db.scalar(select(QosPolicy).where(QosPolicy.name == payload.name)):
+    if get_by_ref(db, QosPolicy, payload.name, current=current):
         raise HTTPException(status_code=409, detail="QoS policy already exists")
     policy = QosPolicy(**payload.model_dump(), project_id=current.get("project_id"))
     db.add(policy)
@@ -55,8 +56,8 @@ def list_qos_policies(current: CurrentUser, db: DB):
     return {"policies": result}
 
 @router.get("/qos/policies/{policy_id}")
-def show_qos_policy(policy_id: str, _: CurrentUser, db: DB):
-    policy = db.get(QosPolicy, policy_id) or db.scalar(select(QosPolicy).where(QosPolicy.name == policy_id))
+def show_qos_policy(policy_id: str, current: CurrentUser, db: DB):
+    policy = get_by_ref(db, QosPolicy, policy_id, current=current)
     if not policy:
         raise HTTPException(status_code=404, detail="QoS policy not found")
     rules = db.scalars(select(QosBandwidthLimitRule).where(QosBandwidthLimitRule.qos_policy_id == policy.id)).all()

@@ -116,15 +116,15 @@ def test_stack_lifecycle(stk, monkeypatch):
             assert e.value.status_code == 404
         assert s.list_stacks(B, db)["stacks"] == []
 
-        # update: add a volume, then drop it again; changing an existing resource is refused
+        # update: add a volume, then drop it again; updating parameters/properties replaces or updates in-place
         more = TPL.replace("outputs:", "  vol: {type: OS::Cinder::Volume, properties: {size: 1}}\noutputs:")
         s.update_stack(A, "web", s.StackUpdate(template=more), Req(), db); db.expire_all()
         assert {r["resource_name"] for r in s.stack_resources(A, "web", db)["resources"]} == {"srv", "net", "sub", "vol"}
         s.update_stack(A, "web", s.StackUpdate(template=TPL), Req(), db); db.expire_all()
         assert len(s.stack_resources(A, "web", db)["resources"]) == 3
-        with pytest.raises(HTTPException) as e:
-            s.update_stack(A, "web", s.StackUpdate(template=TPL, parameters={"cidr": "10.8.0.0/24"}), Req(), db)
-        assert e.value.status_code == 400
+        # updating parameter cidr now replaces 'sub' subnet successfully
+        s.update_stack(A, "web", s.StackUpdate(template=TPL, parameters={"cidr": "10.8.0.0/24"}), Req(), db); db.expire_all()
+        assert s.show_stack(A, "web", db)["stack"]["stack_status"] == "UPDATE_COMPLETE"
 
         s.stack_action(A, "web", Req(), db, {"suspend": None}); db.expire_all()
         assert s.show_stack(A, "web", db)["stack"]["stack_status"] == "SUSPEND_COMPLETE"
@@ -146,6 +146,49 @@ def test_failed_stack_rolls_back_and_bad_template_is_400(stk, monkeypatch):
         with pytest.raises(HTTPException) as e:
             s.create_stack(A, s.StackIn(name="x", template="resources: {}"), Req(), db)
         assert e.value.status_code == 400
+
+
+def test_stuck_stack_recovery_and_autoscaling_group(stk, monkeypatch):
+    m, s = stk
+    api = FakeApi()
+    _patch_api(monkeypatch, s, api)
+
+    with m.SessionLocal() as db:
+        # Create stack stuck in CREATE_IN_PROGRESS
+        stuck = s.Stack(project_id="p1", name="stuck_stack", status="CREATE_IN_PROGRESS", template="{}", parameters="{}")
+        db.add(stuck)
+        db.commit()
+
+        count = s.recover_stuck_stacks(db)
+        assert count == 1
+        st_db = db.get(s.Stack, stuck.id)
+        assert st_db.status == "CREATE_FAILED"
+        assert st_db.status_reason == "interrupted by service restart"
+
+        # Test Cloudx::AutoScalingGroup
+        asg_tpl = """
+resources:
+  group:
+    type: Cloudx::AutoScalingGroup
+    properties:
+      name: myasg
+      size: 2
+      image: cirros
+      flavor: tiny
+      network: net1
+"""
+        s.create_stack(A, s.StackIn(name="asg_stack", template=asg_tpl), Req(), db)
+        st_asg = s.show_stack(A, "asg_stack", db)["stack"]
+        assert st_asg["stack_status"] == "CREATE_COMPLETE"
+        res = s.stack_resources(A, "asg_stack", db)["resources"]
+        assert len(res) == 1
+        assert res[0]["physical_resource_id"].count(",") == 1  # 2 server ids
+
+        # Update ASG size to 3
+        asg_tpl3 = asg_tpl.replace("size: 2", "size: 3")
+        s.update_stack(A, "asg_stack", s.StackUpdate(template=asg_tpl3), Req(), db); db.expire_all()
+        res3 = s.stack_resources(A, "asg_stack", db)["resources"]
+        assert res3[0]["physical_resource_id"].count(",") == 2  # 3 server ids
 
 
 def test_missing_authorization_is_401(stk):

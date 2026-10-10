@@ -5,6 +5,7 @@ from sqlalchemy import select
 from ..db import DB
 from ..models import SubnetPool
 from ..schemas import SubnetPoolIn
+from ..serializers import get_by_ref
 
 router = APIRouter()
 
@@ -23,7 +24,7 @@ def _pool_to_dict(pool: SubnetPool) -> dict:
 
 @router.post("/subnetpools", status_code=201)
 def create_subnet_pool(payload: SubnetPoolIn, current: CurrentUser, db: DB):
-    if db.scalar(select(SubnetPool).where(SubnetPool.name == payload.name)):
+    if get_by_ref(db, SubnetPool, payload.name, current=current):
         raise HTTPException(status_code=409, detail="subnet pool already exists")
     pool = SubnetPool(
         name=payload.name,
@@ -49,8 +50,8 @@ def list_subnet_pools(current: CurrentUser, db: DB):
     return {"subnet_pools": [_pool_to_dict(p) for p in db.scalars(q).all()]}
 
 @router.get("/subnetpools/{pool_id}")
-def show_subnet_pool(pool_id: str, _: CurrentUser, db: DB):
-    pool = db.get(SubnetPool, pool_id) or db.scalar(select(SubnetPool).where(SubnetPool.name == pool_id))
+def show_subnet_pool(pool_id: str, current: CurrentUser, db: DB):
+    pool = get_by_ref(db, SubnetPool, pool_id, current=current)
     if not pool:
         raise HTTPException(status_code=404, detail="subnet pool not found")
     return _pool_to_dict(pool)

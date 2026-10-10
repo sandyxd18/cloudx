@@ -124,6 +124,51 @@ def conductor_delete_record(server_id: str) -> None:
     })
 
 
+def _notify_action_finish(server_id: str | None, result: str = "success", message: str | None = None, action: str | None = None) -> None:
+    if not server_id:
+        return
+    try:
+        api_url = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
+        requests.post(
+            f"{api_url}/internal/servers/{server_id}/actions/finish",
+            json={"result": result, "message": message, "action": action},
+            headers=internal_headers(),
+            timeout=5,
+        )
+    except Exception as exc:
+        log.warning("could not notify compute-api of action finish for %s: %s", server_id, exc)
+
+
+def reconcile_stale_domains() -> None:
+    """Destroy/undefine local domains that the API says now live on another host (evacuate cleanup)."""
+    try:
+        domain_states = libvirt_driver.get_all_domain_states()
+    except Exception as exc:
+        log.warning("[reconcile] could not read libvirt domain states: %s", exc)
+        return
+    if not domain_states:
+        return
+    try:
+        api_url = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
+        resp = requests.get(f"{api_url}/internal/servers", headers=internal_headers(), timeout=5)
+        if resp.status_code != 200:
+            return
+        all_servers = resp.json().get("servers", [])
+    except Exception as exc:
+        log.warning("[reconcile] could not fetch servers from API: %s", exc)
+        return
+
+    domain_to_host = {s["libvirt_domain_name"]: s["host"] for s in all_servers if s.get("libvirt_domain_name")}
+    for domain_name in domain_states:
+        api_host = domain_to_host.get(domain_name)
+        if api_host and api_host != COMPUTE_HOST:
+            log.warning("[reconcile] domain %s host in API is %s (this node=%s) — destroying stale domain", domain_name, api_host, COMPUTE_HOST)
+            try:
+                libvirt_driver.delete(domain_name)
+            except Exception as exc:
+                log.error("[reconcile] failed to destroy stale domain %s: %s", domain_name, exc)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Power-state reconciliation (_sync_power_states reconciliation)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -164,6 +209,7 @@ def sync_power_states() -> None:
 
     Never raises — errors are logged and the next scheduled pass will retry.
     """
+    reconcile_stale_domains()
     try:
         result = _rpc.call("conductor", "get_host_servers", {"host": COMPUTE_HOST}, timeout=10)
     except Exception as exc:
@@ -549,10 +595,36 @@ def handle_build_instance(args: dict) -> None:
                 {"server_id": server_id, "target_device": "sda"},
             )
 
-        # Set status ACTIVE via conductor
-        update_fields["status"] = "ACTIVE"
+        # Reattach data volumes if present
+        data_volumes = args.get("_data_volumes", [])
+        if data_volumes and result.get("libvirt_domain_name"):
+            bs_url = _probe_block_store_url(block_store_url)
+            for dv in data_volumes:
+                vol_id = dv["id"]
+                try:
+                    vol_resp = requests.get(f"{bs_url}/internal/volumes/{vol_id}", headers=internal_headers(), timeout=10)
+                    if vol_resp.status_code == 200:
+                        vol_info = vol_resp.json()
+                        conn_path = str(volume_manager.connect({**vol_info, "volume_id": vol_id}, _rpc))
+                        target_dev = (dv.get("target_device") or vol_info.get("target_device") or "sdb").split("/")[-1]
+                        libvirt_driver.attach_disk(result["libvirt_domain_name"], conn_path, target_dev=target_dev)
+                        _http_post(f"{bs_url}/internal/volumes/{vol_id}/attach-server", {"server_id": server_id, "target_device": target_dev})
+                except Exception as exc:
+                    log.error("Failed to reattach data volume %s to VM %s: %s", vol_id, server_id, exc)
+
+        # Preserve original status if SHUTOFF requested
+        target_status = args.get("_target_status", "ACTIVE")
+        if target_status == "SHUTOFF" and result.get("libvirt_domain_name"):
+            try:
+                libvirt_driver.stop(result["libvirt_domain_name"])
+            except Exception as exc:
+                log.warning("Could not stop VM %s for target status SHUTOFF: %s", server_id, exc)
+
+        # Set status via conductor
+        update_fields["status"] = target_status
         update_fields["error_message"] = None
         conductor_update_server(server_id, update_fields)
+        _notify_action_finish(server_id, "success")
 
         log.info("VM %s spawned successfully", server_id)
 
@@ -561,6 +633,7 @@ def handle_build_instance(args: dict) -> None:
         if root_volume_id:
             _disconnect_volume(root_volume_id, (args.get("root_volume") or {}).get("host"))  # a leftover session keeps the LV busy
         conductor_mark_error(server_id, str(exc))
+        _notify_action_finish(server_id, "error", str(exc))
 
 
 def handle_delete_instance(args: dict) -> None:
@@ -604,12 +677,14 @@ def handle_delete_instance(args: dict) -> None:
         conductor_update_server(server_id, {
             "status": "DELETED",
         })
+        _notify_action_finish(server_id, "success")
 
         log.info("VM %s deleted successfully", server_id)
 
     except Exception as exc:
         log.error("Failed to delete VM %s: %s", server_id, exc, exc_info=True)
         conductor_mark_error(server_id, f"delete failed: {exc}")
+        _notify_action_finish(server_id, "error", f"delete failed: {exc}")
 
 
 def handle_relocate_out(args: dict) -> None:
@@ -625,6 +700,7 @@ def handle_relocate_out(args: dict) -> None:
     except Exception as exc:
         log.error("relocate_out %s failed: %s", server_id, exc, exc_info=True)
         conductor_mark_error(server_id, f"migrate failed: {exc}")
+        _notify_action_finish(server_id, "error", f"migrate failed: {exc}")
 
 
 def _simple_action(method_name: str, success_status: str, args: dict) -> None:
@@ -634,10 +710,12 @@ def _simple_action(method_name: str, success_status: str, args: dict) -> None:
         fn = getattr(worker, method_name)
         fn(args)
         conductor_update_server(server_id, {"status": success_status, "error_message": None})
+        _notify_action_finish(server_id, "success")
         log.info("%s %s → %s", method_name, server_id, success_status)
     except Exception as exc:
         log.error("%s %s failed: %s", method_name, server_id, exc, exc_info=True)
         conductor_mark_error(server_id, str(exc))
+        _notify_action_finish(server_id, "error", str(exc))
 
 
 def handle_start(args: dict) -> None:

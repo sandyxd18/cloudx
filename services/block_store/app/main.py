@@ -2,12 +2,12 @@ from shared.config import load_service_config
 
 load_service_config("block-store-api")
 
-import os
 import threading
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from shared.request_id_middleware import RequestIDMiddleware
+from shared.cors import cors_origins
 from shared.schema import require_schema
 from sqlalchemy import text
 
@@ -57,7 +57,7 @@ Status transitions:
 app = FastAPI(title="cloudx block-store-api", version="3.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
+    allow_origins=cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )

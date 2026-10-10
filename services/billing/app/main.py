@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+from shared.db import get_db_url
 from shared.config import load_service_config
 load_service_config("billing-api")
 
@@ -29,6 +30,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, rela
 
 from shared.auth_middleware import CurrentUser, AdminUser
 from shared.schema import require_schema
+from shared.cors import cors_origins
 
 from shared.request_id_middleware import RequestIDMiddleware
 
@@ -40,7 +42,7 @@ except (ImportError, OSError):
 
 log = logging.getLogger("billing-api")
 
-DATABASE_URL = os.getenv("BILLING_DATABASE_URL", os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx_billing"))
+DATABASE_URL = get_db_url("cloudx_billing", "BILLING_DATABASE_URL")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 AUTH_SECRET_KEY = os.environ["AUTH_SECRET_KEY"]
 
@@ -136,6 +138,8 @@ def init_db():
         RatingSheet(resource_type="volume", unit="gb-hour", rate_per_unit=Decimal("25.0000"), description="Volume GB per hour", currency="IDR"),
         RatingSheet(resource_type="floating_ip", unit="hour", rate_per_unit=Decimal("500.0000"), description="Floating IP per hour", currency="IDR"),
         RatingSheet(resource_type="load_balancer", unit="hour", rate_per_unit=Decimal("750.0000"), description="Load balancer per hour", currency="IDR"),
+        RatingSheet(resource_type="load_balancer_nlb", unit="hour", rate_per_unit=Decimal("750.0000"), description="NLB Load balancer per hour", currency="IDR"),
+        RatingSheet(resource_type="load_balancer_alb", unit="hour", rate_per_unit=Decimal("1000.0000"), description="ALB Load balancer per hour", currency="IDR"),
     ]
     for d in defaults:  # BILLING_RATE_<TYPE> (billing.conf: billing_rate_<type>) overrides the seed; runtime edits: PATCH rating-sheets
         d.rate_per_unit = Decimal(os.getenv(f"BILLING_RATE_{d.resource_type.upper()}", str(d.rate_per_unit)))
@@ -162,7 +166,7 @@ if RequestIDMiddleware:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
+    allow_origins=cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -382,6 +386,8 @@ def create_usage_records_batch(user: AdminUser, items: list[UsageBatchItem], db:
     created, skipped, seen = 0, [], set()
     for i, it in enumerate(items):
         rs = sheets.get(it.resource_type)
+        if not rs and it.resource_type.startswith("load_balancer_"):
+            rs = sheets.get("load_balancer")
         key = (it.project_id, it.resource_type, it.resource_id, it.period_start, it.period_end)
         if not rs:
             skipped.append({"index": i, "reason": "no active rating sheet"})

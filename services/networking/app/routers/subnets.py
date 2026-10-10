@@ -18,7 +18,7 @@ router = APIRouter()
 
 @router.post("/subnets", status_code=201)
 def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
-    if get_by_ref(db, Subnet, payload.name):
+    if get_by_ref(db, Subnet, payload.name, current=current):
         raise HTTPException(status_code=409, detail="subnet already exists")
     check_quota(db, current.get("project_id"), Subnet, "subnets")
     network = require_owned(current, db, Network, payload.network, "network")

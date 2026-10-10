@@ -94,6 +94,9 @@ class ServerAction(Base):
     user_id: Mapped[str | None] = mapped_column(String, nullable=True)
     project_id: Mapped[str | None] = mapped_column(String, nullable=True)
     start_time: Mapped[datetime] = mapped_column(DateTime, default=now)
+    result: Mapped[str | None] = mapped_column(String, nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    finish_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class ComputeService(Base):

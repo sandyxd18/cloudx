@@ -72,3 +72,13 @@ def test_a_provider_with_children_cannot_be_deleted(placement):
 
 def test_deleting_an_unknown_provider_is_a_404(placement):
     assert placement.client.delete("/resource_providers/nope").status_code == 404
+
+
+def test_put_inventories_twice_replaces(placement):
+    uuid = make_provider(placement, "h1")
+    item = {"total": 4, "reserved": 0, "min_unit": 1, "max_unit": 4, "step_size": 1, "allocation_ratio": 1.0}
+    with placement.SessionLocal() as db:
+        for total in (4, 8):
+            payload = placement.InventoriesIn(inventories={"VCPU": dict(item, total=total)})
+            placement.set_inventories(uuid, payload, None, db)
+        assert [i.total for i in db.query(placement.Inventory)] == [8]

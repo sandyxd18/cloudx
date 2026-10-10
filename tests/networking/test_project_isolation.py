@@ -85,3 +85,73 @@ def test_trunk_vpn_and_peering_are_project_scoped(api):
     assert c.get(f"/vpn/ikepolicies/{pid}").status_code == 404
     assert c.delete(f"/vpn/ikepolicies/{pid}").status_code == 404
     assert c.get("/vpn/ikepolicies").json() == []
+
+
+def test_same_name_in_different_projects_succeeds(api):
+    c = api.client
+    api.user["project_id"] = "proj-a"
+    res_a = c.post("/networks", json={"name": "same-name-net"})
+    assert res_a.status_code == 201
+
+    api.user["project_id"] = "proj-b"
+    res_b = c.post("/networks", json={"name": "same-name-net"})
+    assert res_b.status_code == 201
+
+
+def test_same_name_in_same_project_fails_409(api):
+    c = api.client
+    api.user["project_id"] = "proj-a"
+    res1 = c.post("/routers", json={"name": "duplicate-rtr"})
+    assert res1.status_code == 201
+    res2 = c.post("/routers", json={"name": "duplicate-rtr"})
+    assert res2.status_code == 409
+
+
+def test_lookup_by_name_scoped_to_project(api):
+    c = api.client
+    api.user["project_id"] = "proj-a"
+    c.post("/networks", json={"name": "scoped-net"})
+
+    api.user["project_id"] = "proj-b"
+    c.post("/networks", json={"name": "scoped-net"})
+
+    api.user["project_id"] = "proj-a"
+    net_a = c.get("/networks/scoped-net").json()
+    assert net_a["project_id"] == "proj-a"
+
+    api.user["project_id"] = "proj-b"
+    net_b = c.get("/networks/scoped-net").json()
+    assert net_b["project_id"] == "proj-b"
+
+
+def test_admin_lookup_ambiguous_name_returns_409(api):
+    c = api.client
+    api.user["project_id"] = "proj-a"
+    c.post("/security-groups", json={"name": "ambig-sg"})
+
+    api.user["project_id"] = "proj-b"
+    c.post("/security-groups", json={"name": "ambig-sg"})
+
+    api.user["role"] = "admin"
+    api.user["project_id"] = None
+    res = c.get("/security-groups/ambig-sg")
+    assert res.status_code == 409
+
+
+def test_router_project_id_and_peering_bgp_ownership(api):
+    c = api.client
+    api.user["role"] = "member"
+    api.user["project_id"] = "proj-a"
+    r_a = c.post("/routers", json={"name": "rtr-proj-a"}).json()
+    assert r_a["project_id"] == "proj-a"
+
+    api.user["project_id"] = "proj-b"
+    r_b = c.post("/routers", json={"name": "rtr-proj-b"}).json()
+    assert r_b["project_id"] == "proj-b"
+
+    api.user["project_id"] = "proj-a"
+    res_peer = c.post(f"/routers/{r_a['id']}/peering", json={"name": "p1", "accepter_router_id": r_b["id"]})
+    assert res_peer.status_code == 404
+
+    res_bgp = c.post("/bgp-peers", json={"name": "bgp1", "router_id": r_b["id"], "peer_ip": "1.1.1.1", "remote_as": 65000, "local_as": 65001})
+    assert res_bgp.status_code == 404

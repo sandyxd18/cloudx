@@ -1,4 +1,4 @@
-import os
+from shared.db import get_db_url
 from typing import Annotated
 
 from fastapi import Depends
@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-DATABASE_URL    = os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx")
+DATABASE_URL    = get_db_url("cloudx")
 # ── Database ───────────────────────────────────────────────────────────────────
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)

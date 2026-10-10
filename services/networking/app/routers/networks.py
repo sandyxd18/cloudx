@@ -18,7 +18,7 @@ router = APIRouter()
 
 @router.post("/networks", status_code=201)
 def create_network(payload: NetworkIn, current: CurrentUser, db: DB):
-    if get_by_ref(db, Network, payload.name):
+    if get_by_ref(db, Network, payload.name, current=current):
         raise HTTPException(status_code=409, detail="network already exists")
     check_quota(db, current.get("project_id"), Network, "networks")
     provider_defaults = external_network_defaults(payload.name) if payload.external else {}

@@ -25,7 +25,7 @@ router = APIRouter()
 
 @router.post("/security-groups", status_code=201)
 def create_security_group(payload: SecurityGroupIn, current: CurrentUser, db: DB):
-    if get_by_ref(db, SecurityGroup, payload.name):
+    if get_by_ref(db, SecurityGroup, payload.name, current=current):
         raise HTTPException(status_code=409, detail="security-group already exists")
     check_quota(db, current.get("project_id"), SecurityGroup, "security_groups")
     group = SecurityGroup(name=payload.name, description=payload.description, project_id=current.get("project_id"))

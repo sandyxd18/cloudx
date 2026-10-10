@@ -1,4 +1,5 @@
 import os
+from shared.db import get_db_url
 from shared.config import load_service_config
 load_service_config("image-api")
 
@@ -28,9 +29,10 @@ from shared.schema import require_schema
 
 # Import shared modules
 from shared.request_id_middleware import RequestIDMiddleware
+from shared.cors import cors_origins
 from shared.rpc import RPCClient
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx")
+DATABASE_URL = get_db_url("cloudx")
 IMAGE_STORE_PATH = Path(os.getenv("IMAGE_STORE_PATH", "/var/lib/cloudx/images"))
 IMAGE_STORAGE_BACKEND = os.getenv("IMAGE_STORAGE_BACKEND", "file").lower()
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
@@ -275,7 +277,7 @@ app = FastAPI(title="cloudx image-api", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
+    allow_origins=cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )

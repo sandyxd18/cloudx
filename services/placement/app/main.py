@@ -1,5 +1,5 @@
 import logging
-import os
+from shared.db import get_db_url
 from shared.config import load_service_config
 load_service_config("placement-api")
 
@@ -22,6 +22,7 @@ from typing import Annotated
 
 from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth
 from shared.schema import require_schema
+from shared.cors import cors_origins
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -33,7 +34,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 log = logging.getLogger("placement-api")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx")
+DATABASE_URL = get_db_url("cloudx")
 
 engine       = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -286,7 +287,7 @@ app = FastAPI(title="cloudx placement-api", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
+    allow_origins=cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -505,6 +506,7 @@ def set_inventories(rp_uuid: str, payload: InventoriesIn, _: AdminUser, db: DB):
     existing = db.scalars(select(Inventory).where(Inventory.resource_provider_id == rp.uuid)).all()
     for inv in existing:
         db.delete(inv)
+    db.flush()  # the unit of work INSERTs before it DELETEs; flush first or the unique key trips
     # Create new inventories
     for rc, item in payload.inventories.items():
         db.add(Inventory(

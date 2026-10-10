@@ -35,6 +35,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from shared.auth_middleware import CurrentUser, InternalAuth
 from shared.schema import require_schema
 from shared.request_id_middleware import RequestIDMiddleware
+from shared.cors import cors_origins
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -288,7 +289,7 @@ app = FastAPI(title="cloudx load-balancer-api", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
+    allow_origins=cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -871,25 +872,20 @@ def remove_pool_member(pool_ref: str, instance_id: str, current: CurrentUser, db
 
 @app.post("/pools/{pool_ref}/sync")
 def sync_pool_members(pool_ref: str, current: CurrentUser, db: DB):
-    pool = db.query(Pool).filter_by(id=pool_ref).first()
-    if not pool or not pool.server_group_id:
-        raise HTTPException(status_code=400, detail="pool has no server group")
-    lb = db.query(LoadBalancer).filter_by(id=pool.load_balancer_id).first()
-    if lb and lb.project_id != _project_id(current):
-        raise HTTPException(status_code=404, detail="pool not found")
-
-    project_id = _project_id(current)
-    raw = _fetch_server_group_members(pool.server_group_id, project_id)
-
-    # Replace all auto-synced members
-    db.query(Member).filter_by(pool_id=pool.id).delete()
-    members = []
-    for item in raw:
-        item["protocol_port"] = pool.protocol_port if hasattr(pool, "protocol_port") else 80
-        m = Member(pool_id=pool.id, **item)
-        db.add(m)
-        members.append(_member_to_dict(m))
-    db.commit()
+    pool, lb = _own_pool(db, current, pool_ref)
+    if pool.server_group_id:
+        project_id = _project_id(current)
+        raw = _fetch_server_group_members(pool.server_group_id, project_id)
+        db.query(Member).filter_by(pool_id=pool.id).delete()
+        members = []
+        for item in raw:
+            item["protocol_port"] = pool.protocol_port if hasattr(pool, "protocol_port") else 80
+            m = Member(pool_id=pool.id, **item)
+            db.add(m)
+            members.append(_member_to_dict(m))
+        db.commit()
+    else:
+        members = [_member_to_dict(m) for m in db.query(Member).filter_by(pool_id=pool.id).all()]
 
     try:
         _apply_lb_state(db, lb)

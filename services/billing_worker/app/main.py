@@ -191,7 +191,16 @@ def _aggregate_floating_ip_usage(fips: list[dict], start, end) -> list[dict]:
 
 
 def _aggregate_load_balancer_usage(lbs: list[dict], start, end) -> list[dict]:
-    return _keep(_rec(lb, "load_balancer", 1, start, end) for lb in lbs if lb.get("provisioning_status") == "ACTIVE")
+    recs = []
+    for lb in lbs:
+        if lb.get("provisioning_status") != "ACTIVE":
+            continue
+        lb_type = str(lb.get("lb_type") or "").lower()
+        rtype = f"load_balancer_{lb_type}" if lb_type in ("nlb", "alb") else "load_balancer"
+        r = _rec(lb, rtype, 1, start, end)
+        if r:
+            recs.append(r)
+    return recs
 
 
 # ── Send usage records ────────────────────────────────────────────────────────

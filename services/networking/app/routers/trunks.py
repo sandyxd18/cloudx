@@ -8,7 +8,7 @@ from ..access import own, scope
 from ..db import DB
 from ..models import Port, Trunk, TrunkSubPort
 from ..schemas import TrunkIn, TrunkSubPortsPayload
-from ..serializers import _fmt_ts, require_by_ref
+from ..serializers import _fmt_ts, get_by_ref, require_by_ref
 
 router = APIRouter()
 
@@ -18,7 +18,7 @@ router = APIRouter()
 # Reference: Network trunk ports specification
 
 def _trunk(db, current, ref):
-    return own(current, db.get(Trunk, ref) or db.scalar(select(Trunk).where(Trunk.name == ref)) or _nf(), "trunk")
+    return own(current, require_by_ref(db, Trunk, ref, "trunk", current=current), "trunk")
 
 
 def _nf():
@@ -50,8 +50,8 @@ def _trunk_to_dict(db: Session, trunk: Trunk) -> dict:
 @router.post("/trunks", status_code=201)
 def create_trunk(payload: TrunkIn, current: CurrentUser, db: DB):
     """Create a trunk port. The parent port must already exist."""
-    parent_port = own(current, require_by_ref(db, Port, payload.port_id, "port"), "port")
-    if db.scalar(select(Trunk).where(Trunk.name == payload.name)):
+    parent_port = own(current, require_by_ref(db, Port, payload.port_id, "port", current=current), "port")
+    if get_by_ref(db, Trunk, payload.name, current=current):
         raise HTTPException(status_code=409, detail="trunk already exists")
     if db.scalar(select(Trunk).where(Trunk.port_id == parent_port.id)):
         raise HTTPException(status_code=409, detail="port is already a trunk parent")

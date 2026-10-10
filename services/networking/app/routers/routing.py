@@ -6,11 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import ovn_cli
-from ..access import own
 from ..db import DB
 from ..models import BGPPeer, Router, RouterInterface, Subnet, VPCPeering, stable_mac
 from ..schemas import BGPPeerIn, BGPPeerOut, VPCPeeringIn, VPCPeeringOut
-from ..serializers import require_by_ref
+from ..serializers import get_by_ref, require_by_ref
 
 router = APIRouter()
 
@@ -31,20 +30,39 @@ def _bgp_out(peer: BGPPeer) -> dict:
     return {**d, "has_password": bool(peer.auth_password), "advertised_prefixes": json.loads(peer.advertised_prefixes or "[]")}
 
 
+def infer_router_project_id(db: Session, rtr: Router) -> str | None:
+    if rtr.project_id is not None:
+        return rtr.project_id
+    return db.scalar(
+        select(Subnet.project_id)
+        .join(RouterInterface, RouterInterface.subnet_id == Subnet.id)
+        .where(RouterInterface.router_id == rtr.id, Subnet.project_id.isnot(None))
+    )
+
+
 def _check_router(db: Session, rtr: Router, current: dict) -> None:
-    own(current, rtr, "router")
+    if not rtr:
+        raise HTTPException(status_code=404, detail="router not found")
+    if current.get("role") == "admin":
+        return
+    caller_pid = _pid(current)
+    rtr_pid = infer_router_project_id(db, rtr)
+    if rtr_pid is not None and rtr_pid != caller_pid:
+        raise HTTPException(status_code=404, detail="router not found")
 
 
 @router.post("/routers/{ref}/peering", response_model=VPCPeeringOut, status_code=201)
 def create_vpc_peering(ref: str, payload: VPCPeeringIn, current: CurrentUser, db: DB):
     """Create a VPC peering between two routers."""
-    requester = require_by_ref(db, Router, ref, "router")
-    accepter = require_by_ref(db, Router, payload.accepter_router_id, "router")
+    requester = require_by_ref(db, Router, ref, "router", current=current)
+    accepter = require_by_ref(db, Router, payload.accepter_router_id, "router", current=current)
     project_id = _pid(current)
     _check_router(db, requester, current)
     _check_router(db, accepter, current)
     if requester.id == accepter.id:
         raise HTTPException(status_code=400, detail="cannot peer a router with itself")
+    if get_by_ref(db, VPCPeering, payload.name, current=current):
+        raise HTTPException(status_code=409, detail="VPC peering already exists")
     dup = db.scalar(select(VPCPeering).where(
         ((VPCPeering.requester_router_id == requester.id) & (VPCPeering.accepter_router_id == accepter.id))
         | ((VPCPeering.requester_router_id == accepter.id) & (VPCPeering.accepter_router_id == requester.id))
@@ -155,9 +173,11 @@ def delete_vpc_peering(peering_id: str, current: CurrentUser, db: DB):
 @router.post("/bgp-peers", response_model=BGPPeerOut, status_code=201)
 def create_bgp_peer(payload: BGPPeerIn, current: CurrentUser, db: DB):
     """Register a BGP peer for dynamic gateway advertisement."""
-    router = require_by_ref(db, Router, payload.router_id, "router")
+    router = require_by_ref(db, Router, payload.router_id, "router", current=current)
     project_id = _pid(current)
     _check_router(db, router, current)
+    if get_by_ref(db, BGPPeer, payload.name, current=current):
+        raise HTTPException(status_code=409, detail="BGP peer already exists")
 
     peer = BGPPeer(
         project_id=project_id,

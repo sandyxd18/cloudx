@@ -29,6 +29,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
 from shared.schema import require_schema
 from shared.request_id_middleware import RequestIDMiddleware
+from shared.cors import cors_origins
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -129,7 +130,7 @@ async def _bad_name(_: Request, exc: PathEscape):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost").split(",") if o.strip() and o.strip() != "*"],
+    allow_origins=cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )

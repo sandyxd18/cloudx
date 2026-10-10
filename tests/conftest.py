@@ -6,6 +6,7 @@ import pytest
 os.environ.setdefault("AUTH_SECRET_KEY", "test-secret-key-not-for-production-32b")
 os.environ.setdefault("AUTH_ADMIN_PASSWORD", "test-admin-password")
 os.environ.setdefault("KEY_MANAGER_MASTER_KEY", "test-master-key-not-for-production-32b")
+os.environ.setdefault("CLOUDX_ALLOW_DEFAULT_DB", "1")
 
 
 def pytest_addoption(parser):
