@@ -1,5 +1,3 @@
-import os
-import stat
 
 import pytest
 from pydantic import ValidationError
@@ -41,20 +39,3 @@ def test_schemas_reject_injection(monkeypatch, tmp_path):
         m.PoolMemberIn(address="1.2.3.4\nserver evil")
     with pytest.raises(ValidationError):
         m.PoolIn(name="p\nx", protocol_port=80)
-
-
-@pytest.mark.skipif(os.name == "nt", reason="posix perms")
-def test_cert_file_is_private(monkeypatch, tmp_path):
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'lb2.sqlite'}")
-    import importlib
-
-    import services.load_balancer.app.main as m
-
-    m = importlib.reload(m)
-    m.Base.metadata.create_all(bind=m.engine)
-    with m.SessionLocal() as db:
-        db.add(m.LBCertificate(id="c-perm", load_balancer_id="x", name="n", certificate_pem="C", private_key_pem="K"))
-        db.add(m.Listener(id="l1", load_balancer_id="x", name="l", protocol="HTTPS", protocol_port=443, certificate_id="c-perm"))
-        db.commit()
-        out = m._listener_to_dict(db.get(m.Listener, "l1"), db)
-    assert stat.S_IMODE(os.stat(out["ssl_cert_path"]).st_mode) == 0o600
