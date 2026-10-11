@@ -19,7 +19,7 @@ import logging
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated
 
 import requests
@@ -49,6 +49,7 @@ AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
 COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LB_FAILOVER_TIMEOUT = int(os.getenv("LB_FAILOVER_TIMEOUT", "30"))
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
@@ -186,6 +187,13 @@ class LBCertificate(Base):
     created_at:       Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
+class LBAgentHost(Base):
+    __tablename__ = "lb_agent_hosts"
+
+    host:      Mapped[str] = mapped_column(String, primary_key=True)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 NAME = Field(..., pattern=r"^[\w .-]{1,128}$")
@@ -304,13 +312,67 @@ def _sync_nlb_status():
         db.commit()
 
 
+def _get_alive_hosts(db: Session) -> set[str]:
+    cutoff = now() - timedelta(seconds=LB_FAILOVER_TIMEOUT)
+    agents = db.query(LBAgentHost).filter(LBAgentHost.last_seen >= cutoff).all()
+    return {a.host for a in agents}
+
+
+def _sync_alb_failover(db_session: Session | None = None):
+    """Check for ALBs whose host is stale (> LB_FAILOVER_TIMEOUT seconds without heartbeat) and fail them over."""
+    close_db = False
+    if db_session is None:
+        db = SessionLocal()
+        close_db = True
+    else:
+        db = db_session
+
+    try:
+        alive_hosts = _get_alive_hosts(db)
+        if not alive_hosts:  # no heartbeat at all (API just restarted / all workers down): nothing to fail over to
+            return
+        albs = db.query(LoadBalancer).filter(
+            LoadBalancer.lb_type == "ALB",
+            LoadBalancer.host.isnot(None),
+        ).all()
+
+        for lb in albs:
+            if lb.host not in alive_hosts:
+                old_host = lb.host
+                new_host = _pick_host(db, exclude_host=old_host)
+                if new_host:
+                    lb.host = new_host
+                    log.info("ALB %s failed over from host %s to host %s", lb.id, old_host, new_host)
+                    try:
+                        from shared.rpc import RPCClient
+                        RPCClient().publish_event("load_balancer.failover", {
+                            "id": lb.id,
+                            "project_id": lb.project_id,
+                            "name": lb.name,
+                            "old_host": old_host,
+                            "new_host": new_host,
+                            "timestamp": now().isoformat(),
+                        })
+                    except Exception as exc:
+                        log.warning("Failed to publish load_balancer.failover event: %s", exc)
+                else:
+                    log.warning("ALB %s host %s is stale, but no alive host available for failover", lb.id, old_host)
+                    lb.operating_status = "ERROR"
+
+        db.commit()
+    finally:
+        if close_db:
+            db.close()
+
+
 def _status_loop():
     while True:
         time.sleep(10)
         try:
             _sync_nlb_status()
+            _sync_alb_failover()
         except Exception as exc:  # best-effort: status is informational, the loop must survive
-            log.debug("nlb status sync failed: %s", exc)
+            log.debug("status loop failed: %s", exc)
 
 
 @app.on_event("startup")
@@ -475,15 +537,30 @@ def _member_to_dict(m: Member) -> dict:
     }
 
 
-def _pick_host() -> str | None:
-    """Compute node that will run an ALB's haproxy: the first enabled one."""
+def _pick_host(db: Session | None = None, exclude_host: str | None = None) -> str | None:
+    """Compute node that will run an ALB's haproxy: the first enabled and alive host."""
+    alive_hosts = _get_alive_hosts(db) if db else None
+
+    compute_hosts = []
     try:
         r = requests.get(f"{COMPUTE_API_URL}/os-services", headers=internal_headers(), timeout=10)
         r.raise_for_status()
-        return next((s["host"] for s in r.json()["services"] if s["status"] == "enabled" and not s.get("forced_down")), None)
+        compute_hosts = [s["host"] for s in r.json().get("services", [])
+                         if s.get("status") == "enabled" and not s.get("forced_down")]
     except Exception as exc:
         log.warning("could not pick a compute host: %s", exc)
-        return None
+
+    if compute_hosts:
+        candidates = [h for h in compute_hosts if h != exclude_host]
+    elif alive_hosts is not None:
+        candidates = [h for h in sorted(alive_hosts) if h != exclude_host]
+    else:
+        candidates = []
+
+    if alive_hosts is not None and len(alive_hosts) > 0:
+        candidates = [h for h in candidates if h in alive_hosts]
+
+    return candidates[0] if candidates else None
 
 
 def lb_state(db: Session, lb: LoadBalancer, with_pem: bool = False) -> list[dict]:
@@ -538,7 +615,7 @@ def create_load_balancer(payload: LoadBalancerIn, current: CurrentUser, db: DB):
         vip_switch=vip["switch"],
         vip_prefix=vip["prefix"],
         vip_gateway=vip["gateway"],
-        host=_pick_host() if payload.lb_type == "ALB" else None,
+        host=_pick_host(db) if payload.lb_type == "ALB" else None,
         provisioning_status="ACTIVE",
         operating_status="ONLINE",
     )
@@ -650,6 +727,18 @@ def list_certificates(lb_ref: str, current: CurrentUser, db: DB):
         raise HTTPException(status_code=404, detail="load balancer not found")
     certs = db.query(LBCertificate).filter_by(load_balancer_id=lb.id).all()
     return {"certificates": [{"id": c.id, "name": c.name, "created_at": c.created_at.isoformat()} for c in certs]}
+
+
+@app.delete("/load-balancers/{lb_ref}/certificates/{cert_id}", status_code=204)
+def delete_certificate(lb_ref: str, cert_id: str, current: CurrentUser, db: DB):
+    lb = db.query(LoadBalancer).filter_by(id=lb_ref, project_id=_project_id(current)).first()
+    cert = db.query(LBCertificate).filter_by(id=cert_id, load_balancer_id=lb.id).first() if lb else None
+    if not cert:
+        raise HTTPException(status_code=404, detail="certificate not found")
+    if db.query(Listener).filter_by(certificate_id=cert.id).first():
+        raise HTTPException(status_code=409, detail="certificate is used by a listener")
+    db.delete(cert)
+    db.commit()
 
 
 @app.post("/load-balancers/{lb_ref}/listeners", status_code=201)
@@ -1020,6 +1109,14 @@ class MemberStatusIn(BaseModel):
 @app.get("/internal/lb-agent/{host}", dependencies=[InternalAuth])
 def lb_agent_state(host: str, db: DB):
     """Everything lb-worker on `host` must be running: one entry per ALB placed there."""
+    agent = db.query(LBAgentHost).filter_by(host=host).first()
+    if not agent:
+        agent = LBAgentHost(host=host, last_seen=now())
+        db.add(agent)
+    else:
+        agent.last_seen = now()
+    db.commit()
+
     out = []
     for lb in db.query(LoadBalancer).filter_by(lb_type="ALB", host=host):
         if lb.provisioning_status == "ERROR" and not lb.vip_address:

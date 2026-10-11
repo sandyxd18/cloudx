@@ -29,6 +29,7 @@ now = lambda: datetime.now(timezone.utc)  # noqa: E731
 class Stack(Base):
     __tablename__ = "orchestration_stacks"
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid.uuid4()))
+    parent_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     project_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="CREATE_IN_PROGRESS")
@@ -151,6 +152,9 @@ def _create_job(stack_id, api):
     def job():
         with SessionLocal() as db:
             s = db.get(Stack, stack_id)
+            api.db = db
+            api.parent_id = s.id
+            api.project_id = s.project_id
             t, p = json.loads(s.template), json.loads(s.parameters)
             err, state = eng.create(t, p, s.name, api, _recorder(db, s.id), rollback=not s.disable_rollback)
             if err:
@@ -186,7 +190,7 @@ def preview_stack(user: CurrentUser, data: StackIn):
 
 @router.get("/stacks")
 def list_stacks(user: CurrentUser, db: DB, status: str | None = None):
-    q = select(Stack).order_by(Stack.created_at.desc())
+    q = select(Stack).where(Stack.parent_id.is_(None)).order_by(Stack.created_at.desc())
     if user.get("role") != "admin":
         q = q.where(Stack.project_id == user.get("project_id"))
     if status:
@@ -254,6 +258,9 @@ def update_stack(user: CurrentUser, ref: str, data: StackUpdate, request: Reques
     def job():
         with SessionLocal() as db2:
             st = db2.get(Stack, sid)
+            api.db = db2
+            api.parent_id = st.id
+            api.project_id = st.project_id
             rec = _recorder(db2, st.id)
             err, state = eng.update(old, json.loads(st.parameters), new, p, st.name, api, rec, state=_state(db2, st.id))
             if err:
@@ -277,6 +284,9 @@ def delete_stack(user: CurrentUser, ref: str, request: Request, db: DB):
     def job():
         with SessionLocal() as db2:
             st = db2.get(Stack, sid)
+            api.db = db2
+            api.parent_id = st.id
+            api.project_id = st.project_id
             t = json.loads(st.template)
             rows = {r.name: r for r in db2.scalars(select(StackResource).where(StackResource.stack_id == sid))}
             items = [(n, rows[n].type, rows[n].physical_id) for n in reversed(eng.order(t)) if n in rows and rows[n].physical_id]

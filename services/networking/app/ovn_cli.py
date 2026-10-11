@@ -310,8 +310,9 @@ def apply_security_group_acls(db: Session, group: SecurityGroup) -> None:
         action = "allow-related" if rule.action == "allow" else rule.action
         ovn("--type=port-group", "--may-exist", "acl-add", pg, direction, acl_priority(rule), acl_match(group.id, rule), action)
     ovn("--type=port-group", "--may-exist", "acl-add", pg, "to-lport", "1001", f"outport == @{pg} && ip4", "drop")
-    # !nd keeps neighbor discovery working; everything else IPv6 needs an explicit rule
-    ovn("--type=port-group", "--may-exist", "acl-add", pg, "to-lport", "1001", f"outport == @{pg} && ip6 && !nd", "drop")
+    # no `!nd`: ovn-controller refuses to compile negated nominal predicates, so the flow was never installed.
+    # OVN's built-in priority 65532 flows already allow ND/MLD, so a plain ip6 drop is safe.
+    ovn("--type=port-group", "--may-exist", "acl-add", pg, "to-lport", "1001", f"outport == @{pg} && ip6", "drop")
 
 def get_lsp_uuid(logical_port_name: str) -> str | None:
     """Resolve a Logical_Switch_Port name to its OVN NB UUID.

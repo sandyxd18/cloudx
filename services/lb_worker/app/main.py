@@ -98,16 +98,30 @@ def apply_lb(lb: dict, listeners: list[dict]) -> None:
 
 def remove_lb(lb_id: str) -> None:
     ns, dev = names(lb_id)
-    d = ROOT / lb_id
-    pid = pid_of(d)
-    if pid:
-        sh("kill", str(pid), ok=True)
+    dirs_to_remove = []
+    if ROOT.exists():
+        d_exact = ROOT / lb_id
+        if d_exact.exists():
+            dirs_to_remove.append(d_exact)
+        else:
+            for d in ROOT.glob("*"):
+                if d.is_dir() and d.name.startswith(lb_id[:8]):
+                    dirs_to_remove.append(d)
+
+    for d in dirs_to_remove:
+        pid = pid_of(d)
+        if pid:
+            sh("kill", str(pid), ok=True)
+        for f in d.glob("*"):
+            f.unlink(missing_ok=True)
+        d.rmdir()
+
     sh("ovs-vsctl", "--if-exists", "del-port", "br-int", dev, ok=True)
     sh("ip", "netns", "del", ns, ok=True)
-    for f in d.glob("*"):
-        f.unlink(missing_ok=True)
-    d.rmdir()
-    _applied.pop(lb_id, None)
+
+    for k in list(_applied.keys()):
+        if k == lb_id or k.startswith(lb_id[:8]):
+            _applied.pop(k, None)
     log.info("lb %s: removed", lb_id)
 
 
@@ -146,9 +160,28 @@ def tick() -> None:
             apply_lb(x["lb"], x["listeners"])
         except Exception as exc:  # best-effort: one broken LB must not stop the others
             log.error("lb %s: %s", lb_id, exc)
-    for d in ROOT.glob("*") if ROOT.exists() else []:
-        if d.name not in want:
-            remove_lb(d.name)
+
+    stale_ids = set(_applied.keys())
+    if ROOT.exists():
+        for d in ROOT.glob("*"):
+            if d.is_dir():
+                stale_ids.add(d.name)
+
+    try:
+        netns_out = sh("ip", "netns", "list", ok=True)
+        for line in netns_out.splitlines():
+            parts = line.strip().split()
+            if parts and parts[0].startswith("qlb-"):
+                prefix = parts[0][4:]
+                stale_ids.add(prefix)
+    except Exception as exc:
+        log.debug("failed to list netns: %s", exc)
+
+    want_prefixes = {lb_id[:8] for lb_id in want}
+    for lb_id in stale_ids:
+        if lb_id not in want and lb_id[:8] not in want_prefixes:
+            remove_lb(lb_id)
+
     changed = {}
     for lb_id in want:
         try:

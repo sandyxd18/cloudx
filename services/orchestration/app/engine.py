@@ -10,9 +10,11 @@ import ipaddress
 import json
 import os
 import time
+import uuid
 
 import requests
 import yaml
+from sqlalchemy import select
 
 POLL = 3  # seconds between status polls (tests set 0)
 URLS = {
@@ -122,12 +124,38 @@ def resolve(v, params: dict, state: dict, preview: bool = False):
         if "get_resource" in v:
             return f"<{v['get_resource']}>" if preview else state[v["get_resource"]]["id"]
         if "get_attr" in v:
-            n, attr = v["get_attr"][0], v["get_attr"][1]
-            if preview:
-                return f"<{n}.{attr}>"
-            if attr not in state[n]:
+            attr_path = v["get_attr"]
+            if isinstance(attr_path, list):
+                n = attr_path[0]
+                if preview:
+                    return f"<{n}.{'.'.join(attr_path[1:])}>"
+                if n not in state:
+                    raise ResourceFailure(f"resource '{n}' not found in state")
+                if len(attr_path) > 2 and attr_path[1] == "outputs":
+                    out_name = attr_path[2]
+                    outs = state[n].get("outputs", {})
+                    if isinstance(outs, str):
+                        try:
+                            outs = json.loads(outs)
+                        except ValueError:  # best-effort: outputs that are not JSON simply have no named attribute
+                            outs = {}
+                    if isinstance(outs, dict) and out_name in outs:
+                        return outs[out_name]
+                    if out_name in state[n]:
+                        return state[n][out_name]
+                    raise ResourceFailure(f"resource '{n}' has no output attribute '{out_name}'")
+                attr = attr_path[1]
+                if attr in state[n]:
+                    return state[n][attr]
+                outs = state[n].get("outputs", {})
+                if isinstance(outs, str):
+                    try:
+                        outs = json.loads(outs)
+                    except ValueError:  # best-effort: outputs that are not JSON simply have no named attribute
+                        outs = {}
+                if isinstance(outs, dict) and attr in outs:
+                    return outs[attr]
                 raise ResourceFailure(f"resource '{n}' has no attribute '{attr}'")
-            return state[n][attr]
         return {k: resolve(x, params, state, preview) for k, x in v.items()}
     if isinstance(v, list):
         return [resolve(x, params, state, preview) for x in v]
@@ -223,6 +251,12 @@ def _fipassoc_d(api, fid):
     api.call("net", "POST", f"/floating-ips/{fid}/disassociate", {}, ok=(200, 202, 204, 404))
 
 
+def _fipassoc_u(api, pid, old_p, new_p):
+    key = "server" if new_p.get("server_id") else "port"
+    api.call("net", "POST", f"/floating-ips/{new_p['floatingip_id']}/associate", {key: new_p.get("server_id") or new_p["port_id"]})
+    return new_p["floatingip_id"], {}
+
+
 def _sg_c(api, p):
     r = api.call("net", "POST", "/security-groups", _pick(p, "name", "description"))
     for rule in p.get("rules") or []:
@@ -234,6 +268,22 @@ def _sg_c(api, p):
     return r["id"], {"name": r.get("name")}
 
 
+def _sg_u(api, pid, old_p, new_p):
+    if old_p.get("rules") != new_p.get("rules"):
+        curr = api.call("net", "GET", f"/security-groups/{pid}/rules") or {}
+        curr_rules = curr.get("items", [])
+        for r in curr_rules:
+            if "id" in r:
+                api.call("net", "DELETE", f"/security-group-rules/{r['id']}", ok=(200, 202, 204, 404))
+        for rule in new_p.get("rules") or []:
+            body = {"direction": rule.get("direction", "ingress"), "ethertype": rule.get("ethertype", "IPv4"),
+                    "protocol": rule.get("protocol", "any"), "port_min": rule.get("port_range_min"),
+                    "port_max": rule.get("port_range_max"), "remote_ip_prefix": rule.get("remote_ip_prefix"),
+                    "remote_group_id": rule.get("remote_group_id")}
+            api.call("net", "POST", f"/security-groups/{pid}/rules", {k: v for k, v in body.items() if v is not None})
+    return pid, {}
+
+
 def _vol_c(api, p):
     r = api.call("block", "POST", "/volumes", {"name": p["name"], "size_gb": p["size"], **_pick(p, "image")})
     _wait(api, "block", f"/volumes/{r['id']}", ("available",))
@@ -243,6 +293,16 @@ def _vol_c(api, p):
 def _vol_d(api, vid):
     api.call("block", "DELETE", f"/volumes/{vid}", ok=(200, 202, 204, 404))
     _gone(api, "block", f"/volumes/{vid}")
+
+
+def _vol_u(api, pid, old_p, new_p):
+    if old_p.get("size") != new_p.get("size"):
+        old_size, new_size = old_p.get("size", 0), new_p.get("size", 0)
+        if new_size > old_size:
+            api.call("block", "POST", f"/volumes/{pid}/extend", {"new_size": new_size})
+            _wait(api, "block", f"/volumes/{pid}", ("available",))
+            return pid, {"size": new_size}
+    return pid, {}
 
 
 def _server_c(api, p):
@@ -269,6 +329,9 @@ def _del(svc, path):
 def _server_u(api, pid, old_p, new_p):
     if old_p.get("user_data") != new_p.get("user_data"):
         api.call("compute", "PUT", f"/servers/{pid}/user-data", {"user_data": new_p.get("user_data", "")})
+    if old_p.get("flavor") != new_p.get("flavor") and new_p.get("flavor"):
+        api.call("compute", "POST", f"/servers/{pid}/resize", {"flavor": new_p["flavor"]})
+        _wait(api, "compute", f"/servers/{pid}", ("ACTIVE", "VERIFY_RESIZE"))
     return pid, {}
 
 
@@ -319,17 +382,166 @@ def _asg_u(api, pid, old_p, new_p):
     return pid, {"size": new_size, "server_ids": old_ids}
 
 
+def _nested_stack_c(api, props, depth=1):
+    if depth > 3:
+        raise ResourceFailure("nested stack depth limit exceeded (max 3)")
+    tpl_raw = props.get("template")
+    if not tpl_raw:
+        raise ResourceFailure("OS::Heat::Stack requires 'template' property")
+    t = load(tpl_raw)
+    p = merge_params(t, props.get("parameters", {}))
+    stack_name = props.get("name", "nested_stack")
+
+    child_id = str(uuid.uuid4())
+    db = getattr(api, "db", None)
+    parent_id = getattr(api, "parent_id", None)
+    project_id = getattr(api, "project_id", "admin")
+
+    child_rec = lambda *a, **k: None
+    if db:
+        from .stacks import Stack, _recorder
+        s = Stack(
+            id=child_id,
+            parent_id=parent_id,
+            project_id=project_id,
+            name=stack_name,
+            status="CREATE_IN_PROGRESS",
+            template=dumps(t),
+            parameters=dumps(p),
+            disable_rollback=False,
+        )
+        db.add(s)
+        db.commit()
+        child_rec = _recorder(db, child_id)
+
+    orig_parent = getattr(api, "parent_id", None)
+    api.parent_id = child_id
+
+    try:
+        err, child_state = create(t, p, stack_name, api, child_rec, rollback=True, depth=depth)
+    finally:
+        api.parent_id = orig_parent
+
+    if err:
+        if db:
+            from .stacks import Stack
+            s = db.get(Stack, child_id)
+            if s:
+                s.status = "CREATE_FAILED"
+                s.status_reason = err
+                db.commit()
+        raise ResourceFailure(f"nested stack '{stack_name}' failed: {err}")
+
+    outs = outputs(t, p, child_state)
+    if db:
+        from .stacks import Stack
+        s = db.get(Stack, child_id)
+        if s:
+            s.status = "CREATE_COMPLETE"
+            s.outputs = dumps(outs)
+            db.commit()
+
+    if getattr(api, "_nested_stacks", None) is None:
+        api._nested_stacks = {}
+    api._nested_stacks[child_id] = (t, child_state)
+
+    return child_id, {"outputs": outs, **outs}
+
+
+def _nested_stack_d(api, pid):
+    db = getattr(api, "db", None)
+    if db:
+        from .stacks import Stack, StackResource, StackEvent, _recorder
+        child_stack = db.get(Stack, pid)
+        if child_stack:
+            t = json.loads(child_stack.template)
+            rows = {r.name: r for r in db.scalars(select(StackResource).where(StackResource.stack_id == pid))}
+            items = [(n, rows[n].type, rows[n].physical_id) for n in reversed(order(t)) if n in rows and rows[n].physical_id]
+            child_rec = _recorder(db, pid)
+            destroy(items, api, child_rec)
+            for r in db.scalars(select(StackResource).where(StackResource.stack_id == pid)):
+                db.delete(r)
+            for e in db.scalars(select(StackEvent).where(StackEvent.stack_id == pid)):
+                db.delete(e)
+            db.delete(child_stack)
+            db.commit()
+            return
+
+    nested_stacks = getattr(api, "_nested_stacks", {})
+    if pid in nested_stacks:
+        t, child_state = nested_stacks.pop(pid)
+        items = [(n, t["resources"][n]["type"], child_state[n]["id"]) for n in reversed(order(t)) if n in child_state and "id" in child_state[n]]
+        destroy(items, api, lambda *a, **k: None)
+
+
+def _nested_stack_u(api, pid, old_p, new_p, depth=1):
+    if depth > 3:
+        raise ResourceFailure("nested stack depth limit exceeded (max 3)")
+    new_raw = new_p.get("template")
+    if not new_raw:
+        raise ResourceFailure("OS::Heat::Stack requires 'template' property")
+    new_t = load(new_raw)
+    new_p_merged = merge_params(new_t, new_p.get("parameters", {}))
+
+    old_raw = old_p.get("template")
+    old_t = load(old_raw) if old_raw else new_t
+    old_p_merged = merge_params(old_t, old_p.get("parameters", {}))
+
+    db = getattr(api, "db", None)
+    child_rec = lambda *a, **k: None
+    child_state = {}
+
+    if db:
+        from .stacks import Stack, _recorder, _state
+        child_rec = _recorder(db, pid)
+        child_state = _state(db, pid)
+    else:
+        nested_stacks = getattr(api, "_nested_stacks", {})
+        if pid in nested_stacks:
+            old_t, child_state = nested_stacks[pid]
+
+    stack_name = new_p.get("name", "nested_stack")
+    orig_parent = getattr(api, "parent_id", None)
+    api.parent_id = pid
+
+    try:
+        err, updated_state = update(old_t, old_p_merged, new_t, new_p_merged, stack_name, api, child_rec, state=child_state, depth=depth)
+    finally:
+        api.parent_id = orig_parent
+
+    if err:
+        raise ResourceFailure(f"nested stack update failed: {err}")
+
+    outs = outputs(new_t, new_p_merged, updated_state)
+    if db:
+        from .stacks import Stack
+        s = db.get(Stack, pid)
+        if s:
+            s.template = dumps(new_t)
+            s.parameters = dumps(new_p_merged)
+            s.outputs = dumps(outs)
+            db.commit()
+
+    if getattr(api, "_nested_stacks", None) is None:
+        api._nested_stacks = {}
+    api._nested_stacks[pid] = (new_t, updated_state)
+
+    return pid, {"outputs": outs, **outs}
+
+
 TYPES = {
     "OS::Neutron::Net": (_net_c, _del("net", "/networks"), None),
     "OS::Neutron::Subnet": (_subnet_c, _del("net", "/subnets"), None),
     "OS::Neutron::Router": (_router_c, _router_d, _router_u),
     "OS::Neutron::RouterInterface": (_iface_c, _iface_d, None),
     "OS::Neutron::FloatingIP": (_fip_c, _del("net", "/floating-ips"), None),
-    "OS::Neutron::FloatingIPAssociation": (_fipassoc_c, _fipassoc_d, None),
-    "OS::Neutron::SecurityGroup": (_sg_c, _del("net", "/security-groups"), None),
-    "OS::Cinder::Volume": (_vol_c, _vol_d, None),
+    "OS::Neutron::FloatingIPAssociation": (_fipassoc_c, _fipassoc_d, _fipassoc_u),
+    "OS::Neutron::SecurityGroup": (_sg_c, _del("net", "/security-groups"), _sg_u),
+    "OS::Cinder::Volume": (_vol_c, _vol_d, _vol_u),
     "OS::Nova::Server": (_server_c, _server_d, _server_u),
     "Cloudx::AutoScalingGroup": (_asg_c, _asg_d, _asg_u),
+    "OS::Heat::Stack": (_nested_stack_c, _nested_stack_d, _nested_stack_u),
+    "Cloudx::Stack": (_nested_stack_c, _nested_stack_d, _nested_stack_u),
 }
 
 
@@ -349,7 +561,7 @@ def destroy(items, api, record) -> list[str]:
     return failed
 
 
-def create(template, params, stack_name, api, record, rollback=True, state=None):
+def create(template, params, stack_name, api, record, rollback=True, state=None, depth=1):
     """Create resources in dependency order. Returns (error | None, state). On error, rolls back what was built.
 
     `state` pre-seeds resources that already exist (stack update): those are skipped and never rolled back.
@@ -364,7 +576,10 @@ def create(template, params, stack_name, api, record, rollback=True, state=None)
             props = resolve(res.get("properties", {}), params, state)
             props.setdefault("name", f"{stack_name}-{name}")
             record(name, rtype, "CREATE_IN_PROGRESS", props=props)
-            pid, attrs = TYPES[rtype][0](api, props)
+            if rtype in ("OS::Heat::Stack", "Cloudx::Stack"):
+                pid, attrs = _nested_stack_c(api, props, depth=depth + 1)
+            else:
+                pid, attrs = TYPES[rtype][0](api, props)
         except Exception as exc:  # best-effort: any handler failure fails the stack, never the worker
             err = f"{name}: {exc}"
             record(name, rtype, "CREATE_FAILED", str(exc)[:250])
@@ -384,18 +599,54 @@ def dumps(v) -> str:
 def _can_update_inplace(rtype: str, old_p: dict, new_p: dict) -> bool:
     if rtype == "OS::Nova::Server":
         diff_keys = {k for k in set(old_p) | set(new_p) if old_p.get(k) != new_p.get(k)}
-        return diff_keys.issubset({"user_data"})
+        return diff_keys.issubset({"user_data", "flavor"})
+    elif rtype == "OS::Cinder::Volume":
+        diff_keys = {k for k in set(old_p) | set(new_p) if old_p.get(k) != new_p.get(k)}
+        if diff_keys == {"size"}:
+            return new_p.get("size", 0) > old_p.get("size", 0)
+        return False
     elif rtype == "OS::Neutron::Router":
         diff_keys = {k for k in set(old_p) | set(new_p) if old_p.get(k) != new_p.get(k)}
-        return diff_keys.issubset({"routes", "name"})
+        return diff_keys.issubset({"routes"})
+    elif rtype == "OS::Neutron::SecurityGroup":
+        diff_keys = {k for k in set(old_p) | set(new_p) if old_p.get(k) != new_p.get(k)}
+        return diff_keys.issubset({"rules"})
+    elif rtype == "OS::Neutron::FloatingIPAssociation":
+        diff_keys = {k for k in set(old_p) | set(new_p) if old_p.get(k) != new_p.get(k)}
+        return diff_keys.issubset({"floatingip_id", "server_id", "port_id"})
     elif rtype == "Cloudx::AutoScalingGroup":
         diff_keys = {k for k in set(old_p) | set(new_p) if old_p.get(k) != new_p.get(k)}
         return diff_keys.issubset({"size", "name", "image", "flavor", "network"})
+    elif rtype in ("OS::Heat::Stack", "Cloudx::Stack"):
+        return True
     return False
 
 
-def update(old_template: dict, old_params: dict, new_template: dict, new_params: dict, stack_name: str, api, record, state=None):
-    """Update stack resources. In-place update where supported, replace (delete + create) where required."""
+def update(old_template: dict, old_params: dict, new_template: dict, new_params: dict, stack_name: str, api, record, state=None, depth=1):
+    """Update stack resources. In-place update where supported, replace (delete + create) where required.
+
+    In-place vs Replace Matrix:
+    - OS::Nova::Server:
+      - In-place: user_data (PUT /servers/{id}/user-data), flavor (POST /servers/{id}/resize)
+      - Replace: name, image, networks, key_name, availability_zone, volume_size, security_groups
+    - OS::Cinder::Volume:
+      - In-place: size (if size increases, POST /volumes/{id}/extend)
+      - Replace: size (if size decreases), name, image
+    - OS::Neutron::Router:
+      - In-place: routes (PUT /routers/{id})
+      - Replace: name, external_gateway_info
+    - OS::Neutron::SecurityGroup:
+      - In-place: rules (POST /security-groups/{id}/rules & DELETE /security-group-rules/{id})
+      - Replace: name, description
+    - OS::Neutron::FloatingIPAssociation:
+      - In-place: floatingip_id, server_id, port_id (POST /floating-ips/{id}/associate)
+    - Cloudx::AutoScalingGroup:
+      - In-place: size, name, image, flavor, network (scales servers up/down)
+    - OS::Heat::Stack / Cloudx::Stack:
+      - In-place: template, parameters (recursive child stack update)
+    - OS::Neutron::Net, OS::Neutron::Subnet, OS::Neutron::FloatingIP, OS::Neutron::RouterInterface:
+      - Replace (target APIs do not provide update routes)
+    """
     state = dict(state or {})
     before = {r["name"]: r for r in preview(old_template, old_params)}
     after = {r["name"]: r for r in preview(new_template, new_params)}
@@ -438,8 +689,11 @@ def update(old_template: dict, old_params: dict, new_template: dict, new_params:
             pid = state[n]["id"]
             record(n, rtype, "UPDATE_IN_PROGRESS", props=new_p)
             try:
-                handler = TYPES[rtype][2]
-                res = handler(api, pid, old_p, new_p) if (len(TYPES[rtype]) > 2 and TYPES[rtype][2]) else (pid, {})
+                if rtype in ("OS::Heat::Stack", "Cloudx::Stack"):
+                    res = _nested_stack_u(api, pid, old_p, new_p, depth=depth + 1)
+                else:
+                    handler = TYPES[rtype][2]
+                    res = handler(api, pid, old_p, new_p) if (len(TYPES[rtype]) > 2 and TYPES[rtype][2]) else (pid, {})
                 new_pid, attrs = res if isinstance(res, tuple) else (pid, res or {})
                 if new_pid:
                     state[n]["id"] = new_pid
@@ -459,7 +713,10 @@ def update(old_template: dict, old_params: dict, new_template: dict, new_params:
             props = resolve(res.get("properties", {}), new_params, state)
             props.setdefault("name", f"{stack_name}-{n}")
             record(n, rtype, "CREATE_IN_PROGRESS", props=props)
-            pid, attrs = TYPES[rtype][0](api, props)
+            if rtype in ("OS::Heat::Stack", "Cloudx::Stack"):
+                pid, attrs = _nested_stack_c(api, props, depth=depth + 1)
+            else:
+                pid, attrs = TYPES[rtype][0](api, props)
         except Exception as exc:
             err = f"{n}: {exc}"
             record(n, rtype, "CREATE_FAILED", str(exc)[:250])

@@ -1,10 +1,10 @@
-
 def test_cli_service_help(cloudx):
     res = cloudx("service", "--help")
     assert res.returncode == 0
     assert "service" in res.stdout
     assert "status" in res.stdout
     assert "list" in res.stdout
+
 
 def test_key_manager_cli_help(cloudx):
     res = cloudx("secret", "--help")
@@ -18,6 +18,7 @@ def test_key_manager_cli_help(cloudx):
     res3 = cloudx("vpn", "--help")
     assert res3.returncode == 0
     assert "vpn" in res3.stdout
+
 
 def test_k8s_engine_cli_help(cloudx):
     res = cloudx("k8s-template", "--help")
@@ -36,3 +37,33 @@ def test_stack_and_alarm_cli_help(cloudx):
         assert res.returncode == 0
         for s in subs:
             assert s in res.stdout
+
+
+def test_role_assignment_cli_help(cloudx):
+    res = cloudx("role-assignment", "--help")
+    assert res.returncode == 0
+    assert "role-assignment" in res.stdout
+    for s in ("list", "create", "grant", "revoke", "delete"):
+        assert s in res.stdout
+
+
+def test_load_balancer_new_commands_help(cloudx):
+    res = cloudx("load-balancer", "--help")
+    assert res.returncode == 0
+    for s in ("certificate", "l7policy", "l7rule", "listener"):
+        assert s in res.stdout
+
+    res_cert = cloudx("load-balancer", "certificate", "--help")
+    assert res_cert.returncode == 0
+    for s in ("create", "list", "delete"):
+        assert s in res_cert.stdout
+
+    res_policy = cloudx("load-balancer", "l7policy", "--help")
+    assert res_policy.returncode == 0
+    for s in ("create", "list", "delete"):
+        assert s in res_policy.stdout
+
+    res_rule = cloudx("load-balancer", "l7rule", "--help")
+    assert res_rule.returncode == 0
+    for s in ("create", "list", "delete"):
+        assert s in res_rule.stdout

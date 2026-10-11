@@ -29,6 +29,7 @@ from cloudx_cli.commands import (  # noqa: F401
     object_store,
     observability,
     orchestration,
+    role_assignment,
     service,
     stack,
     storage,
