@@ -1,7 +1,7 @@
 import json
 
 from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import CurrentUser, InternalAuth
+from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
 from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
@@ -34,7 +34,7 @@ def _lsp_addresses(port: Port) -> list[str]:
 
 
 @router.post("/ports", status_code=201)
-def create_port(payload: PortIn, current: CurrentUser, db: DB):
+def create_port(payload: PortIn, current: UserOrInternal, db: DB):
     if get_by_ref(db, Port, payload.name, current=current):
         raise HTTPException(status_code=409, detail="port already exists")
     check_quota(db, current.get("project_id"), Port, "ports")
@@ -125,11 +125,11 @@ def create_port(payload: PortIn, current: CurrentUser, db: DB):
     return port_to_dict(db, port)
 
 @router.get("/ports")
-def list_ports(current: CurrentUser, db: DB):
+def list_ports(current: UserOrInternal, db: DB):
     return {"items": [port_to_dict(db, p) for p in db.scalars(scope(select(Port), Port, current).order_by(Port.created_at)).all()]}
 
 @router.get("/ports/{ref}")
-def show_port(ref: str, current: CurrentUser, db: DB):
+def show_port(ref: str, current: UserOrInternal, db: DB):
     return port_to_dict(db, require_owned(current, db, Port, ref, "port"))
 
 @router.post("/ports/{ref}/security-groups")
@@ -206,7 +206,7 @@ def port_ovn_show(ref: str, current: CurrentUser, db: DB):
     }
 
 @router.delete("/ports/{ref}")
-def delete_port(ref: str, current: CurrentUser, db: DB):
+def delete_port(ref: str, current: UserOrInternal, db: DB):
     port = require_owned(current, db, Port, ref, "port")
     port.security_group_ids = None
     apply_security_groups(db, port)

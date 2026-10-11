@@ -1,6 +1,7 @@
 import requests
 from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth
+from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth, UserOrInternal
+from shared.internal import internal_headers
 from sqlalchemy import select
 
 from .. import clients
@@ -24,7 +25,7 @@ router = APIRouter()
 # ── Volume CRUD ────────────────────────────────────────────────────────────────
 
 @router.post("/volumes", status_code=201)
-def create_volume(payload: VolumeIn, current: CurrentUser, db: DB):
+def create_volume(payload: VolumeIn, current: UserOrInternal, db: DB):
     size = payload.size_gb or payload.size
     if not size:
         raise HTTPException(status_code=400, detail="size_gb is required")
@@ -103,19 +104,19 @@ def delete_volume_internal(ref: str, db: DB):
 
 
 @router.get("/volumes")
-def list_volumes(current: CurrentUser, db: DB):
+def list_volumes(current: UserOrInternal, db: DB):
     _reconcile_orphan_volumes(db)
     q = _list_volumes_query(current, db)
     return {"items": [volume_to_os_dict(v) for v in db.scalars(q.order_by(Volume.created_at)).all()]}
 
 
 @router.get("/volumes/{ref}")
-def show_volume(ref: str, current: CurrentUser, db: DB):
+def show_volume(ref: str, current: UserOrInternal, db: DB):
     return volume_to_os_dict(require_volume(db, ref, current))
 
 
 @router.delete("/volumes/{ref}")
-def delete_volume(ref: str, current: CurrentUser, db: DB):
+def delete_volume(ref: str, current: UserOrInternal, db: DB):
     volume = require_volume(db, ref, current)
     if volume.status == "in-use":
         raise HTTPException(status_code=409, detail="detach volume before delete")
@@ -235,7 +236,7 @@ def attach_volume(ref: str, payload: AttachIn, current: CurrentUser, db: DB):
                 "host":        volume.host,
                 "target_dev":  target_device,
             },
-            headers=clients.service_client._headers(),
+            headers=internal_headers(),
             timeout=60,
         )
         if resp.status_code >= 400:
@@ -271,7 +272,7 @@ def detach_volume(ref: str, current: CurrentUser, db: DB):
                 "host":        volume.host,
                 "target_dev":  volume.target_device,
             },
-            headers=clients.service_client._headers(),
+            headers=internal_headers(),
             timeout=60,
         )
         if resp.status_code == 404:

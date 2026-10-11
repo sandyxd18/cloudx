@@ -3,11 +3,12 @@ from datetime import datetime
 
 import requests
 from fastapi import APIRouter, HTTPException, Request
-from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth
+from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth, UserOrInternal
+from shared.internal import internal_headers
 from sqlalchemy import select
 
 from .. import clients
-from ..clients import _svc_headers, response_detail
+from ..clients import response_detail
 from ..config import AUTH_API_URL, BLOCK_STORE_API_URL, NETWORKING_API_URL
 from ..db import DB
 from ..lookups import get_flavor, get_server, require_server
@@ -99,7 +100,7 @@ def _auth(method: str, project: str, headers: dict, **kw) -> dict:
 def get_quota_set(project: str, current: CurrentUser):
     if current.get("role") != "admin" and project != current.get("project_id"):
         raise HTTPException(status_code=404, detail="project not found")
-    return {"quota_set": _quota_set(_auth("GET", project, _svc_headers()))}
+    return {"quota_set": _quota_set(_auth("GET", project, internal_headers()))}
 
 
 @router.put("/os-quota-sets/{project}")
@@ -118,7 +119,7 @@ def _service(row: ComputeService | None, host: str) -> dict:
 
 
 @router.get("/os-services")
-def list_services(_: AdminUser, db: DB):
+def list_services(_: UserOrInternal, db: DB):
     rows = {r.host: r for r in db.scalars(select(ComputeService))}
     return {"services": [_service(rows.get(h), h) for h in sorted(set(rows) | set(compute_hosts()))]}
 

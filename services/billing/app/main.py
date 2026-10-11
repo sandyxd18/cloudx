@@ -28,7 +28,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
-from shared.auth_middleware import CurrentUser, AdminUser
+from shared.auth_middleware import AdminUser, CurrentUser, UserOrInternal
 from shared.schema import require_schema
 from shared.cors import cors_origins
 
@@ -378,7 +378,7 @@ def create_usage_record(user: AdminUser, data: UsageRecordIn, db: DB):
 
 
 @app.post("/billing/usage-records/batch")
-def create_usage_records_batch(user: AdminUser, items: list[UsageBatchItem], db: DB):
+def create_usage_records_batch(user: UserOrInternal, items: list[UsageBatchItem], db: DB):
     sheets = {
         s.resource_type: s
         for s in db.execute(select(RatingSheet).where(RatingSheet.is_active == True).order_by(RatingSheet.id)).scalars()
@@ -416,7 +416,7 @@ def create_usage_records_batch(user: AdminUser, items: list[UsageBatchItem], db:
 
 
 @app.post("/billing/cleanup")
-def cleanup_usage_records(user: AdminUser, db: DB, days: int = Query(365, ge=1)):
+def cleanup_usage_records(user: UserOrInternal, db: DB, days: int = Query(365, ge=1)):
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     res = db.execute(delete(UsageRecord).where(UsageRecord.period_end < cutoff))
     db.commit()
@@ -452,7 +452,7 @@ def list_usage_records(
 
 @app.post("/billing/invoices", response_model=InvoiceDetailOut, status_code=status.HTTP_201_CREATED)
 def create_invoice(
-    user: CurrentUser,
+    user: UserOrInternal,
     db: DB,
     project_id: str | None = None,
     year: int | None = None,

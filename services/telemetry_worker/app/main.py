@@ -21,6 +21,7 @@ import time
 import xml.etree.ElementTree as ET
 
 import requests
+from shared.internal import internal_headers
 from shared.proc import run
 
 
@@ -30,8 +31,6 @@ log = logging.getLogger("telemetry-worker")
 TELEMETRY_API_URL = os.getenv("TELEMETRY_API_URL", "http://127.0.0.1:8010").rstrip("/")
 COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
-AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
-AUTH_ADMIN_PASSWORD = os.environ["AUTH_ADMIN_PASSWORD"]
 COMPUTE_HOST = os.getenv("COMPUTE_HOST", "single-node")
 
 RETENTION_DAYS = int(os.getenv("TELEMETRY_RETENTION_DAYS", "7"))
@@ -44,48 +43,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-# ── Service Token ─────────────────────────────────────────────────────────────
-_svc_token: str | None = None
-_svc_token_exp: float = 0.0
-
-
-def _get_svc_token() -> str | None:
-    global _svc_token, _svc_token_exp
-    if _svc_token and time.time() < _svc_token_exp:
-        return _svc_token
-    _svc_token = None
-    try:
-        r = requests.post(
-            f"{AUTH_API_URL}/auth/tokens",
-            json={"username": AUTH_ADMIN_USERNAME, "password": AUTH_ADMIN_PASSWORD},
-            timeout=10,
-        )
-        if r.status_code in (200, 201):
-            body = r.json()
-            _svc_token = body["token"]
-            _svc_token_exp = time.time() + float(body.get("expires_in", 3600)) - 60
-            return _svc_token
-    except Exception as e:
-        log.warning("Failed to get service token: %s", e)
-    return None
-
-
-def _api_headers() -> dict:
-    token = _get_svc_token()
-    h = {"Content-Type": "application/json"}
-    if token:
-        h["Authorization"] = f"Bearer {token}"
-    return h
-
-
 def _api(method: str, url: str, **kw):
-    """requests.request with service token; on 401 clear the cached token and retry once."""
-    global _svc_token
-    r = requests.request(method, url, headers=_api_headers(), **kw)
-    if r.status_code == 401:
-        _svc_token = None
-        r = requests.request(method, url, headers=_api_headers(), **kw)
-    return r
+    headers = {**kw.pop("headers", {}), "Content-Type": "application/json", **internal_headers()}
+    return requests.request(method, url, headers=headers, **kw)
 
 
 # ── Rate math (pure) ──────────────────────────────────────────────────────────

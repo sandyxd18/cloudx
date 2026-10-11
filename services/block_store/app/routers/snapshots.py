@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import CurrentUser, UserOrInternal
 from sqlalchemy import select
 
 from .. import clients
@@ -16,7 +16,7 @@ router = APIRouter()
 # ── Snapshots ──────────────────────────────────────────────────────────────────
 
 @router.post("/volumes/{ref}/snapshots", status_code=201)
-def create_volume_snapshot(ref: str, payload: SnapshotIn, current: CurrentUser, db: DB):
+def create_volume_snapshot(ref: str, payload: SnapshotIn, current: UserOrInternal, db: DB):
     require_volume(db, ref, current)
     return _do_create_snapshot(db, ref, payload.name)
 

@@ -29,7 +29,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
-from shared.auth_middleware import AdminUser, CurrentUser, OptionalAuth
+from shared.auth_middleware import CurrentUser, OptionalAuth, UserOrInternal
 from shared.schema import require_schema
 
 from shared.request_id_middleware import RequestIDMiddleware
@@ -332,7 +332,7 @@ def list_event_types(user: OptionalAuth):
 
 @app.get("/events/logs", response_model=list[EventLogOut])
 def list_event_logs(
-    user: CurrentUser,
+    user: UserOrInternal,
     db: DB,
     event_type: str | None = None,
     resource_type: str | None = None,
@@ -405,7 +405,7 @@ def get_subscription(user: CurrentUser, sub_id: int, db: DB):
 
 
 @app.get("/events/internal/subscriptions/{sub_id}", response_model=WebhookSubscriptionCreated)
-def internal_get_subscription(user: AdminUser, sub_id: int, db: DB):
+def internal_get_subscription(user: UserOrInternal, sub_id: int, db: DB):
     return _sub_out(_own_sub(user, db, sub_id), WebhookSubscriptionCreated)
 
 
@@ -424,7 +424,7 @@ def _own_delivery(user: dict, db: Session, delivery_id: int) -> WebhookDelivery:
 
 
 @app.get("/events/deliveries", response_model=list[WebhookDeliveryOut])
-def list_deliveries(user: CurrentUser, db: DB, subscription_id: int | None = None, status: str | None = None,
+def list_deliveries(user: UserOrInternal, db: DB, subscription_id: int | None = None, status: str | None = None,
                     limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
     q = select(WebhookDelivery)
     if not _is_admin(user):
@@ -442,7 +442,7 @@ def list_deliveries(user: CurrentUser, db: DB, subscription_id: int | None = Non
 
 
 @app.patch("/events/deliveries/{delivery_id}", response_model=WebhookDeliveryOut)
-def patch_delivery(user: AdminUser, delivery_id: int, data: DeliveryPatch, db: DB):
+def patch_delivery(user: UserOrInternal, delivery_id: int, data: DeliveryPatch, db: DB):
     d = _own_delivery(user, db, delivery_id)
     if data.status is not None and data.status not in ("pending", "success", "failed"):
         raise HTTPException(status_code=422, detail="status must be pending, success or failed")

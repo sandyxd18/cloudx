@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import requests
+from shared.internal import internal_headers
 
 
 log = logging.getLogger("billing-worker")
@@ -34,9 +35,8 @@ COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip
 BLOCK_STORE_API_URL = os.getenv("BLOCK_STORE_API_URL", "http://block-store-api:8000").rstrip("/")
 NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
 LOAD_BALANCER_API_URL = os.getenv("LOAD_BALANCER_API_URL", "http://load-balancer-api:8008").rstrip("/")
+EVENT_API_URL = os.getenv("EVENT_API_URL", "http://event-api:8012").rstrip("/")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
-AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
-AUTH_ADMIN_PASSWORD = os.environ["AUTH_ADMIN_PASSWORD"]
 
 AGGREGATION_INTERVAL = int(os.getenv("AGGREGATION_INTERVAL", "3600"))  # 1 hour
 INVOICE_GENERATION_DAY = int(os.getenv("INVOICE_GENERATION_DAY", "1"))  # Day of month
@@ -49,44 +49,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-# ── Service Token ─────────────────────────────────────────────────────────────
-_svc_token: str | None = None
-
-
-def _get_svc_token() -> str | None:
-    global _svc_token
-    if _svc_token:
-        return _svc_token
-    try:
-        r = requests.post(
-            f"{AUTH_API_URL}/auth/tokens",
-            json={"username": AUTH_ADMIN_USERNAME, "password": AUTH_ADMIN_PASSWORD},
-            timeout=10,
-        )
-        if r.status_code in (200, 201):
-            _svc_token = r.json()["token"]
-            return _svc_token
-    except Exception as e:
-        log.warning("Failed to get service token: %s", e)
-    return None
-
-
-def _api_headers() -> dict:
-    token = _get_svc_token()
-    h = {"Content-Type": "application/json"}
-    if token:
-        h["Authorization"] = f"Bearer {token}"
-    return h
-
-
 def _request(method: str, url: str, **kw) -> requests.Response:
-    """requests with the service token; on 401 (expired token) clear the cache and retry once."""
-    global _svc_token
-    r = requests.request(method, url, headers=_api_headers(), **kw)
-    if r.status_code == 401:
-        _svc_token = None
-        r = requests.request(method, url, headers=_api_headers(), **kw)
-    return r
+    headers = {**kw.pop("headers", {}), "Content-Type": "application/json", **internal_headers()}
+    return requests.request(method, url, headers=headers, **kw)
 
 
 # ── Time math ─────────────────────────────────────────────────────────────────
@@ -292,9 +257,24 @@ def _save_state(state: dict) -> None:
         log.warning("Cannot save state %s: %s", STATE_FILE, e)
 
 
+def _lookup_deleted_at(resource_id: str) -> str | None:
+    """Query event-api for deletion event timestamp of a vanished resource."""
+    try:
+        r = _request("GET", f"{EVENT_API_URL}/events/logs", params={"resource_id": resource_id, "limit": 10}, timeout=5)
+        if r.status_code == 200:
+            events = r.json()
+            if isinstance(events, list):
+                del_events = [e for e in events if "delete" in str(e.get("event_type", "")).lower()]
+                if del_events:
+                    return del_events[0].get("timestamp")
+    except Exception as e:
+        log.warning("Failed to lookup delete event for %s: %s", resource_id, e)
+    return None
+
+
 def _with_ghosts(kind: str, listed: list[dict] | None, state: dict, start, end) -> list[dict]:
-    """Add resources seen last run but gone now (deleted; the APIs have no deleted_at), alive until mid-interval.
-    ponytail: half-interval estimate (error <= interval/2); exact if the APIs ever return deleted_at.
+    """Add resources seen last run but gone now (deleted). Uses exact event deletion timestamp if available,
+    falling back to half-interval estimate if no delete event is found.
     A failed listing (None) keeps the old snapshot so nothing is billed as deleted by mistake."""
     if listed is None:
         return []
@@ -302,7 +282,12 @@ def _with_ghosts(kind: str, listed: list[dict] | None, state: dict, start, end) 
     now = {str(r.get("id") or r.get("uuid")): r for r in listed}
     died = start + (end - start) / 2
     state[kind] = now
-    return listed + [{**r, "deleted_at": died.isoformat()} for k, r in old.items() if k not in now]
+    ghosts = []
+    for k, r in old.items():
+        if k not in now:
+            del_at = _lookup_deleted_at(k) or died.isoformat()
+            ghosts.append({**r, "deleted_at": del_at})
+    return listed + ghosts
 
 
 def aggregate_usage():

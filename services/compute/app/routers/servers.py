@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
-from shared.auth_middleware import CurrentUser, InternalAuth
+from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
 from sqlalchemy import select
 
 from .. import clients
@@ -34,7 +34,7 @@ router = APIRouter()
 
 
 @router.post("/servers", status_code=201)
-def create_server(payload: ServerIn, current: CurrentUser, db: DB):
+def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
     if get_active_server_by_name(db, payload.name):
         raise HTTPException(status_code=409, detail="server already exists")
     if bool(payload.image) == bool(payload.boot_volume):
@@ -199,7 +199,7 @@ def create_server(payload: ServerIn, current: CurrentUser, db: DB):
 
 @router.get("/servers")
 def list_servers(
-    current: CurrentUser, db: DB,
+    current: UserOrInternal, db: DB,
     limit: int = Query(default=200, ge=1, le=1000),
     marker: str | None = None,
     tags: str | None = None,
@@ -275,7 +275,7 @@ def internal_server_by_ip(fixed_ip: str, db: DB):
 
 
 @router.get("/servers/{ref}")
-def show_server(ref: str, current: CurrentUser, db: DB):
+def show_server(ref: str, current: UserOrInternal, db: DB):
     return server_to_dict(require_server(db, ref, current))
 
 

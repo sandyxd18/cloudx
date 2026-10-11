@@ -18,6 +18,7 @@ Examples:
 from cloudx_cli.app import cli
 # Importing a commands module registers its groups on `cli`.
 from cloudx_cli.commands import (  # noqa: F401
+    alarm,
     auth,
     compute,
     image,
@@ -29,6 +30,7 @@ from cloudx_cli.commands import (  # noqa: F401
     observability,
     orchestration,
     service,
+    stack,
     storage,
 )
 

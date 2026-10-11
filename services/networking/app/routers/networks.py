@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import CurrentUser, UserOrInternal
 from sqlalchemy import select
 
 from .. import ovn_cli
@@ -63,7 +63,7 @@ def list_networks(current: CurrentUser, db: DB):
     return {"items": [network_to_os_dict(db, n, current) for n in db.scalars(q).all()]}
 
 @router.get("/networks/{ref}")
-def show_network(ref: str, current: CurrentUser, db: DB):
+def show_network(ref: str, current: UserOrInternal, db: DB):
     return network_to_os_dict(db, require_owned(current, db, Network, ref, "network"), current)
 
 @router.delete("/networks/{ref}")

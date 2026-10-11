@@ -44,22 +44,20 @@ def test_server_usage(w):
     assert recs == {"vcpu": 2, "ram": 2}
 
 
-def test_token_refreshed_once_on_401(w, monkeypatch):
+def test_request_sends_internal_headers(w, monkeypatch):
     class R:
         def __init__(self, code): self.status_code = code
 
-    tokens = iter(["t1", "t2"])
-    monkeypatch.setattr(w, "_svc_token", None)
-    monkeypatch.setattr(w.requests, "post", lambda *a, **k: type("T", (), {"status_code": 200, "json": lambda s: {"token": next(tokens)}})())
-    seen = []
+    seen_headers = []
+    monkeypatch.setenv("INTERNAL_TOKEN", "test-internal-token")
 
     def fake(method, url, headers=None, **kw):
-        seen.append(headers["Authorization"])
-        return R(401 if len(seen) == 1 else 200)
+        seen_headers.append(headers)
+        return R(200)
 
     monkeypatch.setattr(w.requests, "request", fake)
     assert w._request("GET", "http://x").status_code == 200
-    assert seen == ["Bearer t1", "Bearer t2"]
+    assert seen_headers[0].get("X-Internal-Token") == "test-internal-token"
 
 def test_ghosts_billed_until_mid_interval(w):
     state = {"servers": {"a": {"id": "a", "project_id": "p"}}}
@@ -68,6 +66,41 @@ def test_ghosts_billed_until_mid_interval(w):
     assert w.overlap_hours(None, out[1]["deleted_at"], S, E) == Decimal("0.5")
     assert list(state["servers"]) == ["b"]  # next run forgets "a" -> billed once
     assert w._with_ghosts("servers", None, state, S, E) == [] and list(state["servers"]) == ["b"]  # API error keeps snapshot
+
+
+def test_ghosts_exact_deletion_time_and_fallback(w, monkeypatch):
+    events_db = {
+        "a": [{"event_type": "server.delete", "timestamp": "2026-10-01T10:15:00+00:00"}],
+    }
+
+    def fake_lookup(res_id):
+        evs = events_db.get(res_id, [])
+        return evs[0]["timestamp"] if evs else None
+
+    monkeypatch.setattr(w, "_lookup_deleted_at", fake_lookup)
+    state = {"servers": {"a": {"id": "a", "project_id": "p"}, "b": {"id": "b", "project_id": "p"}}}
+    out = w._with_ghosts("servers", [], state, S, E)
+
+    assert len(out) == 2
+    res_a = next(r for r in out if r["id"] == "a")
+    res_b = next(r for r in out if r["id"] == "b")
+
+    assert res_a["deleted_at"] == "2026-10-01T10:15:00+00:00"
+    assert w.overlap_hours(None, res_a["deleted_at"], S, E) == Decimal("0.25")
+
+    assert res_b["deleted_at"] == "2026-10-01T10:30:00+00:00"
+    assert w.overlap_hours(None, res_b["deleted_at"], S, E) == Decimal("0.5")
+
+
+def test_lookup_deleted_at_http(w, monkeypatch):
+    def fake_req(method, url, params=None, **kw):
+        class R:
+            status_code = 200
+            def json(self): return [{"event_type": "volume.delete", "timestamp": "2026-10-01T10:10:00+00:00"}]
+        return R()
+
+    monkeypatch.setattr(w, "_request", fake_req)
+    assert w._lookup_deleted_at("v1") == "2026-10-01T10:10:00+00:00"
 
 
 def test_load_balancer_per_type_rates(w):

@@ -1,7 +1,7 @@
 import ipaddress
 
 from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import CurrentUser, UserOrInternal
 from sqlalchemy import select
 
 from .. import ovn_cli
@@ -113,7 +113,7 @@ def list_security_groups(current: CurrentUser, db: DB):
     return {"items": [sg_to_os_dict(db, group, current, include_rules=False) for group in db.scalars(scope(select(SecurityGroup), SecurityGroup, current).order_by(SecurityGroup.created_at)).all()]}
 
 @router.get("/security-groups/{ref}")
-def show_security_group(ref: str, current: CurrentUser, db: DB):
+def show_security_group(ref: str, current: UserOrInternal, db: DB):
     group = require_owned(current, db, SecurityGroup, ref, "security-group")
     return sg_to_os_dict(db, group, current, include_rules=True)
 

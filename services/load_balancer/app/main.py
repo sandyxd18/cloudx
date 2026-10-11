@@ -32,7 +32,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, create_engine, tex
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
-from shared.auth_middleware import CurrentUser, InternalAuth
+from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
 from shared.schema import require_schema
 from shared.request_id_middleware import RequestIDMiddleware
 from shared.cors import cors_origins
@@ -43,38 +43,12 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx",
 )
+from shared.internal import internal_headers
+
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
 COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
-AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
-AUTH_ADMIN_PASSWORD = os.environ["AUTH_ADMIN_PASSWORD"]
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-
-_svc_token: str | None = None
-
-def _get_svc_token() -> str | None:
-    global _svc_token
-    if _svc_token:
-        return _svc_token
-    try:
-        resp = requests.post(
-            f"{AUTH_API_URL}/auth/tokens",
-            json={"username": AUTH_ADMIN_USERNAME, "password": AUTH_ADMIN_PASSWORD},
-            timeout=10,
-        )
-        if resp.status_code == 201:
-            _svc_token = resp.json().get("token")
-        else:
-            log.warning("load-balancer-api: failed to obtain service token: HTTP %s", resp.status_code)
-    except Exception as exc:
-        log.warning("load-balancer-api: could not reach auth-api for service token: %s", exc)
-    return _svc_token
-
-def _svc_headers() -> dict:
-    token = _get_svc_token()
-    if token:
-        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    return {"Content-Type": "application/json"}
 
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
@@ -357,13 +331,9 @@ def _get_driver(lb: LoadBalancer):
     return driver_cls({})
 
 
-from shared.service_client import ServiceClient
-
-service_client = ServiceClient(service_name="service_load_balancer")
-
-
 def _net(method: str, path: str, **kw) -> dict:
-    r = service_client.request(method, f"{NETWORKING_API_URL}{path}", timeout=15, **kw)
+    headers = {**kw.pop("headers", {}), "Content-Type": "application/json", **internal_headers()}
+    r = requests.request(method, f"{NETWORKING_API_URL}{path}", headers=headers, timeout=15, **kw)
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -409,9 +379,10 @@ def _release_vip(lb: LoadBalancer):
 def _fetch_server_group_members(server_group_id: str, project_id: str) -> list[dict]:
     """Fetch instances from compute-api belonging to a server group."""
     try:
-        resp = service_client.get(
+        resp = requests.get(
             f"{COMPUTE_API_URL}/servers",
             params={"server_group_id": server_group_id},
+            headers=internal_headers(),
             timeout=10,
         )
         resp.raise_for_status()
@@ -507,7 +478,7 @@ def _member_to_dict(m: Member) -> dict:
 def _pick_host() -> str | None:
     """Compute node that will run an ALB's haproxy: the first enabled one."""
     try:
-        r = service_client.get(f"{COMPUTE_API_URL}/os-services", timeout=10)
+        r = requests.get(f"{COMPUTE_API_URL}/os-services", headers=internal_headers(), timeout=10)
         r.raise_for_status()
         return next((s["host"] for s in r.json()["services"] if s["status"] == "enabled" and not s.get("forced_down")), None)
     except Exception as exc:
@@ -598,9 +569,12 @@ def create_load_balancer(payload: LoadBalancerIn, current: CurrentUser, db: DB):
 
 
 @app.get("/load-balancers")
-def list_load_balancers(current: CurrentUser, db: DB):
-    project_id = _project_id(current)
-    rows = db.query(LoadBalancer).filter_by(project_id=project_id).all()
+def list_load_balancers(current: UserOrInternal, db: DB, all_tenants: bool = False):
+    if current.get("role") == "admin" or all_tenants:
+        rows = db.query(LoadBalancer).all()
+    else:
+        project_id = _project_id(current)
+        rows = db.query(LoadBalancer).filter_by(project_id=project_id).all()
     return {"load_balancers": [_lb_to_dict(r) for r in rows]}
 
 
@@ -638,6 +612,11 @@ def delete_load_balancer(ref: str, current: CurrentUser, db: DB):
     db.query(LBCertificate).filter_by(load_balancer_id=lb.id).delete()
     db.delete(lb)
     db.commit()
+    try:
+        from shared.rpc import RPCClient
+        RPCClient().publish_event("load_balancer.delete", {"id": lb.id, "project_id": lb.project_id, "name": lb.name})
+    except Exception as exc:
+        log.warning("Failed to publish load_balancer.delete event: %s", exc)
     return {"status": "deleted", "id": ref}
 
 
@@ -844,7 +823,7 @@ def _own_pool(db, current, pool_ref: str):
 
 
 @app.post("/pools/{pool_ref}/members", status_code=201)
-def add_pool_member(pool_ref: str, payload: MemberIn, current: CurrentUser, db: DB):
+def add_pool_member(pool_ref: str, payload: MemberIn, current: UserOrInternal, db: DB):
     pool, lb = _own_pool(db, current, pool_ref)
     m = Member(pool_id=pool.id, address=payload.address, weight=payload.weight,
                instance_id=payload.instance_id, protocol_port=payload.protocol_port or 80)
@@ -858,7 +837,7 @@ def add_pool_member(pool_ref: str, payload: MemberIn, current: CurrentUser, db: 
 
 
 @app.delete("/pools/{pool_ref}/members/{instance_id}", status_code=204)
-def remove_pool_member(pool_ref: str, instance_id: str, current: CurrentUser, db: DB):
+def remove_pool_member(pool_ref: str, instance_id: str, current: UserOrInternal, db: DB):
     """Remove by member id or by instance_id (what the autoscaler knows)."""
     pool, lb = _own_pool(db, current, pool_ref)
     q = db.query(Member).filter(Member.pool_id == pool.id, (Member.id == instance_id) | (Member.instance_id == instance_id))

@@ -401,7 +401,7 @@ def healthcheck():
 @app.post("/images", status_code=201)
 def upload_image(
     db: DB,
-    current: CurrentUser,
+    current: UserOrInternal,
     name: str = Form(...),
     file: UploadFile = File(...),
     disk_format: str = Form("qcow2"),

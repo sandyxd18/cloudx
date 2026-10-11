@@ -1,9 +1,9 @@
 import requests
 from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import CurrentUser, UserOrInternal
+from shared.internal import internal_headers
 
 from .. import clients
-from ..clients import _get_svc_token
 from ..config import (
     BLOCK_STORE_API_URL,
     IMAGE_API_URL,
@@ -199,7 +199,7 @@ def set_server_password(ref: str, payload: ServerPasswordIn, current: CurrentUse
 
 
 @router.delete("/servers/{ref}")
-def delete_server(ref: str, current: CurrentUser, db: DB, keep_root_volume: bool = False):
+def delete_server(ref: str, current: UserOrInternal, db: DB, keep_root_volume: bool = False):
     server = require_server(db, ref, current)
     # Locked guard
     if server.locked and current.get("role") != "admin":
@@ -268,7 +268,7 @@ def list_migration_candidates(ref: str, current: CurrentUser, db: DB):
     try:
         r = requests.get(
             f"{PLACEMENT_API_URL}/compute_nodes",
-            headers={"Authorization": f"Bearer {_get_svc_token() or ''}"},
+            headers=internal_headers(),
             timeout=10,
         )
         if r.status_code == 200:
@@ -326,7 +326,7 @@ def remove_server_port(ref: str, port_ref: str, current: CurrentUser, db: DB):
 
 
 @router.post("/servers/{ref}/volumes/attach")
-def attach_volume(ref: str, payload: VolumeAttachIn, current: CurrentUser, db: DB):
+def attach_volume(ref: str, payload: VolumeAttachIn, current: UserOrInternal, db: DB):
     server = require_server(db, ref, current)
     if server.status != "ACTIVE":
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE to attach volume; current status is {server.status}")
@@ -335,7 +335,7 @@ def attach_volume(ref: str, payload: VolumeAttachIn, current: CurrentUser, db: D
 
 
 @router.post("/servers/{ref}/volumes/detach")
-def detach_volume(ref: str, payload: VolumeAttachIn, current: CurrentUser, db: DB):
+def detach_volume(ref: str, payload: VolumeAttachIn, current: UserOrInternal, db: DB):
     server = require_server(db, ref, current)
     if server.status not in {"ACTIVE", "SHUTOFF"}:
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE or SHUTOFF to detach volume; current status is {server.status}")

@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import clients
-from .clients import _svc_headers, response_detail
+from .clients import response_detail
 from shared.internal import internal_headers
 from .config import (
     AUTH_API_URL,
@@ -61,7 +61,7 @@ def compute_hosts() -> list[str]:
     if COMPUTE_HOSTS:
         return COMPUTE_HOSTS
     try:
-        response = requests.get(f"{PLACEMENT_API_URL}/resource_providers", headers=_svc_headers(), timeout=5)
+        response = requests.get(f"{PLACEMENT_API_URL}/resource_providers", headers=internal_headers(), timeout=5)
         response.raise_for_status()
         body = response.json()
         return [rp["name"] for rp in (body.get("resource_providers", body) if isinstance(body, dict) else body)]
@@ -250,7 +250,7 @@ def _check_project_quota(db: Session, project_id: str, requested_vcpus: int, req
     ponytail: if auth-api is unreachable the check is skipped (logged), not failed.
     """
     try:
-        resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=_svc_headers(), timeout=5)
+        resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=internal_headers(), timeout=5)
         resp.raise_for_status()
         quota = resp.json()
     except (requests.RequestException, ValueError) as exc:
@@ -301,7 +301,7 @@ def finish_action(db: Session, server_id: str, result: str = "success", message:
 def project_limits(db: Session, project_id: str) -> dict:
     """Nova-style absolute limits: quota from auth-api (None if unreachable) + usage from the servers table."""
     try:
-        resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=_svc_headers(), timeout=5)
+        resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=internal_headers(), timeout=5)
         resp.raise_for_status()
         quota = resp.json()
     except (requests.RequestException, ValueError):

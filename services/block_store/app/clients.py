@@ -3,13 +3,8 @@ from fastapi import HTTPException
 from shared.rpc import RPCClient, host_queue
 from sqlalchemy import text
 
-from shared.service_client import ServiceClient
-
 from .config import log
 from .db import SessionLocal
-
-# Service-to-service HTTP client (caches the admin service token for calls to auth-api).
-service_client = ServiceClient(service_name="service_block_store")
 
 # ── RPC Client (initialized on startup) ───────────────────────────────────────
 _rpc: RPCClient | None = None

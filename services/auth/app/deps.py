@@ -1,3 +1,5 @@
+import hmac
+import os
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
@@ -28,5 +30,22 @@ def _require_admin(payload: dict = Depends(_require_token)) -> dict:
     return payload
 
 
+def _require_user_or_internal(request: Request, user: dict = Depends(_require_token)) -> dict:
+    token = os.getenv("INTERNAL_TOKEN", "")
+    if token and hmac.compare_digest(request.headers.get("X-Internal-Token", ""), token):
+        return {
+            "sub": "internal",
+            "username": "admin",
+            "project_id": "admin",
+            "project_name": "admin",
+            "role": "admin",
+            "roles": ["admin"],
+            "scope_type": "system",
+            "jti": "internal",
+        }
+    return user
+
+
 CurrentUser = Annotated[dict, Depends(_require_token)]
 AdminUser   = Annotated[dict, Depends(_require_admin)]
+UserOrInternal = Annotated[dict, Depends(_require_user_or_internal)]

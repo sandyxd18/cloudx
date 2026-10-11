@@ -29,7 +29,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
-from shared.auth_middleware import AdminUser, CurrentUser
+from shared.auth_middleware import CurrentUser, UserOrInternal
 from shared.schema import require_schema
 
 from shared.request_id_middleware import RequestIDMiddleware
@@ -267,7 +267,7 @@ def create_scaling_group(user: CurrentUser, data: ScalingGroupIn, db: DB):
 
 @app.get("/scaling-groups", response_model=list[ScalingGroupOut])
 @app.get("/orchestration/scaling-groups", response_model=list[ScalingGroupOut])
-def list_scaling_groups(user: CurrentUser, db: DB, project_id: str | None = None, active_only: bool = False):
+def list_scaling_groups(user: UserOrInternal, db: DB, project_id: str | None = None, active_only: bool = False):
     q = select(ScalingGroup)
     if user.get("role") != "admin" or project_id:  # admin (the worker) sees all projects unless it filters
         q = q.where(ScalingGroup.project_id == (project_id or user.get("project_id", "admin")))
@@ -370,7 +370,7 @@ def manual_scale_in(user: CurrentUser, group_id: str, db: DB, request: Request =
 
 @app.get("/scaling-groups/{group_id}/instances", response_model=list[ScalingGroupInstanceOut])
 @app.get("/orchestration/scaling-groups/{group_id}/instances", response_model=list[ScalingGroupInstanceOut])
-def list_group_instances(user: CurrentUser, group_id: str, db: DB):
+def list_group_instances(user: UserOrInternal, group_id: str, db: DB):
     group = _own_group(db, user, group_id)
     return group.instances
 
@@ -395,7 +395,7 @@ class ScalingEventIn(BaseModel):
 
 @app.post("/scaling-groups/{group_id}/history", status_code=status.HTTP_201_CREATED)
 @app.post("/orchestration/scaling-groups/{group_id}/history", status_code=status.HTTP_201_CREATED)
-def record_scaling_event(admin: AdminUser, group_id: str, data: ScalingEventIn, db: DB):
+def record_scaling_event(admin: UserOrInternal, group_id: str, data: ScalingEventIn, db: DB):
     """Called by orchestration-worker after it scaled: logs history, syncs instances and cooldown timestamps."""
     group = _own_group(db, admin, group_id)
     now = datetime.now(timezone.utc)

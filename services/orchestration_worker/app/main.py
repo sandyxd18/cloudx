@@ -21,6 +21,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import requests
+from shared.internal import internal_headers
 
 
 log = logging.getLogger("orchestration-worker")
@@ -31,8 +32,6 @@ COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip
 TELEMETRY_API_URL = os.getenv("TELEMETRY_API_URL", "http://telemetry-api:8010").rstrip("/")
 LOAD_BALANCER_API_URL = os.getenv("LOAD_BALANCER_API_URL", "http://load-balancer-api:8008").rstrip("/")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
-AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
-AUTH_ADMIN_PASSWORD = os.environ["AUTH_ADMIN_PASSWORD"]
 
 MONITOR_INTERVAL = int(os.getenv("MONITOR_INTERVAL", "30"))  # seconds
 
@@ -42,34 +41,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-# ── Service Token ─────────────────────────────────────────────────────────────
-_svc_token: str | None = None
-
-
-def _get_svc_token() -> str | None:
-    global _svc_token
-    if _svc_token:
-        return _svc_token
-    try:
-        r = requests.post(
-            f"{AUTH_API_URL}/auth/tokens",
-            json={"username": AUTH_ADMIN_USERNAME, "password": AUTH_ADMIN_PASSWORD},
-            timeout=10,
-        )
-        if r.status_code == 200:
-            _svc_token = r.json()["token"]
-            return _svc_token
-    except Exception as e:
-        log.warning("Failed to get service token: %s", e)
-    return None
-
-
 def _api_headers() -> dict:
-    token = _get_svc_token()
-    h = {"Content-Type": "application/json"}
-    if token:
-        h["Authorization"] = f"Bearer {token}"
-    return h
+    return {"Content-Type": "application/json", **internal_headers()}
 
 
 # ── API Helpers ───────────────────────────────────────────────────────────────

@@ -20,7 +20,7 @@ class Resp:
 @pytest.fixture
 def check(monkeypatch, tmp_path):
     compute = fresh_service("compute", monkeypatch, tmp_path)
-    monkeypatch.setattr(compute.service, "_svc_headers", lambda: {})
+    monkeypatch.setattr(compute.service, "internal_headers", lambda: {})
     db = compute.SessionLocal()
 
     def run(quota, servers=(), vcpus=2, ram_mb=1024):
@@ -63,7 +63,7 @@ def test_defaults_apply_when_auth_returns_no_limits(check):
 
 def test_unreachable_auth_api_skips_the_check_and_says_so(monkeypatch, tmp_path, caplog):
     compute = fresh_service("compute", monkeypatch, tmp_path)
-    monkeypatch.setattr(compute.service, "_svc_headers", lambda: {})
+    monkeypatch.setattr(compute.service, "internal_headers", lambda: {})
 
     def down(*a, **k):
         raise requests.ConnectionError("auth-api down")

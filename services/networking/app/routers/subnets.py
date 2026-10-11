@@ -1,7 +1,7 @@
 import ipaddress
 
 from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import CurrentUser, UserOrInternal
 from sqlalchemy import select
 
 from .. import ovn_cli
@@ -101,7 +101,7 @@ def list_subnets(current: CurrentUser, db: DB):
     return {"items": [subnet_to_os_dict(db, s, current) for s in db.scalars(scope(select(Subnet), Subnet, current).order_by(Subnet.created_at)).all()]}
 
 @router.get("/subnets/{ref}")
-def show_subnet(ref: str, current: CurrentUser, db: DB):
+def show_subnet(ref: str, current: UserOrInternal, db: DB):
     return subnet_to_os_dict(db, require_owned(current, db, Subnet, ref, "subnet"), current)
 
 @router.delete("/subnets/{ref}")

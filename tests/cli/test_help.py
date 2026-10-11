@@ -27,3 +27,12 @@ def test_k8s_engine_cli_help(cloudx):
     res2 = cloudx("cluster", "--help")
     assert res2.returncode == 0
     assert "cluster" in res2.stdout
+
+
+def test_stack_and_alarm_cli_help(cloudx):
+    for group, subs in (("stack", ("create", "update", "resources", "events", "suspend")),
+                        ("alarm", ("create", "history", "delete"))):
+        res = cloudx(group, "--help")
+        assert res.returncode == 0
+        for s in subs:
+            assert s in res.stdout

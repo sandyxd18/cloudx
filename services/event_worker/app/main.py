@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import requests
+from shared.internal import internal_headers
 
 
 log = logging.getLogger("event-worker")
@@ -31,8 +32,6 @@ log = logging.getLogger("event-worker")
 # ── Config ────────────────────────────────────────────────────────────────────
 EVENT_API_URL = os.getenv("EVENT_API_URL", "http://event-api:8012").rstrip("/")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
-AUTH_ADMIN_USERNAME = os.getenv("AUTH_ADMIN_USERNAME", "admin")
-AUTH_ADMIN_PASSWORD = os.environ["AUTH_ADMIN_PASSWORD"]
 
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "10"))  # seconds
 WEBHOOK_TIMEOUT = int(os.getenv("WEBHOOK_TIMEOUT", "10"))
@@ -44,40 +43,6 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-
-# ── Service Token ─────────────────────────────────────────────────────────────
-_svc_token: str | None = None
-_svc_token_exp: float = 0.0  # monotonic deadline; 0 = no known expiry
-
-
-def _get_svc_token() -> str | None:
-    global _svc_token, _svc_token_exp
-    if _svc_token and (not _svc_token_exp or time.monotonic() < _svc_token_exp):
-        return _svc_token
-    _svc_token = None
-    try:
-        r = requests.post(
-            f"{AUTH_API_URL}/auth/tokens",
-            json={"username": AUTH_ADMIN_USERNAME, "password": AUTH_ADMIN_PASSWORD},
-            timeout=10,
-        )
-        if r.status_code in (200, 201):
-            body = r.json()
-            _svc_token = body["token"]
-            ttl = body.get("expires_in")
-            _svc_token_exp = time.monotonic() + ttl - 30 if isinstance(ttl, (int, float)) else 0.0
-            return _svc_token
-    except Exception as e:
-        log.warning("Failed to get service token: %s", e)
-    return None
-
-
-def _api_headers() -> dict:
-    token = _get_svc_token()
-    h = {"Content-Type": "application/json"}
-    if token:
-        h["Authorization"] = f"Bearer {token}"
-    return h
 
 
 # ── Webhook Delivery ──────────────────────────────────────────────────────────
@@ -134,14 +99,8 @@ def _deliver_webhook(endpoint_url: str, secret: str, event_type: str, event_id: 
 # ── Event API Helpers ─────────────────────────────────────────────────────────
 
 def _api(method: str, path: str, **kw) -> requests.Response:
-    """Call event-api; on 401 drop the cached token and retry once."""
-    global _svc_token
-    for attempt in (0, 1):
-        r = requests.request(method, f"{EVENT_API_URL}{path}", headers=_api_headers(), timeout=10, **kw)
-        if r.status_code != 401 or attempt:
-            return r
-        _svc_token = None
-    return r
+    headers = {**kw.pop("headers", {}), "Content-Type": "application/json", **internal_headers()}
+    return requests.request(method, f"{EVENT_API_URL}{path}", headers=headers, timeout=10, **kw)
 
 
 def _get_pending_deliveries() -> list[dict]:

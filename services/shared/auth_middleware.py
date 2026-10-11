@@ -19,6 +19,7 @@ Authentication methods (checked in order):
 """
 
 import hmac
+import inspect
 import logging
 import os
 import time
@@ -145,8 +146,20 @@ def require_user_or_internal(request: Request) -> dict:
     """User JWT, or a service holding INTERNAL_TOKEN (acts as admin). Unlike require_internal, never open."""
     token = os.getenv("INTERNAL_TOKEN", "")
     if token and hmac.compare_digest(request.headers.get("X-Internal-Token", ""), token):
-        return {"sub": "internal", "role": "admin"}
-    return require_auth(request)
+        return {
+            "sub": "internal",
+            "username": "admin",
+            "project_id": "admin",
+            "project_name": "admin",
+            "role": "admin",
+            "roles": ["admin"],
+            "scope_type": "system",
+            "jti": "internal",
+        }
+    auth_func = getattr(getattr(request, "app", None), "dependency_overrides", {}).get(require_auth, require_auth)
+    if len(inspect.signature(auth_func).parameters) > 0:
+        return auth_func(request)
+    return auth_func()
 
 
 def optional_auth(request: Request) -> dict | None:

@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import UserOrInternal
 from sqlalchemy import select
 
 from .. import ovn_cli
@@ -25,7 +25,7 @@ router = APIRouter()
 
 
 @router.post("/floating-ips", status_code=201)
-def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
+def create_floating_ip(payload: FloatingIPIn, current: UserOrInternal, db: DB):
     if payload.name and get_by_ref(db, FloatingIP, payload.name, current=current):
         raise HTTPException(status_code=409, detail="floating-ip already exists")
     check_quota(db, current.get("project_id"), FloatingIP, "floating_ips")
@@ -73,15 +73,15 @@ def create_floating_ip(payload: FloatingIPIn, current: CurrentUser, db: DB):
     return obj_to_dict(fip)
 
 @router.get("/floating-ips")
-def list_floating_ips(current: CurrentUser, db: DB):
+def list_floating_ips(current: UserOrInternal, db: DB):
     return {"items": [fip_to_os_dict(db, f, current) for f in db.scalars(scope(select(FloatingIP), FloatingIP, current).order_by(FloatingIP.created_at)).all()]}
 
 @router.get("/floating-ips/{ref}")
-def show_floating_ip(ref: str, current: CurrentUser, db: DB):
+def show_floating_ip(ref: str, current: UserOrInternal, db: DB):
     return fip_to_os_dict(db, own(current, require_floating_ip(db, ref), "floating-ip"), current)
 
 @router.post("/floating-ips/{ref}/associate")
-def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, current: CurrentUser, db: DB):
+def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, current: UserOrInternal, db: DB):
     fip = own(current, require_floating_ip(db, ref), "floating-ip")
     port = resolve_association_port(db, payload)
     router = find_router_for_fip(db, payload.router)
@@ -103,7 +103,7 @@ def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, current: Cur
     return fip_to_os_dict(db, fip, current)
 
 @router.post("/floating-ips/{ref}/disassociate")
-def disassociate_floating_ip(ref: str, current: CurrentUser, db: DB):
+def disassociate_floating_ip(ref: str, current: UserOrInternal, db: DB):
     fip = own(current, require_floating_ip(db, ref), "floating-ip")
     old_server_id = fip.server_id
     router = db.get(Router, fip.router_id) if fip.router_id else None
@@ -123,7 +123,7 @@ def disassociate_floating_ip(ref: str, current: CurrentUser, db: DB):
     return fip_to_os_dict(db, fip)
 
 @router.delete("/floating-ips/{ref}")
-def delete_floating_ip(ref: str, current: CurrentUser, db: DB):
+def delete_floating_ip(ref: str, current: UserOrInternal, db: DB):
     fip = own(current, require_floating_ip(db, ref), "floating-ip")
     if fip.router_id and fip.floating_ip:
         router = db.get(Router, fip.router_id)

@@ -1,6 +1,7 @@
 import requests
 from fastapi import HTTPException
 from shared.auth_middleware import CurrentUser
+from shared.internal import internal_headers
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -22,7 +23,7 @@ from .serializers import obj_to_dict
 
 def _check_auth_volume_quota(project_id: str, size: int, db: Session):
     try:
-        quota_resp = clients.service_client.get(f"{AUTH_API_URL}/projects/{project_id}/quota", timeout=5)
+        quota_resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=internal_headers(), timeout=5)
         if quota_resp.status_code == 200:
             auth_quota = quota_resp.json()
             max_vol_gb = auth_quota.get("max_volume_gb", 100)
@@ -187,7 +188,7 @@ def _reconcile_orphan_volumes(db: DB):
         .where(Volume.attached_to_server_id.isnot(None))
     )
     try:
-        resp = requests.get(f"{COMPUTE_API_URL}/servers", headers=clients.service_client._headers(), timeout=5)
+        resp = requests.get(f"{COMPUTE_API_URL}/servers", headers=internal_headers(), timeout=5)
         if resp.status_code == 200:
             servers = resp.json().get("items", [])
             active_ids = {s.get("id") for s in servers}

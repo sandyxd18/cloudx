@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from ..config import ADMIN_PROJECT
 from ..db import DB
-from ..deps import AdminUser, CurrentUser
+from ..deps import AdminUser, CurrentUser, UserOrInternal
 from ..lookups import _get_project_by_ref
 from ..models import Group, GroupMember, Project, ProjectQuota, User, utcnow
 from ..schemas import ProjectIn, ProjectUpdate, QuotaUpdate
@@ -28,7 +28,7 @@ def create_project(payload: ProjectIn, _: AdminUser, db: DB):
 
 @router.get("/projects")
 def list_projects(
-    current: CurrentUser, db: DB,
+    current: UserOrInternal, db: DB,
     limit: int = Query(default=100, ge=1, le=1000),
     marker: str | None = None,
 ):
@@ -119,7 +119,7 @@ def internal_project_quota(ref: str, db: DB):
 
 
 @router.get("/projects/{ref}/quota")
-def get_project_quota(ref: str, _: CurrentUser, db: DB):
+def get_project_quota(ref: str, _: UserOrInternal, db: DB):
     p = _get_project_by_ref(db, ref)
     q = _get_or_create_quota(db, p.id)
     return _quota_dict(p.id, q)

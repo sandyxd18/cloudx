@@ -69,7 +69,12 @@ class OVNL4Driver(LoadBalancerDriver):
                 if lrp in lrps and _nb("get", "logical_router_port", lrp, "gateway_chassis") == "[]" \
                         and _nb("get", "logical_router_port", lrp, "ha_chassis_group") == "[]":
                     _nb("--may-exist", "ls-lb-add", sw, lb_name)
-        # ponytail: networks joined to the router after the last apply are covered on the next apply
+    def reconcile_attachments(self, lb: dict, listeners: list[dict]) -> None:
+        if not lb.get("vip_switch"):
+            return
+        for ls in listeners:
+            self._attach(lb["vip_switch"], _name(ls["id"]))
+
     def apply(self, lb: dict, listeners: list[dict]) -> None:
         want = {}
         for ls in listeners:
@@ -81,7 +86,10 @@ class OVNL4Driver(LoadBalancerDriver):
         for name in self._existing(lb["id"]):
             _nb("--if-exists", "lb-del", name)
         for name, (ls, pool, backends) in want.items():
-            _nb("lb-add", name, f"{lb['vip_address']}:{ls['protocol_port']}", backends, "udp" if ls["protocol"] == "UDP" else "tcp")
+            proto = "udp" if ls["protocol"] == "UDP" else "tcp"
+            _nb("lb-add", name, f"{lb['vip_address']}:{ls['protocol_port']}", backends, proto)
+            if lb.get("vip_floating_ip"):  # the router DNATs FIP->VIP *after* the LB match, so the FIP must be a VIP too
+                _nb("set", "load_balancer", name, f"vips:\"{lb['vip_floating_ip']}:{ls['protocol_port']}\"=\"{backends}\"")
             _nb("set", "load_balancer", name, f"external_ids:cloudx_lb={lb['id']}")
             if pool["lb_algorithm"] == "SOURCE_IP":
                 _nb("set", "load_balancer", name, "selection_fields=ip_src")
