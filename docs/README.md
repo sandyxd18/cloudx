@@ -33,7 +33,7 @@ Start with `../README.md` (overview) and `../SETUP.md` (installation). The docum
 ## Networking
 `ovn.md`, `ovn-dhcp.md`, `ovn-localnet.md`, `ovn-acl.md`, `ovs-ovn-vm-binding.md`, `br-ex.md`, `provider-network.md`,
 `multi-network.md`, `ipam.md`, `floating-ip.md`, `security-group.md`, `security-group-ovn-acl.md`,
-`metadata-service.md`, `metadata-proxy.md`
+`metadata-service.md`, `metadata-proxy.md`, `vpn-site-to-site.md`, `bgp-dynamic-routing.md`, `k8s-engine.md`
 
 ## Storage
 `storage-backend.md` (images), `snapshot.md` (volumes and backups)

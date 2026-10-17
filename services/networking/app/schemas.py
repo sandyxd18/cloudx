@@ -147,6 +147,7 @@ class VPCPeeringOut(BaseModel):
     requester_router_name: str
     accepter_router_name: str
     status: str
+    transit_cidr: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -203,6 +204,10 @@ class BGPPeerOut(BaseModel):
     advertised_prefixes: list[str] | None
     is_active: bool
     status: str
+    speaker_id: str | None = None
+    status_reason: str | None = None
+    outer_ip: str | None = None
+    learned_routes: list[dict] = []
     created_at: datetime
 
     class Config:
@@ -273,12 +278,14 @@ class VPNSiteConnectionOut(BaseModel):
     name: str
     project_id: str
     router_id: str
+    gateway_id: str | None = None
     peer_address: str
     peer_id: str
     peer_cidrs: list[str]
     ikepolicy_id: str
     ipsecpolicy_id: str
     status: str
+    status_reason: str | None = None
     admin_state_up: bool
     created_at: datetime
 

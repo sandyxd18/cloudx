@@ -126,6 +126,41 @@ def volume_transfer_accept(ctx, transfer_id, auth_key):
     _output(data, ctx.obj["fmt"])
 
 
+@volume.command("enable-replication")
+@click.argument("ref")
+@click.option("--target", required=True, help="Replication target node")
+@click.option("--mode", default="async", help="Replication mode")
+@click.pass_context
+def volume_enable_replication(ctx, ref, target, mode):
+    data = _api("post", f"{DEFAULT_URLS['volume']}/volumes/{ref}/enable-replication", ctx.obj["profile"], json={"target": target, "mode": mode})
+    _output(data, ctx.obj["fmt"])
+
+
+@volume.command("sync-replication")
+@click.argument("ref")
+@click.pass_context
+def volume_sync_replication(ctx, ref):
+    data = _api("post", f"{DEFAULT_URLS['volume']}/volumes/{ref}/sync-replication", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+
+@volume.command("failover")
+@click.argument("ref")
+@click.option("--force", is_flag=True, help="Failover even if the volume is in-use")
+@click.pass_context
+def volume_failover(ctx, ref, force):
+    data = _api("post", f"{DEFAULT_URLS['volume']}/volumes/{ref}/failover{'?force=true' if force else ''}", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+
+@volume.command("disable-replication")
+@click.argument("ref")
+@click.pass_context
+def volume_disable_replication(ctx, ref):
+    data = _api("post", f"{DEFAULT_URLS['volume']}/volumes/{ref}/disable-replication", ctx.obj["profile"])
+    _output(data, ctx.obj["fmt"])
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # VOLUME TYPE
 # Volume types are AWS EBS-style performance profiles (gp2, gp3, io1, io2, sc1, st1, etc.)

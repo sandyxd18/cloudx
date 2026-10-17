@@ -51,21 +51,25 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-echo "===> [1/5] Installing KVM, libvirt, Open vSwitch, and OVN Host..."
+echo "===> [1/5] Installing KVM, libvirt, Open vSwitch, strongSwan, BIRD, and OVN Host..."
 apt-get update -qq
 apt-get install -y -qq \
     qemu-kvm libvirt-daemon-system libvirt-clients \
     openvswitch-switch ovn-host qemu-utils qemu-guest-agent \
-    genisoimage cloud-image-utils haproxy \
+    genisoimage cloud-image-utils haproxy strongswan-swanctl charon-systemd \
     libvirt-dev pkg-config build-essential python3-dev \
-    python3-venv python3-pip curl jq bridge-utils >/dev/null
-# genisoimage/cloud-image-utils build the cloud-init config drive; libvirt-python is what the compute worker drives
-# libvirt with (without it the worker starts but cannot create VMs).
-if [[ -x /opt/cloudx/venv/bin/pip ]]; then
-    /opt/cloudx/venv/bin/pip install -q libvirt-python
-fi
+    python3-venv python3-pip curl jq bridge-utils bird2 >/dev/null
 
-systemctl disable --now haproxy 2>/dev/null || true  # lb-worker runs its own haproxy per ALB
+systemctl disable --now strongswan strongswan-starter 2>/dev/null || true
+# bgp-worker runs its own bird per router in a netns; the stock unit would only conflict
+systemctl disable --now bird 2>/dev/null || true
+# Disable AppArmor profiles for charon/swanctl if they block custom netns paths
+for ap in usr.lib.ipsec.charon usr.sbin.swanctl; do
+    if [[ -f "/etc/apparmor.d/${ap}" ]]; then
+        ln -sf "/etc/apparmor.d/${ap}" /etc/apparmor.d/disable/ 2>/dev/null || true
+        apparmor_parser -R "/etc/apparmor.d/${ap}" 2>/dev/null || true
+    fi
+done
 echo "===> [2/5] Ensuring libvirtd service is active..."
 systemctl enable --now libvirtd || true
 systemctl enable --now openvswitch-switch || true
@@ -101,7 +105,7 @@ mkdir -p /var/lib/cloudx/compute
 # /etc/cloudx/cloudx.conf (copied from the controller) holds the secrets; this node's services point at the controller.
 # The compute worker names itself after this node (placement provider, server.host, its own RPC queue). Two compute
 # nodes must never share a name, so it is set per node here.
-for svc in compute-worker metadata-proxy telemetry-worker lb-worker; do
+for svc in compute-worker metadata-proxy telemetry-worker lb-worker vpn-worker bgp-worker; do
     mkdir -p "/etc/cloudx/${svc}"
     cat > "/etc/cloudx/${svc}/${svc}.conf" <<EOF
 [DEFAULT]

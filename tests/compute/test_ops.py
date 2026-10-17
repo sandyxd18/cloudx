@@ -124,3 +124,12 @@ def test_instance_actions_outcome_recording(compute):
     assert actions[0].result == "success"
     assert actions[0].message == "reboot complete"
     assert actions[0].finish_time is not None
+
+def test_log_action_accepts_the_internal_token():
+    """k8s-engine-worker deletes VMs with only X-Internal-Token; the router-wide log_action dependency must not demand a JWT."""
+    import inspect
+
+    from services.compute.app.routers import ops
+    from shared.auth_middleware import UserOrInternal
+
+    assert inspect.signature(ops.log_action).parameters["current"].annotation == UserOrInternal

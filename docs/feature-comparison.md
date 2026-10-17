@@ -302,7 +302,7 @@
 | **Load Balancer (Octavia)** | Deliberately excluded |
 | **VPN as a Service** | Deliberately excluded |
 | **Firewall as a Service (FWaaS)** | Deliberately excluded |
-| **BGP Dynamic Routing** | Deliberately excluded |
+| **BGP Dynamic Routing** | Advertise and learn (BIRD, eBGP IPv4), not 1:1; see docs/bgp-dynamic-routing.md |
 | **Network Segment** | No manual VLAN/VXLAN segments |
 | **Trunk ports (VLAN-in-VLAN)** | None |
 | **IPv6** | IPv4 only |
@@ -424,7 +424,7 @@
 |---|---|
 | **Volume encryption** | No Barbican integration |
 | **Volume migration** (between backends) | No online migration |
-| **Volume replication** | No HA replication |
+| **Volume replication** | Cross-host replica, promote/failover (full copy, not 1:1) |
 | **Consistency groups** | None |
 | **Generic volume groups** | None |
 | **Quota management** | No per-project volume quota |
@@ -629,7 +629,7 @@
 | **Heat** | Orchestration / IaC (stack templates) | No template engine |
 | **Swift** | Object storage | MinIO is used instead as the image backend |
 | **Ironic** | Bare-metal provisioning | Single-node VMs only |
-| **Magnum** | Container orchestration (Kubernetes-as-a-Service) | None |
+| **Magnum** | Container orchestration (Kubernetes-as-a-Service) | K3s clusters in CloudX VMs, not 1:1; see docs/k8s-engine.md |
 | **Octavia** | Load balancer as a Service | Deliberately excluded |
 | **Barbican** | Secret / certificate management | None |
 | **Designate** | DNS as a Service | None |

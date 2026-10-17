@@ -20,3 +20,6 @@ def test_cloud_init_rendering():
     network_config = render_network_config({"fixed_ip": "10.10.0.2", "cidr": "10.10.0.0/24", "gateway_ip": "10.10.0.1", "dns_nameservers": ["1.1.1.1"]})
     assert "addresses: [10.10.0.2/24]" in network_config
     assert "gateway4: 10.10.0.1" in network_config
+    by_mac = render_network_config({"fixed_ip": "10.10.0.2", "cidr": "10.10.0.0/24", "mac_address": "02:75:C1:C6:AF:52"})
+    assert 'match: {macaddress: "02:75:c1:c6:af:52"}' in by_mac and "set-name: eth0" in by_mac
+    assert "match:" not in network_config

@@ -38,6 +38,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -271,6 +272,7 @@ def handle_mark_server_error(args: dict) -> dict:
 ALLOWED_VOLUME_FIELDS = {
     "status", "path", "size_gb", "error_message",
     "attached_to_server_id", "target_device",
+    "replication_status", "replication_target", "replication_mode", "last_replicated_at", "host",
 }
 
 ALLOWED_SNAPSHOT_FIELDS = {"status", "path", "error_message"}
@@ -290,6 +292,17 @@ def handle_update_volume(args: dict) -> dict:
     fields    = args.get("fields", {})
     if not volume_id:
         return {"error": "volume_id required"}
+
+    # Validate last_replicated_at timestamp format if present
+    if "last_replicated_at" in fields:
+        val = fields["last_replicated_at"]
+        if isinstance(val, str):
+            try:
+                dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                fields["last_replicated_at"] = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                # Garbage date format -> ignore/drop field
+                fields = {k: v for k, v in fields.items() if k != "last_replicated_at"}
 
     safe = {k: v for k, v in fields.items() if k in ALLOWED_VOLUME_FIELDS}
     if not safe:

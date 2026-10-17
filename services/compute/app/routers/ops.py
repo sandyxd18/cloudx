@@ -19,7 +19,7 @@ from ..service import claim_host, compute_hosts, fallback_host, finish_action, p
 router = APIRouter()
 
 
-def log_action(request: Request, current: CurrentUser, db: DB) -> None:
+def log_action(request: Request, current: UserOrInternal, db: DB) -> None:
     """Router dependency for /servers/{ref}/<action>: logs the request (not its outcome)."""
     if request.method == "GET":
         return

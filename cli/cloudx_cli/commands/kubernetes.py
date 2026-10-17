@@ -67,7 +67,7 @@ def k8s_cluster(ctx):
 @click.pass_context
 def k8s_cluster_list(ctx):
     data = _api("get", f"{DEFAULT_URLS['k8s-engine']}/clusters", ctx.obj["profile"])
-    _output(data, ctx.obj["fmt"], ["id", "name", "template_id", "master_count", "worker_count", "status"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "template_id", "master_count", "worker_count", "status", "master_ip", "status_reason"])
 
 
 @k8s_cluster.command("create")

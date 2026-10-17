@@ -145,6 +145,7 @@ class VPCPeering(Base):
     requester_router_name: Mapped[str] = mapped_column(String, nullable=False)
     accepter_router_name: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, default="pending")  # pending, active, rejected, failed
+    transit_cidr: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
@@ -163,9 +164,35 @@ class BGPPeer(Base):
     auth_password: Mapped[str | None] = mapped_column(String, nullable=True)
     advertised_prefixes: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON list
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    status: Mapped[str] = mapped_column(String, default="down")  # down, established
+    status: Mapped[str] = mapped_column(String, default="down")  # down | established | error
+    speaker_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+class BGPSpeaker(Base):
+    """BGP speaker daemon container per router."""
+    __tablename__ = "networking_bgp_speakers"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: f"bgpsp-{uuid.uuid4().hex[:12]}")
+    router_id: Mapped[str] = mapped_column(String, ForeignKey("networking_routers.id"), nullable=False, unique=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    host: Mapped[str] = mapped_column(String, nullable=False)
+    outer_network_id: Mapped[str] = mapped_column(String, ForeignKey("networking_networks.id"), nullable=False)
+    outer_ip: Mapped[str] = mapped_column(String, nullable=False)
+    outer_mac: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="down")  # down, established, error
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+class BGPLearnedRoute(Base):
+    """Learned BGP routes from peer injected into OVN router."""
+    __tablename__ = "networking_bgp_learned_routes"
+    __table_args__ = (UniqueConstraint("peer_id", "prefix", name="uq_networking_bgp_learned_routes_peer_prefix"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    peer_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    prefix: Mapped[str] = mapped_column(String, nullable=False)
+    nexthop: Mapped[str] = mapped_column(String, nullable=False)
 
 class IKEPolicy(Base):
     """VPNaaS IKE Policy (Phase 7.2)."""
@@ -201,14 +228,32 @@ class VPNSiteConnection(Base):
     name: Mapped[str] = mapped_column(String, nullable=False, index=True)
     project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     router_id: Mapped[str] = mapped_column(String, ForeignKey("networking_routers.id"), nullable=False)
+    gateway_id: Mapped[str | None] = mapped_column(String, nullable=True)
     peer_address: Mapped[str] = mapped_column(String, nullable=False)
     peer_id: Mapped[str] = mapped_column(String, nullable=False)
     peer_cidrs_json: Mapped[str] = mapped_column(Text, default="[]")
     psk: Mapped[str] = mapped_column(String, nullable=False)
     ikepolicy_id: Mapped[str] = mapped_column(String, ForeignKey("networking_ike_policies.id"), nullable=False)
     ipsecpolicy_id: Mapped[str] = mapped_column(String, ForeignKey("networking_ipsec_policies.id"), nullable=False)
-    status: Mapped[str] = mapped_column(String, default="ACTIVE")
+    status: Mapped[str] = mapped_column(String, default="PENDING_CREATE")
+    status_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     admin_state_up: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+class VPNGateway(Base):
+    """VPNaaS VPN Gateway per Router."""
+    __tablename__ = "networking_vpn_gateways"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: f"vpngw-{uuid.uuid4().hex[:12]}")
+    router_id: Mapped[str] = mapped_column(String, ForeignKey("networking_routers.id"), nullable=False, unique=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=False)
+    host: Mapped[str] = mapped_column(String, nullable=False)
+    transit_cidr: Mapped[str] = mapped_column(String, nullable=False)
+    outer_network_id: Mapped[str] = mapped_column(String, ForeignKey("networking_networks.id"), nullable=False)
+    outer_ip: Mapped[str] = mapped_column(String, nullable=False)
+    inner_mac: Mapped[str] = mapped_column(String, nullable=False)
+    outer_mac: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING_CREATE")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 class PortForwarding(Base):

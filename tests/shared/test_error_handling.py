@@ -168,3 +168,10 @@ def test_malformed_password_hash_is_a_failed_login_not_a_crash(stored):
     from services.auth.app.tokens import _verify_password
 
     assert _verify_password("secret", stored) is False
+
+
+def test_creating_volume_without_backend_yet_is_not_marked_error(monkeypatch):
+    monkeypatch.setattr(block_reconciler.lvm, "exists", lambda name: False)
+    rpc = FakeRPC(volumes=[_volume(status="creating")])
+    block_reconciler.reconcile_volumes(rpc)
+    assert rpc.casts == []

@@ -92,6 +92,10 @@ def ovs(*args: str, check: bool = True) -> str:
         raise HTTPException(status_code=502, detail={"message": "ovs-vsctl failed", "stderr": proc.stderr.strip()})
     return proc.stdout.strip()
 
+def sbctl(*args: str) -> str:
+    cmd = ["ovn-sbctl", f"--db={os.environ.get('OVN_SB_DB', 'tcp:127.0.0.1:6642')}", "--timeout=8", *args]
+    return run(cmd, check=False, timeout=OVN_TIMEOUT).stdout.strip()
+
 def get_local_chassis_id() -> str | None:
     """Chassis to pin the gateway to: this node's own (OVS system-id) if it runs ovn-controller, else the first one in SB."""
     proc = run(["ovn-sbctl", f"--db={os.environ.get('OVN_SB_DB', 'tcp:127.0.0.1:6642')}", "--timeout=8", "--bare",

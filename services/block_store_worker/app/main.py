@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Callable
 from urllib.parse import quote
 
 import requests
@@ -54,7 +55,13 @@ BLOCK_STORE_HOST = os.getenv("BLOCK_STORE_HOST") or socket.gethostname()
 # Export LVM volumes over iSCSI so VMs on other nodes can attach them (needs targetcli-fb, see drivers/iscsi.py)
 ISCSI_EXPORT = os.getenv("ISCSI_EXPORT", "false").lower() == "true"
 
-# ── Volume backup → object storage (MinIO/S3) ──────────────────────────────────
+_worker_cfg = load_service_config("block-store-worker")
+INTERNAL_TOKEN = os.getenv("INTERNAL_TOKEN", "") or _worker_cfg.get("internal_token", "")
+REPLICATION_PORT = int(os.getenv("REPLICATION_PORT", "") or _worker_cfg.get("replication_port", 9870))
+REPLICATION_PEERS = os.getenv("REPLICATION_PEERS", "") or _worker_cfg.get("replication_peers", "")
+
+from . import replication
+
 MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000").rstrip("/")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
@@ -75,7 +82,10 @@ _rpc = RPCClient(RABBITMQ_URL)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def conductor_update_volume(volume_id: str, fields: dict) -> None:
-    _rpc.cast("conductor", "update_volume", {"volume_id": volume_id, "fields": fields})
+    try:
+        _rpc.cast("conductor", "update_volume", {"volume_id": volume_id, "fields": fields})
+    except Exception:  # best-effort: conductor update failure ignored
+        pass
 
 
 def conductor_update_snapshot(snapshot_id: str, fields: dict) -> None:
@@ -688,24 +698,6 @@ def handle_restore_backup(args: dict) -> None:
             Path(tmp).unlink(missing_ok=True)
 
 
-def handle_delete_backup(args: dict) -> None:
-    """Remove a backup object from MinIO and delete its DB record."""
-    backup_id  = args["backup_id"]
-    object_key = args.get("object_key")
-    log.info("Deleting backup %s (%s)", backup_id, object_key)
-    try:
-        if object_key:
-            _mc_alias()
-            _mc(["rm", f"cloudx/{BACKUP_BUCKET}/{object_key}"], check=False)
-    except Exception as exc:
-        log.warning("Backup object delete for %s: %s", backup_id, exc)
-    conductor_delete_backup(backup_id)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Handler dispatch table
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def handle_export_volume(args: dict) -> dict:
     """RPC call from a compute-worker: let its iSCSI initiator log in to the volume. Returns the connection info."""
     if not ISCSI_EXPORT:
@@ -724,6 +716,177 @@ def handle_unexport_volume(args: dict) -> dict:
     iscsi.unexport(lv, args["initiator_iqn"])
     log.info("Unexported %s from %s", lv, args["initiator_iqn"])
     return {}
+def handle_delete_backup(args: dict) -> None:
+    """Remove a backup object from MinIO and delete its DB record."""
+    backup_id  = args["backup_id"]
+    object_key = args.get("object_key")
+    log.info("Deleting backup %s (%s)", backup_id, object_key)
+    try:
+        if object_key:
+            _mc_alias()
+            _mc(["rm", f"cloudx/{BACKUP_BUCKET}/{object_key}"], check=False)
+    except Exception as exc:
+        log.warning("Backup object delete for %s: %s", backup_id, exc)
+    conductor_delete_backup(backup_id)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Handler dispatch table
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _parse_replication_peers() -> dict[str, str]:
+    peers = {}
+    for entry in REPLICATION_PEERS.split(","):
+        if "=" in entry:
+            parts = entry.split("=", 1)
+            k, v = parts[0].strip(), parts[1].strip()
+            if k and v:
+                peers[k] = v
+    return peers
+
+
+def _build_allowed_peer() -> Callable[[str], bool]:
+    peer_map = _parse_replication_peers()
+    resolved_ips = set()
+    for host_val in peer_map.values():
+        try:
+            resolved_ips.add(socket.gethostbyname(host_val))
+        except Exception:  # best-effort: unresolvable replication peer host ignored at startup
+            pass
+
+    def _allowed(ip: str) -> bool:
+        if ip in ("127.0.0.1", "::1", "localhost"):
+            return True
+        for h, target in peer_map.items():
+            if ip == target or h == ip:
+                return True
+            try:
+                if socket.gethostbyname(target) == ip:
+                    return True
+            except Exception:  # best-effort: peer IP resolution check
+                pass
+        if ip in resolved_ips:
+            return True
+        return False
+
+    return _allowed
+
+
+def _maybe_start_receiver() -> None:
+    if STORAGE_LVM_DRIVER and INTERNAL_TOKEN:
+        try:
+            replication.serve(REPLICATION_PORT, INTERNAL_TOKEN, _build_allowed_peer())
+            log.info("Replication receiver started on port %d", REPLICATION_PORT)
+        except Exception as exc:
+            log.warning("Failed to start replication receiver: %s", exc)
+
+
+def handle_replica_create(args: dict) -> None:
+    volume_id = args["volume_id"]
+    size_gb = int(args["size_gb"])
+    sync_from = args.get("sync_from")
+    try:
+        lvm.replica_create(volume_id, size_gb)
+        if sync_from:
+            try:
+                _rpc.cast(host_queue("block-store", sync_from), "replica_sync", {
+                    "volume_id": volume_id,
+                    "size_gb": size_gb,
+                    "target_host": BLOCK_STORE_HOST,
+                })
+            except Exception as exc:
+                log.error("Failed to cast replica_sync to %s: %s", sync_from, exc)
+                conductor_update_volume(volume_id, {"replication_status": "error"})
+    except Exception as exc:
+        log.error("Failed to create replica %s: %s", volume_id, exc, exc_info=True)
+        conductor_update_volume(volume_id, {"replication_status": "error"})
+
+
+def handle_replica_sync(args: dict) -> None:
+    volume_id = args["volume_id"]
+    size_gb = int(args.get("size_gb", 1))
+    target_host = args.get("target_host")
+
+    if not INTERNAL_TOKEN:
+        log.warning("Replica sync refused: INTERNAL_TOKEN is empty")
+        try:
+            conductor_update_volume(volume_id, {"replication_status": "error"})
+        except Exception:  # best-effort: conductor update failure ignored
+            pass
+        return
+
+    peer_map = _parse_replication_peers()
+    target_addr = peer_map.get(target_host, target_host)
+    try:
+        target_ip = socket.gethostbyname(target_addr)
+    except Exception as exc:
+        log.error("Could not resolve replication target host %s: %s", target_host, exc)
+        try:
+            conductor_update_volume(volume_id, {"replication_status": "error"})
+        except Exception:  # best-effort: conductor update failure ignored
+            pass
+        return
+
+    vg = lvm.vg_name() if lvm.LVM_VG_NAME else "vg-cloudx"
+    snap_name = f"repsnap-{volume_id}-{int(time.time())}"
+    source_lv = _lv_name(volume_id)
+    try:
+        snap_path = lvm.snapshot(source_lv, snap_name, max(1, size_gb // 5))
+        try:
+            actual_size = replication._lv_size(snap_path)
+            replication.send(snap_path, volume_id, actual_size, target_ip, REPLICATION_PORT, INTERNAL_TOKEN)
+            try:
+                conductor_update_volume(volume_id, {
+                    "replication_status": "synced",
+                    "last_replicated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                })
+            except Exception:  # best-effort: conductor update failure ignored
+                pass
+        except Exception as exc:
+            log.error("Replication send failed: %s", exc)
+            try:
+                conductor_update_volume(volume_id, {"replication_status": "error"})
+            except Exception:  # best-effort: conductor update failure ignored
+                pass
+        finally:
+            try:
+                lvm.delete(snap_name)
+            except Exception:  # best-effort: snapshot cleanup on replication failure
+                pass
+    except Exception as exc:
+        log.error("Replica sync snapshot creation failed: %s", exc)
+        try:
+            if lvm.exists(snap_name):
+                lvm.delete(snap_name)
+        except Exception:  # best-effort: snapshot cleanup
+            pass
+        try:
+            conductor_update_volume(volume_id, {"replication_status": "error"})
+        except Exception:  # best-effort: conductor update failure ignored
+            pass
+
+
+def handle_replica_promote(args: dict) -> None:
+    volume_id = args["volume_id"]
+    volume_name = _lv_name(volume_id)
+    try:
+        path = lvm.replica_promote(volume_id, volume_name)
+        conductor_update_volume(volume_id, {
+            "replication_status": "failed-over",
+            "host": BLOCK_STORE_HOST,
+            "path": path,
+        })
+    except Exception as exc:
+        log.error("Failed to promote replica %s: %s", volume_id, exc, exc_info=True)
+        conductor_update_volume(volume_id, {"replication_status": "error"})
+
+
+def handle_replica_delete(args: dict) -> None:
+    volume_id = args["volume_id"]
+    try:
+        lvm.replica_delete(volume_id)
+    except Exception as exc:
+        log.warning("Failed to delete replica %s: %s", volume_id, exc)
 
 
 HANDLERS = {
@@ -740,6 +903,10 @@ HANDLERS = {
     "backup_volume":    handle_backup_volume,
     "restore_backup":   handle_restore_backup,
     "delete_backup":    handle_delete_backup,
+    "replica_create":   handle_replica_create,
+    "replica_sync":     handle_replica_sync,
+    "replica_promote":  handle_replica_promote,
+    "replica_delete":   handle_replica_delete,
 }
 
 
@@ -805,6 +972,9 @@ def main():
     # Start background storage reconciler thread (same interval as compute_worker)
     from .reconciler import start_reconcile_thread  # noqa: E402
     start_reconcile_thread(_rpc)
+
+    # Start replication receiver if LVM driver & internal token are set
+    _maybe_start_receiver()
 
     # Own queue for what is addressed to this node (its LVM volumes) + the shared queue for the rest
     # (volumes without a host, backups in object storage).

@@ -33,3 +33,16 @@ def test_prepare_lvm_node_needs_a_host_name_and_portal_address():
 def test_setup_compute_node_names_the_worker_after_the_node():
     script = (ROOT / "scripts" / "setup-compute-node.sh").read_text(encoding="utf-8")
     assert "compute_host = ${NODE_NAME}" in script
+
+def test_build_k3s_image_dry_run_bakes_k3s_and_uploads():
+    result = subprocess.run(["bash", str(ROOT / "scripts" / "build-k3s-image.sh"), "--base-image", "u.img", "--dry-run"], text=True, capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert "k3s-airgap-images-amd64.tar.zst" in result.stdout and "v1.30.2%2Bk3s1" in result.stdout
+    assert "cloudx image upload k3s-ubuntu" in result.stdout
+
+
+def test_build_k3s_image_rejects_bad_input():
+    base = ["bash", str(ROOT / "scripts" / "build-k3s-image.sh")]
+    assert subprocess.run(base + ["--dry-run"], text=True, capture_output=True, timeout=20).returncode == 2
+    bad = subprocess.run(base + ["--base-image", "u.img", "--k3s-version", "v1;rm -rf /", "--dry-run"], text=True, capture_output=True, timeout=20)
+    assert bad.returncode == 2 and "invalid --k3s-version" in bad.stderr

@@ -419,7 +419,7 @@ def bgp_peer(ctx):
 @click.pass_context
 def bgp_peer_list(ctx):
     data = _api("get", f"{DEFAULT_URLS['network']}/bgp-peers", ctx.obj["profile"])
-    _output(data, ctx.obj["fmt"], ["id", "name", "router_id", "peer_ip", "local_as", "remote_as", "status"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "router_id", "peer_ip", "local_as", "remote_as", "status", "status_reason", "outer_ip"])
 
 
 @bgp_peer.command("create")
@@ -548,7 +548,7 @@ def vpn_connection(ctx):
 @click.pass_context
 def vpn_connection_list(ctx):
     data = _api("get", f"{DEFAULT_URLS['network']}/vpn/site-connections", ctx.obj["profile"])
-    _output(data, ctx.obj["fmt"], ["id", "name", "router_id", "peer_address", "peer_cidrs", "status"])
+    _output(data, ctx.obj["fmt"], ["id", "name", "router_id", "peer_address", "peer_cidrs", "status", "status_reason"])
 
 
 @vpn_connection.command("create")

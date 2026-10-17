@@ -175,6 +175,7 @@ sudo systemctl enable --now \
   cloudx-orchestration-api \
   cloudx-key-manager-api \
   cloudx-k8s-engine-api \
+  cloudx-k8s-engine-worker \
   cloudx-telemetry-api \
   cloudx-billing-api \
   cloudx-event-api \

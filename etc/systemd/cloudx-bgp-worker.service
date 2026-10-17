@@ -1,0 +1,15 @@
+[Unit]
+Description=CloudX BGP Worker (BIRD 2 daemon for BGP dynamic routing) (compute/storage node)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/cloudx/services/bgp_worker
+ExecStart=/opt/cloudx/venv/bin/python -m app.main
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

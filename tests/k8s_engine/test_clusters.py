@@ -1,5 +1,5 @@
-import importlib
 import os
+import importlib
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -11,12 +11,14 @@ AUTH = {"Authorization": "Bearer " + jwt.encode(
 def test_k8s_engine_crud(monkeypatch, tmp_path: Path):
     db_path = tmp_path / "k8s_engine.sqlite"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("INTERNAL_TOKEN", "t" * 32)
 
     import services.k8s_engine.app.main as k8s_main
     k8s_main = importlib.reload(k8s_main)
     k8s_main.Base.metadata.create_all(bind=k8s_main.engine)
 
     client = TestClient(k8s_main.app)
+    internal_headers = {"X-Internal-Token": "t" * 32}
 
     # 1. Health check
     res = client.get("/health")
@@ -64,35 +66,47 @@ def test_k8s_engine_crud(monkeypatch, tmp_path: Path):
     assert res.status_code == 201
     cls_data = res.json()
     assert cls_data["name"] == "prod-k8s-cluster"
-    assert cls_data["status"] in ("BUILDING", "ACTIVE")
+    assert cls_data["status"] == "CREATING"
+    assert "admin_token" not in cls_data
+    assert "join_token" not in cls_data
     cls_id = cls_data["id"]
 
     # 5. List & Get Clusters
     res = client.get("/clusters", headers=AUTH)
     assert res.status_code == 200
     assert len(res.json()) == 1
+    assert "admin_token" not in res.json()[0]
 
     res = client.get(f"/clusters/{cls_id}", headers=AUTH)
     assert res.status_code == 200
     assert res.json()["master_count"] == 1
     assert res.json()["worker_count"] == 2
+    assert "admin_token" not in res.json()
 
-    # 6. Scale Cluster
+    # 6. Scale Cluster when CREATING -> 409
     scale_body = {"worker_count": 4}
+    res = client.post(f"/clusters/{cls_id}/scale", json=scale_body, headers=AUTH)
+    assert res.status_code == 409
+
+    # Set cluster to ACTIVE via internal status endpoint
+    client.post(f"/internal/k8s-engine/clusters/{cls_id}/status", json={"status": "ACTIVE", "master_ip": "10.0.0.100"}, headers=internal_headers)
+
+    # Scale cluster when ACTIVE -> 200
     res = client.post(f"/clusters/{cls_id}/scale", json=scale_body, headers=AUTH)
     assert res.status_code == 200
     assert res.json()["worker_count"] == 4
 
-    # 7. Get Kubeconfig
+    # 7. Get Kubeconfig when ACTIVE -> 200
     res = client.get(f"/clusters/{cls_id}/kubeconfig", headers=AUTH)
     assert res.status_code == 200
     kubeconfig = res.json()["kubeconfig"]
     assert "apiVersion: v1" in kubeconfig
     assert "prod-k8s-cluster" in kubeconfig
+    assert "insecure-skip-tls-verify: true" in kubeconfig
 
     # 8. Delete Cluster & Template
     res = client.delete(f"/clusters/{cls_id}", headers=AUTH)
-    assert res.status_code == 204
+    assert res.status_code == 202
 
     res = client.delete(f"/cluster-templates/{tpl_id}", headers=AUTH)
     assert res.status_code == 204

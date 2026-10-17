@@ -61,6 +61,13 @@ cloudx scaling-group history <asg_id>
 
 Extends the OVN/OVS networking capabilities to connect two separate VPCs/routers without NAT, and to coordinate dynamic route advertisement through the BGP protocol.
 
+**Behavior & Limitations**:
+- Same-project only (enforced via project scoping / ownership checks).
+- Static routing via OVN logical router patch ports and static routes (`lr-route-add`).
+- BGP peers run a real BIRD session; see [bgp-dynamic-routing.md](bgp-dynamic-routing.md). VPC peering itself uses static routes only.
+- Transit CIDRs: automatically allocated /30 subnets from `100.100.0.0/16` (legacy rows default to `100.100.0.0/30`).
+- Overlapping router subnets are refused with HTTP 409.
+
 ### VPC Peering Endpoints
 - `POST /routers/{requester_id}/peering` — Create a VPC peering between two tenant routers (`accepter_router_id`).
 - `GET /vpc-peerings` & `GET /vpc-peerings/{id}` — List and show VPC peering connections.
@@ -69,7 +76,7 @@ Extends the OVN/OVS networking capabilities to connect two separate VPCs/routers
 ### BGP Dynamic Routing Endpoints
 - `POST /bgp-peers` & `GET /bgp-peers` — Configure a BGP peer (Local AS, Remote AS, Peer IP, Advertised Prefixes).
 - `GET /bgp-peers/{id}` & `DELETE /bgp-peers/{id}` — Show and delete a BGP peer.
-- `POST /bgp-peers/{id}/sync-config` — Synchronise the BGP router daemon configuration (FRR / Quagga).
+- `POST /bgp-peers/{id}/sync-config` — Return the rendered BIRD configuration (password masked).
 
 ### CLI Usage
 ```bash

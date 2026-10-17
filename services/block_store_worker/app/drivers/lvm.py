@@ -13,6 +13,7 @@ All volumes appear as /dev/{VG}/{LV} on the host (and in VM via libvirt block di
 
 import logging
 import os
+import re
 
 from shared.proc import output, run, succeeds
 
@@ -258,6 +259,31 @@ def delete(volume_name: str) -> None:
     """Remove an LV."""
     vg = vg_name()
     _run(["lvremove", "-f", f"{vg}/{volume_name}"] + LVM_CONTAINER_CFG)
+
+
+def replica_create(volume_id: str, size_gb: int) -> str:
+    """Create a replication LV (rep-<volume_id>) and return its path."""
+    if not isinstance(volume_id, str) or not re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", volume_id):
+        raise ValueError(f"Invalid volume_id: {volume_id}")
+    return create(f"rep-{volume_id}", size_gb)
+
+
+def replica_delete(volume_id: str) -> None:
+    """Delete a replication LV if it exists."""
+    vname = f"rep-{volume_id}"
+    if exists(vname):
+        delete(vname)
+
+
+def replica_promote(volume_id: str, volume_name: str) -> str:
+    """Promote replication LV (rep-<volume_id>) to main volume name."""
+    vg = vg_name()
+    rep_name = f"rep-{volume_id}"
+    if not exists(rep_name):
+        raise RuntimeError(f"Replication volume {rep_name} does not exist for promotion")
+    _cleanup_stale_lv(volume_name, vg)
+    _run(["lvrename", vg, rep_name, volume_name])
+    return f"/dev/{vg}/{volume_name}"
 
 
 def extend(volume_name: str, new_size_gb: int) -> None:

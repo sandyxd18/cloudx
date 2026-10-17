@@ -147,6 +147,8 @@ def add_router_interface(ref: str, payload: RouterInterfaceIn, current: CurrentU
     db.add(iface)
     db.commit()
     db.refresh(iface)
+    from .routing import sync_peering_routes
+    sync_peering_routes(db, router)
     if router.external_network_id:
         _snat(router.name, _router_external_ip(db, db.get(Network, router.external_network_id)), port_ip)
     # Add OVN static route for metadata service (169.254.169.254 → host)
@@ -166,6 +168,9 @@ def remove_router_interface(ref: str, subnet_ref: str, current: CurrentUser, db:
     if not iface:
         raise HTTPException(status_code=404, detail="router interface not found")
     network = db.get(Network, subnet.network_id)
+    # Remove peering routes for this subnet on peered routers
+    from .routing import delete_peering_routes_for_subnet
+    delete_peering_routes_for_subnet(db, router, subnet)
     ovn_cli.ovn("--if-exists", "lsp-del", iface.switch_port_name)
     ovn_cli.ovn("--if-exists", "lrp-del", iface.router_port_name)
     db.delete(iface)

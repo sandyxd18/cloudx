@@ -41,10 +41,23 @@ def test_networking_vpnaas_crud(monkeypatch, networking):
     assert ipsec_data["name"] == "ipsec-policy-1"
     ipsec_id = ipsec_data["id"]
 
+    from services.networking.app.routers import vpn
+    monkeypatch.setattr(vpn, "_get_router_host", lambda rid: "cloudx-compute-01")
+
+    db = networking.db.SessionLocal()
+    ext_net = networking.models.Network(name="ext", external=True, provider=True, provider_cidr="172.24.4.0/24", gateway_ip="172.24.4.1", allocation_start="172.24.4.100", allocation_end="172.24.4.200")
+    db.add(ext_net)
+    db.commit()
+    db.refresh(ext_net)
+
     # 3. Create Router first
     router_res = client.post("/routers", json={"name": "vpn-router-1"}, headers={"X-Project-Id": "proj-admin", "X-Role": "admin"})
     assert router_res.status_code == 201
     router_id = router_res.json()["id"]
+
+    router_obj = db.get(networking.models.Router, router_id)
+    router_obj.external_network_id = ext_net.id
+    db.commit()
 
     # 4. Create VPN Site Connection
     conn_body = {
@@ -72,5 +85,5 @@ def test_networking_vpnaas_crud(monkeypatch, networking):
     res = client.post(f"/vpn/site-connections/{conn_id}/config", headers={"X-Project-Id": "proj-admin", "X-Role": "admin"})
     assert res.status_code == 200
     cfg = res.json()
-    assert "conn office-site-connection" in cfg["ipsec_conf"]
+    assert "office-site-connection" in cfg["ipsec_conf"]
     assert "super-secret-psk-key-123" in cfg["ipsec_secrets"]

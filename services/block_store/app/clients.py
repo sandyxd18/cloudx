@@ -54,8 +54,16 @@ def worker_host(payload: dict) -> str | None:
 
 def cast_to_worker(method: str, payload: dict) -> None:
     """Fire-and-forget to the block-store-worker that owns the volume (any worker if it has no host)."""
+    global _rpc
+    if _rpc is None:
+        try:
+            from .config import RABBITMQ_URL
+            _rpc = RPCClient(RABBITMQ_URL)
+        except Exception:  # best-effort: RPC broker unavailable, cast is dropped
+            pass
     host = worker_host(payload)
-    _rpc.cast(host_queue("block-store", host), method, payload)
+    if _rpc is not None:
+        _rpc.cast(host_queue("block-store", host), method, payload)
     log.info("CAST block-store.%s for %s (host=%s)", method,
              payload.get("volume_id") or payload.get("snapshot_id", "?"), host or "any")
 

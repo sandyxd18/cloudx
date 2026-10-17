@@ -21,7 +21,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, create_engine, select, text
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, Text, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
@@ -98,7 +98,7 @@ class Image(Base):
     object_name: Mapped[str] = mapped_column(String)
     disk_format: Mapped[str] = mapped_column(String)
     container_format: Mapped[str] = mapped_column(String)
-    size: Mapped[int] = mapped_column(Integer)
+    size: Mapped[int] = mapped_column(BigInteger)
     min_disk_gb: Mapped[int] = mapped_column(Integer, default=0)       # minimum disk size in GB required to boot
     checksum: Mapped[str] = mapped_column(String)
     signature: Mapped[str | None] = mapped_column(String, nullable=True)              # SHA256 hex signature
@@ -109,7 +109,7 @@ class Image(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     min_ram_mb: Mapped[int] = mapped_column(Integer, default=0)
     protected: Mapped[bool] = mapped_column(Boolean, default=False)
-    virtual_size: Mapped[int | None] = mapped_column(Integer, nullable=True)  # from qemu-img info
+    virtual_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # from qemu-img info
     os_hash_algo: Mapped[str | None] = mapped_column(String, nullable=True)
     os_hash_value: Mapped[str | None] = mapped_column(String, nullable=True)
     properties: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON object of custom properties

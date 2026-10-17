@@ -26,6 +26,7 @@ from .routers import (
     subnets,
     trunks,
     vpn,
+    bgp_agent,
 )
 
 app = FastAPI(title="cloudx networking-api", version="1.0.0")
@@ -89,3 +90,4 @@ app.include_router(subnet_pools.router)
 app.include_router(port_forwarding.router)
 app.include_router(discovery.router)
 app.include_router(trunks.router)
+app.include_router(bgp_agent.router)

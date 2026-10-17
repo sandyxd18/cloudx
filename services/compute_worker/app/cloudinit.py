@@ -46,10 +46,12 @@ def render_network_config(port: dict | None = None) -> str:
     prefix = ipaddress.ip_network(port.get("cidr", "0.0.0.0/24"), strict=False).prefixlen
     gateway = port.get("gateway_ip")
     dns = port.get("dns_nameservers") or []
+    mac = port.get("mac_address")  # Ubuntu renames eth0 to ens3, so match the NIC by MAC
     lines = [
         "version: 2",
         "ethernets:",
-        "  eth0:",
+        "  nic0:",
+        *([f"    match: {{macaddress: \"{mac.lower()}\"}}", "    set-name: eth0"] if mac else []),
         "    dhcp4: false",
         f"    addresses: [{fixed_ip}/{prefix}]",
     ]

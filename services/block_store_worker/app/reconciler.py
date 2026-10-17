@@ -133,7 +133,7 @@ def reconcile_volumes(rpc_client) -> None:
             continue  # could not check this pass; do not touch the record
 
         # 1. DB says available/in-use/creating/error but physical missing
-        if not physical_exists and db_status in ("available", "in-use", "creating", "error"):
+        if not physical_exists and db_status in ("available", "in-use", "error"):  # "creating": the LV is still being built, the create handler owns errors
             log.warning(
                 "[reconcile] volume %s (%s): status=%s but backend missing → marking error",
                 vol.get("name"), vol["id"], db_status,

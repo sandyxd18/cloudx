@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ def test_block_store_volume_replication_dr(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("STORAGE_LVM_DRIVER", "true")
 
     bs_main = fresh_service("block_store", monkeypatch, tmp_path)
+    monkeypatch.setattr("services.block_store.app.clients.cast_to_worker", lambda *a, **k: None)
 
     try:
         from shared.auth_middleware import require_auth
@@ -43,8 +45,14 @@ def test_block_store_volume_replication_dr(monkeypatch, tmp_path: Path):
     res = client.post("/volumes/vol-dr-1/sync-replication", headers={"X-Project-Id": "proj-1", "X-Role": "admin"})
     assert res.status_code == 200
     sync_res = res.json()
-    assert sync_res["status"] == "synced"
-    assert sync_res["last_replicated_at"] is not None
+    assert sync_res["status"] in ("synced", "replicating")
+    
+    # Simulate sync completion by worker / conductor update
+    db = bs_main.SessionLocal()
+    v = db.get(bs_main.Volume, "vol-dr-1")
+    v.replication_status = "synced"
+    v.last_replicated_at = datetime.utcnow()
+    db.commit()
 
     # 3. Failover Volume (Disaster Recovery promotion)
     res = client.post("/volumes/vol-dr-1/failover", headers={"X-Project-Id": "proj-1", "X-Role": "admin"})
