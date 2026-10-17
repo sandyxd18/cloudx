@@ -6,7 +6,7 @@ from sqlalchemy import select
 from ..config import TOKEN_EXPIRE_H
 from ..db import DB
 from ..deps import CurrentUser
-from ..models import AccessKey, Group, GroupMember, Project, RevokedToken, RoleAssignment, User
+from ..models import AccessKey, Domain, Group, GroupMember, Project, RevokedToken, RoleAssignment, User
 from ..schemas import LoginIn, SwitchProjectIn
 from ..serializers import _project_to_dict, _user_to_dict
 from ..tokens import _build_catalog, _create_token, _verify_password, project_role
@@ -21,7 +21,14 @@ def _member_projects(db, user: User) -> set[str]:
         select(Group.project_id).join(GroupMember, Group.id == GroupMember.group_id).where(GroupMember.user_id == user.id)
     ).all())
     ids.update(db.scalars(select(RoleAssignment.project_id).where(RoleAssignment.user_id == user.id)).all())
-    return ids
+    return ids  # cross-domain projects are refused by _check_domain
+
+def _check_domain(db, user: User, proj: Project | None = None) -> None:
+    d = db.get(Domain, user.domain_id)
+    if d and not d.enabled:
+        raise HTTPException(status_code=403, detail="domain disabled")
+    if proj is not None and user.role != "admin" and proj.domain_id != user.domain_id:
+        raise HTTPException(status_code=403, detail="project belongs to another domain")
 
 
 # ── Auth / Tokens ──────────────────────────────────────────────────────────────
@@ -33,6 +40,7 @@ def login(payload: LoginIn, db: DB):
         raise HTTPException(status_code=401, detail="invalid credentials")
     if not user.enabled:
         raise HTTPException(status_code=403, detail="user disabled")
+    _check_domain(db, user)
 
     target_project_id = user.project_id
     if payload.project:
@@ -41,6 +49,7 @@ def login(payload: LoginIn, db: DB):
         )
         if not req_proj or not req_proj.enabled:
             raise HTTPException(status_code=404, detail="project not found or disabled")
+        _check_domain(db, user, req_proj)
         if user.role != "admin" and user.project_id != req_proj.id:
             if req_proj.id not in _member_projects(db, user):
                 raise HTTPException(status_code=403, detail="you are not a member of that project")
@@ -85,6 +94,7 @@ def login_with_access_key(
     proj = db.get(Project, ak.project_id)
     if not proj or not proj.enabled:
         raise HTTPException(status_code=403, detail="project disabled")
+    _check_domain(db, user, proj)
     orig_project = user.project_id
     user.project_id = proj.id
     token = _create_token(user, project_name=proj.name, role=project_role(db, user, proj.id))
@@ -120,6 +130,7 @@ def switch_project(payload: SwitchProjectIn, current: CurrentUser, db: DB):
     )
     if not proj or not proj.enabled:
         raise HTTPException(status_code=404, detail="project not found or disabled")
+    _check_domain(db, user, proj)
     # Admin can switch to any project; regular users can only switch to their assigned projects
     if current.get("role") != "admin":
         if proj.id not in _member_projects(db, user):

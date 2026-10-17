@@ -412,6 +412,38 @@ export const api = {
   getEventDeliveries: (params = {}) => request('GET', `/event/events/deliveries${qs(params)}`),
   retryEventDelivery: (id) => request('POST', `/event/events/deliveries/${id}/retry`),
 
+  // Orchestration - Stacks (Heat-like)
+  getStacks: () => request('GET', '/orchestration/stacks'),
+  getStack: (id) => request('GET', `/orchestration/stacks/${id}`),
+  getStackResources: (id) => request('GET', `/orchestration/stacks/${id}/resources`),
+  getStackEvents: (id) => request('GET', `/orchestration/stacks/${id}/events`),
+  getStackTemplate: (id) => request('GET', `/orchestration/stacks/${id}/template`),
+  previewStack: (b) => request('POST', '/orchestration/stacks/preview', b),
+  createStack: (b) => request('POST', '/orchestration/stacks', b),
+  updateStack: (id, b) => request('PUT', `/orchestration/stacks/${id}`, b),
+  deleteStack: (id) => request('DELETE', `/orchestration/stacks/${id}`),
+  stackAction: (id, action) => request('POST', `/orchestration/stacks/${id}/actions`, { [action]: null }),
+
+  // Telemetry - Alarms
+  getAlarms: () => request('GET', '/telemetry/alarms'),
+  getAlarmHistory: (id) => request('GET', `/telemetry/alarms/${id}/history`),
+  createAlarm: (b) => request('POST', '/telemetry/alarms', b),
+  deleteAlarm: (id) => request('DELETE', `/telemetry/alarms/${id}`),
+
+  // Auth - Role assignments (project x user x role)
+  getRoleAssignments: (params = {}) => request('GET', `/auth/role-assignments${qs(params)}`),
+  assignRole: (project, user, role) => request('PUT', `/auth/projects/${project}/users/${user}/roles/${role}`),
+  unassignRole: (project, user, role) => request('DELETE', `/auth/projects/${project}/users/${user}/roles/${role}`),
+
+  // Load Balancer - L7 policies and rules
+  getL7Policies: (listenerId) => request('GET', `/load-balancer/listeners/${listenerId}/l7policies`),
+  createL7Policy: (listenerId, b) => request('POST', `/load-balancer/listeners/${listenerId}/l7policies`, b),
+  updateL7Policy: (id, b) => request('PUT', `/load-balancer/l7policies/${id}`, b),
+  deleteL7Policy: (id) => request('DELETE', `/load-balancer/l7policies/${id}`),
+  createL7Rule: (policyId, b) => request('POST', `/load-balancer/l7policies/${policyId}/rules`, b),
+  updateL7Rule: (policyId, ruleId, b) => request('PUT', `/load-balancer/l7policies/${policyId}/rules/${ruleId}`, b),
+  deleteL7Rule: (policyId, ruleId) => request('DELETE', `/load-balancer/l7policies/${policyId}/rules/${ruleId}`),
+
   // Hypervisors & Compute Nodes
   getComputeNodes: () => request('GET', '/placement/compute_nodes'),
 }

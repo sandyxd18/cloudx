@@ -7,13 +7,27 @@ inject extra directives.
 from __future__ import annotations
 
 _BALANCE = {"LEAST_CONNECTIONS": "leastconn", "SOURCE_IP": "source"}
-# (rule type, compare type) -> haproxy ACL fetch
-_ACL = {
-    ("PATH", "STARTS_WITH"): "path_beg", ("PATH", "EQUAL_TO"): "path", ("PATH", "ENDS_WITH"): "path_end",
-    ("HOST_NAME", "STARTS_WITH"): "hdr_beg(host) -i", ("HOST_NAME", "EQUAL_TO"): "hdr(host) -i",
-    ("HOST_NAME", "ENDS_WITH"): "hdr_end(host) -i",
-}
+_SUFFIX = {"STARTS_WITH": "_beg", "ENDS_WITH": "_end", "EQUAL_TO": "", "CONTAINS": "_sub", "REGEX": "_reg"}
 
+def _acl(r: dict) -> str:
+    """haproxy ACL (fetch + value) for one L7 rule."""
+    typ, cmp_ = r["type"], r["compare_type"]
+    sfx = _SUFFIX.get(cmp_)
+    val = _safe(r["value"], "l7 rule value")
+    if sfx is None or typ not in ("PATH", "HOST_NAME", "FILE_TYPE", "HEADER", "COOKIE"):
+        raise ValueError(f"unsupported l7 rule {typ}/{cmp_}")
+    if typ == "PATH":
+        return f"path{sfx} {val}"
+    if typ == "HOST_NAME":
+        return f"hdr{sfx}(host) -i {val}"
+    if typ == "FILE_TYPE":
+        if cmp_ == "EQUAL_TO":
+            return f"path_end -i .{val}"
+        if cmp_ == "REGEX":
+            return f"path_reg -i [.]({val})$"
+        raise ValueError("FILE_TYPE takes EQUAL_TO or REGEX")
+    fetch = "hdr" if typ == "HEADER" else "cook"
+    return f"{fetch}{sfx}({_safe(r.get('key') or '', 'l7 rule key')}) {val}"
 
 def _safe(value, what: str) -> str:
     s = str(value)
@@ -41,14 +55,14 @@ def render(lb: dict, listeners: list[dict], stats_socket: str | None = None) -> 
         for i, pol in enumerate(sorted(ls.get("policies", []), key=lambda p: p["position"])):
             conds = []
             for j, r in enumerate(pol["rules"]):
-                fetch = _ACL.get((r["type"], r["compare_type"]))
-                if not fetch:
-                    raise ValueError(f"unsupported l7 rule {r['type']}/{r['compare_type']}")
-                out.append(f"    acl p{i}r{j} {fetch} {_safe(r['value'], 'l7 rule value')}")
-                conds.append(f"p{i}r{j}")
+                out.append(f"    acl p{i}r{j} {_acl(r)}")
+                conds.append(("!" if r.get("invert") else "") + f"p{i}r{j}")
             cond = (" if " + " ".join(conds)) if conds else ""
             if pol["action"] == "REJECT":
                 out.append(f"    http-request deny{cond}")
+            elif pol["action"] in ("REDIRECT_TO_URL", "REDIRECT_PREFIX"):
+                kind, url = ("location", pol.get("redirect_url")) if pol["action"] == "REDIRECT_TO_URL" else ("prefix", pol.get("redirect_prefix"))
+                out.append(f"    http-request redirect {kind} {_safe(url, 'redirect target')} code {int(pol.get('redirect_http_code') or 302)}{cond}")
             elif pol.get("redirect_pool_id"):
                 out.append(f"    use_backend be_{_safe(pol['redirect_pool_id'], 'pool id')}{cond}")
         if default:

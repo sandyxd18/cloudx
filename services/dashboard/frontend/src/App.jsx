@@ -63,6 +63,9 @@ import AdminPage from './pages/Admin.jsx'
 import TopologyPage from './pages/Topology.jsx'
 import ConsolePage from './pages/Console.jsx'
 import RolesPage from './pages/Roles.jsx'
+import RoleAssignmentsPage from './pages/RoleAssignments.jsx'
+import StacksPage from './pages/Stacks.jsx'
+import AlarmsPage from './pages/Alarms.jsx'
 import XIDEPage from './pages/XIDE.jsx'
 import XIDECreatePage from './pages/XIDECreate.jsx'
 
@@ -222,6 +225,9 @@ function AppRoutes() {
           <Route path="topology" element={<TopologyPage />} />
           <Route path="console/:id" element={<ConsolePage />} />
           <Route path="roles" element={<RolesPage />} />
+          <Route path="role-assignments" element={<RoleAssignmentsPage />} />
+          <Route path="stacks" element={<StacksPage />} />
+          <Route path="alarms" element={<AlarmsPage />} />
           <Route path="admin" element={<AdminPage />} />
           <Route path="xide" element={<XIDEPage />} />
           <Route path="xide/create" element={<XIDECreatePage />} />

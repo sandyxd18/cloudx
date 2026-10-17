@@ -69,6 +69,8 @@ def _create_token(
         "role":         (extra_roles[0] if extra_roles else (role or user.role)),
         "roles":        (extra_roles if extra_roles else [role or user.role]),
         "scope_type":   scope_type,
+        "domain_id":    user.domain_id or "default",
+        "domain_admin": bool(user.is_domain_admin),
         "exp":          utcnow() + timedelta(hours=TOKEN_EXPIRE_H),
         "iat":          utcnow(),
     }

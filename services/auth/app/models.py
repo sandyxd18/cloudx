@@ -32,6 +32,7 @@ class Project(Base):
     name:        Mapped[str] = mapped_column(String, unique=True, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled:     Mapped[bool] = mapped_column(Boolean, default=True)
+    domain_id:   Mapped[str] = mapped_column(String, ForeignKey("auth_domains.id"), default="default", server_default="default")
     created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -61,6 +62,8 @@ class User(Base):
     project_id:    Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id"))
     role:          Mapped[str] = mapped_column(String, default="member")   # admin | member | reader
     enabled:       Mapped[bool] = mapped_column(Boolean, default=True)
+    domain_id:     Mapped[str] = mapped_column(String, ForeignKey("auth_domains.id"), default="default", server_default="default")
+    is_domain_admin: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     created_at:    Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

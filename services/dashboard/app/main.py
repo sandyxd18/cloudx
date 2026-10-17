@@ -511,6 +511,7 @@ async def session_me(request: Request):
                         "username": val.get("username", ""),
                         "user_id": val.get("sub") or val.get("user_id", ""),
                         "role": val.get("role", "member"),
+                        "domain_admin": bool(val.get("domain_admin")),
                         "project_id": val.get("project_id", ""),
                         "project_name": val.get("project_name", ""),
                     }
@@ -528,6 +529,7 @@ async def session_me(request: Request):
         "username": user.get("username", ""),
         "user_id": user.get("id", ""),
         "role": user.get("role", "member"),
+        "domain_admin": bool(user.get("is_domain_admin")),
         "project_id": project.get("id") or user.get("project_id", ""),
         "project_name": project.get("name", ""),
     }

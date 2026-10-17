@@ -1,5 +1,5 @@
 from shared.schema import require_schema
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import (
@@ -30,13 +30,6 @@ def _bootstrap():
             print("[auth] bootstrap: default domain created", flush=True)
 
         # ── Migrate existing projects / users to default domain ───────────────
-        with engine.begin() as conn:
-            conn.execute(text(
-                "UPDATE auth_projects SET domain_id = 'default' WHERE domain_id IS NULL"
-            ))
-            conn.execute(text(
-                "UPDATE auth_users SET domain_id = 'default' WHERE domain_id IS NULL"
-            ))
 
         # ── Create admin project ──────────────────────────────────────────────
         proj = db.scalar(select(Project).where(Project.name == ADMIN_PROJECT))
@@ -45,11 +38,6 @@ def _bootstrap():
             db.add(proj)
             db.commit()
             db.refresh(proj)
-        # Ensure admin project has domain_id
-        with engine.begin() as conn:
-            conn.execute(text(
-                "UPDATE auth_projects SET domain_id = 'default' WHERE domain_id IS NULL"
-            ))
 
         # ── Create admin user ─────────────────────────────────────────────────
         user = db.scalar(select(User).where(User.username == ADMIN_USERNAME))

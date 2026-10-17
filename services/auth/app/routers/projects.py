@@ -5,9 +5,9 @@ from sqlalchemy.orm import Session
 
 from ..config import ADMIN_PROJECT
 from ..db import DB
-from ..deps import AdminUser, CurrentUser, UserOrInternal
-from ..lookups import _get_project_by_ref
-from ..models import Group, GroupMember, Project, ProjectQuota, User, utcnow
+from ..deps import AdminUser, CurrentUser, DomainAdminUser, UserOrInternal, scope_domain
+from ..lookups import _get_project_by_ref, _scoped_project
+from ..models import Domain, Group, GroupMember, Project, ProjectQuota, User, utcnow
 from ..schemas import ProjectIn, ProjectUpdate, QuotaUpdate
 from ..serializers import _project_to_dict
 
@@ -16,10 +16,19 @@ router = APIRouter()
 
 # ── Projects ───────────────────────────────────────────────────────────────────
 @router.post("/projects", status_code=201)
-def create_project(payload: ProjectIn, _: AdminUser, db: DB):
+def create_project(payload: ProjectIn, current: DomainAdminUser, db: DB):
     if db.scalar(select(Project).where(Project.name == payload.name)):
         raise HTTPException(status_code=409, detail="project already exists")
-    p = Project(**payload.model_dump())
+    scope = scope_domain(current)
+    if scope is None:
+        domain_id = payload.domain_id or "default"
+        if not db.get(Domain, domain_id):
+            raise HTTPException(status_code=404, detail="domain not found")
+    elif payload.domain_id not in (None, scope):
+        raise HTTPException(status_code=403, detail="a domain admin can only create projects in its own domain")
+    else:
+        domain_id = scope
+    p = Project(**{**payload.model_dump(), "domain_id": domain_id})
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -34,6 +43,8 @@ def list_projects(
 ):
     if current.get("role") == "admin":
         q = select(Project).order_by(Project.created_at)
+    elif current.get("domain_admin"):
+        q = select(Project).where(Project.domain_id == scope_domain(current)).order_by(Project.created_at)
     else:
         user = db.get(User, current["sub"])
         project_ids = set()
@@ -60,6 +71,8 @@ def list_projects(
 @router.get("/projects/{ref}")
 def show_project(ref: str, current: CurrentUser, db: DB):
     p = _get_project_by_ref(db, ref)
+    if current.get("domain_admin") and current.get("role") != "admin":
+        return _project_to_dict(_scoped_project(db, ref, current))
     if current.get("role") != "admin":
         user = db.get(User, current["sub"])
         allowed = set()
@@ -77,8 +90,8 @@ def show_project(ref: str, current: CurrentUser, db: DB):
 
 
 @router.put("/projects/{ref}")
-def update_project(ref: str, payload: ProjectUpdate, _: AdminUser, db: DB):
-    p = _get_project_by_ref(db, ref)
+def update_project(ref: str, payload: ProjectUpdate, current: DomainAdminUser, db: DB):
+    p = _scoped_project(db, ref, current)
     for k, v in payload.model_dump(exclude_none=True).items():
         setattr(p, k, v)
     db.commit()
@@ -87,8 +100,8 @@ def update_project(ref: str, payload: ProjectUpdate, _: AdminUser, db: DB):
 
 
 @router.delete("/projects/{ref}", status_code=204)
-def delete_project(ref: str, _: AdminUser, db: DB):
-    p = _get_project_by_ref(db, ref)
+def delete_project(ref: str, current: DomainAdminUser, db: DB):
+    p = _scoped_project(db, ref, current)
     if p.name == ADMIN_PROJECT:
         raise HTTPException(status_code=400, detail="cannot delete admin project")
     db.delete(p)

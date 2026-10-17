@@ -2,8 +2,8 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
 from ..db import DB
-from ..deps import AdminUser, CurrentUser
-from ..models import Domain
+from ..deps import AdminUser, DomainAdminUser, scope_domain
+from ..models import Domain, Project, User
 from ..schemas import DomainIn, DomainUpdate
 
 router = APIRouter()
@@ -32,19 +32,22 @@ def create_domain(payload: DomainIn, _: AdminUser, db: DB):
 
 
 @router.get("/v3/domains")
-def list_domains(current: CurrentUser, db: DB):
-    """List all domains."""
-    domains = db.scalars(select(Domain).order_by(Domain.name)).all()
+def list_domains(current: DomainAdminUser, db: DB):
+    """List all domains (a domain admin sees only its own)."""
+    q = select(Domain).order_by(Domain.name)
+    if scope_domain(current) is not None:
+        q = q.where(Domain.id == scope_domain(current))
+    domains = db.scalars(q).all()
     return {"domains": [_domain_to_dict(d) for d in domains]}
 
 
 @router.get("/v3/domains/{domain_id}")
-def show_domain(domain_id: str, current: CurrentUser, db: DB):
+def show_domain(domain_id: str, current: DomainAdminUser, db: DB):
     """Get a specific domain by ID or name."""
     domain = db.get(Domain, domain_id)
     if not domain:
         domain = db.scalar(select(Domain).where(Domain.name == domain_id))
-    if not domain:
+    if not domain or scope_domain(current) not in (None, domain.id):
         raise HTTPException(status_code=404, detail="domain not found")
     return _domain_to_dict(domain)
 
@@ -72,5 +75,8 @@ def delete_domain(domain_id: str, _: AdminUser, db: DB):
     domain = db.get(Domain, domain_id)
     if not domain:
         raise HTTPException(status_code=404, detail="domain not found")
+    if db.scalar(select(Project.id).where(Project.domain_id == domain.id).limit(1)) or \
+            db.scalar(select(User.id).where(User.domain_id == domain.id).limit(1)):
+        raise HTTPException(status_code=409, detail="domain still has projects or users")
     db.delete(domain)
     db.commit()

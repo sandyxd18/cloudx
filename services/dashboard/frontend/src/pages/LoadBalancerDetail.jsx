@@ -11,6 +11,7 @@ import StatusIndicator from '@cloudscape-design/components/status-indicator'
 import Table from '@cloudscape-design/components/table'
 import { api } from '../api.js'
 import { PageLoading, TableEmpty } from '../components/common.jsx'
+import L7Policies from '../components/L7Policies.jsx'
 
 const STATUS_MAP = {
   ACTIVE: 'success', PENDING_CREATE: 'pending', ERROR: 'error',
@@ -137,6 +138,7 @@ export default function LoadBalancerDetailPage() {
                   empty={<TableEmpty title="No members" subtitle="Members will be synced from the server group." />}
                   header={<Header variant="h3" counter={`(${members.length})`}>Members</Header>}
                 />
+                {lb.lb_type === 'ALB' && ['HTTP', 'HTTPS'].includes(ls.protocol) && <L7Policies listenerId={ls.id} />}
               </SpaceBetween>
             </Container>
           )

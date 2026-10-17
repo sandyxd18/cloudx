@@ -6,6 +6,7 @@ class ProjectIn(BaseModel):
     name: str
     description: str | None = None
     enabled: bool = True
+    domain_id: str | None = None
 
 
 class ProjectUpdate(BaseModel):
@@ -41,6 +42,7 @@ class UserIn(BaseModel):
     password: str
     project_id: str  # project name or id
     role: str = "member"
+    is_domain_admin: bool = False
 
     _check_role = field_validator("role")(_valid_role)
 
@@ -50,6 +52,7 @@ class UserUpdate(BaseModel):
     password: str | None = None
     role:     str | None = None
     enabled:  bool | None = None
+    is_domain_admin: bool | None = None
 
     _check_role = field_validator("role")(_valid_role)
 

@@ -27,6 +27,10 @@ export CLOUDX_SECRET_ACCESS_KEY="admin-secret"
 cloudx auth project-list
 cloudx auth user-list
 
+# Domains: a domain admin manages only its own domain (system admin creates it)
+cloudx auth project-create web --domain d1
+cloudx auth user-create alice --email a@x --project web --domain-admin
+
 # Tenant/project quota management
 cloudx quota show admin
 cloudx quota update admin --instances 20 --cores 40 --ram 81920 --gigabytes 500
@@ -145,6 +149,11 @@ cloudx scaling-group create web-autoscale-grp \
 # Octavia-like load balancer (L4 NLB / L7 ALB)
 cloudx load-balancer create lb-web-frontend --vip-network-id net-prod-01
 cloudx load-balancer list
+# L7 (ALB, HTTP/HTTPS listener): policy = action, rules = AND-ed conditions
+cloudx load-balancer l7policy create LISTENER --name api --redirect-pool POOL --position 1
+cloudx load-balancer l7rule create POLICY --type HEADER --key X-Env --compare-type EQUAL_TO --value prod
+cloudx load-balancer l7policy create LISTENER --name old --action REDIRECT_TO_URL --redirect-url https://x.io/new --redirect-http-code 301
+cloudx load-balancer l7policy update POLICY --disable
 ```
 
 ### ⚙️ System Service Lifecycle (`cloudx service`)

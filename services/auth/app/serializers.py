@@ -4,7 +4,7 @@ from .models import AccessKey, Group, Project, User
 def _project_to_dict(p: Project) -> dict:
     return {
         "id": p.id, "name": p.name, "description": p.description,
-        "enabled": p.enabled, "created_at": p.created_at.isoformat(),
+        "enabled": p.enabled, "domain_id": p.domain_id, "created_at": p.created_at.isoformat(),
     }
 
 
@@ -12,7 +12,7 @@ def _user_to_dict(u: User) -> dict:
     return {
         "id": u.id, "username": u.username, "email": u.email,
         "project_id": u.project_id, "role": u.role,
-        "enabled": u.enabled, "created_at": u.created_at.isoformat(),
+        "domain_id": u.domain_id, "is_domain_admin": u.is_domain_admin, "enabled": u.enabled, "created_at": u.created_at.isoformat(),
     }
 
 

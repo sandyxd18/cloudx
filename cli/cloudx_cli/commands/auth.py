@@ -187,10 +187,11 @@ def auth_project():
 @auth_project.command("create")
 @click.argument("name")
 @click.option("--description", "-d", default="")
+@click.option("--domain", default=None, help="Domain id (system admin only; a domain admin always uses its own)")
 @click.pass_context
-def project_create(ctx, name, description):
+def project_create(ctx, name, description, domain):
     data = _api("post", f"{DEFAULT_URLS['auth']}/projects",
-                ctx.obj["profile"], json={"name": name, "description": description})
+                ctx.obj["profile"], json={"name": name, "description": description, "domain_id": domain})
     _output(data, ctx.obj["fmt"])
 
 
@@ -198,7 +199,7 @@ def project_create(ctx, name, description):
 @click.pass_context
 def project_list(ctx):
     data = _api("get", f"{DEFAULT_URLS['auth']}/projects", ctx.obj["profile"])
-    _output(data["items"], ctx.obj["fmt"], ["id", "name", "description", "enabled"])
+    _output(data["items"], ctx.obj["fmt"], ["id", "name", "domain_id", "description", "enabled"])
 
 
 @auth_project.command("show")
@@ -229,11 +230,12 @@ def auth_user():
 @click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True)
 @click.option("--project", required=True)
 @click.option("--role", type=click.Choice(["admin", "member", "reader"]), default="member")
+@click.option("--domain-admin", is_flag=True, help="Make the user an admin of its domain (system admin only)")
 @click.pass_context
-def user_create(ctx, username, email, password, project, role):
+def user_create(ctx, username, email, password, project, role, domain_admin):
     data = _api("post", f"{DEFAULT_URLS['auth']}/users", ctx.obj["profile"],
                 json={"username": username, "email": email, "password": password,
-                      "project_id": project, "role": role})
+                      "project_id": project, "role": role, "is_domain_admin": domain_admin})
     _output(data, ctx.obj["fmt"])
 
 
@@ -241,7 +243,7 @@ def user_create(ctx, username, email, password, project, role):
 @click.pass_context
 def user_list(ctx):
     data = _api("get", f"{DEFAULT_URLS['auth']}/users", ctx.obj["profile"])
-    _output(data["items"], ctx.obj["fmt"], ["id", "username", "email", "role", "enabled"])
+    _output(data["items"], ctx.obj["fmt"], ["id", "username", "email", "role", "domain_id", "is_domain_admin", "enabled"])
 
 
 @auth_user.command("show")

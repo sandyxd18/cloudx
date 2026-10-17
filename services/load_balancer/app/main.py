@@ -16,6 +16,7 @@ automatically from active instances in that group.
 """
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -27,8 +28,8 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import ipaddress
 
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import DateTime, ForeignKey, Integer, String, create_engine, text
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -162,6 +163,10 @@ class L7Policy(Base):
     action:           Mapped[str] = mapped_column(String)  # REDIRECT_TO_POOL | REJECT
     position:         Mapped[int] = mapped_column(Integer, default=1)
     redirect_pool_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    redirect_url:     Mapped[str | None] = mapped_column(String, nullable=True)
+    redirect_prefix:  Mapped[str | None] = mapped_column(String, nullable=True)
+    redirect_http_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    admin_state_up:   Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
     created_at:       Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -170,9 +175,12 @@ class L7Rule(Base):
 
     id:           Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     policy_id:    Mapped[str] = mapped_column(String, ForeignKey("lb_l7policies.id"))
-    type:         Mapped[str] = mapped_column(String)          # PATH | HOST_NAME
-    compare_type: Mapped[str] = mapped_column(String)          # STARTS_WITH | ENDS_WITH | EQUAL_TO
+    type:         Mapped[str] = mapped_column(String)          # PATH | HOST_NAME | FILE_TYPE | HEADER | COOKIE
+    compare_type: Mapped[str] = mapped_column(String)          # STARTS_WITH | ENDS_WITH | EQUAL_TO | CONTAINS | REGEX
     value:        Mapped[str] = mapped_column(String)
+    key:          Mapped[str | None] = mapped_column(String, nullable=True)   # header / cookie name
+    invert:       Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    admin_state_up: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
     created_at:   Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -244,18 +252,66 @@ class PoolUpdate(BaseModel):
     lb_algorithm: str = Field(pattern="^(ROUND_ROBIN|LEAST_CONNECTIONS|SOURCE_IP)$")
 
 
+_URL = r"^https?://[A-Za-z0-9._~:/?&=+@,;*()-]{1,500}$"  # no %, $, { or quotes: haproxy expands them in redirect targets
+
 class L7PolicyIn(BaseModel):
     name: str = NAME
-    action: str = Field(default="REDIRECT_TO_POOL", pattern="^(REDIRECT_TO_POOL|REJECT)$")
+    action: str = Field(default="REDIRECT_TO_POOL", pattern="^(REDIRECT_TO_POOL|REJECT|REDIRECT_TO_URL|REDIRECT_PREFIX)$")
     position: int = Field(default=1, ge=1, le=1000)
     redirect_pool_id: str | None = None
+    redirect_url: str | None = Field(default=None, pattern=_URL)
+    redirect_prefix: str | None = Field(default=None, pattern=_URL)
+    redirect_http_code: int | None = Field(default=None, ge=301, le=308)
+    admin_state_up: bool = True
 
+    @model_validator(mode="after")
+    def _combo(self):
+        need = {"REDIRECT_TO_POOL": "redirect_pool_id", "REDIRECT_TO_URL": "redirect_url",
+                "REDIRECT_PREFIX": "redirect_prefix"}.get(self.action)
+        for f in ("redirect_pool_id", "redirect_url", "redirect_prefix"):
+            if (f == need) != (getattr(self, f) is not None):
+                raise ValueError(f"{self.action} takes {need or 'no redirect target'} and nothing else")
+        if self.redirect_http_code is not None and need not in ("redirect_url", "redirect_prefix"):
+            raise ValueError("redirect_http_code only applies to REDIRECT_TO_URL / REDIRECT_PREFIX")
+        if self.redirect_http_code not in (None, 301, 302, 303, 307, 308):
+            raise ValueError("redirect_http_code must be 301, 302, 303, 307 or 308")
+        return self
+
+class L7PolicyUpdate(BaseModel):  # loose on purpose: the merged result is validated by L7PolicyIn
+    name: str | None = None
+    action: str | None = None
+    position: int | None = None
+    redirect_pool_id: str | None = None
+    redirect_url: str | None = None
+    redirect_prefix: str | None = None
+    redirect_http_code: int | None = None
+    admin_state_up: bool | None = None
 
 class L7RuleIn(BaseModel):
-    type: str = Field(pattern="^(PATH|HOST_NAME)$")
-    compare_type: str = Field(default="STARTS_WITH", pattern="^(STARTS_WITH|ENDS_WITH|EQUAL_TO)$")
-    value: str = Field(pattern=r"^[A-Za-z0-9._~/%?&=+*:-]{1,200}$")
+    type: str = Field(pattern="^(PATH|HOST_NAME|FILE_TYPE|HEADER|COOKIE)$")
+    compare_type: str = Field(default="STARTS_WITH", pattern="^(STARTS_WITH|ENDS_WITH|EQUAL_TO|CONTAINS|REGEX)$")
+    value: str = Field(pattern=r"^[A-Za-z0-9._~/%?&=+*:^()|\[\]-]{1,200}$")
+    key: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    invert: bool = False
+    admin_state_up: bool = True
 
+    @model_validator(mode="after")
+    def _combo(self):
+        if (self.type in ("HEADER", "COOKIE")) != (self.key is not None):
+            raise ValueError("key is required for HEADER / COOKIE rules and not allowed otherwise")
+        if self.type == "FILE_TYPE" and self.compare_type not in ("EQUAL_TO", "REGEX"):
+            raise ValueError("FILE_TYPE takes EQUAL_TO or REGEX")
+        if self.compare_type != "REGEX" and re.search(r"[\^()|\[\]]", self.value):
+            raise ValueError("regex characters need compare_type REGEX")
+        return self
+
+class L7RuleUpdate(BaseModel):
+    type: str | None = None
+    compare_type: str | None = None
+    value: str | None = None
+    key: str | None = None
+    invert: bool | None = None
+    admin_state_up: bool | None = None
 
 class HealthMonitorIn(BaseModel):
     type: str = Field(..., pattern="^(HTTP|TCP|PING)$")
@@ -571,11 +627,12 @@ def lb_state(db: Session, lb: LoadBalancer, with_pem: bool = False) -> list[dict
     for ls in db.query(Listener).filter_by(load_balancer_id=lb.id).order_by(Listener.created_at):
         d = {**_listener_to_dict(ls, db, with_pem), "pools": [], "policies": []}
         wanted = {p for p in [ls.default_pool_id] if p}
-        for pol in db.query(L7Policy).filter_by(listener_id=ls.id):
-            rules = [{"type": r.type, "compare_type": r.compare_type, "value": r.value}
-                     for r in db.query(L7Rule).filter_by(policy_id=pol.id)]
+        for pol in db.query(L7Policy).filter_by(listener_id=ls.id, admin_state_up=True):
+            rules = [{"type": r.type, "compare_type": r.compare_type, "value": r.value, "key": r.key, "invert": r.invert}
+                     for r in db.query(L7Rule).filter_by(policy_id=pol.id, admin_state_up=True)]
             d["policies"].append({"action": pol.action, "redirect_pool_id": pol.redirect_pool_id,
-                                  "position": pol.position, "rules": rules})
+                                  "redirect_url": pol.redirect_url, "redirect_prefix": pol.redirect_prefix,
+                                  "redirect_http_code": pol.redirect_http_code, "position": pol.position, "rules": rules})
             if pol.redirect_pool_id:
                 wanted.add(pol.redirect_pool_id)
         for pid in wanted:
@@ -1032,23 +1089,42 @@ def delete_listener(ls_ref: str, current: CurrentUser, db: DB):
     _reapply(db, lb)
 
 
+_POL_FIELDS = ("name", "action", "position", "redirect_pool_id", "redirect_url", "redirect_prefix",
+               "redirect_http_code", "admin_state_up")
+_RULE_FIELDS = ("type", "compare_type", "value", "key", "invert", "admin_state_up")
+
+def _valid(model, data: dict):
+    try:
+        return model(**data)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors(include_url=False, include_context=False, include_input=False))
+
+def _rule_to_dict(r) -> dict:
+    return {"id": r.id, "policy_id": r.policy_id, **{k: getattr(r, k) for k in _RULE_FIELDS}}
+
+def _policy_to_dict(p, db) -> dict:
+    rules = [_rule_to_dict(r) for r in db.query(L7Rule).filter_by(policy_id=p.id)]
+    return {"id": p.id, "listener_id": p.listener_id, **{k: getattr(p, k) for k in _POL_FIELDS}, "rules": rules}
+
+def _fill_policy(db, lb, pol, new: L7PolicyIn) -> None:
+    if new.action == "REDIRECT_TO_POOL" and not db.query(Pool).filter_by(id=new.redirect_pool_id, load_balancer_id=lb.id).first():
+        raise HTTPException(status_code=400, detail="redirect_pool_id must be a pool of this load balancer")
+    for k in _POL_FIELDS:
+        setattr(pol, k, getattr(new, k))
+    if new.action in ("REDIRECT_TO_URL", "REDIRECT_PREFIX"):
+        pol.redirect_http_code = new.redirect_http_code or 302
+
 @app.post("/listeners/{ls_ref}/l7policies", status_code=201)
 def create_l7policy(ls_ref: str, payload: L7PolicyIn, current: CurrentUser, db: DB):
     ls, lb = _own_listener(db, current, ls_ref)
     if lb.lb_type != "ALB" or ls.protocol not in ("HTTP", "HTTPS"):
         raise HTTPException(status_code=400, detail="L7 policies need an ALB with an HTTP/HTTPS listener")
-    if payload.action == "REDIRECT_TO_POOL":
-        pool = payload.redirect_pool_id and db.query(Pool).filter_by(id=payload.redirect_pool_id, load_balancer_id=lb.id).first()
-        if not pool:
-            raise HTTPException(status_code=400, detail="redirect_pool_id must be a pool of this load balancer")
-    pol = L7Policy(listener_id=ls.id, name=payload.name, action=payload.action, position=payload.position,
-                   redirect_pool_id=payload.redirect_pool_id if payload.action == "REDIRECT_TO_POOL" else None)
+    pol = L7Policy(listener_id=ls.id)
+    _fill_policy(db, lb, pol, payload)
     db.add(pol)
     db.commit()
     _reapply(db, lb)
-    return {"id": pol.id, "listener_id": ls.id, "name": pol.name, "action": pol.action, "position": pol.position,
-            "redirect_pool_id": pol.redirect_pool_id}
-
+    return _policy_to_dict(pol, db)
 
 def _policy(db, current, pol_ref: str):
     pol = db.query(L7Policy).filter_by(id=pol_ref).first()
@@ -1057,18 +1133,27 @@ def _policy(db, current, pol_ref: str):
     ls, lb = _own_listener(db, current, pol.listener_id)
     return pol, lb
 
-
 @app.get("/listeners/{ls_ref}/l7policies")
 def list_l7policies(ls_ref: str, current: CurrentUser, db: DB):
     ls, _ = _own_listener(db, current, ls_ref)
-    out = []
-    for p in db.query(L7Policy).filter_by(listener_id=ls.id).order_by(L7Policy.position):
-        rules = [{"id": r.id, "type": r.type, "compare_type": r.compare_type, "value": r.value}
-                 for r in db.query(L7Rule).filter_by(policy_id=p.id)]
-        out.append({"id": p.id, "name": p.name, "action": p.action, "position": p.position,
-                    "redirect_pool_id": p.redirect_pool_id, "rules": rules})
-    return {"l7policies": out}
+    return {"l7policies": [_policy_to_dict(p, db) for p in db.query(L7Policy).filter_by(listener_id=ls.id).order_by(L7Policy.position)]}
 
+@app.get("/l7policies/{pol_ref}")
+def show_l7policy(pol_ref: str, current: CurrentUser, db: DB):
+    return _policy_to_dict(_policy(db, current, pol_ref)[0], db)
+
+@app.put("/l7policies/{pol_ref}")
+def update_l7policy(pol_ref: str, payload: L7PolicyUpdate, current: CurrentUser, db: DB):
+    pol, lb = _policy(db, current, pol_ref)
+    cur = {k: getattr(pol, k) for k in _POL_FIELDS}
+    changes = payload.model_dump(exclude_unset=True)
+    if changes.get("action", pol.action) != pol.action:  # a new action drops the old target
+        cur.update(redirect_pool_id=None, redirect_url=None, redirect_prefix=None, redirect_http_code=None)
+    cur.update({k: v for k, v in changes.items() if v is not None or k.startswith("redirect_")})
+    _fill_policy(db, lb, pol, _valid(L7PolicyIn, cur))
+    db.commit()
+    _reapply(db, lb)
+    return _policy_to_dict(pol, db)
 
 @app.delete("/l7policies/{pol_ref}", status_code=204)
 def delete_l7policy(pol_ref: str, current: CurrentUser, db: DB):
@@ -1078,22 +1163,47 @@ def delete_l7policy(pol_ref: str, current: CurrentUser, db: DB):
     db.commit()
     _reapply(db, lb)
 
+def _rule(db, current, pol_ref: str, rule_id: str):
+    pol, lb = _policy(db, current, pol_ref)
+    rule = db.query(L7Rule).filter_by(id=rule_id, policy_id=pol.id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="l7 rule not found")
+    return rule, lb
 
 @app.post("/l7policies/{pol_ref}/rules", status_code=201)
 def create_l7rule(pol_ref: str, payload: L7RuleIn, current: CurrentUser, db: DB):
     pol, lb = _policy(db, current, pol_ref)
-    rule = L7Rule(policy_id=pol.id, type=payload.type, compare_type=payload.compare_type, value=payload.value)
+    rule = L7Rule(policy_id=pol.id, **payload.model_dump())
     db.add(rule)
     db.commit()
     _reapply(db, lb)
-    return {"id": rule.id, "policy_id": pol.id, "type": rule.type, "compare_type": rule.compare_type, "value": rule.value}
+    return _rule_to_dict(rule)
 
+@app.get("/l7policies/{pol_ref}/rules")
+def list_l7rules(pol_ref: str, current: CurrentUser, db: DB):
+    pol, _ = _policy(db, current, pol_ref)
+    return {"rules": [_rule_to_dict(r) for r in db.query(L7Rule).filter_by(policy_id=pol.id)]}
+
+@app.get("/l7policies/{pol_ref}/rules/{rule_id}")
+def show_l7rule(pol_ref: str, rule_id: str, current: CurrentUser, db: DB):
+    return _rule_to_dict(_rule(db, current, pol_ref, rule_id)[0])
+
+@app.put("/l7policies/{pol_ref}/rules/{rule_id}")
+def update_l7rule(pol_ref: str, rule_id: str, payload: L7RuleUpdate, current: CurrentUser, db: DB):
+    rule, lb = _rule(db, current, pol_ref, rule_id)
+    cur = {k: getattr(rule, k) for k in _RULE_FIELDS}
+    cur.update({k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None or k == "key"})
+    new = _valid(L7RuleIn, cur)
+    for k in _RULE_FIELDS:
+        setattr(rule, k, getattr(new, k))
+    db.commit()
+    _reapply(db, lb)
+    return _rule_to_dict(rule)
 
 @app.delete("/l7policies/{pol_ref}/rules/{rule_id}", status_code=204)
 def delete_l7rule(pol_ref: str, rule_id: str, current: CurrentUser, db: DB):
-    pol, lb = _policy(db, current, pol_ref)
-    if not db.query(L7Rule).filter_by(id=rule_id, policy_id=pol.id).delete():
-        raise HTTPException(status_code=404, detail="l7 rule not found")
+    rule, lb = _rule(db, current, pol_ref, rule_id)
+    db.delete(rule)
     db.commit()
     _reapply(db, lb)
 

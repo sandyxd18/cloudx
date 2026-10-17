@@ -46,6 +46,19 @@ def _require_user_or_internal(request: Request, user: dict = Depends(_require_to
     return user
 
 
+def _require_domain_admin(payload: dict = Depends(_require_token)) -> dict:
+    if payload.get("role") != "admin" and not payload.get("domain_admin"):
+        raise HTTPException(status_code=403, detail="admin or domain admin required")
+    return payload
+
+def scope_domain(current: dict) -> str | None:
+    """None = system admin (every domain); otherwise the one domain this caller may touch."""
+    return None if current.get("role") == "admin" else current.get("domain_id", "default")
+
+def in_scope(current: dict, domain_id: str) -> bool:
+    return scope_domain(current) in (None, domain_id)
+
 CurrentUser = Annotated[dict, Depends(_require_token)]
 AdminUser   = Annotated[dict, Depends(_require_admin)]
+DomainAdminUser = Annotated[dict, Depends(_require_domain_admin)]
 UserOrInternal = Annotated[dict, Depends(_require_user_or_internal)]

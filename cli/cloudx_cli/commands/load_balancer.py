@@ -220,14 +220,20 @@ def lb_l7policy(ctx):
 @lb_l7policy.command("create")
 @click.argument("listener_ref")
 @click.option("--name", required=True, help="L7 policy name")
-@click.option("--action", type=click.Choice(["REDIRECT_TO_POOL", "REJECT"]), default="REDIRECT_TO_POOL", help="Policy action")
+@click.option("--action", type=click.Choice(["REDIRECT_TO_POOL", "REJECT", "REDIRECT_TO_URL", "REDIRECT_PREFIX"]), default="REDIRECT_TO_POOL", help="Policy action")
 @click.option("--redirect-pool", default=None, help="Target pool ID for REDIRECT_TO_POOL action")
+@click.option("--redirect-url", default=None, help="Target URL for REDIRECT_TO_URL")
+@click.option("--redirect-prefix", default=None, help="Target prefix for REDIRECT_PREFIX")
+@click.option("--redirect-http-code", type=int, default=None, help="301, 302 (default), 303, 307 or 308")
 @click.option("--position", type=int, default=1, help="Policy evaluation position")
+@click.option("--disable", is_flag=True, help="Create with admin_state_up=false")
 @click.pass_context
-def l7policy_create(ctx, listener_ref, name, action, redirect_pool, position):
-    payload = {"name": name, "action": action, "position": position}
-    if redirect_pool:
-        payload["redirect_pool_id"] = redirect_pool
+def l7policy_create(ctx, listener_ref, name, action, redirect_pool, redirect_url, redirect_prefix, redirect_http_code, position, disable):
+    payload = {"name": name, "action": action, "position": position, "admin_state_up": not disable}
+    for k, v in (("redirect_pool_id", redirect_pool), ("redirect_url", redirect_url),
+                 ("redirect_prefix", redirect_prefix), ("redirect_http_code", redirect_http_code)):
+        if v is not None:
+            payload[k] = v
     data = _api("post", f"{DEFAULT_URLS['load-balancer']}/listeners/{listener_ref}/l7policies", ctx.obj["profile"], json=payload)
     _output(data, ctx.obj["fmt"])
 
@@ -237,7 +243,32 @@ def l7policy_create(ctx, listener_ref, name, action, redirect_pool, position):
 @click.pass_context
 def l7policy_list(ctx, listener_ref):
     data = _api("get", f"{DEFAULT_URLS['load-balancer']}/listeners/{listener_ref}/l7policies", ctx.obj["profile"])
-    _output(data.get("l7policies", data.get("items", data)), ctx.obj["fmt"], ["id", "name", "action", "position", "redirect_pool_id"])
+    _output(data.get("l7policies", data.get("items", data)), ctx.obj["fmt"], ["id", "name", "action", "position", "redirect_pool_id", "redirect_url", "redirect_prefix", "admin_state_up"])
+
+@lb_l7policy.command("show")
+@click.argument("policy_ref")
+@click.pass_context
+def l7policy_show(ctx, policy_ref):
+    _output(_api("get", f"{DEFAULT_URLS['load-balancer']}/l7policies/{policy_ref}", ctx.obj["profile"]), ctx.obj["fmt"])
+
+@lb_l7policy.command("update")
+@click.argument("policy_ref")
+@click.option("--name", default=None)
+@click.option("--action", type=click.Choice(["REDIRECT_TO_POOL", "REJECT", "REDIRECT_TO_URL", "REDIRECT_PREFIX"]), default=None)
+@click.option("--redirect-pool", default=None)
+@click.option("--redirect-url", default=None)
+@click.option("--redirect-prefix", default=None)
+@click.option("--redirect-http-code", type=int, default=None)
+@click.option("--position", type=int, default=None)
+@click.option("--enable/--disable", "enabled", default=None)
+@click.pass_context
+def l7policy_update(ctx, policy_ref, name, action, redirect_pool, redirect_url, redirect_prefix, redirect_http_code, position, enabled):
+    given = {"name": name, "action": action, "redirect_pool_id": redirect_pool, "redirect_url": redirect_url,
+             "redirect_prefix": redirect_prefix, "redirect_http_code": redirect_http_code, "position": position,
+             "admin_state_up": enabled}
+    data = _api("put", f"{DEFAULT_URLS['load-balancer']}/l7policies/{policy_ref}", ctx.obj["profile"],
+                json={k: v for k, v in given.items() if v is not None})
+    _output(data, ctx.obj["fmt"])
 
 
 @lb_l7policy.command("delete")
@@ -257,12 +288,17 @@ def lb_l7rule(ctx):
 
 @lb_l7rule.command("create")
 @click.argument("policy_ref")
-@click.option("--type", "type_", type=click.Choice(["PATH", "HOST_NAME"]), required=True, help="Match type")
-@click.option("--compare-type", type=click.Choice(["STARTS_WITH", "ENDS_WITH", "EQUAL_TO"]), default="STARTS_WITH", help="Comparison type")
+@click.option("--type", "type_", type=click.Choice(["PATH", "HOST_NAME", "FILE_TYPE", "HEADER", "COOKIE"]), required=True, help="Match type")
+@click.option("--compare-type", type=click.Choice(["STARTS_WITH", "ENDS_WITH", "EQUAL_TO", "CONTAINS", "REGEX"]), default="STARTS_WITH", help="Comparison type")
 @click.option("--value", required=True, help="Match value")
+@click.option("--key", default=None, help="Header / cookie name (HEADER and COOKIE only)")
+@click.option("--invert", is_flag=True, help="Match when the condition is false")
+@click.option("--disable", is_flag=True, help="Create with admin_state_up=false")
 @click.pass_context
-def l7rule_create(ctx, policy_ref, type_, compare_type, value):
-    payload = {"type": type_, "compare_type": compare_type, "value": value}
+def l7rule_create(ctx, policy_ref, type_, compare_type, value, key, invert, disable):
+    payload = {"type": type_, "compare_type": compare_type, "value": value, "invert": invert, "admin_state_up": not disable}
+    if key:
+        payload["key"] = key
     data = _api("post", f"{DEFAULT_URLS['load-balancer']}/l7policies/{policy_ref}/rules", ctx.obj["profile"], json=payload)
     _output(data, ctx.obj["fmt"])
 
@@ -272,7 +308,30 @@ def l7rule_create(ctx, policy_ref, type_, compare_type, value):
 @click.pass_context
 def l7rule_list(ctx, policy_ref):
     data = _api("get", f"{DEFAULT_URLS['load-balancer']}/l7policies/{policy_ref}/rules", ctx.obj["profile"])
-    _output(data.get("rules", data.get("items", data)), ctx.obj["fmt"], ["id", "type", "compare_type", "value"])
+    _output(data.get("rules", data.get("items", data)), ctx.obj["fmt"], ["id", "type", "compare_type", "key", "value", "invert", "admin_state_up"])
+
+@lb_l7rule.command("show")
+@click.argument("policy_ref")
+@click.argument("rule_ref")
+@click.pass_context
+def l7rule_show(ctx, policy_ref, rule_ref):
+    _output(_api("get", f"{DEFAULT_URLS['load-balancer']}/l7policies/{policy_ref}/rules/{rule_ref}", ctx.obj["profile"]), ctx.obj["fmt"])
+
+@lb_l7rule.command("update")
+@click.argument("policy_ref")
+@click.argument("rule_ref")
+@click.option("--type", "type_", type=click.Choice(["PATH", "HOST_NAME", "FILE_TYPE", "HEADER", "COOKIE"]), default=None)
+@click.option("--compare-type", type=click.Choice(["STARTS_WITH", "ENDS_WITH", "EQUAL_TO", "CONTAINS", "REGEX"]), default=None)
+@click.option("--value", default=None)
+@click.option("--key", default=None)
+@click.option("--invert/--no-invert", default=None)
+@click.option("--enable/--disable", "enabled", default=None)
+@click.pass_context
+def l7rule_update(ctx, policy_ref, rule_ref, type_, compare_type, value, key, invert, enabled):
+    given = {"type": type_, "compare_type": compare_type, "value": value, "key": key, "invert": invert, "admin_state_up": enabled}
+    data = _api("put", f"{DEFAULT_URLS['load-balancer']}/l7policies/{policy_ref}/rules/{rule_ref}", ctx.obj["profile"],
+                json={k: v for k, v in given.items() if v is not None})
+    _output(data, ctx.obj["fmt"])
 
 
 @lb_l7rule.command("delete")
