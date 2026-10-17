@@ -112,7 +112,7 @@ cloudx volume detach v1                               # the session and the targ
 ## Limits
 
 - A volume is only as available as its node: if the storage node is down, VMs using its volumes (root volumes included)
-  lose their disk. There is no replication, multipath or CHAP (only the initiator ACL).
+  lose their disk. There is no multipath or CHAP (only the initiator ACL). Cross-host replication exists (`cloudx volume enable-replication`, `sync-replication`, `failover`) but is a manual full copy, not continuous mirroring; limits are in docs/releases/v0.7.19.md.
 - A server's node is chosen when it is created (fewest servers; capacity is not compared per node). Live migration of a
   VM with a remote iSCSI volume attached is not supported.
 - Snapshots, clones and consistency groups stay on one node (a group spanning two nodes is refused with 409);
