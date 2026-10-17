@@ -147,7 +147,10 @@ def test_replayed_nonce_rejected(tmp_path):
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect(("127.0.0.1", port))
             s.sendall(header.encode("utf-8"))
-            s.sendall(b"\x00" * size)
+            try:
+                s.sendall(b"\x00" * size)
+            except (BrokenPipeError, ConnectionResetError):  # the server rejects the replayed nonce and closes before the payload is sent
+                pass
             resp = s.makefile("rb").readline(4096).decode("utf-8")
             s.close()
             return resp
