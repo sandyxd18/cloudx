@@ -35,8 +35,16 @@ def _check_domain(db, user: User, proj: Project | None = None) -> None:
 @router.post("/auth/tokens", status_code=201)
 def login(payload: LoginIn, db: DB):
     """Authenticate with username + password, return JWT token."""
-    user = db.scalar(select(User).where(User.username == payload.username))
-    if not user or not _verify_password(payload.password, user.password_hash):
+    q = select(User).where(User.username == payload.username)
+    if payload.domain:
+        dom = db.get(Domain, payload.domain) or db.scalar(select(Domain).where(Domain.name == payload.domain))
+        q = q.where(User.domain_id == (dom.id if dom else payload.domain))
+    # usernames are unique per domain: the password decides between same-named users
+    ok = [u for u in db.scalars(q.limit(5)).all() if _verify_password(payload.password, u.password_hash)]
+    if len(ok) > 1:
+        raise HTTPException(status_code=409, detail="username exists in several domains; pass domain")
+    user = ok[0] if ok else None
+    if not user:
         raise HTTPException(status_code=401, detail="invalid credentials")
     if not user.enabled:
         raise HTTPException(status_code=403, detail="user disabled")
@@ -45,8 +53,8 @@ def login(payload: LoginIn, db: DB):
     target_project_id = user.project_id
     if payload.project:
         req_proj = db.get(Project, payload.project) or db.scalar(
-            select(Project).where(Project.name == payload.project)
-        )
+            select(Project).where(Project.name == payload.project).order_by(Project.domain_id != user.domain_id).limit(1)
+        )  # own domain first, so a cross-domain name still gives the 403 from _check_domain
         if not req_proj or not req_proj.enabled:
             raise HTTPException(status_code=404, detail="project not found or disabled")
         _check_domain(db, user, req_proj)
@@ -126,7 +134,7 @@ def switch_project(payload: SwitchProjectIn, current: CurrentUser, db: DB):
     if not user:
         raise HTTPException(status_code=404, detail="user not found")
     proj = db.get(Project, payload.project_id) or db.scalar(
-        select(Project).where(Project.name == payload.project_id)
+        select(Project).where(Project.name == payload.project_id).order_by(Project.domain_id != user.domain_id).limit(1)
     )
     if not proj or not proj.enabled:
         raise HTTPException(status_code=404, detail="project not found or disabled")

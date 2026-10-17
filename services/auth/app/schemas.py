@@ -27,6 +27,10 @@ class QuotaUpdate(BaseModel):
     max_security_groups: int | None = Field(default=None, ge=0)
 
 
+class DomainQuotaUpdate(QuotaUpdate):
+    pass
+
+
 ROLES = ("admin", "member", "reader")
 
 
@@ -66,6 +70,7 @@ class LoginIn(BaseModel):
     username: str
     password: str
     project: str | None = None
+    domain: str | None = None  # id or name; only needed when the username exists in several domains
 
 
 class AccessKeyIn(BaseModel):

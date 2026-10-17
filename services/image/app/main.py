@@ -1,4 +1,5 @@
 import os
+from shared.domain import owns, visible_projects
 from shared.db import get_db_url
 from shared.config import load_service_config
 load_service_config("image-api")
@@ -520,7 +521,7 @@ def list_images(
         # Non-admin sees: public images + own private images
         q = q.where(
             (Image.visibility == "public") |
-            (Image.project_id == current["project_id"])
+            (Image.project_id.in_(visible_projects(current) or [current["project_id"]]))
         )
     if status:
         q = q.where(Image.status == status)
@@ -611,7 +612,7 @@ def sign_image(ref: str, current: CurrentUser, db: DB):
     """
     image = require_image(db, ref)
     # Ownership check
-    if current.get("role") != "admin" and image.project_id != current.get("project_id"):
+    if not owns(current, image.project_id):
         raise HTTPException(status_code=403, detail="not authorized to sign this image")
     if not image.checksum:
         raise HTTPException(status_code=400, detail="image has no checksum; upload the image file first")
@@ -926,7 +927,7 @@ def get_task(task_id: str, current: CurrentUser, db: DB):
     task = db.get(ImageTask, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="task not found")
-    if current.get("role") != "admin" and task.owner != current["project_id"]:
+    if not owns(current, task.owner):
         raise HTTPException(status_code=403, detail="access denied")
     return _task_to_dict(task)
 
@@ -934,8 +935,8 @@ def get_task(task_id: str, current: CurrentUser, db: DB):
 @app.get("/v2/tasks")
 def list_tasks(current: CurrentUser, db: DB):
     q = select(ImageTask)
-    if current.get("role") != "admin":
-        q = q.where(ImageTask.owner == current["project_id"])
+    if (ids := visible_projects(current)) is not None:
+        q = q.where(ImageTask.owner.in_(ids))
     tasks = db.scalars(q.order_by(ImageTask.created_at.desc())).all()
     return {"tasks": [_task_to_dict(t) for t in tasks]}
 

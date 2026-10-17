@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import shutil
+from shared.domain import lock_domain
 from datetime import datetime
 
 import requests
@@ -250,7 +251,7 @@ def _check_project_quota(db: Session, project_id: str, requested_vcpus: int, req
     ponytail: if auth-api is unreachable the check is skipped (logged), not failed.
     """
     try:
-        resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=internal_headers(), timeout=5)
+        resp = requests.get(f"{AUTH_API_URL}/internal/projects/{project_id}/quota", headers=internal_headers(), timeout=5)
         resp.raise_for_status()
         quota = resp.json()
     except (requests.RequestException, ValueError) as exc:
@@ -266,6 +267,14 @@ def _check_project_quota(db: Session, project_id: str, requested_vcpus: int, req
     for name, wanted, limit in checks:
         if wanted > limit:
             raise HTTPException(status_code=413, detail=f"Quota exceeded: {name} ({limit}) reached")
+    dom = quota.get("domain") or {}
+    if dom.get("caps"):
+        lock_domain(db, dom.get("domain_id"))  # aggregate caps: the same sums over every project of the domain
+        dlive = db.scalars(select(Server).where(Server.project_id.in_(dom["project_ids"]), Server.status.in_(LIVE_STATES))).all()
+        for name, wanted in (("max_instances", len(dlive) + 1), ("max_vcpus", sum(s.vcpus or 0 for s in dlive) + requested_vcpus),
+                             ("max_ram_mb", sum(s.ram_mb or 0 for s in dlive) + requested_ram_mb)):
+            if name in dom["caps"] and wanted > dom["caps"][name]:
+                raise HTTPException(status_code=413, detail=f"Domain quota exceeded: {name} ({dom['caps'][name]}) reached")
 
 
 def record_action(db: Session, server_id: str, action: str, current: dict, result: str | None = None, message: str | None = None, finish: bool = False) -> ServerAction:
@@ -301,7 +310,7 @@ def finish_action(db: Session, server_id: str, result: str = "success", message:
 def project_limits(db: Session, project_id: str) -> dict:
     """Nova-style absolute limits: quota from auth-api (None if unreachable) + usage from the servers table."""
     try:
-        resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=internal_headers(), timeout=5)
+        resp = requests.get(f"{AUTH_API_URL}/internal/projects/{project_id}/quota", headers=internal_headers(), timeout=5)
         resp.raise_for_status()
         quota = resp.json()
     except (requests.RequestException, ValueError):

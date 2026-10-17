@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
+from shared.domain import owns, visible_projects
 from shared.auth_middleware import CurrentUser
 
 from . import engine as eng
@@ -84,7 +85,7 @@ def _run(fn):  # tests replace this with an inline call
 
 def _stack(db, user, ref) -> Stack:
     s = db.scalar(select(Stack).where((Stack.id == ref) | (Stack.name == ref)).order_by(Stack.created_at.desc()))
-    if not s or (user.get("role") != "admin" and s.project_id != user.get("project_id")):
+    if not s or (not owns(user, s.project_id)):
         raise HTTPException(status_code=404, detail="Stack not found")
     return s
 
@@ -191,8 +192,8 @@ def preview_stack(user: CurrentUser, data: StackIn):
 @router.get("/stacks")
 def list_stacks(user: CurrentUser, db: DB, status: str | None = None):
     q = select(Stack).where(Stack.parent_id.is_(None)).order_by(Stack.created_at.desc())
-    if user.get("role") != "admin":
-        q = q.where(Stack.project_id == user.get("project_id"))
+    if (ids := visible_projects(user)) is not None:
+        q = q.where(Stack.project_id.in_(ids))
     if status:
         q = q.where(Stack.status == status)
     return {"stacks": [_out(s) for s in db.scalars(q)]}

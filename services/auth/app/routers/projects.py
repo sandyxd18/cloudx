@@ -7,7 +7,7 @@ from ..config import ADMIN_PROJECT
 from ..db import DB
 from ..deps import AdminUser, CurrentUser, DomainAdminUser, UserOrInternal, scope_domain
 from ..lookups import _get_project_by_ref, _scoped_project
-from ..models import Domain, Group, GroupMember, Project, ProjectQuota, User, utcnow
+from ..models import Domain, Group, GroupMember, Project, DomainQuota, ProjectQuota, User, utcnow
 from ..schemas import ProjectIn, ProjectUpdate, QuotaUpdate
 from ..serializers import _project_to_dict
 
@@ -17,8 +17,6 @@ router = APIRouter()
 # ── Projects ───────────────────────────────────────────────────────────────────
 @router.post("/projects", status_code=201)
 def create_project(payload: ProjectIn, current: DomainAdminUser, db: DB):
-    if db.scalar(select(Project).where(Project.name == payload.name)):
-        raise HTTPException(status_code=409, detail="project already exists")
     scope = scope_domain(current)
     if scope is None:
         domain_id = payload.domain_id or "default"
@@ -28,6 +26,8 @@ def create_project(payload: ProjectIn, current: DomainAdminUser, db: DB):
         raise HTTPException(status_code=403, detail="a domain admin can only create projects in its own domain")
     else:
         domain_id = scope
+    if db.scalar(select(Project).where(Project.name == payload.name, Project.domain_id == domain_id)):
+        raise HTTPException(status_code=409, detail="project already exists in this domain")
     p = Project(**{**payload.model_dump(), "domain_id": domain_id})
     db.add(p)
     db.commit()
@@ -70,7 +70,7 @@ def list_projects(
 
 @router.get("/projects/{ref}")
 def show_project(ref: str, current: CurrentUser, db: DB):
-    p = _get_project_by_ref(db, ref)
+    p = _get_project_by_ref(db, ref, scope_domain(current))
     if current.get("domain_admin") and current.get("role") != "admin":
         return _project_to_dict(_scoped_project(db, ref, current))
     if current.get("role") != "admin":
@@ -125,17 +125,25 @@ def _quota_dict(project_id: str, q) -> dict:
     return {"project_id": project_id, **{f: getattr(q, f) for f in QUOTA_FIELDS}}
 
 
+def domain_caps(db: Session, domain_id: str) -> dict:
+    """Aggregate caps of a domain plus the projects they are summed over (empty caps = unlimited)."""
+    dq = db.get(DomainQuota, domain_id)
+    return {"domain_id": domain_id,
+            "project_ids": list(db.scalars(select(Project.id).where(Project.domain_id == domain_id))),
+            "caps": {f: getattr(dq, f) for f in QUOTA_FIELDS if dq and getattr(dq, f) is not None}}
+
+
 @router.get("/internal/projects/{ref}/quota", dependencies=[InternalAuth])
 def internal_project_quota(ref: str, db: DB):
     p = _get_project_by_ref(db, ref)
-    return _quota_dict(p.id, _get_or_create_quota(db, p.id))
+    return {**_quota_dict(p.id, _get_or_create_quota(db, p.id)), "domain": domain_caps(db, p.domain_id)}
 
 
 @router.get("/projects/{ref}/quota")
 def get_project_quota(ref: str, _: UserOrInternal, db: DB):
     p = _get_project_by_ref(db, ref)
     q = _get_or_create_quota(db, p.id)
-    return _quota_dict(p.id, q)
+    return {**_quota_dict(p.id, q), "domain": domain_caps(db, p.domain_id)}
 
 
 @router.put("/projects/{ref}/quota")

@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from ..config import TOKEN_EXPIRE_H
 from ..db import DB
-from ..deps import CurrentUser
+from ..deps import CurrentUser, scope_domain
 from ..lookups import _get_user_by_ref
 from ..models import ApplicationCredential, User, utcnow
 from ..schemas import AppCredIn, AppCredTokenIn
@@ -37,7 +37,7 @@ def _appcred_to_dict(ac: "ApplicationCredential", secret: str | None = None) -> 
 @router.post("/v3/users/{user_ref}/application_credentials", status_code=201)
 def create_app_credential(user_ref: str, payload: AppCredIn, current: CurrentUser, db: DB):
     """Create an application credential for a user."""
-    u = _get_user_by_ref(db, user_ref)
+    u = _get_user_by_ref(db, user_ref, scope_domain(current))
     # Users can only create creds for themselves; admins can do it for anyone
     if current.get("role") != "admin" and u.id != current["sub"]:
         raise HTTPException(status_code=403, detail="forbidden")
@@ -72,7 +72,7 @@ def create_app_credential(user_ref: str, payload: AppCredIn, current: CurrentUse
 @router.get("/v3/users/{user_ref}/application_credentials")
 def list_app_credentials(user_ref: str, current: CurrentUser, db: DB):
     """List application credentials for a user."""
-    u = _get_user_by_ref(db, user_ref)
+    u = _get_user_by_ref(db, user_ref, scope_domain(current))
     if current.get("role") != "admin" and u.id != current["sub"]:
         raise HTTPException(status_code=403, detail="forbidden")
     creds = db.scalars(
@@ -84,7 +84,7 @@ def list_app_credentials(user_ref: str, current: CurrentUser, db: DB):
 @router.get("/v3/users/{user_ref}/application_credentials/{cred_ref}")
 def show_app_credential(user_ref: str, cred_ref: str, current: CurrentUser, db: DB):
     """Show a specific application credential."""
-    u = _get_user_by_ref(db, user_ref)
+    u = _get_user_by_ref(db, user_ref, scope_domain(current))
     if current.get("role") != "admin" and u.id != current["sub"]:
         raise HTTPException(status_code=403, detail="forbidden")
     ac = db.get(ApplicationCredential, cred_ref) or db.scalar(
@@ -101,7 +101,7 @@ def show_app_credential(user_ref: str, cred_ref: str, current: CurrentUser, db: 
 @router.delete("/v3/users/{user_ref}/application_credentials/{cred_ref}", status_code=204)
 def delete_app_credential(user_ref: str, cred_ref: str, current: CurrentUser, db: DB):
     """Delete an application credential."""
-    u = _get_user_by_ref(db, user_ref)
+    u = _get_user_by_ref(db, user_ref, scope_domain(current))
     if current.get("role") != "admin" and u.id != current["sub"]:
         raise HTTPException(status_code=403, detail="forbidden")
     ac = db.get(ApplicationCredential, cred_ref) or db.scalar(

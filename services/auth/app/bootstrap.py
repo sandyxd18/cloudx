@@ -32,7 +32,7 @@ def _bootstrap():
         # ── Migrate existing projects / users to default domain ───────────────
 
         # ── Create admin project ──────────────────────────────────────────────
-        proj = db.scalar(select(Project).where(Project.name == ADMIN_PROJECT))
+        proj = db.scalar(select(Project).where(Project.name == ADMIN_PROJECT, Project.domain_id == "default"))
         if not proj:
             proj = Project(name=ADMIN_PROJECT, description="Default admin project")
             db.add(proj)
@@ -40,7 +40,7 @@ def _bootstrap():
             db.refresh(proj)
 
         # ── Create admin user ─────────────────────────────────────────────────
-        user = db.scalar(select(User).where(User.username == ADMIN_USERNAME))
+        user = db.scalar(select(User).where(User.username == ADMIN_USERNAME, User.domain_id == "default"))
         if not user:
             user = User(
                 username=ADMIN_USERNAME,
@@ -58,7 +58,7 @@ def _bootstrap():
             print(f"[auth] bootstrap: admin user '{ADMIN_USERNAME}' password updated", flush=True)
 
         # ── Create service project and system service users ───────────────────
-        service_proj = db.scalar(select(Project).where(Project.name == "service"))
+        service_proj = db.scalar(select(Project).where(Project.name == "service", Project.domain_id == "default"))
         if not service_proj:
             service_proj = Project(name="service", description="CloudX System Service Accounts Project")
             db.add(service_proj)
@@ -74,7 +74,7 @@ def _bootstrap():
             ("service_object_store", "service_object_store@cloudx.local"),
         ]
         for svc_user, svc_email in service_accounts:
-            existing_svc_user = db.scalar(select(User).where(User.username == svc_user))
+            existing_svc_user = db.scalar(select(User).where(User.username == svc_user, User.domain_id == "default"))
             if not existing_svc_user:
                 db.add(User(
                     username=svc_user,

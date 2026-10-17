@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+from shared.domain import can_see, visible_projects
 from shared.db import get_db_url
 from shared.config import load_service_config
 load_service_config("billing-api")
@@ -301,6 +302,16 @@ class BillingSummary(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _ids(user: dict, project_id: str | None, domain_id: str | None) -> list[str] | None:
+    """Projects a listing may cover: None = all (system admin), else the caller's visible projects."""
+    ids = visible_projects(user, domain_id)
+    if ids is not None and project_id in ids:
+        return [project_id]
+    if ids is None and project_id:
+        return [project_id]
+    return ids
+
+
 def _scope(user: dict, project_id: str | None) -> str | None:
     """Admin may pick any project (or None = all); others are pinned to their own."""
     if user.get("role") == "admin":
@@ -428,6 +439,7 @@ def list_usage_records(
     user: CurrentUser,
     db: DB,
     project_id: str | None = None,
+    domain_id: str | None = None,
     resource_type: str | None = None,
     period_start: datetime | None = None,
     period_end: datetime | None = None,
@@ -435,9 +447,9 @@ def list_usage_records(
     offset: int = Query(0, ge=0),
 ):
     q = select(UsageRecord)
-    project_id = _scope(user, project_id)
-    if project_id:
-        q = q.where(UsageRecord.project_id == project_id)
+    ids = _ids(user, project_id, domain_id)
+    if ids is not None:
+        q = q.where(UsageRecord.project_id.in_(ids))
     if resource_type:
         q = q.where(UsageRecord.resource_type == resource_type)
     if period_start:
@@ -460,8 +472,14 @@ def create_invoice(
     period_start: datetime | None = None,
     period_end: datetime | None = None,
     notes: str | None = None,
+    domain_id: str | None = None,
 ):
-    pid = _scope(user, project_id) or user.get("project_id") or "admin"
+    pids = None
+    if domain_id:
+        if user.get("role") != "admin" and not user.get("domain_admin"):
+            raise HTTPException(status_code=403, detail="domain invoices need admin or domain admin")
+        pids = visible_projects(user, domain_id)
+    pid = f"domain:{domain_id}" if domain_id else _scope(user, project_id) or user.get("project_id") or "admin"
     now = datetime.now(timezone.utc)
     if year and month:
         p_start, p_end = _month_range(year, month)
@@ -477,7 +495,7 @@ def create_invoice(
     # Aggregate usage for project in period
     usages = db.execute(
         select(UsageRecord).where(
-            UsageRecord.project_id == pid,
+            UsageRecord.project_id.in_(pids) if pids is not None else UsageRecord.project_id == pid,
             UsageRecord.period_start >= p_start,
             UsageRecord.period_end <= p_end,
         )
@@ -540,13 +558,14 @@ def create_invoice(
 
 @app.get("/billing/invoices", response_model=list[InvoiceOut])
 def list_invoices(
-    user: CurrentUser, db: DB, project_id: str | None = None, status: str | None = None,
+    user: CurrentUser, db: DB, project_id: str | None = None, status: str | None = None, domain_id: str | None = None,
     limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
 ):
     q = select(Invoice)
-    project_id = _scope(user, project_id)
-    if project_id:
-        q = q.where(Invoice.project_id == project_id)
+    ids = _ids(user, project_id, domain_id)
+    if ids is not None:
+        # a domain's consolidated invoice is stored as project "domain:<id>"
+        q = q.where(Invoice.project_id.in_(ids + [f"domain:{domain_id}"] if domain_id else ids))
     if status:
         q = q.where(Invoice.status == status)
     q = q.order_by(Invoice.created_at.desc(), Invoice.id.desc()).limit(limit).offset(offset)
@@ -555,7 +574,7 @@ def list_invoices(
 
 def _own_invoice(db: Session, user: dict, invoice_id: int) -> Invoice:
     inv = db.get(Invoice, invoice_id)
-    if not inv or (user.get("role") != "admin" and inv.project_id != user.get("project_id")):
+    if not inv or not (can_see(user, inv.project_id) or inv.project_id == f"domain:{user.get('domain_id')}" and user.get("domain_admin")):
         raise HTTPException(status_code=404, detail="Invoice not found")
     return inv
 
@@ -622,15 +641,17 @@ def billing_summary(
     month: int | None = None,
     period_start: datetime | None = None,
     period_end: datetime | None = None,
+    domain_id: str | None = None,
 ):
-    pid = _scope(user, project_id) or user.get("project_id") or "admin"
+    pids = visible_projects(user, domain_id) if domain_id else None
+    pid = f"domain:{domain_id}" if domain_id else _scope(user, project_id) or user.get("project_id") or "admin"
     now = datetime.now(timezone.utc)
     p_start = period_start or (now - timedelta(days=30))
     p_end = period_end or now
 
     usages = db.execute(
         select(UsageRecord).where(
-            UsageRecord.project_id == pid,
+            UsageRecord.project_id.in_(pids) if pids is not None else UsageRecord.project_id == pid,
             UsageRecord.period_start >= p_start,
             UsageRecord.period_end <= p_end,
         )

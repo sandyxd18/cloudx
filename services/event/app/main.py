@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+from shared.domain import owns, visible_projects
 from shared.db import get_db_url
 from shared.config import load_service_config
 load_service_config("event-api")
@@ -347,8 +348,8 @@ def list_event_logs(
     if _is_admin(user):
         if project_id:
             q = q.where(EventLog.project_id == project_id)
-    else:
-        q = q.where(EventLog.project_id == user.get("project_id"))
+    elif (ids := visible_projects(user)) is not None:
+        q = q.where(EventLog.project_id.in_(ids))
     if since:
         q = q.where(EventLog.timestamp >= since)
     if until:
@@ -365,7 +366,7 @@ def list_event_logs(
 
 def _own_sub(user: dict, db: Session, sub_id: int) -> WebhookSubscription:
     sub = db.get(WebhookSubscription, sub_id)
-    if not sub or (not _is_admin(user) and sub.project_id != user.get("project_id")):
+    if not sub or (not owns(user, sub.project_id)):
         raise HTTPException(status_code=404, detail="Subscription not found")
     return sub
 
@@ -418,7 +419,7 @@ def delete_subscription(user: CurrentUser, sub_id: int, db: DB):
 
 def _own_delivery(user: dict, db: Session, delivery_id: int) -> WebhookDelivery:
     d = db.get(WebhookDelivery, delivery_id)
-    if not d or (not _is_admin(user) and d.subscription.project_id != user.get("project_id")):
+    if not d or (not owns(user, d.subscription.project_id)):
         raise HTTPException(status_code=404, detail="Delivery not found")
     return d
 
@@ -427,9 +428,9 @@ def _own_delivery(user: dict, db: Session, delivery_id: int) -> WebhookDelivery:
 def list_deliveries(user: UserOrInternal, db: DB, subscription_id: int | None = None, status: str | None = None,
                     limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
     q = select(WebhookDelivery)
-    if not _is_admin(user):
+    if (ids := visible_projects(user)) is not None:
         q = q.join(WebhookSubscription, WebhookDelivery.subscription_id == WebhookSubscription.id).where(
-            WebhookSubscription.project_id == user.get("project_id"))
+            WebhookSubscription.project_id.in_(ids))
     if subscription_id:
         q = q.where(WebhookDelivery.subscription_id == subscription_id)
     if status:

@@ -1,4 +1,6 @@
 from fastapi import HTTPException
+from shared.domain import can_see as domain_can_see
+from shared.domain import visible_projects
 from sqlalchemy import or_
 
 
@@ -9,7 +11,7 @@ def is_admin(current: dict) -> bool:
 def can_see(current: dict, obj) -> bool:
     # project_id NULL = created before ownership existed or a global default; visible to everyone
     pid = getattr(obj, "project_id", None)
-    if is_admin(current) or pid is None or pid == current.get("project_id"):
+    if is_admin(current) or pid is None or pid == current.get("project_id") or domain_can_see(current, pid):
         return True
     return bool(getattr(obj, "shared", False) or getattr(obj, "external", False))
 
@@ -25,7 +27,7 @@ def scope(q, model, current: dict):
     """Restrict a select() to what the caller may see."""
     if is_admin(current):
         return q
-    cond = [model.project_id.is_(None), model.project_id == current.get("project_id")]
+    cond = [model.project_id.is_(None), model.project_id.in_(visible_projects(current) or [current.get("project_id")])]
     for flag in ("shared", "external"):
         if hasattr(model, flag):
             cond.append(getattr(model, flag).is_(True))

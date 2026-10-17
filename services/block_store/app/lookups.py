@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import STORAGE_CEPH_RBD_DRIVER, STORAGE_LVM_DRIVER, STORAGE_NFS_DRIVER
+from shared.domain import can_see
 from .models import ConsistencyGroup, Snapshot, Volume, VolumeType
 
 
@@ -12,7 +13,7 @@ def get_volume(db: Session, ref: str):
 
 def can_access(project_id: str | None, current: dict | None) -> bool:
     """Admins (and internal callers, current=None) see everything; others only their own project (or unowned rows)."""
-    return current is None or current.get("role") == "admin" or not project_id or project_id == current.get("project_id")
+    return current is None or not project_id or can_see(current, project_id)
 
 
 def require_volume(db: Session, ref: str, current: dict | None = None) -> Volume:

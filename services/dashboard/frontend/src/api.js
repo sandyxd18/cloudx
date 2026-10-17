@@ -87,6 +87,9 @@ export const api = {
   getDomains: () => request('GET', '/auth/v3/domains'),
   createDomain: (b) => request('POST', '/auth/v3/domains', b),
   deleteDomain: (id) => request('DELETE', `/auth/v3/domains/${id}`),
+  getDomainQuota: (id) => request('GET', `/auth/v3/domains/${id}/quota`),
+  setDomainQuota: (id, b) => request('PUT', `/auth/v3/domains/${id}/quota`, b),
+  clearDomainQuota: (id) => request('DELETE', `/auth/v3/domains/${id}/quota`),
 
   // Auth — Application Credentials
   getAppCredentials: (userId) => request('GET', `/auth/v3/users/${userId}/application_credentials`),

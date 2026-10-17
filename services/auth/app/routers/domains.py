@@ -2,9 +2,11 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
 from ..db import DB
+from shared.auth_middleware import InternalAuth
 from ..deps import AdminUser, DomainAdminUser, scope_domain
-from ..models import Domain, Project, User
-from ..schemas import DomainIn, DomainUpdate
+from ..models import Domain, DomainQuota, Project, User, utcnow
+from ..schemas import DomainIn, DomainQuotaUpdate, DomainUpdate
+from .projects import QUOTA_FIELDS, domain_caps
 
 router = APIRouter()
 
@@ -80,3 +82,43 @@ def delete_domain(domain_id: str, _: AdminUser, db: DB):
         raise HTTPException(status_code=409, detail="domain still has projects or users")
     db.delete(domain)
     db.commit()
+
+
+def _quota_view(db, domain_id: str) -> dict:
+    caps = domain_caps(db, domain_id)
+    return {"domain_id": domain_id, **{f: caps["caps"].get(f) for f in QUOTA_FIELDS}}
+
+
+@router.get("/v3/domains/{domain_id}/quota")
+def get_domain_quota(domain_id: str, current: DomainAdminUser, db: DB):
+    """Aggregate caps (null = unlimited). A domain admin reads its own domain only."""
+    if not db.get(Domain, domain_id) or scope_domain(current) not in (None, domain_id):
+        raise HTTPException(status_code=404, detail="domain not found")
+    return _quota_view(db, domain_id)
+
+
+@router.put("/v3/domains/{domain_id}/quota")
+def set_domain_quota(domain_id: str, payload: DomainQuotaUpdate, _: AdminUser, db: DB):
+    """Cap the sum over all projects of the domain; DELETE lifts every cap."""
+    if not db.get(Domain, domain_id):
+        raise HTTPException(status_code=404, detail="domain not found")
+    dq = db.get(DomainQuota, domain_id) or DomainQuota(domain_id=domain_id)
+    for k, v in payload.model_dump(exclude_none=True).items():
+        setattr(dq, k, v)
+    dq.updated_at = utcnow()
+    db.add(dq)
+    db.commit()
+    return _quota_view(db, domain_id)
+
+
+@router.delete("/v3/domains/{domain_id}/quota", status_code=204)
+def clear_domain_quota(domain_id: str, _: AdminUser, db: DB):
+    dq = db.get(DomainQuota, domain_id)
+    if dq:
+        db.delete(dq)
+        db.commit()
+
+
+@router.get("/internal/domains/{domain_id}/projects", dependencies=[InternalAuth])
+def internal_domain_projects(domain_id: str, db: DB):
+    return domain_caps(db, domain_id)

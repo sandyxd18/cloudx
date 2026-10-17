@@ -2,6 +2,7 @@ import os
 
 import requests
 from fastapi import HTTPException
+from shared.domain import lock_domain
 from shared.internal import internal_headers
 from sqlalchemy import func, select
 
@@ -20,10 +21,17 @@ def check_quota(db, project_id: str | None, model, key: str) -> None:
     try:
         r = requests.get(f"{AUTH_API_URL}/internal/projects/{project_id}/quota", headers=internal_headers(), timeout=5)
         r.raise_for_status()
-        limit = r.json().get(f"max_{key}")
+        body = r.json()
+        limit = body.get(f"max_{key}")
+        dom = body.get("domain") or {}
     except (requests.RequestException, ValueError) as exc:
         log.warning("quota check skipped (auth-api): %s", exc)
         return
+    cap = (dom.get("caps") or {}).get(f"max_{key}")
+    if cap is not None:
+        lock_domain(db, dom.get("domain_id"))
+    if cap is not None and db.scalar(select(func.count()).select_from(model).where(model.project_id.in_(dom["project_ids"]))) >= cap:
+        raise HTTPException(status_code=413, detail=f"Domain quota exceeded: max_{key} ({cap}) reached")
     if limit is None:
         return
     used = db.scalar(select(func.count()).select_from(model).where(model.project_id == project_id))

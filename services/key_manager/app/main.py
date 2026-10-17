@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+from shared.domain import owns, visible_projects
 from shared.db import get_db_url
 from shared.config import load_service_config
 load_service_config("key-manager-api")
@@ -194,8 +195,8 @@ def create_secret(payload: SecretIn, db: DB, user: dict = Depends(require_auth))
 def list_secrets(db: DB, user: dict = Depends(require_auth)):
     project_id = user.get("project_id", "default")
     stmt = select(Secret)
-    if user.get("role") != "admin":
-        stmt = stmt.where(Secret.project_id == project_id)
+    if (ids := visible_projects(user)) is not None:
+        stmt = stmt.where(Secret.project_id.in_(ids))
     secrets = db.scalars(stmt).all()
     return [
         SecretOut(
@@ -219,7 +220,7 @@ def get_secret(secret_id: str, db: DB, user: dict = Depends(require_auth)):
     secret = db.get(Secret, secret_id)
     if not secret:
         raise HTTPException(status_code=404, detail="Secret not found")
-    if user.get("role") != "admin" and secret.project_id != user.get("project_id"):
+    if not owns(user, secret.project_id):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     decrypted_bytes = _cipher.decrypt(secret.encrypted_payload.encode("utf-8"))
@@ -244,7 +245,7 @@ def delete_secret(secret_id: str, db: DB, user: dict = Depends(require_auth)):
     secret = db.get(Secret, secret_id)
     if not secret:
         raise HTTPException(status_code=404, detail="Secret not found")
-    if user.get("role") != "admin" and secret.project_id != user.get("project_id"):
+    if not owns(user, secret.project_id):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     db.delete(secret)
@@ -278,8 +279,8 @@ def create_container(payload: ContainerIn, db: DB, user: dict = Depends(require_
 def list_containers(db: DB, user: dict = Depends(require_auth)):
     project_id = user.get("project_id", "default")
     stmt = select(SecretContainer)
-    if user.get("role") != "admin":
-        stmt = stmt.where(SecretContainer.project_id == project_id)
+    if (ids := visible_projects(user)) is not None:
+        stmt = stmt.where(SecretContainer.project_id.in_(ids))
     containers = db.scalars(stmt).all()
     return [
         ContainerOut(
@@ -300,7 +301,7 @@ def get_container(container_id: str, db: DB, user: dict = Depends(require_auth))
     container = db.get(SecretContainer, container_id)
     if not container:
         raise HTTPException(status_code=404, detail="Container not found")
-    if user.get("role") != "admin" and container.project_id != user.get("project_id"):
+    if not owns(user, container.project_id):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     return ContainerOut(
@@ -319,7 +320,7 @@ def delete_container(container_id: str, db: DB, user: dict = Depends(require_aut
     container = db.get(SecretContainer, container_id)
     if not container:
         raise HTTPException(status_code=404, detail="Container not found")
-    if user.get("role") != "admin" and container.project_id != user.get("project_id"):
+    if not owns(user, container.project_id):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     db.delete(container)

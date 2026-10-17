@@ -1,4 +1,5 @@
 from __future__ import annotations
+from shared.domain import owns, visible_projects
 from shared.db import get_db_url
 from shared.config import load_service_config
 load_service_config("orchestration-api")
@@ -246,7 +247,7 @@ def _compute(request: Request | None, method: str, path: str, body: dict | None 
 
 def _own_group(db, user, group_id: str) -> ScalingGroup:
     group = db.get(ScalingGroup, group_id)
-    if not group or (user.get("role") != "admin" and group.project_id != user.get("project_id")):
+    if not group or (not owns(user, group.project_id)):
         raise HTTPException(status_code=404, detail="Scaling group not found")
     return group
 
@@ -269,8 +270,10 @@ def create_scaling_group(user: CurrentUser, data: ScalingGroupIn, db: DB):
 @app.get("/orchestration/scaling-groups", response_model=list[ScalingGroupOut])
 def list_scaling_groups(user: UserOrInternal, db: DB, project_id: str | None = None, active_only: bool = False):
     q = select(ScalingGroup)
-    if user.get("role") != "admin" or project_id:  # admin (the worker) sees all projects unless it filters
-        q = q.where(ScalingGroup.project_id == (project_id or user.get("project_id", "admin")))
+    ids = visible_projects(user)
+    if ids is not None or project_id:  # admin (the worker) sees all projects unless it filters
+        want = [project_id] if project_id and (ids is None or project_id in ids) else (ids or [user.get("project_id", "admin")])
+        q = q.where(ScalingGroup.project_id.in_(want))
     if active_only:
         q = q.where(ScalingGroup.is_active.is_(True))
     return db.execute(q).scalars().all()

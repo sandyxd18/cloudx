@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+from shared.domain import owns, visible_projects
 from shared.db import get_db_url
 from shared.config import load_service_config
 load_service_config("telemetry-api")
@@ -224,6 +225,14 @@ def _scope(user: dict, project_id: str | None) -> str | None:
     return user.get("project_id") or "\0none"
 
 
+def _scope_ids(user: dict, project_id: str | None) -> list[str] | None:
+    """Project ids a metric query may cover (None = all): a domain admin sees the whole domain."""
+    ids = visible_projects(user)
+    if ids is None:
+        return [project_id] if project_id else None
+    return [project_id] if project_id in ids else ids
+
+
 # ── API Endpoints ─────────────────────────────────────────────────────────────
 
 @app.post("/telemetry/metrics", response_model=MetricOut, status_code=status.HTTP_201_CREATED)
@@ -258,9 +267,9 @@ def list_metrics(
     q = select(TelemetryMetric)
     if instance_id:
         q = q.where(TelemetryMetric.instance_id == instance_id)
-    scope = _scope(user, project_id)
-    if scope:
-        q = q.where(TelemetryMetric.project_id == scope)
+    scope = _scope_ids(user, project_id)
+    if scope is not None:
+        q = q.where(TelemetryMetric.project_id.in_(scope))
     if metric_type:
         q = q.where(TelemetryMetric.metric_type == metric_type)
     if since:
@@ -301,9 +310,9 @@ def get_stats(
         q = q.where(M.metric_type == metric_type)
     if instance_id:
         q = q.where(M.instance_id == instance_id)
-    scope = _scope(user, project_id)
-    if scope:
-        q = q.where(M.project_id == scope)
+    scope = _scope_ids(user, project_id)
+    if scope is not None:
+        q = q.where(M.project_id.in_(scope))
     q = q.group_by(M.metric_type, M.instance_id).order_by(M.metric_type, M.instance_id)
     return [
         {"metric_type": r.metric_type, "instance_id": r.instance_id, "unit": r.unit, "count": r.count,
@@ -333,9 +342,9 @@ def get_series(
         q = select(ts, func.avg(M.value).label("avg"), func.min(M.value).label("min"),
                    func.max(M.value).label("max"), func.count().label("count")).group_by(ts)
     q = q.where(M.metric_type == metric_type, M.instance_id == instance_id, M.timestamp >= cutoff)
-    scope = _scope(user, project_id)
-    if scope:
-        q = q.where(M.project_id == scope)
+    scope = _scope_ids(user, project_id)
+    if scope is not None:
+        q = q.where(M.project_id.in_(scope))
     q = q.order_by(text("timestamp ASC"))
     return [{"timestamp": r.timestamp, "avg": r.avg, "min": r.min, "max": r.max, "count": r.count}
             for r in db.execute(q).all()]
@@ -359,9 +368,9 @@ def get_instance_stats(
         TelemetryMetric.instance_id == instance_id,
         TelemetryMetric.timestamp >= datetime.now(timezone.utc) - timedelta(hours=hours),
     )
-    scope = _scope(user, None)
-    if scope:
-        q = q.where(TelemetryMetric.project_id == scope)
+    scope = _scope_ids(user, None)
+    if scope is not None:
+        q = q.where(TelemetryMetric.project_id.in_(scope))
     rows = db.execute(q.group_by(TelemetryMetric.metric_type)).all()
     if not rows:
         raise HTTPException(status_code=404, detail="no metrics for instance")
@@ -466,8 +475,8 @@ def list_rollups(user: CurrentUser, db: DB, metric_type: str, instance_id: str |
                  days: int = Query(30, ge=1, le=3650), granularity: Literal["hour", "day"] = "hour"):
     since = datetime.now(timezone.utc) - timedelta(days=days)
     q = select(TelemetryRollup).where(TelemetryRollup.metric_type == metric_type, TelemetryRollup.bucket >= since)
-    if user.get("role") != "admin":
-        q = q.where(TelemetryRollup.project_id == user.get("project_id"))
+    if (ids := visible_projects(user)) is not None:
+        q = q.where(TelemetryRollup.project_id.in_(ids))
     if instance_id:
         q = q.where(TelemetryRollup.instance_id == instance_id)
     out: dict[datetime, dict] = {}
@@ -585,7 +594,7 @@ def _alarm_loop() -> None:
 
 def _alarm_or_404(db: Session, alarm_id: str, user: dict) -> TelemetryAlarm:
     a = db.get(TelemetryAlarm, alarm_id)
-    if not a or (user.get("role") != "admin" and a.project_id != user.get("project_id")):
+    if not a or (not owns(user, a.project_id)):
         raise HTTPException(404, "alarm not found")
     return a
 
@@ -606,8 +615,8 @@ def create_alarm(user: CurrentUser, data: AlarmIn, db: DB):
 @app.get("/telemetry/alarms")
 def list_alarms(user: CurrentUser, db: DB):
     q = select(TelemetryAlarm).order_by(TelemetryAlarm.created_at)
-    if user.get("role") != "admin":
-        q = q.where(TelemetryAlarm.project_id == user.get("project_id"))
+    if (ids := visible_projects(user)) is not None:
+        q = q.where(TelemetryAlarm.project_id.in_(ids))
     return [alarm_dict(a) for a in db.execute(q).scalars()]
 
 

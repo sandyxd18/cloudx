@@ -28,6 +28,8 @@ export default function StacksPage() {
   const [detail, setDetail] = useState({ resources: [], events: [] })
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState({ name: '', template: '', parameters: '{}' })
+  const [editId, setEditId] = useState(null)
+  const [preview, setPreview] = useState(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [showDelete, setShowDelete] = useState(false)
@@ -54,13 +56,35 @@ export default function StacksPage() {
       }))
   }
 
+  const close = () => { setShowAdd(false); setEditId(null); setPreview(null) }
+
+  const openCreate = () => { setError(''); setEditId(null); setPreview(null); setForm({ name: '', template: '', parameters: '{}' }); setShowAdd(true) }
+
+  const openUpdate = async () => {
+    setError(''); setPreview(null)
+    try {
+      const s = selected[0]
+      const tpl = await api.getStackTemplate(s.id)
+      setForm({ name: s.stack_name, template: typeof tpl === 'string' ? tpl : JSON.stringify(tpl, null, 2), parameters: JSON.stringify(s.parameters || {}, null, 2) })
+      setEditId(s.id); setShowAdd(true)
+    } catch (e) { toast(e.message, 'error') }
+  }
+
+  const body = () => ({ name: form.name, template: form.template, parameters: JSON.parse(form.parameters || '{}') })
+
+  const doPreview = async () => {
+    setError('')
+    try { setPreview(await api.previewStack(body())) } catch (e) { setError(e.message) }
+  }
+
   const create = async () => {
     setSaving(true); setError('')
     try {
-      const parameters = JSON.parse(form.parameters || '{}')
-      await api.createStack({ name: form.name, template: form.template, parameters })
-      toast('Stack creation started', 'success')
-      setShowAdd(false); setForm({ name: '', template: '', parameters: '{}' }); load()
+      const b = body()
+      if (editId) await api.updateStack(editId, { template: b.template, parameters: b.parameters })
+      else await api.createStack(b)
+      toast(editId ? 'Stack update started' : 'Stack creation started', 'success')
+      close(); load()
     } catch (e) { setError(e.message) } finally { setSaving(false) }
   }
 
@@ -99,7 +123,8 @@ export default function StacksPage() {
                   <Button disabled={!one} onClick={() => act('suspend')}>Suspend</Button>
                   <Button disabled={!one} onClick={() => act('resume')}>Resume</Button>
                   <Button disabled={!selected.length} onClick={() => setShowDelete(true)}>Delete</Button>
-                  <Button variant="primary" onClick={() => { setError(''); setShowAdd(true) }}>Create stack</Button>
+                  <Button disabled={!one} onClick={openUpdate}>Update</Button>
+                  <Button variant="primary" onClick={openCreate}>Create stack</Button>
                 </SpaceBetween>
               }
             >
@@ -163,22 +188,28 @@ export default function StacksPage() {
         <Modal
           visible
           size="large"
-          onDismiss={() => setShowAdd(false)}
-          header="Create stack"
+          onDismiss={close}
+          header={editId ? 'Update stack' : 'Create stack'}
           footer={
             <Box float="right">
               <SpaceBetween direction="horizontal" size="xs">
-                <Button onClick={() => setShowAdd(false)}>Cancel</Button>
-                <Button variant="primary" loading={saving} disabled={!form.name || !form.template} onClick={create}>Create</Button>
+                <Button onClick={close}>Cancel</Button>
+                <Button disabled={!form.template} onClick={doPreview}>Preview</Button>
+                <Button variant="primary" loading={saving} disabled={!form.name || !form.template} onClick={create}>{editId ? 'Update' : 'Create'}</Button>
               </SpaceBetween>
             </Box>
           }
         >
           <SpaceBetween size="m">
             {error && <Alert type="error">{error}</Alert>}
-            <FormField label="Name"><Input value={form.name} onChange={({ detail }) => setForm(f => ({ ...f, name: detail.value }))} /></FormField>
+            <FormField label="Name"><Input disabled={!!editId} value={form.name} onChange={({ detail }) => setForm(f => ({ ...f, name: detail.value }))} /></FormField>
             <FormField label="Template" description="YAML or JSON"><Textarea rows={12} value={form.template} onChange={({ detail }) => setForm(f => ({ ...f, template: detail.value }))} /></FormField>
             <FormField label="Parameters (JSON)"><Textarea rows={3} value={form.parameters} onChange={({ detail }) => setForm(f => ({ ...f, parameters: detail.value }))} /></FormField>
+            {preview && (
+              <FormField label="Preview: resources this template creates">
+                <Box variant="code"><pre>{JSON.stringify(preview.resources ?? preview, null, 2)}</pre></Box>
+              </FormField>
+            )}
           </SpaceBetween>
         </Modal>
       )}

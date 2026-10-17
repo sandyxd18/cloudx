@@ -44,13 +44,20 @@ export default function L7Policies({ listenerId }) {
     try { await fn(); setPform(null); setRform(null); load() } catch (e) { setError(e.message); toast(e.message, 'error') }
   }
 
-  const createPolicy = () => run(() => {
+  const savePolicy = () => run(() => {
     const f = pform
     const body = { name: f.name, action: f.action.value, position: Number(f.position) }
     if (TARGET[body.action]) body[TARGET[body.action]] = f.target
     if (f.code) body.redirect_http_code = Number(f.code)
-    return api.createL7Policy(listenerId, body)
+    return f.id ? api.updateL7Policy(f.id, body) : api.createL7Policy(listenerId, body)
   })
+
+  const editPolicy = p => {
+    const action = ACTIONS.find(a => a.value === p.action) || ACTIONS[0]
+    setError('')
+    setPform({ id: p.id, name: p.name, action, position: String(p.position),
+      target: p[TARGET[p.action]] || '', code: p.redirect_http_code ? String(p.redirect_http_code) : '' })
+  }
 
   const createRule = () => run(() => {
     const f = rform
@@ -94,6 +101,7 @@ export default function L7Policies({ listenerId }) {
           )},
           { id: 'act', header: 'Actions', cell: p => (
             <SpaceBetween direction="horizontal" size="xs">
+              <Button onClick={() => editPolicy(p)}>Edit</Button>
               <Button onClick={() => { setError(''); setRform({ ...R0, policyId: p.id }) }}>Add rule</Button>
               <Button onClick={() => run(() => api.deleteL7Policy(p.id))}>Delete</Button>
             </SpaceBetween>
@@ -103,10 +111,10 @@ export default function L7Policies({ listenerId }) {
       />
 
       {pform && (
-        <Modal visible onDismiss={() => setPform(null)} header="Add L7 policy"
+        <Modal visible onDismiss={() => setPform(null)} header={pform.id ? 'Edit L7 policy' : 'Add L7 policy'}
           footer={<Box float="right"><SpaceBetween direction="horizontal" size="xs">
             <Button onClick={() => setPform(null)}>Cancel</Button>
-            <Button variant="primary" disabled={!pform.name} onClick={createPolicy}>Create</Button>
+            <Button variant="primary" disabled={!pform.name} onClick={savePolicy}>{pform.id ? 'Save' : 'Create'}</Button>
           </SpaceBetween></Box>}>
           <SpaceBetween size="m">
             {error && <Alert type="error">{error}</Alert>}

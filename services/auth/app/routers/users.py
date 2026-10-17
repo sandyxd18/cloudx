@@ -19,11 +19,11 @@ def create_user(payload: UserIn, current: DomainAdminUser, db: DB):
     scope = scope_domain(current)
     if scope is not None and (payload.role == "admin" or payload.is_domain_admin):
         raise HTTPException(status_code=403, detail="a domain admin cannot create admin users")
-    if db.scalar(select(User).where(User.username == payload.username)):
-        raise HTTPException(status_code=409, detail="username already exists")
+    proj = _scoped_project(db, payload.project_id, current)
+    if db.scalar(select(User).where(User.username == payload.username, User.domain_id == proj.domain_id)):
+        raise HTTPException(status_code=409, detail="username already exists in this domain")
     if db.scalar(select(User).where(User.email == payload.email)):
         raise HTTPException(status_code=409, detail="email already exists")
-    proj = _scoped_project(db, payload.project_id, current)
     u = User(
         username=payload.username,
         email=payload.email,
@@ -58,7 +58,7 @@ def list_users(
 
 @router.get("/users/{ref}")
 def show_user(ref: str, current: CurrentUser, db: DB):
-    u = _scoped_user(db, ref, current) if current.get("domain_admin") else _get_user_by_ref(db, ref)
+    u = _scoped_user(db, ref, current) if current.get("domain_admin") else _get_user_by_ref(db, ref, scope_domain(current))
     # Non-admins can only see themselves (a domain admin also sees its domain, via _scoped_user)
     if current.get("role") != "admin" and not current.get("domain_admin") and u.id != current.get("sub"):
         raise HTTPException(status_code=403, detail="forbidden")
@@ -68,7 +68,7 @@ def show_user(ref: str, current: CurrentUser, db: DB):
 @router.put("/users/{ref}")
 def update_user(ref: str, payload: UserUpdate, current: CurrentUser, db: DB):
     is_sys = current.get("role") == "admin"
-    u = _scoped_user(db, ref, current) if current.get("domain_admin") else _get_user_by_ref(db, ref)
+    u = _scoped_user(db, ref, current) if current.get("domain_admin") else _get_user_by_ref(db, ref, scope_domain(current))
     if not is_sys and not current.get("domain_admin") and u.id != current.get("sub"):
         raise HTTPException(status_code=403, detail="forbidden")
     if payload.role and (not is_sys and (payload.role == "admin" or not current.get("domain_admin"))):

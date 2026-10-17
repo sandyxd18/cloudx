@@ -131,17 +131,33 @@ def listener_list(ctx, lb_ref):
     _output(data.get("listeners", data.get("items", data)), ctx.obj["fmt"], ["id", "name", "protocol", "protocol_port", "default_pool_id"])
 
 
+@lb_listener.command("update")
+@click.argument("listener_id")
+@click.option("--client-authentication", type=click.Choice(["NONE", "OPTIONAL", "MANDATORY"]), required=True, help="Ask HTTPS clients for a certificate")
+@click.option("--client-ca-file", type=click.Path(exists=True, dir_okay=False), default=None, help="New CA bundle (kept when omitted)")
+@click.pass_context
+def listener_update(ctx, listener_id, client_authentication, client_ca_file):
+    payload = {"client_authentication": client_authentication}
+    if client_ca_file:
+        payload["client_ca_pem"] = open(client_ca_file, encoding="utf-8").read()
+    data = _api("put", f"{DEFAULT_URLS['load-balancer']}/listeners/{listener_id}", ctx.obj["profile"], json=payload)
+    _output(data, ctx.obj["fmt"], ["id", "name", "protocol", "client_authentication"])
+
 @lb_listener.command("create")
 @click.argument("lb_ref")
 @click.option("--name", required=True, help="Listener name")
 @click.option("--port", required=True, type=int, help="Protocol port (e.g. 80, 443)")
 @click.option("--protocol", type=click.Choice(["HTTP", "TCP", "UDP", "HTTPS"]), default="HTTP", help="Protocol")
 @click.option("--certificate", "--certificate-id", "certificate_id", default=None, help="Certificate ID for HTTPS")
+@click.option("--client-authentication", type=click.Choice(["NONE", "OPTIONAL", "MANDATORY"]), default="NONE", help="Ask HTTPS clients for a certificate")
+@click.option("--client-ca-file", type=click.Path(exists=True, dir_okay=False), default=None, help="PEM bundle of the CAs that sign client certificates")
 @click.pass_context
-def listener_create(ctx, lb_ref, name, port, protocol, certificate_id):
-    payload = {"name": name, "protocol": protocol, "protocol_port": port}
+def listener_create(ctx, lb_ref, name, port, protocol, certificate_id, client_authentication, client_ca_file):
+    payload = {"name": name, "protocol": protocol, "protocol_port": port, "client_authentication": client_authentication}
     if certificate_id:
         payload["certificate_id"] = certificate_id
+    if client_ca_file:
+        payload["client_ca_pem"] = open(client_ca_file, encoding="utf-8").read()
     data = _api("post", f"{DEFAULT_URLS['load-balancer']}/load-balancers/{lb_ref}/listeners", ctx.obj["profile"], json=payload)
     _output(data, ctx.obj["fmt"])
 
@@ -288,10 +304,10 @@ def lb_l7rule(ctx):
 
 @lb_l7rule.command("create")
 @click.argument("policy_ref")
-@click.option("--type", "type_", type=click.Choice(["PATH", "HOST_NAME", "FILE_TYPE", "HEADER", "COOKIE"]), required=True, help="Match type")
+@click.option("--type", "type_", type=click.Choice(["PATH", "HOST_NAME", "FILE_TYPE", "HEADER", "COOKIE", "SSL_CONN_HAS_CERT", "SSL_VERIFY_RESULT", "SSL_DN_FIELD"]), required=True, help="Match type")
 @click.option("--compare-type", type=click.Choice(["STARTS_WITH", "ENDS_WITH", "EQUAL_TO", "CONTAINS", "REGEX"]), default="STARTS_WITH", help="Comparison type")
 @click.option("--value", required=True, help="Match value")
-@click.option("--key", default=None, help="Header / cookie name (HEADER and COOKIE only)")
+@click.option("--key", default=None, help="Header / cookie name, or the DN field such as CN (HEADER, COOKIE, SSL_DN_FIELD only)")
 @click.option("--invert", is_flag=True, help="Match when the condition is false")
 @click.option("--disable", is_flag=True, help="Create with admin_state_up=false")
 @click.pass_context

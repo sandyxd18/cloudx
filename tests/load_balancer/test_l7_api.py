@@ -86,3 +86,62 @@ def test_disabled_policy_and_rule_stay_out_of_the_rendered_tree(lb):
         assert m.lb_state(db, lbo)[0]["policies"][0]["rules"] == []
         m.update_l7policy(p["id"], m.L7PolicyUpdate(admin_state_up=False), m.user, db)
         assert m.lb_state(db, lbo)[0]["policies"] == []
+def _ca_pem():
+    from datetime import datetime, timedelta, timezone
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test-ca")])
+    now = datetime.now(timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(1).not_valid_before(now).not_valid_after(now + timedelta(days=1))
+            .sign(key, hashes.SHA256()))
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+def test_ssl_rules_validation(lb):
+    m = lb
+    for ok in ({"type": "SSL_CONN_HAS_CERT", "compare_type": "EQUAL_TO", "value": "true"},
+               {"type": "SSL_VERIFY_RESULT", "compare_type": "EQUAL_TO", "value": "0"},
+               {"type": "SSL_DN_FIELD", "compare_type": "EQUAL_TO", "value": "alice", "key": "CN"}):
+        m.L7RuleIn(**ok)
+    for bad in ({"type": "SSL_CONN_HAS_CERT", "compare_type": "STARTS_WITH", "value": "true"},
+                {"type": "SSL_CONN_HAS_CERT", "compare_type": "EQUAL_TO", "value": "maybe"},
+                {"type": "SSL_VERIFY_RESULT", "compare_type": "EQUAL_TO", "value": "ok"},
+                {"type": "SSL_DN_FIELD", "compare_type": "EQUAL_TO", "value": "alice"},
+                {"type": "SSL_VERIFY_RESULT", "compare_type": "EQUAL_TO", "value": "0", "key": "CN"}):
+        with pytest.raises(ValueError):
+            m.L7RuleIn(**bad)
+
+
+def test_ssl_rule_needs_https_listener_and_listener_needs_ca(lb):
+    m = lb
+    with m.SessionLocal() as db:
+        p = _pol(m, db, action="REJECT")
+        with pytest.raises(HTTPException) as e:  # ls1 is plain HTTP
+            m.create_l7rule(p["id"], m.L7RuleIn(type="SSL_CONN_HAS_CERT", compare_type="EQUAL_TO", value="true"), m.user, db)
+        assert e.value.status_code == 400
+    ca = _ca_pem()
+    base = {"name": "s", "protocol": "HTTPS", "protocol_port": 443, "certificate_id": "c1"}
+    m.ListenerIn(**base, client_authentication="MANDATORY", client_ca_pem=ca)
+    for bad in ({"client_authentication": "MANDATORY"}, {"client_ca_pem": ca},
+                {"client_authentication": "MANDATORY", "client_ca_pem": "not a pem"},
+                {"client_authentication": "MANDATORY", "client_ca_pem": ca, "protocol": "HTTP"},
+                {"client_authentication": "MANDATORY", "client_ca_pem": ca, "certificate_id": None}):
+        with pytest.raises(ValueError):
+            m.ListenerIn(**{**base, **bad})
+
+
+def test_client_ca_reaches_the_rendered_tree(lb):
+    m = lb
+    ca = _ca_pem()
+    with m.SessionLocal() as db:
+        m.db_cert = m.LBCertificate(id="c1", load_balancer_id="lb1", name="c", certificate_pem="x", private_key_pem="y")
+        db.add(m.db_cert); db.commit()
+        out = m.create_listener("lb1", m.ListenerIn(name="s", protocol="HTTPS", protocol_port=443, certificate_id="c1",
+                                                    client_authentication="OPTIONAL", client_ca_pem=ca), m.user, db)
+        assert out["client_authentication"] == "OPTIONAL" and out["client_ca_path"].endswith("-ca.pem") and "client_ca_pem" not in out
+        ls = next(l for l in m.lb_state(db, db.get(m.LoadBalancer, "lb1"), with_pem=True) if l["id"] == out["id"])
+        assert ls["client_ca_pem"] == ca

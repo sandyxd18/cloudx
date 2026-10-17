@@ -29,7 +29,8 @@ def utcnow() -> datetime:
 class Project(Base):
     __tablename__ = "auth_projects"
     id:          Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    name:        Mapped[str] = mapped_column(String, unique=True, index=True)
+    __table_args__ = (UniqueConstraint("domain_id", "name", name="uq_auth_projects_domain_name"),)
+    name:        Mapped[str] = mapped_column(String, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled:     Mapped[bool] = mapped_column(Boolean, default=True)
     domain_id:   Mapped[str] = mapped_column(String, ForeignKey("auth_domains.id"), default="default", server_default="default")
@@ -56,7 +57,8 @@ class ProjectQuota(Base):
 class User(Base):
     __tablename__ = "auth_users"
     id:            Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    username:      Mapped[str] = mapped_column(String, unique=True, index=True)
+    __table_args__ = (UniqueConstraint("domain_id", "username", name="uq_auth_users_domain_username"),)
+    username:      Mapped[str] = mapped_column(String, index=True)
     email:         Mapped[str] = mapped_column(String, unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String)
     project_id:    Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id"))
@@ -134,6 +136,23 @@ class Domain(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled:     Mapped[bool] = mapped_column(Boolean, default=True)
     created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class DomainQuota(Base):
+    """Aggregate caps across every project of a domain (NULL = no cap)."""
+    __tablename__ = "auth_domain_quotas"
+    domain_id: Mapped[str] = mapped_column(String, ForeignKey("auth_domains.id", ondelete="CASCADE"), primary_key=True)
+    max_instances: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_vcpus: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_ram_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_volume_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_networks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_subnets: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_ports: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_routers: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_floating_ips: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_security_groups: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class ApplicationCredential(Base):

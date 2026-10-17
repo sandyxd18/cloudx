@@ -3,7 +3,7 @@ set -euo pipefail
 
 IMG_PATH="/var/lib/vg-cloudx.img"
 VG_NAME="vg-cloudx"
-SIZE_MB=30720
+SIZE_MB="${CLOUDX_VG_SIZE_MB:-30720}"
 
 echo "═══ CloudX LVM Storage Bootstrap & Persistence ═══"
 
@@ -15,7 +15,8 @@ fi
 # 1. Ensure loop image exists
 if [ ! -f "$IMG_PATH" ]; then
   echo "[+] Creating $SIZE_MB MB backing file at $IMG_PATH..."
-  dd if=/dev/zero of="$IMG_PATH" bs=1M count="$SIZE_MB" status=none
+  # a half-written image would pass the -f check on the next run, so drop it on failure
+  dd if=/dev/zero of="$IMG_PATH" bs=1M count="$SIZE_MB" status=none || { rm -f "$IMG_PATH"; echo "Error: could not create $IMG_PATH (disk full? set CLOUDX_VG_SIZE_MB)" >&2; exit 1; }
 fi
 
 # 2. Attach loop device if not attached

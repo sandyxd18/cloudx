@@ -16,6 +16,7 @@ from .lookups import (
     require_snapshot,
     require_volume,
 )
+from shared.domain import lock_domain, visible_projects
 from .models import Snapshot, Volume, new_id
 from .schemas import VolumeInternalIn
 from .serializers import obj_to_dict
@@ -23,7 +24,7 @@ from .serializers import obj_to_dict
 
 def _check_auth_volume_quota(project_id: str, size: int, db: Session):
     try:
-        quota_resp = requests.get(f"{AUTH_API_URL}/projects/{project_id}/quota", headers=internal_headers(), timeout=5)
+        quota_resp = requests.get(f"{AUTH_API_URL}/internal/projects/{project_id}/quota", headers=internal_headers(), timeout=5)
         if quota_resp.status_code == 200:
             auth_quota = quota_resp.json()
             max_vol_gb = auth_quota.get("max_volume_gb", 100)
@@ -39,6 +40,14 @@ def _check_auth_volume_quota(project_id: str, size: int, db: Session):
                     status_code=413,
                     detail=f"Volume GB quota exceeded: {used_gb + size}/{max_vol_gb} GB limit reached",
                 )
+            dom = auth_quota.get("domain") or {}
+            cap = (dom.get("caps") or {}).get("max_volume_gb")
+            if cap is not None:
+                lock_domain(db, dom.get("domain_id"))
+                dused = db.scalar(select(func.coalesce(func.sum(Volume.size_gb), 0)).where(
+                    Volume.project_id.in_(dom["project_ids"]), Volume.status.not_in(["deleting", "error"])))
+                if dused + size > cap:
+                    raise HTTPException(status_code=413, detail=f"Domain volume GB quota exceeded: {dused + size}/{cap} GB limit reached")
     except HTTPException:
         raise
     except Exception as exc:
@@ -175,8 +184,9 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
 
 def _list_volumes_query(current: CurrentUser, db: DB):
     q = select(Volume)
-    if current.get("role") != "admin":
-        q = q.where(Volume.project_id == current["project_id"])
+    ids = visible_projects(current)
+    if ids is not None:
+        q = q.where(Volume.project_id.in_(ids))
     return q
 
 

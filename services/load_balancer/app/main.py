@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+from shared.domain import owns, visible_projects
 from shared.config import load_service_config
 load_service_config("load-balancer-api")
 
@@ -24,6 +25,7 @@ from datetime import datetime, timedelta
 from typing import Annotated
 
 import requests
+from cryptography import x509
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import ipaddress
@@ -112,6 +114,8 @@ class Listener(Base):
     protocol_port:     Mapped[int] = mapped_column(Integer)
     default_pool_id:   Mapped[str | None] = mapped_column(String, nullable=True)
     certificate_id:    Mapped[str | None] = mapped_column(String, nullable=True)
+    client_authentication: Mapped[str] = mapped_column(String, default="NONE", server_default="NONE")  # NONE | OPTIONAL | MANDATORY
+    client_ca_pem:     Mapped[str | None] = mapped_column(String, nullable=True)
     created_at:        Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -220,6 +224,26 @@ class ListenerIn(BaseModel):
     protocol: str = Field(..., pattern="^(TCP|UDP|HTTP|HTTPS)$")
     protocol_port: int = Field(..., ge=1, le=65535)
     certificate_id: str | None = None
+    client_authentication: str = Field(default="NONE", pattern="^(NONE|OPTIONAL|MANDATORY)$")
+    client_ca_pem: str | None = Field(default=None, max_length=65536)
+
+    @model_validator(mode="after")
+    def _client_auth(self):
+        if (self.client_authentication != "NONE") != (self.client_ca_pem is not None):
+            raise ValueError("client_ca_pem is required with client_authentication OPTIONAL/MANDATORY and not allowed otherwise")
+        if self.client_ca_pem is not None:
+            if self.protocol != "HTTPS" or not self.certificate_id:
+                raise ValueError("client certificates need an HTTPS listener with a server certificate")
+            try:
+                x509.load_pem_x509_certificates(self.client_ca_pem.encode())
+            except ValueError:
+                raise ValueError("client_ca_pem is not a PEM certificate bundle")
+        return self
+
+
+class ListenerUpdate(BaseModel):
+    client_authentication: str = Field(pattern="^(NONE|OPTIONAL|MANDATORY)$")
+    client_ca_pem: str | None = Field(default=None, max_length=65536)
 
 
 class CertificateIn(BaseModel):
@@ -288,7 +312,7 @@ class L7PolicyUpdate(BaseModel):  # loose on purpose: the merged result is valid
     admin_state_up: bool | None = None
 
 class L7RuleIn(BaseModel):
-    type: str = Field(pattern="^(PATH|HOST_NAME|FILE_TYPE|HEADER|COOKIE)$")
+    type: str = Field(pattern="^(PATH|HOST_NAME|FILE_TYPE|HEADER|COOKIE|SSL_CONN_HAS_CERT|SSL_VERIFY_RESULT|SSL_DN_FIELD)$")
     compare_type: str = Field(default="STARTS_WITH", pattern="^(STARTS_WITH|ENDS_WITH|EQUAL_TO|CONTAINS|REGEX)$")
     value: str = Field(pattern=r"^[A-Za-z0-9._~/%?&=+*:^()|\[\]-]{1,200}$")
     key: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
@@ -297,8 +321,12 @@ class L7RuleIn(BaseModel):
 
     @model_validator(mode="after")
     def _combo(self):
-        if (self.type in ("HEADER", "COOKIE")) != (self.key is not None):
-            raise ValueError("key is required for HEADER / COOKIE rules and not allowed otherwise")
+        if (self.type in ("HEADER", "COOKIE", "SSL_DN_FIELD")) != (self.key is not None):
+            raise ValueError("key is required for HEADER / COOKIE / SSL_DN_FIELD rules and not allowed otherwise")
+        if self.type == "SSL_CONN_HAS_CERT" and not (self.compare_type == "EQUAL_TO" and self.value.upper() in ("TRUE", "FALSE")):
+            raise ValueError("SSL_CONN_HAS_CERT takes EQUAL_TO TRUE or FALSE")
+        if self.type == "SSL_VERIFY_RESULT" and not (self.compare_type == "EQUAL_TO" and self.value.isdigit()):
+            raise ValueError("SSL_VERIFY_RESULT takes EQUAL_TO and an OpenSSL verify code (0 = verified)")
         if self.type == "FILE_TYPE" and self.compare_type not in ("EQUAL_TO", "REGEX"):
             raise ValueError("FILE_TYPE takes EQUAL_TO or REGEX")
         if self.compare_type != "REGEX" and re.search(r"[\^()|\[\]]", self.value):
@@ -439,6 +467,13 @@ def startup():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _lb_q(db, current: dict):
+    """Load balancers the caller may see: own project, or every project of its domain for a domain admin."""
+    q = db.query(LoadBalancer)
+    ids = visible_projects(current)
+    return q if ids is None else q.filter(LoadBalancer.project_id.in_(ids or [_project_id(current)]))
+
+
 def _project_id(current: dict) -> str:
     return current.get("project_id") or current.get("tenant_id") or "default"
 
@@ -554,16 +589,20 @@ def _listener_to_dict(ls: Listener, db: Session | None = None, with_pem: bool = 
             ssl_cert_path = f"/var/lib/cloudx/lb/{ls.load_balancer_id}/{cert.id}.pem"
             if with_pem:
                 pem = f"{cert.certificate_pem}\n{cert.private_key_pem}"
+    ca_path = f"/var/lib/cloudx/lb/{ls.load_balancer_id}/{ls.id}-ca.pem" if ls.client_ca_pem else None
     return {
         "id": ls.id,
         "load_balancer_id": ls.load_balancer_id,
         "name": ls.name,
+        "client_ca_path": ca_path,
+        **({"client_ca_pem": ls.client_ca_pem} if ls.client_ca_pem and with_pem else {}),
         "protocol": ls.protocol,
         "protocol_port": ls.protocol_port,
         "default_pool_id": ls.default_pool_id,
         "certificate_id": ls.certificate_id,
         "ssl_cert_path": ssl_cert_path,
         **({"ssl_pem": pem} if pem else {}),
+        "client_authentication": ls.client_authentication,
         "created_at": ls.created_at.isoformat() if ls.created_at else None,
     }
 
@@ -707,15 +746,14 @@ def list_load_balancers(current: UserOrInternal, db: DB, all_tenants: bool = Fal
     if current.get("role") == "admin" or all_tenants:
         rows = db.query(LoadBalancer).all()
     else:
-        project_id = _project_id(current)
-        rows = db.query(LoadBalancer).filter_by(project_id=project_id).all()
+        rows = _lb_q(db, current).all()
     return {"load_balancers": [_lb_to_dict(r) for r in rows]}
 
 
 @app.get("/load-balancers/{ref}")
 def show_load_balancer(ref: str, current: CurrentUser, db: DB):
     project_id = _project_id(current)
-    lb = db.query(LoadBalancer).filter_by(id=ref, project_id=project_id).first()
+    lb = _lb_q(db, current).filter_by(id=ref).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
     return _lb_to_dict(lb)
@@ -724,7 +762,7 @@ def show_load_balancer(ref: str, current: CurrentUser, db: DB):
 @app.delete("/load-balancers/{ref}")
 def delete_load_balancer(ref: str, current: CurrentUser, db: DB):
     project_id = _project_id(current)
-    lb = db.query(LoadBalancer).filter_by(id=ref, project_id=project_id).first()
+    lb = _lb_q(db, current).filter_by(id=ref).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
 
@@ -761,7 +799,7 @@ def delete_load_balancer(ref: str, current: CurrentUser, db: DB):
 @app.post("/load-balancers/{lb_ref}/certificates", status_code=201)
 def upload_certificate(lb_ref: str, payload: CertificateIn, current: CurrentUser, db: DB):
     project_id = _project_id(current)
-    lb = db.query(LoadBalancer).filter_by(id=lb_ref, project_id=project_id).first()
+    lb = _lb_q(db, current).filter_by(id=lb_ref).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
     cert = LBCertificate(
@@ -779,7 +817,7 @@ def upload_certificate(lb_ref: str, payload: CertificateIn, current: CurrentUser
 @app.get("/load-balancers/{lb_ref}/certificates")
 def list_certificates(lb_ref: str, current: CurrentUser, db: DB):
     project_id = _project_id(current)
-    lb = db.query(LoadBalancer).filter_by(id=lb_ref, project_id=project_id).first()
+    lb = _lb_q(db, current).filter_by(id=lb_ref).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
     certs = db.query(LBCertificate).filter_by(load_balancer_id=lb.id).all()
@@ -788,7 +826,7 @@ def list_certificates(lb_ref: str, current: CurrentUser, db: DB):
 
 @app.delete("/load-balancers/{lb_ref}/certificates/{cert_id}", status_code=204)
 def delete_certificate(lb_ref: str, cert_id: str, current: CurrentUser, db: DB):
-    lb = db.query(LoadBalancer).filter_by(id=lb_ref, project_id=_project_id(current)).first()
+    lb = _lb_q(db, current).filter_by(id=lb_ref).first()
     cert = db.query(LBCertificate).filter_by(id=cert_id, load_balancer_id=lb.id).first() if lb else None
     if not cert:
         raise HTTPException(status_code=404, detail="certificate not found")
@@ -801,7 +839,7 @@ def delete_certificate(lb_ref: str, cert_id: str, current: CurrentUser, db: DB):
 @app.post("/load-balancers/{lb_ref}/listeners", status_code=201)
 def create_listener(lb_ref: str, payload: ListenerIn, current: CurrentUser, db: DB):
     project_id = _project_id(current)
-    lb = db.query(LoadBalancer).filter_by(id=lb_ref, project_id=project_id).first()
+    lb = _lb_q(db, current).filter_by(id=lb_ref).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
 
@@ -811,6 +849,8 @@ def create_listener(lb_ref: str, payload: ListenerIn, current: CurrentUser, db: 
         protocol=payload.protocol,
         protocol_port=payload.protocol_port,
         certificate_id=payload.certificate_id,
+        client_authentication=payload.client_authentication,
+        client_ca_pem=payload.client_ca_pem,
     )
     db.add(ls)
     db.commit()
@@ -826,7 +866,7 @@ def create_listener(lb_ref: str, payload: ListenerIn, current: CurrentUser, db: 
 @app.get("/load-balancers/{lb_ref}/listeners")
 def list_listeners(lb_ref: str, current: CurrentUser, db: DB):
     project_id = _project_id(current)
-    lb = db.query(LoadBalancer).filter_by(id=lb_ref, project_id=project_id).first()
+    lb = _lb_q(db, current).filter_by(id=lb_ref).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
     rows = db.query(Listener).filter_by(load_balancer_id=lb.id).all()
@@ -843,7 +883,7 @@ def create_pool(ls_ref: str, payload: PoolIn, current: CurrentUser, db: DB):
     ls = db.query(Listener).filter_by(id=ls_ref).first()
     if not ls:
         raise HTTPException(status_code=404, detail="listener not found")
-    lb = db.query(LoadBalancer).filter_by(id=ls.load_balancer_id, project_id=project_id).first()
+    lb = _lb_q(db, current).filter_by(id=ls.load_balancer_id).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
 
@@ -896,7 +936,7 @@ def show_pool(pool_ref: str, current: CurrentUser, db: DB):
     if not pool:
         raise HTTPException(status_code=404, detail="pool not found")
     lb = db.query(LoadBalancer).filter_by(id=pool.load_balancer_id).first()
-    if lb and lb.project_id != _project_id(current):
+    if lb and not owns(current, lb.project_id):
         raise HTTPException(status_code=404, detail="pool not found")
     members = db.query(Member).filter_by(pool_id=pool.id).all()
     return {
@@ -927,7 +967,7 @@ def create_health_monitor(pool_ref: str, payload: HealthMonitorIn, current: Curr
     if not pool:
         raise HTTPException(status_code=404, detail="pool not found")
     lb = db.query(LoadBalancer).filter_by(id=pool.load_balancer_id).first()
-    if lb and lb.project_id != _project_id(current):
+    if lb and not owns(current, lb.project_id):
         raise HTTPException(status_code=404, detail="pool not found")
 
     hm = HealthMonitor(
@@ -963,7 +1003,7 @@ class MemberIn(BaseModel):
 def _own_pool(db, current, pool_ref: str):
     pool = db.query(Pool).filter_by(id=pool_ref).first()
     lb = pool and db.query(LoadBalancer).filter_by(id=pool.load_balancer_id).first()
-    if not pool or (lb and current.get("role") != "admin" and lb.project_id != _project_id(current)):
+    if not pool or (lb and not owns(current, lb.project_id)):
         raise HTTPException(status_code=404, detail="pool not found")
     return pool, lb
 
@@ -1033,7 +1073,7 @@ def _reapply(db, lb):
 
 def _own_lb(db, current, lb_ref: str) -> LoadBalancer:
     lb = db.query(LoadBalancer).filter_by(id=lb_ref).first()
-    if not lb or (current.get("role") != "admin" and lb.project_id != _project_id(current)):
+    if not lb or (not owns(current, lb.project_id)):
         raise HTTPException(status_code=404, detail="load balancer not found")
     return lb
 
@@ -1075,6 +1115,30 @@ def delete_health_monitor(pool_ref: str, current: CurrentUser, db: DB):
     db.commit()
     _reapply(db, lb)
 
+
+@app.put("/listeners/{ls_ref}")
+def update_listener(ls_ref: str, payload: ListenerUpdate, current: CurrentUser, db: DB):
+    """Change the client certificate settings (the only mutable part of a listener)."""
+    ls, lb = _own_listener(db, current, ls_ref)
+    mode, ca = payload.client_authentication, payload.client_ca_pem
+    if mode != "NONE" and ca is None:
+        ca = ls.client_ca_pem  # keep the stored bundle when only the mode changes
+    if (mode == "NONE") != (ca is None):
+        raise HTTPException(status_code=400, detail="client_ca_pem is not allowed with client_authentication NONE")
+    if mode != "NONE":
+        if ls.protocol != "HTTPS" or not ls.certificate_id:
+            raise HTTPException(status_code=400, detail="client certificates need an HTTPS listener with a server certificate")
+        try:
+            x509.load_pem_x509_certificates(ca.encode())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="client_ca_pem is not a PEM certificate bundle")
+    elif db.query(L7Rule).join(L7Policy, L7Rule.policy_id == L7Policy.id).filter(
+            L7Policy.listener_id == ls.id, L7Rule.type.like("SSL\\_%", escape="\\")).first():
+        raise HTTPException(status_code=409, detail="delete the listener's SSL_* L7 rules first")
+    ls.client_authentication, ls.client_ca_pem = mode, ca
+    db.commit()
+    _reapply(db, lb)
+    return _listener_to_dict(ls, db)
 
 @app.delete("/listeners/{ls_ref}", status_code=204)
 def delete_listener(ls_ref: str, current: CurrentUser, db: DB):
@@ -1163,6 +1227,10 @@ def delete_l7policy(pol_ref: str, current: CurrentUser, db: DB):
     db.commit()
     _reapply(db, lb)
 
+def _need_https(db, pol, rule_type: str) -> None:
+    if rule_type.startswith("SSL_") and db.get(Listener, pol.listener_id).protocol != "HTTPS":
+        raise HTTPException(status_code=400, detail=f"{rule_type} rules need an HTTPS listener")
+
 def _rule(db, current, pol_ref: str, rule_id: str):
     pol, lb = _policy(db, current, pol_ref)
     rule = db.query(L7Rule).filter_by(id=rule_id, policy_id=pol.id).first()
@@ -1173,6 +1241,7 @@ def _rule(db, current, pol_ref: str, rule_id: str):
 @app.post("/l7policies/{pol_ref}/rules", status_code=201)
 def create_l7rule(pol_ref: str, payload: L7RuleIn, current: CurrentUser, db: DB):
     pol, lb = _policy(db, current, pol_ref)
+    _need_https(db, pol, payload.type)
     rule = L7Rule(policy_id=pol.id, **payload.model_dump())
     db.add(rule)
     db.commit()
@@ -1194,6 +1263,7 @@ def update_l7rule(pol_ref: str, rule_id: str, payload: L7RuleUpdate, current: Cu
     cur = {k: getattr(rule, k) for k in _RULE_FIELDS}
     cur.update({k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None or k == "key"})
     new = _valid(L7RuleIn, cur)
+    _need_https(db, db.get(L7Policy, rule.policy_id), new.type)
     for k in _RULE_FIELDS:
         setattr(rule, k, getattr(new, k))
     db.commit()

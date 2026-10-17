@@ -52,7 +52,7 @@ def list_groups(current: CurrentUser, db: DB):
 @router.put("/groups/{ref}/members/{user_ref}")
 def add_group_member(ref: str, user_ref: str, current: CurrentUser, db: DB):
     g = _group(db, ref, current)
-    u = _get_user_by_ref(db, user_ref)
+    u = _get_user_by_ref(db, user_ref, scope_domain(current))
     if not in_scope(current, u.domain_id):
         raise HTTPException(status_code=404, detail="user not found")
     if db.get(Project, g.project_id).domain_id != u.domain_id:
@@ -68,7 +68,7 @@ def add_group_member(ref: str, user_ref: str, current: CurrentUser, db: DB):
 @router.delete("/groups/{ref}/members/{user_ref}", status_code=204)
 def remove_group_member(ref: str, user_ref: str, current: CurrentUser, db: DB):
     g = _group(db, ref, current)
-    u = _get_user_by_ref(db, user_ref)
+    u = _get_user_by_ref(db, user_ref, scope_domain(current))
     m = db.scalar(select(GroupMember).where(
         GroupMember.group_id == g.id, GroupMember.user_id == u.id))
     if m:

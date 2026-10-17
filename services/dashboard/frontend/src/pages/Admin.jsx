@@ -4,6 +4,7 @@ import Box from '@cloudscape-design/components/box'
 import Button from '@cloudscape-design/components/button'
 import ContentLayout from '@cloudscape-design/components/content-layout'
 import Header from '@cloudscape-design/components/header'
+import Checkbox from '@cloudscape-design/components/checkbox'
 import Modal from '@cloudscape-design/components/modal'
 import SpaceBetween from '@cloudscape-design/components/space-between'
 import Table from '@cloudscape-design/components/table'
@@ -25,8 +26,71 @@ const ROLES = [
   { value: 'admin',  label: 'admin' },
 ]
 
+// -- Domains ------------------------------------------------------------
+const DOMAIN_CAPS = ['max_instances', 'max_vcpus', 'max_ram_mb', 'max_volume_gb', 'max_networks', 'max_subnets', 'max_ports', 'max_routers', 'max_floating_ips', 'max_security_groups']
+
+function DomainModal({ onDismiss, onCreate }) {
+  const [name, setName] = useState('')
+  const [desc, setDesc] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const submit = async () => {
+    if (!name) { setError('Domain name is required.'); return }
+    setLoading(true); setError('')
+    try { await onCreate({ name, description: desc }); onDismiss() }
+    catch (e) { setError(e.message) } finally { setLoading(false) }
+  }
+  return (
+    <Modal visible onDismiss={onDismiss} header="Create domain"
+      footer={<Box float="right"><SpaceBetween direction="horizontal" size="xs">
+        <Button onClick={onDismiss}>Cancel</Button>
+        <Button variant="primary" loading={loading} onClick={submit} data-testid="domain-create-submit">Create domain</Button>
+      </SpaceBetween></Box>}>
+      <Form><SpaceBetween size="m">
+        {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
+        <FormField label="Domain name"><Input value={name} onChange={({ detail }) => setName(detail.value)} controlId="domain-name" /></FormField>
+        <FormField label="Description"><Input value={desc} onChange={({ detail }) => setDesc(detail.value)} controlId="domain-desc" /></FormField>
+      </SpaceBetween></Form>
+    </Modal>
+  )
+}
+
+function DomainQuotaModal({ domain, onDismiss }) {
+  const [caps, setCaps] = useState({})
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => { api.getDomainQuota(domain.id).then(q => setCaps(Object.fromEntries(DOMAIN_CAPS.map(k => [k, q[k] ?? ''])))).catch(e => setError(e.message)) }, [domain.id])
+  const save = async () => {
+    setLoading(true); setError('')
+    try {
+      const body = Object.fromEntries(DOMAIN_CAPS.filter(k => caps[k] !== '' && caps[k] != null).map(k => [k, Number(caps[k])]))
+      await api.clearDomainQuota(domain.id)
+      if (Object.keys(body).length) await api.setDomainQuota(domain.id, body)
+      onDismiss()
+    } catch (e) { setError(e.message) } finally { setLoading(false) }
+  }
+  return (
+    <Modal visible onDismiss={onDismiss} header={`Quota: ${domain.name}`}
+      footer={<Box float="right"><SpaceBetween direction="horizontal" size="xs">
+        <Button onClick={onDismiss}>Cancel</Button>
+        <Button variant="primary" loading={loading} onClick={save} data-testid="domain-quota-save">Save</Button>
+      </SpaceBetween></Box>}>
+      <Form><SpaceBetween size="s">
+        {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
+        <Box variant="small" color="text-body-secondary">Total over every project of the domain. Empty means unlimited.</Box>
+        {DOMAIN_CAPS.map(k => (
+          <FormField key={k} label={k.replace('max_', '').replaceAll('_', ' ')}>
+            <Input type="number" inputMode="numeric" value={String(caps[k] ?? '')} onChange={({ detail }) => setCaps(c => ({ ...c, [k]: detail.value }))} controlId={`dq-${k}`} />
+          </FormField>
+        ))}
+      </SpaceBetween></Form>
+    </Modal>
+  )
+}
+
 // ── Create project ───────────────────────────────────────────────────────────
-function ProjectModal({ onDismiss, onCreate }) {
+function ProjectModal({ onDismiss, onCreate, domains }) {
+  const [domain, setDomain] = useState(null)
   const [name, setName] = useState('')
   const [desc, setDesc] = useState('')
   const [loading, setLoading] = useState(false)
@@ -35,7 +99,7 @@ function ProjectModal({ onDismiss, onCreate }) {
   const submit = async () => {
     if (!name) { setError('Project name is required.'); return }
     setLoading(true); setError('')
-    try { await onCreate({ name, description: desc }); onDismiss() }
+    try { await onCreate({ name, description: desc, ...(domain ? { domain_id: domain.value } : {}) }); onDismiss() }
     catch (e) { setError(e.message) } finally { setLoading(false) }
   }
 
@@ -62,6 +126,17 @@ function ProjectModal({ onDismiss, onCreate }) {
           <FormField label="Description">
             <Input value={desc} onChange={({ detail }) => setDesc(detail.value)} placeholder="Optional description" controlId="project-desc" />
           </FormField>
+          {domains.length > 1 && (
+            <FormField label="Domain" description="Empty means the default domain">
+              <Select
+                selectedOption={domain}
+                onChange={({ detail }) => setDomain(detail.selectedOption)}
+                options={domains.map(d => ({ value: d.id, label: d.name }))}
+                placeholder="Default"
+                controlId="project-domain"
+              />
+            </FormField>
+          )}
         </SpaceBetween>
       </Form>
     </Modal>
@@ -69,7 +144,8 @@ function ProjectModal({ onDismiss, onCreate }) {
 }
 
 // ── Create user ──────────────────────────────────────────────────────────────
-function UserModal({ onDismiss, onCreate, projects }) {
+function UserModal({ onDismiss, onCreate, projects, canMakeDomainAdmin }) {
+  const [domainAdmin, setDomainAdmin] = useState(false)
   const [form, setForm] = useState({ username: '', email: '', password: '', role: ROLES[0], project: null })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -91,6 +167,7 @@ function UserModal({ onDismiss, onCreate, projects }) {
         password: form.password,
         role: form.role.value,
         project_id: form.project.value,
+        ...(domainAdmin ? { is_domain_admin: true } : {}),
       })
       onDismiss()
     } catch (e) { setError(e.message) } finally { setLoading(false) }
@@ -135,6 +212,11 @@ function UserModal({ onDismiss, onCreate, projects }) {
               controlId="user-project"
             />
           </FormField>
+          {canMakeDomainAdmin && (
+            <Checkbox checked={domainAdmin} onChange={({ detail }) => setDomainAdmin(detail.checked)}>
+              Domain admin (manages every project and user of its domain)
+            </Checkbox>
+          )}
         </SpaceBetween>
       </Form>
     </Modal>
@@ -229,6 +311,8 @@ function AccessKeyModal({ onDismiss, onGenerate }) {
 // ── Page ─────────────────────────────────────────────────────────────────────
 export default function AdminPage() {
   const { user } = useAuth()
+  const [domains, setDomains] = useState([])
+  useEffect(() => { api.getDomains().then(d => setDomains(d?.domains || [])).catch(() => setDomains([])) }, [])
   const toast = useToast()
   const [projects, setProjects] = useState([])
   const [users, setUsers]       = useState([])
@@ -243,6 +327,9 @@ export default function AdminPage() {
   const [showProject, setShowProject] = useState(false)
   const [showUser, setShowUser] = useState(false)
   const [showKey, setShowKey]   = useState(false)
+  const [showDomain, setShowDomain] = useState(false)
+  const [quotaDomain, setQuotaDomain] = useState(null)
+  const [selDomains, setSelDomains] = useState([])
 
   const load = useCallback(() => {
     if (user?.role !== 'admin') {
@@ -296,6 +383,14 @@ export default function AdminPage() {
       try { await api.deleteAccessKey(k.id) } catch (e) { toast(e.message, 'error') }
     }
     setSelKeys([]); load()
+  }
+
+  const deleteDomains = async () => {
+    if (!confirm(`Delete ${selDomains.length} domain(s)?`)) return
+    for (const d of selDomains) {
+      try { await api.deleteDomain(d.id) } catch (e) { toast(`${d.name}: ${e.message}`, 'error') }
+    }
+    setSelDomains([]); api.getDomains().then(d => setDomains(d?.domains || [])).catch(() => {}); load()
   }
 
   const filteredProjects = q ? projects.filter(p => p.name?.toLowerCase().includes(q)) : projects
@@ -372,6 +467,39 @@ export default function AdminPage() {
                 ]}
                 filter={searchFilter('projects')}
                 empty={q ? <TableNoMatch onClear={() => setFilter('')} /> : <TableEmpty title="No projects" description="Create a project to scope resources and users." action={<Button variant="primary" onClick={() => setShowProject(true)}>Create project</Button>} />}
+              />
+            ),
+          },
+          {
+            id: 'domains',
+            label: `Domains (${domains.length})`,
+            content: (
+              <Table
+                variant="container"
+                selectionType="multi"
+                selectedItems={selDomains}
+                onSelectionChange={({ detail }) => setSelDomains(detail.selectedItems)}
+                items={domains}
+                trackBy="id"
+                header={
+                  <Header variant="h2" counter={counterText(domains.length, selDomains.length)}
+                    actions={
+                      <SpaceBetween direction="horizontal" size="xs">
+                        <Button disabled={selDomains.length !== 1} onClick={() => setQuotaDomain(selDomains[0])}>Quota</Button>
+                        <Button disabled={!selDomains.length} onClick={deleteDomains}>Delete</Button>
+                        <Button variant="primary" onClick={() => setShowDomain(true)} data-testid="create-domain-btn">Create domain</Button>
+                      </SpaceBetween>
+                    }>
+                    Domains
+                  </Header>
+                }
+                columnDefinitions={[
+                  { id: 'name', header: 'Domain name', cell: d => <Box fontWeight="bold">{d.name}</Box>, isRowHeader: true },
+                  { id: 'description', header: 'Description', cell: d => d.description || '-' },
+                  { id: 'enabled', header: 'Status', cell: d => <BoolStatus value={d.enabled !== false} trueText="Enabled" falseText="Disabled" /> },
+                  { id: 'projects', header: 'Projects', cell: d => projects.filter(p => p.domain_id === d.id).length },
+                ]}
+                empty={<TableEmpty title="No domains" description="Create a domain to separate projects and users." action={<Button variant="primary" onClick={() => setShowDomain(true)}>Create domain</Button>} />}
               />
             ),
           },
@@ -505,13 +633,22 @@ export default function AdminPage() {
 
       {showProject && (
         <ProjectModal
+          domains={domains}
           onDismiss={() => setShowProject(false)}
           onCreate={async (b) => { await api.createProject(b); toast('Project created', 'success'); load() }}
         />
       )}
+      {showDomain && (
+        <DomainModal
+          onDismiss={() => setShowDomain(false)}
+          onCreate={async (b) => { await api.createDomain(b); toast('Domain created', 'success'); api.getDomains().then(d => setDomains(d?.domains || [])) }}
+        />
+      )}
+      {quotaDomain && <DomainQuotaModal domain={quotaDomain} onDismiss={() => setQuotaDomain(null)} />}
       {showUser && (
         <UserModal
           projects={projects}
+          canMakeDomainAdmin={user?.role === 'admin'}
           onDismiss={() => setShowUser(false)}
           onCreate={async (b) => { await api.createUser(b); toast('User created', 'success'); load() }}
         />

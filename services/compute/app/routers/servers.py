@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
+from shared.domain import visible_projects
 from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
 from sqlalchemy import select
 
@@ -206,8 +207,9 @@ def list_servers(
     server_group_id: str | None = None,
 ):
     q = select(Server).where(Server.status != "DELETED")
-    if current.get("role") != "admin":
-        q = q.where(Server.project_id == current["project_id"])
+    ids = visible_projects(current)
+    if ids is not None:
+        q = q.where(Server.project_id.in_(ids))
     if server_group_id:
         q = q.where(Server.server_group_id == server_group_id)
     if tags:
