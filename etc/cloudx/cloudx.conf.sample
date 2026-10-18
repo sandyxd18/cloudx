@@ -30,3 +30,11 @@ metadata_api_url = http://127.0.0.1:8775
 
 storage_lvm_driver = true
 lvm_vg_name = vg-cloudx
+
+dns_api_url = http://127.0.0.1:8016
+dns_platform_domain = cloud.lab
+dns_public_address = 172.20.0.120
+dns_resolver_address = 172.20.0.118
+dns_upstream = 1.1.1.1,8.8.8.8
+# CIDRs allowed to recurse through the resolver. VM traffic is source-NATed to the compute/gateway node address (seen in the lab: the node IP, not the VM IP), so include the node network.
+dns_resolver_clients = 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16

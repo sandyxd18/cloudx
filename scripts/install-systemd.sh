@@ -11,7 +11,7 @@ SYSTEMD_DIR="/etc/systemd/system"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "===> Setting up /etc/hosts service aliases..."
-grep -q "networking-api" /etc/hosts || echo "127.0.0.1 auth-api compute-api networking-api image-api block-store-api placement-api key-manager-api k8s-engine-api telemetry-api billing-api event-api orchestration-api load-balancer-api object-store-api metadata-api rabbitmq postgres" >> /etc/hosts
+grep -q "networking-api" /etc/hosts || echo "127.0.0.1 auth-api compute-api networking-api image-api block-store-api placement-api key-manager-api k8s-engine-api telemetry-api billing-api event-api orchestration-api load-balancer-api dns-api object-store-api metadata-api rabbitmq postgres" >> /etc/hosts
 
 echo "===> Setting up CloudX system user & group..."
 if ! getent group "${CLOUDX_GROUP}" >/dev/null; then
@@ -41,6 +41,7 @@ SERVICES=(
     "orchestration-api"
     "load-balancer-api"
     "object-store-api"
+    "dns-api"
 )
 
 for svc in "${SERVICES[@]}"; do
@@ -105,6 +106,18 @@ fi
 echo "===> Creating runtime data directories under /var/lib/cloudx..."
 mkdir -p /var/lib/cloudx/images /var/lib/cloudx/object-store /var/lib/cloudx/compute
 chown -R "${CLOUDX_USER}:${CLOUDX_GROUP}" /var/lib/cloudx
+# DNS (controller only): BIND runs from /var/lib/cloudx/dns/<role>, rendered by cloudx-dns-worker (root).
+if systemctl cat postgresql.service >/dev/null 2>&1; then
+    echo "===> Installing BIND9 for the DNS service..."
+    DEBIAN_FRONTEND=noninteractive apt-get install -y bind9 bind9utils >/dev/null
+    systemctl disable --now named bind9 2>/dev/null || true   # the distro instance would fight for port 53
+    mkdir -p /var/lib/cloudx/dns/auth /var/lib/cloudx/dns/resolver
+    chown -R root:root /var/lib/cloudx/dns
+    if [[ -d /etc/apparmor.d/local ]]; then
+        echo "/var/lib/cloudx/dns/** rwk," > /etc/apparmor.d/local/usr.sbin.named
+        apparmor_parser -r /etc/apparmor.d/usr.sbin.named 2>/dev/null || true
+    fi
+fi
 
 echo "===> Syncing codebase to ${OPT_DIR}..."
 mkdir -p "${OPT_DIR}"

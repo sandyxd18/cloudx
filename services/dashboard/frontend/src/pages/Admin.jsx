@@ -55,7 +55,7 @@ function DomainModal({ onDismiss, onCreate }) {
   )
 }
 
-function DomainQuotaModal({ domain, onDismiss }) {
+function DomainQuotaModal({ domain, onDismiss, readOnly }) {
   const [caps, setCaps] = useState({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -72,15 +72,15 @@ function DomainQuotaModal({ domain, onDismiss }) {
   return (
     <Modal visible onDismiss={onDismiss} header={`Quota: ${domain.name}`}
       footer={<Box float="right"><SpaceBetween direction="horizontal" size="xs">
-        <Button onClick={onDismiss}>Cancel</Button>
-        <Button variant="primary" loading={loading} onClick={save} data-testid="domain-quota-save">Save</Button>
+        <Button onClick={onDismiss}>{readOnly ? 'Close' : 'Cancel'}</Button>
+        {!readOnly && <Button variant="primary" loading={loading} onClick={save} data-testid="domain-quota-save">Save</Button>}
       </SpaceBetween></Box>}>
       <Form><SpaceBetween size="s">
         {error && <Alert type="error" statusIconAriaLabel="Error">{error}</Alert>}
-        <Box variant="small" color="text-body-secondary">Total over every project of the domain. Empty means unlimited.</Box>
+        <Box variant="small" color="text-body-secondary">Total over every project of the domain. Empty means unlimited.{readOnly ? ' Only the system admin can change these.' : ''}</Box>
         {DOMAIN_CAPS.map(k => (
           <FormField key={k} label={k.replace('max_', '').replaceAll('_', ' ')}>
-            <Input type="number" inputMode="numeric" value={String(caps[k] ?? '')} onChange={({ detail }) => setCaps(c => ({ ...c, [k]: detail.value }))} controlId={`dq-${k}`} />
+            <Input type="number" inputMode="numeric" readOnly={readOnly} value={String(caps[k] ?? '')} onChange={({ detail }) => setCaps(c => ({ ...c, [k]: detail.value }))} controlId={`dq-${k}`} />
           </FormField>
         ))}
       </SpaceBetween></Form>
@@ -331,13 +331,17 @@ export default function AdminPage() {
   const [quotaDomain, setQuotaDomain] = useState(null)
   const [selDomains, setSelDomains] = useState([])
 
+  const isSystem = user?.role === 'admin'
+  const canAdminister = isSystem || !!user?.domain_admin   // a domain admin manages its own domain only
+
   const load = useCallback(() => {
-    if (user?.role !== 'admin') {
+    if (!canAdminister) {
       setLoading(false)
       return
     }
     setLoading(true)
-    Promise.allSettled([api.getProjects(), api.getUsers(), api.getAccessKeys(), api.getAuditLogs()])
+    // access keys and audit logs are system-admin APIs: a domain admin would only get 403s
+    Promise.allSettled([api.getProjects(), api.getUsers(), isSystem ? api.getAccessKeys() : Promise.resolve({}), isSystem ? api.getAuditLogs() : Promise.resolve({})])
       .then(([p, u, k, a]) => {
         if (p.status === 'fulfilled') setProjects(p.value?.items || [])
         if (u.status === 'fulfilled') setUsers(u.value?.items || [])
@@ -345,15 +349,15 @@ export default function AdminPage() {
         if (a.status === 'fulfilled') setAuditLogs(a.value?.items || [])
       })
       .finally(() => setLoading(false))
-  }, [user?.role])
+  }, [canAdminister, isSystem])
 
   useEffect(() => { load() }, [load])
 
-  if (user?.role !== 'admin') {
+  if (!canAdminister) {
     return (
       <ContentLayout header={<Header variant="h1">Identity Administration</Header>}>
         <Alert type="warning" header="Administrator access required">
-          Only users with the admin role can access identity administration.
+          Only system admins and domain admins can access identity administration.
         </Alert>
       </ContentLayout>
     )
@@ -485,9 +489,9 @@ export default function AdminPage() {
                   <Header variant="h2" counter={counterText(domains.length, selDomains.length)}
                     actions={
                       <SpaceBetween direction="horizontal" size="xs">
-                        <Button disabled={selDomains.length !== 1} onClick={() => setQuotaDomain(selDomains[0])}>Quota</Button>
-                        <Button disabled={!selDomains.length} onClick={deleteDomains}>Delete</Button>
-                        <Button variant="primary" onClick={() => setShowDomain(true)} data-testid="create-domain-btn">Create domain</Button>
+                        <Button disabled={selDomains.length !== 1} onClick={() => setQuotaDomain(selDomains[0])}>{isSystem ? 'Quota' : 'View quota'}</Button>
+                        {isSystem && <Button disabled={!selDomains.length} onClick={deleteDomains}>Delete</Button>}
+                        {isSystem && <Button variant="primary" onClick={() => setShowDomain(true)} data-testid="create-domain-btn">Create domain</Button>}
                       </SpaceBetween>
                     }>
                     Domains
@@ -499,7 +503,7 @@ export default function AdminPage() {
                   { id: 'enabled', header: 'Status', cell: d => <BoolStatus value={d.enabled !== false} trueText="Enabled" falseText="Disabled" /> },
                   { id: 'projects', header: 'Projects', cell: d => projects.filter(p => p.domain_id === d.id).length },
                 ]}
-                empty={<TableEmpty title="No domains" description="Create a domain to separate projects and users." action={<Button variant="primary" onClick={() => setShowDomain(true)}>Create domain</Button>} />}
+                empty={<TableEmpty title="No domains" description="Create a domain to separate projects and users." action={isSystem ? <Button variant="primary" onClick={() => setShowDomain(true)}>Create domain</Button> : undefined} />}
               />
             ),
           },
@@ -644,7 +648,7 @@ export default function AdminPage() {
           onCreate={async (b) => { await api.createDomain(b); toast('Domain created', 'success'); api.getDomains().then(d => setDomains(d?.domains || [])) }}
         />
       )}
-      {quotaDomain && <DomainQuotaModal domain={quotaDomain} onDismiss={() => setQuotaDomain(null)} />}
+      {quotaDomain && <DomainQuotaModal domain={quotaDomain} readOnly={!isSystem} onDismiss={() => setQuotaDomain(null)} />}
       {showUser && (
         <UserModal
           projects={projects}

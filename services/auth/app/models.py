@@ -51,6 +51,8 @@ class ProjectQuota(Base):
     max_routers: Mapped[int] = mapped_column(Integer, default=10, server_default="10")
     max_floating_ips: Mapped[int] = mapped_column(Integer, default=50, server_default="50")
     max_security_groups: Mapped[int] = mapped_column(Integer, default=20, server_default="20")
+    max_zones: Mapped[int] = mapped_column(Integer, default=10, server_default="10")
+    max_recordsets: Mapped[int] = mapped_column(Integer, default=200, server_default="200")
     updated_at:    Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -152,6 +154,8 @@ class DomainQuota(Base):
     max_routers: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_floating_ips: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_security_groups: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_zones: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_recordsets: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

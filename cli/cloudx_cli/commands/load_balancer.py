@@ -135,11 +135,17 @@ def listener_list(ctx, lb_ref):
 @click.argument("listener_id")
 @click.option("--client-authentication", type=click.Choice(["NONE", "OPTIONAL", "MANDATORY"]), required=True, help="Ask HTTPS clients for a certificate")
 @click.option("--client-ca-file", type=click.Path(exists=True, dir_okay=False), default=None, help="New CA bundle (kept when omitted)")
+@click.option("--client-crl-file", type=click.Path(exists=True, dir_okay=False), default=None, help="New CRL (kept when omitted)")
+@click.option("--clear-crl", is_flag=True, help="Remove the stored CRL")
 @click.pass_context
-def listener_update(ctx, listener_id, client_authentication, client_ca_file):
+def listener_update(ctx, listener_id, client_authentication, client_ca_file, client_crl_file, clear_crl):
     payload = {"client_authentication": client_authentication}
     if client_ca_file:
         payload["client_ca_pem"] = open(client_ca_file, encoding="utf-8").read()
+    if client_crl_file:
+        payload["client_crl_pem"] = open(client_crl_file, encoding="utf-8").read()
+    elif clear_crl:
+        payload["client_crl_pem"] = None
     data = _api("put", f"{DEFAULT_URLS['load-balancer']}/listeners/{listener_id}", ctx.obj["profile"], json=payload)
     _output(data, ctx.obj["fmt"], ["id", "name", "protocol", "client_authentication"])
 
@@ -151,13 +157,16 @@ def listener_update(ctx, listener_id, client_authentication, client_ca_file):
 @click.option("--certificate", "--certificate-id", "certificate_id", default=None, help="Certificate ID for HTTPS")
 @click.option("--client-authentication", type=click.Choice(["NONE", "OPTIONAL", "MANDATORY"]), default="NONE", help="Ask HTTPS clients for a certificate")
 @click.option("--client-ca-file", type=click.Path(exists=True, dir_okay=False), default=None, help="PEM bundle of the CAs that sign client certificates")
+@click.option("--client-crl-file", type=click.Path(exists=True, dir_okay=False), default=None, help="PEM CRL for those CAs")
 @click.pass_context
-def listener_create(ctx, lb_ref, name, port, protocol, certificate_id, client_authentication, client_ca_file):
+def listener_create(ctx, lb_ref, name, port, protocol, certificate_id, client_authentication, client_ca_file, client_crl_file):
     payload = {"name": name, "protocol": protocol, "protocol_port": port, "client_authentication": client_authentication}
     if certificate_id:
         payload["certificate_id"] = certificate_id
     if client_ca_file:
         payload["client_ca_pem"] = open(client_ca_file, encoding="utf-8").read()
+    if client_crl_file:
+        payload["client_crl_pem"] = open(client_crl_file, encoding="utf-8").read()
     data = _api("post", f"{DEFAULT_URLS['load-balancer']}/load-balancers/{lb_ref}/listeners", ctx.obj["profile"], json=payload)
     _output(data, ctx.obj["fmt"])
 

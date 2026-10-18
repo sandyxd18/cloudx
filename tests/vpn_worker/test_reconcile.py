@@ -68,7 +68,7 @@ def test_vpn_worker_first_tick_command_order(tmp_path, monkeypatch):
         return res
 
     with patch("requests.get", return_value=mock_response), \
-         patch("requests.post") as mock_post, \
+         patch("requests.post"), \
          patch.object(vpn_worker, "run", side_effect=mock_run), \
          patch("time.sleep", return_value=None):
 
@@ -488,7 +488,7 @@ def test_vpn_worker_apply_failure_error_reported(tmp_path, monkeypatch):
     }
 
     with patch("requests.get", return_value=mock_response), \
-         patch("requests.post") as mock_post, \
+         patch("requests.post"), \
          patch.object(vpn_worker, "apply_gateway", side_effect=RuntimeError("disk full")), \
          patch("time.sleep", return_value=None):
 

@@ -13,6 +13,7 @@ SERVICES = {
     "billing":       ("billing-api",       ["BILLING_DATABASE_URL", "DATABASE_URL"],          "cloudx_billing",       "services.billing.app.main"),
     "block_store":   ("block-store-api",   ["DATABASE_URL"],                                  "cloudx",               "services.block_store.app.models"),
     "compute":       ("compute-api",       ["DATABASE_URL"],                                  "cloudx",               "services.compute.app.models"),
+    "dns":           ("dns-api",           ["DATABASE_URL"],                                  "cloudx",               "services.dns.app.main"),
     "event":         ("event-api",         ["EVENT_DATABASE_URL", "DATABASE_URL"],            "cloudx_events",        "services.event.app.main"),
     "image":         ("image-api",         ["DATABASE_URL"],                                  "cloudx",               "services.image.app.main"),
     "k8s_engine":    ("k8s-engine-api",    ["DATABASE_URL"],                                  "cloudx_k8s_engine",    "services.k8s_engine.app.main"),

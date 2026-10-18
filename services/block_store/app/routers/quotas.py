@@ -18,9 +18,6 @@ def _quota_usage(db: Session, project_id: str) -> dict:
             Volume.status.not_in(["deleting", "error"]),
         )
     ).all()
-    snaps_count = db.scalar(
-        select(Snapshot).where(Snapshot.status.not_in(["deleting", "error"]))
-    )
     return {
         "volumes": len(vols),
         "gigabytes": sum(v.size_gb for v in vols),

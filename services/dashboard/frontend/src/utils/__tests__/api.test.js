@@ -19,6 +19,10 @@ const cases = [
   [() => api.createL7Policy('l1', {}), 'POST', '/api/load-balancer/listeners/l1/l7policies'],
   [() => api.updateL7Policy('p1', {}), 'PUT', '/api/load-balancer/l7policies/p1'],
   [() => api.deleteL7Policy('p1'), 'DELETE', '/api/load-balancer/l7policies/p1'],
+  [() => api.getZones(), 'GET', '/api/dns/zones'],
+  [() => api.createRecordset('z1', {}), 'POST', '/api/dns/zones/z1/recordsets'],
+  [() => api.updateRecordset('z1', 'r1', {}), 'PUT', '/api/dns/zones/z1/recordsets/r1'],
+  [() => api.deleteSecondary('z1', 's1'), 'DELETE', '/api/dns/zones/z1/secondaries/s1'],
   [() => api.getDomains(), 'GET', '/api/auth/v3/domains'],
   [() => api.createProject({ name: 'p', domain_id: 'd1' }), 'POST', '/api/auth/projects'],
 ]

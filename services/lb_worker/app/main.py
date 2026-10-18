@@ -83,6 +83,9 @@ def apply_lb(lb: dict, listeners: list[dict]) -> None:
         if ls.get("client_ca_pem"):
             p = Path(ls["client_ca_path"]); p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(ls["client_ca_pem"])  # public CA certificates only
+        if ls.get("client_crl_pem"):
+            p = Path(ls["client_crl_path"]); p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(ls["client_crl_pem"])
     cfg = render(lb, listeners, stats_socket=str(d / "stats.sock"))
     digest = hashlib.sha256(cfg.encode()).hexdigest()
     pid = pid_of(d)

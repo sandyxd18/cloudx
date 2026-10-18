@@ -1,0 +1,14 @@
+[Unit]
+Description=CloudX BIND9 (auth) (controller)
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/test -f /var/lib/cloudx/dns/auth/named.conf
+ExecStart=/usr/sbin/named -f -u bind -c /var/lib/cloudx/dns/auth/named.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

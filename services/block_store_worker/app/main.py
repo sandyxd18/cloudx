@@ -179,7 +179,6 @@ def _create_backend(volume_id: str, backend: str, size_gb: int,
                 log.warning("could not remove temp file %s: %s", tmp_path, exc)
 
     if snapshot_id:
-        snap_lv = _snap_lv_name(snapshot_id)
         # For LVM: restore from snapshot device path stored in DB
         # For Ceph: clone from snapshot
         # We need the snapshot path — it's passed as "snapshot_path" in the message
@@ -222,7 +221,6 @@ def handle_create_volume(args: dict) -> None:
     snapshot_path  = args.get("snapshot_path")     # device path of snapshot
     source_volume_id = args.get("source_volume_id")
     source_path    = args.get("source_path")        # device path of source volume
-    bootable       = args.get("bootable", False)
     image_api_url  = (os.environ.get("IMAGE_API_URL") or args.get("_image_api_url") or IMAGE_API_URL).rstrip("/")  # own env wins: the API sends its own (loopback) address
     lvm_type       = args.get("lvm_type", "default")  # default | thin
     max_iops       = args.get("max_iops")           # QoS: from volume type
@@ -307,7 +305,6 @@ def handle_create_volume(args: dict) -> None:
 def handle_delete_volume(args: dict) -> None:
 
     volume_id = args["volume_id"]
-    path      = args.get("path", "")
     backend   = args.get("backend", "lvm")
     lv        = _lv_name(volume_id)
 
@@ -501,11 +498,9 @@ def handle_migrate_volume(args: dict) -> None:
     """
     volume_id   = args["volume_id"]
     volume_name = args.get("name", volume_id)
-    source_path = args.get("path", "")
     backend     = args.get("backend", "lvm")
     size_gb     = int(args.get("size_gb", 1))
     target_host = args.get("target_host", "")
-    force_copy  = args.get("force_host_copy", False)
 
     # Parse target backend from the host string (e.g. "block_store@ceph#ceph" → "ceph")
     # Format is "service@driver#pool" (OpenStack convention)
@@ -522,7 +517,6 @@ def handle_migrate_volume(args: dict) -> None:
 
     source_lv = _lv_name(volume_id)
     # Destination LV uses same naming (same volume_id, different VG/pool conceptually)
-    dest_lv   = _lv_name(volume_id)
 
     try:
         new_path = ""
@@ -651,7 +645,6 @@ def handle_backup_volume(args: dict) -> None:
     backup_id   = args["backup_id"]
     volume_path = args.get("volume_path", "")
     backend     = args.get("backend", "lvm")
-    size_gb     = int(args.get("size_gb", 1))
     object_key  = args["object_key"]
 
     log.info("Backing up volume %s (%s) → %s/%s", args.get("volume_id"), backend, BACKUP_BUCKET, object_key)
@@ -827,7 +820,6 @@ def handle_replica_sync(args: dict) -> None:
             pass
         return
 
-    vg = lvm.vg_name() if lvm.LVM_VG_NAME else "vg-cloudx"
     snap_name = f"repsnap-{volume_id}-{int(time.time())}"
     source_lv = _lv_name(volume_id)
     try:

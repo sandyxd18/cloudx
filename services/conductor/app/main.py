@@ -430,7 +430,7 @@ def handle_update_snapshot(args: dict) -> dict:
 
     sql = f"UPDATE block_store_snapshots SET {', '.join(set_parts)} WHERE id = :_sid"
     with SessionLocal() as db:
-        result = db.execute(text(sql), params)
+        db.execute(text(sql), params)
         db.commit()
 
     log.info("Updated snapshot %s: %s", snapshot_id, list(safe.keys()))

@@ -21,7 +21,7 @@ import re
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import requests
@@ -39,6 +39,7 @@ from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
 from shared.schema import require_schema
 from shared.request_id_middleware import RequestIDMiddleware
 from shared.cors import cors_origins
+from shared import dns_names
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -116,6 +117,7 @@ class Listener(Base):
     certificate_id:    Mapped[str | None] = mapped_column(String, nullable=True)
     client_authentication: Mapped[str] = mapped_column(String, default="NONE", server_default="NONE")  # NONE | OPTIONAL | MANDATORY
     client_ca_pem:     Mapped[str | None] = mapped_column(String, nullable=True)
+    client_crl_pem:    Mapped[str | None] = mapped_column(String, nullable=True)
     created_at:        Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
@@ -219,6 +221,23 @@ class LoadBalancerIn(BaseModel):
     floating_network: str | None = None  # also give the VIP a floating IP from this external network
 
 
+def _check_crl(pem: str) -> None:
+    try:
+        crl = x509.load_pem_x509_crl(pem.encode())
+    except ValueError:
+        raise ValueError("client_crl_pem is not a PEM CRL")
+    # haproxy rejects every client certificate of the CA once its CRL has expired
+    if crl.next_update_utc and crl.next_update_utc < datetime.now(timezone.utc):
+        raise ValueError("client_crl_pem has expired (next_update is in the past)")
+
+
+def _crl_next_update(pem: str | None) -> str | None:
+    if not pem:
+        return None
+    nu = x509.load_pem_x509_crl(pem.encode()).next_update_utc
+    return nu.isoformat() if nu else None
+
+
 class ListenerIn(BaseModel):
     name: str = NAME
     protocol: str = Field(..., pattern="^(TCP|UDP|HTTP|HTTPS)$")
@@ -226,6 +245,7 @@ class ListenerIn(BaseModel):
     certificate_id: str | None = None
     client_authentication: str = Field(default="NONE", pattern="^(NONE|OPTIONAL|MANDATORY)$")
     client_ca_pem: str | None = Field(default=None, max_length=65536)
+    client_crl_pem: str | None = Field(default=None, max_length=1048576)
 
     @model_validator(mode="after")
     def _client_auth(self):
@@ -238,12 +258,17 @@ class ListenerIn(BaseModel):
                 x509.load_pem_x509_certificates(self.client_ca_pem.encode())
             except ValueError:
                 raise ValueError("client_ca_pem is not a PEM certificate bundle")
+        if self.client_crl_pem is not None:
+            if self.client_ca_pem is None:
+                raise ValueError("client_crl_pem needs client_ca_pem")
+            _check_crl(self.client_crl_pem)
         return self
 
 
 class ListenerUpdate(BaseModel):
     client_authentication: str = Field(pattern="^(NONE|OPTIONAL|MANDATORY)$")
     client_ca_pem: str | None = Field(default=None, max_length=65536)
+    client_crl_pem: str | None = Field(default=None, max_length=1048576)  # omitted = keep, null = remove
 
 
 class CertificateIn(BaseModel):
@@ -590,11 +615,16 @@ def _listener_to_dict(ls: Listener, db: Session | None = None, with_pem: bool = 
             if with_pem:
                 pem = f"{cert.certificate_pem}\n{cert.private_key_pem}"
     ca_path = f"/var/lib/cloudx/lb/{ls.load_balancer_id}/{ls.id}-ca.pem" if ls.client_ca_pem else None
+    crl_path = f"/var/lib/cloudx/lb/{ls.load_balancer_id}/{ls.id}-crl.pem" if ls.client_ca_pem and ls.client_crl_pem else None
     return {
         "id": ls.id,
         "load_balancer_id": ls.load_balancer_id,
         "name": ls.name,
         "client_ca_path": ca_path,
+        "client_crl_path": crl_path,
+        "has_client_crl": bool(ls.client_crl_pem),
+        "client_crl_next_update": _crl_next_update(ls.client_crl_pem),
+        **({"client_crl_pem": ls.client_crl_pem} if crl_path and with_pem else {}),
         **({"client_ca_pem": ls.client_ca_pem} if ls.client_ca_pem and with_pem else {}),
         "protocol": ls.protocol,
         "protocol_port": ls.protocol_port,
@@ -726,6 +756,7 @@ def create_load_balancer(payload: LoadBalancerIn, current: CurrentUser, db: DB):
             lb.vip_floating_ip_id, lb.vip_floating_ip = fip["id"], fip["floating_ip_address"]
             _net("POST", f"/floating-ips/{fip['id']}/associate", json={"port": vip["id"]})
             db.commit()
+            dns_names.register(f"load_balancer:{lb.id}", project_id, dns_names.lb_fqdn(lb.name, lb.id, dns_names.base()), "A", [lb.vip_floating_ip])
         except Exception as exc:
             log.error("floating ip for LB %s failed: %s", lb.id, exc)
             lb.provisioning_status = "ERROR"
@@ -742,17 +773,14 @@ def create_load_balancer(payload: LoadBalancerIn, current: CurrentUser, db: DB):
 
 
 @app.get("/load-balancers")
-def list_load_balancers(current: UserOrInternal, db: DB, all_tenants: bool = False):
-    if current.get("role") == "admin" or all_tenants:
-        rows = db.query(LoadBalancer).all()
-    else:
-        rows = _lb_q(db, current).all()
+def list_load_balancers(current: UserOrInternal, db: DB):
+    rows = _lb_q(db, current).all()  # system admin / internal callers see every project
     return {"load_balancers": [_lb_to_dict(r) for r in rows]}
 
 
 @app.get("/load-balancers/{ref}")
 def show_load_balancer(ref: str, current: CurrentUser, db: DB):
-    project_id = _project_id(current)
+    _project_id(current)
     lb = _lb_q(db, current).filter_by(id=ref).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
@@ -761,7 +789,7 @@ def show_load_balancer(ref: str, current: CurrentUser, db: DB):
 
 @app.delete("/load-balancers/{ref}")
 def delete_load_balancer(ref: str, current: CurrentUser, db: DB):
-    project_id = _project_id(current)
+    _project_id(current)
     lb = _lb_q(db, current).filter_by(id=ref).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
@@ -771,6 +799,8 @@ def delete_load_balancer(ref: str, current: CurrentUser, db: DB):
     except Exception as exc:
         log.warning("Driver delete failed for %s: %s", ref, exc)
 
+    dns_names.unregister(f"load_balancer:{lb.id}")
+    dns_names.unregister(f"load_balancer_internal:{lb.id}")
     _release_vip(lb)
     pool_ids = db.query(Pool.id).filter_by(load_balancer_id=lb.id)
     db.query(Member).filter(Member.pool_id.in_(pool_ids)).delete(synchronize_session=False)
@@ -798,7 +828,7 @@ def delete_load_balancer(ref: str, current: CurrentUser, db: DB):
 
 @app.post("/load-balancers/{lb_ref}/certificates", status_code=201)
 def upload_certificate(lb_ref: str, payload: CertificateIn, current: CurrentUser, db: DB):
-    project_id = _project_id(current)
+    _project_id(current)
     lb = _lb_q(db, current).filter_by(id=lb_ref).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
@@ -816,7 +846,7 @@ def upload_certificate(lb_ref: str, payload: CertificateIn, current: CurrentUser
 
 @app.get("/load-balancers/{lb_ref}/certificates")
 def list_certificates(lb_ref: str, current: CurrentUser, db: DB):
-    project_id = _project_id(current)
+    _project_id(current)
     lb = _lb_q(db, current).filter_by(id=lb_ref).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
@@ -838,7 +868,7 @@ def delete_certificate(lb_ref: str, cert_id: str, current: CurrentUser, db: DB):
 
 @app.post("/load-balancers/{lb_ref}/listeners", status_code=201)
 def create_listener(lb_ref: str, payload: ListenerIn, current: CurrentUser, db: DB):
-    project_id = _project_id(current)
+    _project_id(current)
     lb = _lb_q(db, current).filter_by(id=lb_ref).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
@@ -851,6 +881,7 @@ def create_listener(lb_ref: str, payload: ListenerIn, current: CurrentUser, db: 
         certificate_id=payload.certificate_id,
         client_authentication=payload.client_authentication,
         client_ca_pem=payload.client_ca_pem,
+        client_crl_pem=payload.client_crl_pem,
     )
     db.add(ls)
     db.commit()
@@ -865,7 +896,7 @@ def create_listener(lb_ref: str, payload: ListenerIn, current: CurrentUser, db: 
 
 @app.get("/load-balancers/{lb_ref}/listeners")
 def list_listeners(lb_ref: str, current: CurrentUser, db: DB):
-    project_id = _project_id(current)
+    _project_id(current)
     lb = _lb_q(db, current).filter_by(id=lb_ref).first()
     if not lb:
         raise HTTPException(status_code=404, detail="load balancer not found")
@@ -1135,7 +1166,19 @@ def update_listener(ls_ref: str, payload: ListenerUpdate, current: CurrentUser, 
     elif db.query(L7Rule).join(L7Policy, L7Rule.policy_id == L7Policy.id).filter(
             L7Policy.listener_id == ls.id, L7Rule.type.like("SSL\\_%", escape="\\")).first():
         raise HTTPException(status_code=409, detail="delete the listener's SSL_* L7 rules first")
-    ls.client_authentication, ls.client_ca_pem = mode, ca
+    crl = ls.client_crl_pem
+    if "client_crl_pem" in payload.model_fields_set:
+        crl = payload.client_crl_pem
+    if mode == "NONE":
+        if payload.client_crl_pem is not None:
+            raise HTTPException(status_code=400, detail="client_crl_pem is not allowed with client_authentication NONE")
+        crl = None
+    elif crl is not None:
+        try:
+            _check_crl(crl)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    ls.client_authentication, ls.client_ca_pem, ls.client_crl_pem = mode, ca, crl
     db.commit()
     _reapply(db, lb)
     return _listener_to_dict(ls, db)

@@ -41,6 +41,8 @@ import VolumeTypesPage from './pages/VolumeTypes.jsx'
 import ObjectStorePage from './pages/ObjectStore.jsx'
 import BucketCreatePage from './pages/BucketCreate.jsx'
 import BucketDetailPage from './pages/BucketDetail.jsx'
+import DnsPage from './pages/Dns.jsx'
+import DnsZoneDetailPage from './pages/DnsZoneDetail.jsx'
 import LoadBalancersPage from './pages/LoadBalancers.jsx'
 import LoadBalancerCreatePage from './pages/LoadBalancerCreate.jsx'
 import LoadBalancerDetailPage from './pages/LoadBalancerDetail.jsx'
@@ -219,6 +221,8 @@ function AppRoutes() {
           <Route path="object-store" element={<ObjectStorePage />} />
           <Route path="object-store/create" element={<BucketCreatePage />} />
           <Route path="object-store/buckets/:name" element={<BucketDetailPage />} />
+          <Route path="dns" element={<DnsPage />} />
+          <Route path="dns/:id" element={<DnsZoneDetailPage />} />
           <Route path="load-balancers" element={<LoadBalancersPage />} />
           <Route path="load-balancers/create" element={<LoadBalancerCreatePage />} />
           <Route path="load-balancers/:id" element={<LoadBalancerDetailPage />} />

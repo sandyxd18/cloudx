@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import shutil
-from shared.domain import lock_domain
+from shared.domain import check_domain_caps
 from datetime import datetime
 
 import requests
@@ -249,6 +249,8 @@ def _check_project_quota(db: Session, project_id: str, requested_vcpus: int, req
 
     Usage comes from compute's own servers table (placement allocations are not written by compute).
     ponytail: if auth-api is unreachable the check is skipped (logged), not failed.
+    It runs twice per create: early (fail fast) and again just before the insert, so the domain advisory lock
+    is held until that insert commits. The early check alone would let parallel creates both pass.
     """
     try:
         resp = requests.get(f"{AUTH_API_URL}/internal/projects/{project_id}/quota", headers=internal_headers(), timeout=5)
@@ -267,14 +269,13 @@ def _check_project_quota(db: Session, project_id: str, requested_vcpus: int, req
     for name, wanted, limit in checks:
         if wanted > limit:
             raise HTTPException(status_code=413, detail=f"Quota exceeded: {name} ({limit}) reached")
-    dom = quota.get("domain") or {}
-    if dom.get("caps"):
-        lock_domain(db, dom.get("domain_id"))  # aggregate caps: the same sums over every project of the domain
-        dlive = db.scalars(select(Server).where(Server.project_id.in_(dom["project_ids"]), Server.status.in_(LIVE_STATES))).all()
-        for name, wanted in (("max_instances", len(dlive) + 1), ("max_vcpus", sum(s.vcpus or 0 for s in dlive) + requested_vcpus),
-                             ("max_ram_mb", sum(s.ram_mb or 0 for s in dlive) + requested_ram_mb)):
-            if name in dom["caps"] and wanted > dom["caps"][name]:
-                raise HTTPException(status_code=413, detail=f"Domain quota exceeded: {name} ({dom['caps'][name]}) reached")
+    live_in = lambda ids: Server.project_id.in_(ids) & Server.status.in_(LIVE_STATES)  # noqa: E731
+    total = lambda col: lambda ids: db.scalar(select(func.coalesce(func.sum(col), 0)).where(live_in(ids)))  # noqa: E731
+    check_domain_caps(db, quota.get("domain"), {
+        "max_instances": (lambda ids: db.scalar(select(func.count()).select_from(Server).where(live_in(ids))), 1),
+        "max_vcpus": (total(Server.vcpus), requested_vcpus),
+        "max_ram_mb": (total(Server.ram_mb), requested_ram_mb),
+    })
 
 
 def record_action(db: Session, server_id: str, action: str, current: dict, result: str | None = None, message: str | None = None, finish: bool = False) -> ServerAction:

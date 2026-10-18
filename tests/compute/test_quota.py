@@ -72,3 +72,15 @@ def test_unreachable_auth_api_skips_the_check_and_says_so(monkeypatch, tmp_path,
     with caplog.at_level(logging.WARNING):
         compute.service._check_project_quota(None, "proj-1", 64, 10**6)  # would blow every limit, but cannot be checked
     assert "Quota check skipped" in caplog.text
+
+def test_quota_is_rechecked_right_before_the_insert():
+    """The domain advisory lock is only released by the commit that inserts the server, so the (second) check
+    must sit between the Server(...) build and db.add(server), not only at the top of create_server."""
+    import inspect
+    import re
+
+    from services.compute.app.routers import servers
+    src = inspect.getsource(servers.create_server)
+    assert len(re.findall(r"_check_project_quota\(", src)) == 2
+    assert src.rindex("_check_project_quota(") < src.index("db.add(server)")
+    assert src.index("server = Server(") < src.rindex("_check_project_quota(")

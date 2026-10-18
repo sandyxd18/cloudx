@@ -71,3 +71,10 @@ def test_ssl_rules_and_client_auth_render():
     for mode, want in (("MANDATORY", "ca-file /ca.pem verify required\n"), ("OPTIONAL", "ca-file /ca.pem verify optional crt-ignore-err all\n"), ("NONE", None)):
         cfg = render({"vip_address": "10.0.0.5"}, [{**ls, "client_authentication": mode}])
         assert (want in cfg) if want else ("ca-file" not in cfg)
+
+    ls2 = {**ls, "client_authentication": "MANDATORY", "client_crl_path": "/crl.pem"}
+    assert "ca-file /ca.pem verify required crl-file /crl.pem\n" in render({"vip_address": "10.0.0.5"}, [ls2])
+    cfg = render({"vip_address": "10.0.0.5"}, [{**ls2, "client_authentication": "OPTIONAL"}])
+    assert "verify optional crl-file /crl.pem crt-ignore-err all\n" in cfg
+    with pytest.raises(ValueError):
+        render({"vip_address": "10.0.0.5"}, [{**ls2, "client_crl_path": "/c rl.pem"}])

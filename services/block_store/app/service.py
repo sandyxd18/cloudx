@@ -16,7 +16,7 @@ from .lookups import (
     require_snapshot,
     require_volume,
 )
-from shared.domain import lock_domain, visible_projects
+from shared.domain import check_domain_caps, visible_projects
 from .models import Snapshot, Volume, new_id
 from .schemas import VolumeInternalIn
 from .serializers import obj_to_dict
@@ -40,14 +40,9 @@ def _check_auth_volume_quota(project_id: str, size: int, db: Session):
                     status_code=413,
                     detail=f"Volume GB quota exceeded: {used_gb + size}/{max_vol_gb} GB limit reached",
                 )
-            dom = auth_quota.get("domain") or {}
-            cap = (dom.get("caps") or {}).get("max_volume_gb")
-            if cap is not None:
-                lock_domain(db, dom.get("domain_id"))
-                dused = db.scalar(select(func.coalesce(func.sum(Volume.size_gb), 0)).where(
-                    Volume.project_id.in_(dom["project_ids"]), Volume.status.not_in(["deleting", "error"])))
-                if dused + size > cap:
-                    raise HTTPException(status_code=413, detail=f"Domain volume GB quota exceeded: {dused + size}/{cap} GB limit reached")
+            check_domain_caps(db, auth_quota.get("domain"), {"max_volume_gb": (lambda ids: db.scalar(
+                select(func.coalesce(func.sum(Volume.size_gb), 0)).where(
+                    Volume.project_id.in_(ids), Volume.status.not_in(["deleting", "error"]))), size)})
     except HTTPException:
         raise
     except Exception as exc:

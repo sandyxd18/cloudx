@@ -3,6 +3,7 @@ import os
 import time
 
 import requests
+from fastapi import HTTPException
 
 from shared.internal import internal_headers
 
@@ -58,3 +59,20 @@ def lock_domain(db, domain_id: str | None) -> None:
     if domain_id and db.get_bind().dialect.name == "postgresql":
         from sqlalchemy import text
         db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:d))"), {"d": f"quota:{domain_id}"})
+
+
+def check_domain_caps(db, dom: dict | None, usage: dict) -> None:
+    """413 when a domain-wide cap would be exceeded. `dom` is the `domain` block of auth's project quota.
+
+    usage: {cap_key: (used(project_ids) -> int, requested)}. Locks the domain once, only if one of the keys has a cap.
+    """
+    dom = dom or {}
+    caps = dom.get("caps") or {}
+    keys = [k for k in usage if caps.get(k) is not None]
+    if not keys:
+        return
+    lock_domain(db, dom.get("domain_id"))
+    for k in keys:
+        used, requested = usage[k]
+        if used(dom["project_ids"]) + requested > caps[k]:
+            raise HTTPException(status_code=413, detail=f"Domain quota exceeded: {k} ({caps[k]}) reached")

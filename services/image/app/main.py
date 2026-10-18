@@ -647,9 +647,6 @@ def verify_image(ref: str, _: CurrentUser, db: DB):
         }
     # Recalculate SHA256 from the actual file
     try:
-        backend = MinioStorageBackend() if image.storage_backend == "minio" else FileStorageBackend(IMAGE_STORE_PATH)
-        info = backend.get_image_info(image.object_name or Path(image.filename).name)
-        # get_image_info returns size; recompute from file path for local storage
         if image.storage_backend == "file":
             file_path = Path(IMAGE_STORE_PATH) / (image.object_name or Path(image.filename).name)
             if not file_path.exists():

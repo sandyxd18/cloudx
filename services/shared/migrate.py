@@ -23,7 +23,7 @@ from .schema import version_table
 
 
 def services_dir(explicit: str | None = None) -> Path:
-    for candidate in (explicit, os.getenv("CLOUDX_SERVICES_DIR"), "services", "/opt/cloudx/services"):
+    for candidate in (explicit, os.getenv("CLOUDX_SERVICES_DIR"), ".", "services", "/opt/cloudx/services"):  # "." first: run inside the tree, never a stale nested copy
         if candidate and (Path(candidate) / "migrations" / "registry.py").exists():
             return Path(candidate).resolve()
     sys.exit("cannot find the services directory (set --services-dir or CLOUDX_SERVICES_DIR)")

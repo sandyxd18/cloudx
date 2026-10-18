@@ -270,6 +270,17 @@ export const api = {
   deleteBucketType: (ref) => request('DELETE', `/object-store/admin/bucket-types/${ref}`),
 
   // Load Balancer
+  getZones: () => request('GET', '/dns/zones'),
+  getZone: (id) => request('GET', `/dns/zones/${id}`),
+  createZone: (b) => request('POST', '/dns/zones', b),
+  deleteZone: (id) => request('DELETE', `/dns/zones/${id}`),
+  getRecordsets: (zone) => request('GET', `/dns/zones/${zone}/recordsets`),
+  createRecordset: (zone, b) => request('POST', `/dns/zones/${zone}/recordsets`, b),
+  updateRecordset: (zone, id, b) => request('PUT', `/dns/zones/${zone}/recordsets/${id}`, b),
+  deleteRecordset: (zone, id) => request('DELETE', `/dns/zones/${zone}/recordsets/${id}`),
+  getSecondaries: (zone) => request('GET', `/dns/zones/${zone}/secondaries`),
+  addSecondary: (zone, b) => request('POST', `/dns/zones/${zone}/secondaries`, b),
+  deleteSecondary: (zone, id) => request('DELETE', `/dns/zones/${zone}/secondaries/${id}`),
   getLoadBalancers: () => request('GET', '/load-balancer/load-balancers'),
   getLoadBalancer: (id) => request('GET', `/load-balancer/load-balancers/${id}`),
   createLoadBalancer: (b) => request('POST', '/load-balancer/load-balancers', b),

@@ -66,7 +66,7 @@ def render(lb: dict, listeners: list[dict], stats_socket: str | None = None) -> 
             mode_ = {"OPTIONAL": "optional", "MANDATORY": "required"}.get(ls.get("client_authentication"))
             if mode_ and ls.get("client_ca_path"):
                 # optional + crt-ignore-err: a bad client cert still connects, so SSL_VERIFY_RESULT rules can route it
-                bind += f" ca-file {_safe(ls['client_ca_path'], 'client_ca_path')} verify {mode_}" + (" crt-ignore-err all" if mode_ == "optional" else "")
+                bind += f" ca-file {_safe(ls['client_ca_path'], 'client_ca_path')} verify {mode_}" + (f" crl-file {_safe(ls['client_crl_path'], 'client_crl_path')}" if ls.get("client_crl_path") else "") + (" crt-ignore-err all" if mode_ == "optional" else "")
         out += [f"frontend fe_{lid}", bind, f"    mode {mode}"]
         if http:
             out.append("    option forwardfor")

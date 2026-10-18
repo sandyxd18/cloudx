@@ -1,0 +1,15 @@
+[Unit]
+Description=CloudX DNS Worker (renders BIND zones) (controller)
+After=network.target cloudx-dns-api.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/cloudx/services/dns_worker
+ExecStart=/opt/cloudx/venv/bin/python -m app.main
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

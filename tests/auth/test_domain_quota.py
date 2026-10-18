@@ -30,3 +30,14 @@ def test_visible_projects(monkeypatch):
     assert domain.visible_projects({"role": "member", "project_id": "a"}) == ["a"]
     assert not domain.can_see({"role": "member", "project_id": "a"}, "b")
     assert domain.can_see({"role": "member", "domain_admin": True, "domain_id": "d1"}, "b")
+def test_dns_quota_fields_roundtrip(auth):  # noqa: F811
+    sys_h = _tok(auth, username="sys", password="a")
+    q = auth.client.get("/projects/p1/quota", headers=sys_h).json()
+    assert q["max_zones"] == 10 and q["max_recordsets"] == 200
+    assert auth.client.put("/projects/p1/quota", json={"max_zones": 2}, headers=sys_h).json()["max_zones"] == 2
+    assert auth.client.put("/v3/domains/d1/quota", json={"max_recordsets": 5}, headers=sys_h).json()["max_recordsets"] == 5
+    assert auth.client.get("/projects/p1/quota", headers=sys_h).json()["domain"]["caps"] == {"max_recordsets": 5}
+
+def test_internal_project_names(auth):  # noqa: F811
+    r = auth.client.get("/internal/projects")
+    assert r.status_code == 200 and "p1" in r.json()["projects"]

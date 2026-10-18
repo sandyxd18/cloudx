@@ -70,7 +70,7 @@ def test_eval_periods_statistic_history_and_rollup_merge(monkeypatch, tmp_path):
         db.add(m.TelemetryMetric(instance_id="i1", project_id="p1", metric_type="cpu_percent", value=90.0, timestamp=now))
         db.commit()
 
-        changed1 = m.evaluate_alarms(db, now)
+        m.evaluate_alarms(db, now)
         a_db = db.get(m.TelemetryAlarm, alarm_id)
         assert a_db.breach_count == 1
         assert a_db.state == "insufficient_data"  # not reached evaluation_periods yet

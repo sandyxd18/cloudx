@@ -33,7 +33,6 @@ def test_bgp_speaker_comprehensive(networking, monkeypatch):
     from fastapi.testclient import TestClient
     c = TestClient(net.app)
     h_valid = {"X-Internal-Token": "t" * 32}
-    h_user = {"X-Project-Id": "p1", "X-Role": "admin"}
 
     # 1. Internal Auth protection
     assert c.get("/internal/bgp-agent/cloudx-compute-01").status_code in (401, 403)
@@ -84,7 +83,7 @@ def test_bgp_speaker_comprehensive(networking, monkeypatch):
 
     # 6. Multi-host agent isolation: create peer-2 on router-2 (hosted on compute-02)
     p2_in = net.schemas.BGPPeerIn(name="peer-2", router_id=r2.id, peer_ip="172.24.4.60", remote_as=65002, local_as=64512, advertised_prefixes=["192.168.20.0/24"])
-    peer2 = routing.create_bgp_peer(p2_in, {"project_id": "p1", "role": "admin"}, db)
+    routing.create_bgp_peer(p2_in, {"project_id": "p1", "role": "admin"}, db)
 
     # Agent GET for compute-01 should only return router-1 speaker
     r_ag1 = c.get("/internal/bgp-agent/cloudx-compute-01", headers=h_valid)

@@ -25,6 +25,8 @@ class QuotaUpdate(BaseModel):
     max_routers: int | None = Field(default=None, ge=0)
     max_floating_ips: int | None = Field(default=None, ge=0)
     max_security_groups: int | None = Field(default=None, ge=0)
+    max_zones: int | None = Field(default=None, ge=0)
+    max_recordsets: int | None = Field(default=None, ge=0)
 
 
 class DomainQuotaUpdate(QuotaUpdate):

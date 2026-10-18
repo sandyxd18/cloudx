@@ -1,4 +1,5 @@
 import ipaddress
+import os
 
 from fastapi import APIRouter, HTTPException
 from shared.auth_middleware import CurrentUser, UserOrInternal
@@ -55,12 +56,14 @@ def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    dns = ",".join(payload.dns_nameservers)
+    # empty list = the platform resolver (it answers internal names and forwards the rest)
+    nameservers = payload.dns_nameservers or ([os.getenv("DNS_RESOLVER_ADDRESS", "172.20.0.118")] if ip_version == 4 else [])
+    dns = ",".join(nameservers)
     dhcp_id = None
 
     if payload.enable_dhcp:
         if ip_version == 4:
-            dhcp_id = ovn_cli.ovn(*dhcp_options_args(payload.cidr, gateway, payload.dns_nameservers, mtu=network_mtu(network))) if gateway else None
+            dhcp_id = ovn_cli.ovn(*dhcp_options_args(payload.cidr, gateway, nameservers, mtu=network_mtu(network))) if gateway else None
         elif ip_version == 6:
             # IPv6: set up DHCPv6 options or RA mode in OVN
             dhcp_id = _ensure_dhcpv6_options(

@@ -188,8 +188,6 @@ def _get_or_create_default_rp(db: Session) -> ResourceProvider:
     """Return the single-node compute provider, creating if absent."""
     rp = db.scalar(select(ResourceProvider).where(ResourceProvider.name == "cloudx-compute-0"))
     if not rp:
-        import socket
-        hostname = socket.gethostname()
         rp = ResourceProvider(name="cloudx-compute-0")
         db.add(rp)
         db.commit()

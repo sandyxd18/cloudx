@@ -167,10 +167,8 @@ include /etc/strongswan.d/*.conf
         run(["sh", "-c", cmd_str], check=False)
         
         # Wait for vici socket to exist (poll up to 5s)
-        socket_ready = False
         for _ in range(50):
             if (d / "vici").exists() or pid_of(d) is not None:
-                socket_ready = True
                 break
             time.sleep(0.1)
         pid = pid_of(d)

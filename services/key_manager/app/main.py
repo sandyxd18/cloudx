@@ -193,7 +193,7 @@ def create_secret(payload: SecretIn, db: DB, user: dict = Depends(require_auth))
 
 @app.get("/secrets", response_model=list[SecretOut])
 def list_secrets(db: DB, user: dict = Depends(require_auth)):
-    project_id = user.get("project_id", "default")
+    user.get("project_id", "default")
     stmt = select(Secret)
     if (ids := visible_projects(user)) is not None:
         stmt = stmt.where(Secret.project_id.in_(ids))
@@ -277,7 +277,7 @@ def create_container(payload: ContainerIn, db: DB, user: dict = Depends(require_
 
 @app.get("/containers", response_model=list[ContainerOut])
 def list_containers(db: DB, user: dict = Depends(require_auth)):
-    project_id = user.get("project_id", "default")
+    user.get("project_id", "default")
     stmt = select(SecretContainer)
     if (ids := visible_projects(user)) is not None:
         stmt = stmt.where(SecretContainer.project_id.in_(ids))

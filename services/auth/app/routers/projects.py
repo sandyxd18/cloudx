@@ -118,7 +118,7 @@ def _get_or_create_quota(db: Session, project_id: str) -> ProjectQuota:
     return quota
 
 
-QUOTA_FIELDS = ("max_instances", "max_vcpus", "max_ram_mb", "max_volume_gb", "max_networks", "max_subnets", "max_ports", "max_routers", "max_floating_ips", "max_security_groups")
+QUOTA_FIELDS = ("max_instances", "max_vcpus", "max_ram_mb", "max_volume_gb", "max_networks", "max_subnets", "max_ports", "max_routers", "max_floating_ips", "max_security_groups", "max_zones", "max_recordsets")
 
 
 def _quota_dict(project_id: str, q) -> dict:
@@ -131,6 +131,12 @@ def domain_caps(db: Session, domain_id: str) -> dict:
     return {"domain_id": domain_id,
             "project_ids": list(db.scalars(select(Project.id).where(Project.domain_id == domain_id))),
             "caps": {f: getattr(dq, f) for f in QUOTA_FIELDS if dq and getattr(dq, f) is not None}}
+
+
+@router.get("/internal/projects", dependencies=[InternalAuth])
+def internal_project_names(db: DB):
+    """id -> name of every project (dns-worker builds <server>.<project>.internal names from it)."""
+    return {"projects": {p.id: p.name for p in db.scalars(select(Project))}}
 
 
 @router.get("/internal/projects/{ref}/quota", dependencies=[InternalAuth])

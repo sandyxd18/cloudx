@@ -639,7 +639,7 @@ def handle_build_instance(args: dict) -> None:
 def handle_delete_instance(args: dict) -> None:
     """Destroy a VM and clean up resources."""
     server_id = args.get("id")
-    original_name = args.get("_original_name", "")
+    args.get("_original_name", "")
     keep_root_volume = args.get("_keep_root_volume", False)
     root_volume_id = args.get("_root_volume_id")
     port_id = args.get("_port_id")

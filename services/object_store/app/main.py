@@ -30,6 +30,7 @@ from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
 from shared.schema import require_schema
 from shared.request_id_middleware import RequestIDMiddleware
 from shared.cors import cors_origins
+from shared import dns_names
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -336,6 +337,7 @@ def create_bucket(payload: BucketIn, current: CurrentUser, db: DB):
 
     db.add(b)
     db.commit()
+    dns_names.register(f"bucket:{b.id}", project_id, dns_names.bucket_fqdn(b.name, project_id, dns_names.base()), "A", [dns_names.public_address()])
     return _bucket_to_dict(b, bt)
 
 
@@ -400,6 +402,7 @@ def delete_bucket(name: str, current: CurrentUser, db: DB):
 
     db.delete(b)
     db.commit()
+    dns_names.unregister(f"bucket:{b.id}")
     return {"status": "deleted", "name": name}
 
 

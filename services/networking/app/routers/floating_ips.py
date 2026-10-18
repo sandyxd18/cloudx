@@ -1,6 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, HTTPException
+from shared import dns_names
 from shared.auth_middleware import UserOrInternal
 from sqlalchemy import select
 
@@ -70,6 +71,7 @@ def create_floating_ip(payload: FloatingIPIn, current: UserOrInternal, db: DB):
     db.refresh(fip)
     _publish_net_event("network.floating_ip.create", {
         "floating_ip_id": fip.id, "floating_ip": floating_ip, **_actor(current)})
+    dns_names.register(f"floating_ip:{fip.id}", fip.project_id, dns_names.fip_fqdn(floating_ip, dns_names.base()), "A", [floating_ip])
     return obj_to_dict(fip)
 
 @router.get("/floating-ips")
@@ -131,6 +133,7 @@ def delete_floating_ip(ref: str, current: UserOrInternal, db: DB):
             ovn_cli.ovn("--if-exists", "lr-nat-del", router.name, "dnat_and_snat", fip.floating_ip, check=False)
     db.delete(fip)
     db.commit()
+    dns_names.unregister(f"floating_ip:{fip.id}")
     _publish_net_event("network.floating_ip.delete", {
         "floating_ip_id": fip.id, "floating_ip": fip.floating_ip, **_actor(current)})
     return {"status": "deleted", "id": fip.id, "name": fip.name}

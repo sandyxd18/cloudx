@@ -62,6 +62,7 @@ const NAV_ITEMS = [
       { type: 'link', text: 'Security groups', href: '/security-groups' },
       { type: 'link', text: 'Floating IPs',    href: '/floating-ips' },
       { type: 'link', text: 'Load Balancers',  href: '/load-balancers' },
+      { type: 'link', text: 'DNS',  href: '/dns' },
       { type: 'link', text: 'VPC Peering',     href: '/vpc-peering' },
       { type: 'link', text: 'VPN Gateways',    href: '/vpn-gateways' },
       { type: 'link', text: 'BGP Peers',       href: '/bgp-peers' },
@@ -146,6 +147,7 @@ const CRUMBS = {
   '/floating-ips/allocate':  [{ text: 'Networking', href: '/networks' }, { text: 'Floating IPs', href: '/floating-ips' }, { text: 'Allocate floating IP', href: '/floating-ips/allocate' }],
   '/floating-ips/associate': [{ text: 'Networking', href: '/networks' }, { text: 'Floating IPs', href: '/floating-ips' }, { text: 'Associate floating IP', href: '/floating-ips/associate' }],
   '/topology':         [{ text: 'Networking', href: '/networks' }, { text: 'Topology', href: '/topology' }],
+  '/dns':   [{ text: 'Networking', href: '/networks' }, { text: 'DNS', href: '/dns' }],
   '/load-balancers':   [{ text: 'Networking', href: '/networks' }, { text: 'Load Balancers', href: '/load-balancers' }],
   '/load-balancers/create': [{ text: 'Networking', href: '/networks' }, { text: 'Load Balancers', href: '/load-balancers' }, { text: 'Create load balancer', href: '/load-balancers/create' }],
   '/admin':            [{ text: 'Administration', href: '/admin' }, { text: 'Projects & users', href: '/admin' }],
@@ -212,8 +214,11 @@ export default function Layout() {
 
   const navItems = useMemo(() => {
     if (user?.role === 'admin') return NAV_ITEMS
-    return NAV_ITEMS.filter(section => section.text !== 'Administration')
-  }, [user?.role])
+    // a domain admin gets the identity pages only; the rest of Administration is system-wide
+    const idPages = ['/admin', '/role-assignments']
+    return NAV_ITEMS.map(s => s.text !== 'Administration' ? s
+      : user?.domain_admin ? { ...s, items: s.items.filter(i => idPages.includes(i.href)) } : null).filter(Boolean)
+  }, [user?.role, user?.domain_admin])
 
   // Highlight the deepest matching nav link.
   const activeHref = useMemo(() => {

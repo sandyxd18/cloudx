@@ -86,7 +86,7 @@ def test_disabled_policy_and_rule_stay_out_of_the_rendered_tree(lb):
         assert m.lb_state(db, lbo)[0]["policies"][0]["rules"] == []
         m.update_l7policy(p["id"], m.L7PolicyUpdate(admin_state_up=False), m.user, db)
         assert m.lb_state(db, lbo)[0]["policies"] == []
-def _ca_pem():
+def _ca_pem(with_crl=False, crl_days=1):
     from datetime import datetime, timedelta, timezone
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -98,7 +98,12 @@ def _ca_pem():
     cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
             .serial_number(1).not_valid_before(now).not_valid_after(now + timedelta(days=1))
             .sign(key, hashes.SHA256()))
-    return cert.public_bytes(serialization.Encoding.PEM).decode()
+    pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    if not with_crl:
+        return pem
+    crl = (x509.CertificateRevocationListBuilder().issuer_name(name).last_update(now - timedelta(days=3)).next_update(now + timedelta(days=crl_days))
+           .sign(key, hashes.SHA256()))
+    return pem, crl.public_bytes(serialization.Encoding.PEM).decode()
 
 
 def test_ssl_rules_validation(lb):
@@ -145,3 +150,60 @@ def test_client_ca_reaches_the_rendered_tree(lb):
         assert out["client_authentication"] == "OPTIONAL" and out["client_ca_path"].endswith("-ca.pem") and "client_ca_pem" not in out
         ls = next(l for l in m.lb_state(db, db.get(m.LoadBalancer, "lb1"), with_pem=True) if l["id"] == out["id"])
         assert ls["client_ca_pem"] == ca
+
+
+def test_client_crl_validation_state_and_update(lb):
+    m = lb
+    ca, crl = _ca_pem(with_crl=True)
+    base = {"name": "s", "protocol": "HTTPS", "protocol_port": 443, "certificate_id": "c1",
+            "client_authentication": "MANDATORY", "client_ca_pem": ca}
+    m.ListenerIn(**base, client_crl_pem=crl)
+    for bad in ({"client_crl_pem": "not a crl"}, {"client_crl_pem": crl, "client_ca_pem": None, "client_authentication": "NONE"}):
+        with pytest.raises(ValueError):
+            m.ListenerIn(**{**base, **bad})
+    with m.SessionLocal() as db:
+        db.add(m.LBCertificate(id="c1", load_balancer_id="lb1", name="c", certificate_pem="x", private_key_pem="y")); db.commit()
+        out = m.create_listener("lb1", m.ListenerIn(**base, client_crl_pem=crl), m.user, db)
+        assert out["has_client_crl"] and out["client_crl_path"].endswith("-crl.pem") and "client_crl_pem" not in out
+        state = lambda: next(l for l in m.lb_state(db, db.get(m.LoadBalancer, "lb1"), with_pem=True) if l["id"] == out["id"])
+        assert state()["client_crl_pem"] == crl
+        # mode-only update keeps the CRL; null removes it; garbage is a 400; NONE drops CA and CRL
+        m.update_listener(out["id"], m.ListenerUpdate(client_authentication="OPTIONAL"), m.user, db)
+        assert state()["client_crl_pem"] == crl
+        m.update_listener(out["id"], m.ListenerUpdate(client_authentication="OPTIONAL", client_crl_pem=None), m.user, db)
+        assert not state().get("client_crl_pem") and state()["client_crl_path"] is None
+        with pytest.raises(HTTPException) as e:
+            m.update_listener(out["id"], m.ListenerUpdate(client_authentication="OPTIONAL", client_crl_pem="junk"), m.user, db)
+        assert e.value.status_code == 400
+        m.update_listener(out["id"], m.ListenerUpdate(client_authentication="OPTIONAL", client_crl_pem=crl), m.user, db)
+        m.update_listener(out["id"], m.ListenerUpdate(client_authentication="NONE"), m.user, db)
+        assert not state().get("client_crl_pem") and not state().get("client_ca_pem")
+
+
+def test_list_ignores_all_tenants_for_regular_users(lb):
+    m = lb
+    with m.SessionLocal() as db:
+        db.add(m.LoadBalancer(id="lb2", name="other", project_id="p2", lb_type="ALB", vip_address="10.0.0.6", provisioning_status="ACTIVE"))
+        db.commit()
+        ids = lambda u, **kw: {x["id"] for x in m.list_load_balancers(u, db, **kw)["load_balancers"]}
+        assert ids(m.user) == {"lb1"}
+        assert ids({**m.user, "role": "admin"}) == {"lb1", "lb2"}
+    import inspect
+    assert "all_tenants" not in inspect.signature(m.list_load_balancers).parameters
+
+
+def test_expired_crl_is_refused_and_next_update_is_shown(lb):
+    m = lb
+    ca, old = _ca_pem(with_crl=True, crl_days=-1)
+    base = {"name": "s", "protocol": "HTTPS", "protocol_port": 443, "certificate_id": "c1",
+            "client_authentication": "MANDATORY", "client_ca_pem": ca}
+    with pytest.raises(ValueError, match="expired"):
+        m.ListenerIn(**base, client_crl_pem=old)
+    ca, ok = _ca_pem(with_crl=True)
+    with m.SessionLocal() as db:
+        db.add(m.LBCertificate(id="c1", load_balancer_id="lb1", name="c", certificate_pem="x", private_key_pem="y")); db.commit()
+        out = m.create_listener("lb1", m.ListenerIn(**base, client_crl_pem=ok), m.user, db)
+        assert out["client_crl_next_update"]
+        with pytest.raises(HTTPException) as e:
+            m.update_listener(out["id"], m.ListenerUpdate(client_authentication="MANDATORY", client_crl_pem=old), m.user, db)
+        assert e.value.status_code == 400 and "expired" in e.value.detail
