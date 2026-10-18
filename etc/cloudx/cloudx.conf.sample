@@ -32,6 +32,10 @@ storage_lvm_driver = true
 lvm_vg_name = vg-cloudx
 
 dns_api_url = http://127.0.0.1:8016
+file_store_api_url = http://127.0.0.1:8017
+# Node that runs cloudx-file-store-worker (NFS-Ganesha); the installer adds nfs-ganesha only there.
+file_store_host =
+file_store_mount_root = /var/lib/cloudx/fs
 dns_platform_domain = cloud.lab
 dns_public_address = 172.20.0.120
 dns_resolver_address = 172.20.0.118

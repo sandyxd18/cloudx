@@ -1,0 +1,16 @@
+[Unit]
+Description=CloudX File Store Worker (NFS-Ganesha shares) (storage node)
+After=network.target openvswitch-switch.service ovn-controller.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/cloudx/services/file_store_worker
+ExecStart=/opt/cloudx/venv/bin/python -m app.main
+KillMode=process
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

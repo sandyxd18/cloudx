@@ -47,6 +47,7 @@ PLACEMENT_API_URL  = os.getenv("PLACEMENT_API_URL",  "http://placement-api:8000"
 OBJECT_STORE_API_URL = os.getenv("OBJECT_STORE_API_URL","http://object-store-api:8000").rstrip("/")
 LOAD_BALANCER_API_URL = os.getenv("LOAD_BALANCER_API_URL","http://load-balancer-api:8000").rstrip("/")
 DNS_API_URL = os.getenv("DNS_API_URL","http://dns-api:8016").rstrip("/")
+FILE_STORE_API_URL = os.getenv("FILE_STORE_API_URL","http://file-store-api:8017").rstrip("/")
 TELEMETRY_API_URL  = os.getenv("TELEMETRY_API_URL",  "http://telemetry-api:8000").rstrip("/")
 BILLING_API_URL    = os.getenv("BILLING_API_URL",    "http://billing-api:8000").rstrip("/")
 EVENT_API_URL      = os.getenv("EVENT_API_URL",      "http://event-api:8000").rstrip("/")
@@ -68,6 +69,7 @@ _ROUTES: list[tuple[str, str]] = [
     ("/api/object-store",  OBJECT_STORE_API_URL),
     ("/api/load-balancer", LOAD_BALANCER_API_URL),
     ("/api/dns", DNS_API_URL),
+    ("/api/file-store", FILE_STORE_API_URL),
     ("/api/telemetry",     TELEMETRY_API_URL),
     ("/api/billing",       BILLING_API_URL),
     ("/api/event",         EVENT_API_URL),

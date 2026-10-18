@@ -42,6 +42,7 @@ SERVICES=(
     "load-balancer-api"
     "object-store-api"
     "dns-api"
+    "file-store-api"
 )
 
 for svc in "${SERVICES[@]}"; do
@@ -117,6 +118,15 @@ if systemctl cat postgresql.service >/dev/null 2>&1; then
         echo "/var/lib/cloudx/dns/** rwk," > /etc/apparmor.d/local/usr.sbin.named
         apparmor_parser -r /etc/apparmor.d/usr.sbin.named 2>/dev/null || true
     fi
+fi
+
+# File store (worker node only): NFS-Ganesha runs inside a network namespace per share network, without rpcbind.
+FS_HOST="$(grep -E '^file_store_host *=' "${CONF_FILE}" | cut -d= -f2- | tr -d ' ')"
+if [[ -n "${FS_HOST}" && ( "${FS_HOST}" == "$(hostname)" || "${FS_HOST}" == "$(grep -E '^node_name *=' "${CONF_FILE}" | cut -d= -f2- | tr -d ' ')" ) ]]; then
+    echo "===> Installing NFS-Ganesha for the file store service..."
+    DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-ganesha nfs-ganesha-vfs >/dev/null
+    systemctl disable --now nfs-ganesha 2>/dev/null || true   # the distro instance would fight for port 2049
+    mkdir -p /var/lib/cloudx/fs /var/lib/cloudx/fs-state
 fi
 
 echo "===> Syncing codebase to ${OPT_DIR}..."

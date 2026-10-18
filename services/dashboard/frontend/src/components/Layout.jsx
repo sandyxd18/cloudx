@@ -50,6 +50,7 @@ const NAV_ITEMS = [
       { type: 'link', text: 'Volumes',      href: '/volumes' },
       { type: 'link', text: 'Snapshots',    href: '/snapshots' },
       { type: 'link', text: 'Object Store', href: '/object-store' },
+      { type: 'link', text: 'File Store',   href: '/file-store' },
     ],
   },
   {
@@ -136,6 +137,7 @@ const CRUMBS = {
   '/volume-types/create': [{ text: 'Administration', href: '/admin' }, { text: 'Volume types', href: '/volume-types' }, { text: 'Create volume type', href: '/volume-types/create' }],
   '/bucket-types':        [{ text: 'Administration', href: '/admin' }, { text: 'Bucket types', href: '/bucket-types' }],
   '/object-store':     [{ text: 'Storage', href: '/volumes' }, { text: 'Object Store', href: '/object-store' }],
+  '/file-store':       [{ text: 'Storage', href: '/volumes' }, { text: 'File Store', href: '/file-store' }],
   '/networks':         [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }],
   '/networks/create':  [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }, { text: 'Create network', href: '/networks/create' }],
   '/subnets/create':   [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }, { text: 'Create subnet', href: '/subnets/create' }],

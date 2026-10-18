@@ -39,6 +39,7 @@ DEFAULT_URLS = {
     "object-store":  os.getenv("CLOUDX_OBJECT_STORE_URL",  "http://127.0.0.1:8007"),
     "load-balancer": os.getenv("CLOUDX_LOAD_BALANCER_URL", "http://127.0.0.1:8008"),
     "dns": os.getenv("CLOUDX_DNS_URL", "http://127.0.0.1:8016"),
+    "file_store": os.getenv("CLOUDX_FILE_STORE_URL", "http://127.0.0.1:8017"),
     "telemetry":     os.getenv("CLOUDX_TELEMETRY_URL",     "http://127.0.0.1:8010"),
     "billing":       os.getenv("CLOUDX_BILLING_URL",       "http://127.0.0.1:8011"),
     "event":         os.getenv("CLOUDX_EVENT_URL",         "http://127.0.0.1:8012"),

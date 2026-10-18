@@ -270,6 +270,16 @@ export const api = {
   deleteBucketType: (ref) => request('DELETE', `/object-store/admin/bucket-types/${ref}`),
 
   // Load Balancer
+  getShares: () => request('GET', '/file-store/shares'),
+  createShare: (b) => request('POST', '/file-store/shares', b),
+  extendShare: (id, size_gb) => request('POST', `/file-store/shares/${id}/extend`, { size_gb }),
+  deleteShare: (id) => request('DELETE', `/file-store/shares/${id}`),
+  getShareNetworks: () => request('GET', '/file-store/share-networks'),
+  createShareNetwork: (b) => request('POST', '/file-store/share-networks', b),
+  deleteShareNetwork: (id) => request('DELETE', `/file-store/share-networks/${id}`),
+  getShareAccess: (id) => request('GET', `/file-store/shares/${id}/access`),
+  addShareAccess: (id, b) => request('POST', `/file-store/shares/${id}/access`, b),
+  deleteShareAccess: (id, rid) => request('DELETE', `/file-store/shares/${id}/access/${rid}`),
   getZones: () => request('GET', '/dns/zones'),
   getZone: (id) => request('GET', `/dns/zones/${id}`),
   createZone: (b) => request('POST', '/dns/zones', b),
