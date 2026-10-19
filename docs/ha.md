@@ -47,4 +47,4 @@ Dua VM CirrOS (satu root di storage-node, satu di compute-node), keduanya dilind
 
 ## Batas
 
-Lihat catatan rilis (`docs/releases/unreleased-ha.md`).
+Lihat catatan rilis (`docs/releases/v0.8.5.md`).

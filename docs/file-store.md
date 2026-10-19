@@ -34,4 +34,4 @@ Ganesha listen di IP port dalam netns tanpa rpcbind; VM di compute node mount da
 
 ## Batasan
 
-Tanpa snapshot, clone, shrink, kuota, SMB/CIFS, replikasi, NFSv3, Kerberos. Satu node worker. Root share mode 0777 (akses dikendalikan ACL IP dan Root_Squash). Restart worker tidak memutus NFS (`KillMode=process`), tetapi restart Ganesha memicu grace period 10 detik. Detail: `docs/releases/unreleased-file-store.md`.
+Tanpa snapshot, clone, shrink, kuota, SMB/CIFS, replikasi, NFSv3, Kerberos. Satu node worker. Root share mode 0777 (akses dikendalikan ACL IP dan Root_Squash). Restart worker tidak memutus NFS (`KillMode=process`), tetapi restart Ganesha memicu grace period 10 detik. Detail: `docs/releases/v0.8.5.md`.
