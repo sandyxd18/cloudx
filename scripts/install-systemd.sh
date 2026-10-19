@@ -43,6 +43,7 @@ SERVICES=(
     "object-store-api"
     "dns-api"
     "file-store-api"
+    "container-api"
 )
 
 for svc in "${SERVICES[@]}"; do
@@ -127,6 +128,16 @@ if [[ -n "${FS_HOST}" && ( "${FS_HOST}" == "$(hostname)" || "${FS_HOST}" == "$(g
     DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-ganesha nfs-ganesha-vfs >/dev/null
     systemctl disable --now nfs-ganesha 2>/dev/null || true   # the distro instance would fight for port 2049
     mkdir -p /var/lib/cloudx/fs /var/lib/cloudx/fs-state
+fi
+
+# Containers (nodes that set container_host): Docker must not touch iptables or create docker0, OVN/NAT stay untouched.
+CT_HOST="$(grep -E '^container_host *=' "${CONF_FILE}" | cut -d= -f2- | tr -d ' ')"
+if [[ -n "${CT_HOST}" ]]; then
+    echo "===> Installing Docker for the container service..."
+    mkdir -p /etc/docker
+    [[ -f /etc/docker/daemon.json ]] || printf '{"iptables": false, "bridge": "none", "ip-forward": false}\n' > /etc/docker/daemon.json
+    DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io >/dev/null
+    mkdir -p /var/lib/cloudx/ct-state
 fi
 
 echo "===> Syncing codebase to ${OPT_DIR}..."

@@ -36,6 +36,9 @@ file_store_api_url = http://127.0.0.1:8017
 # Node that runs cloudx-file-store-worker (NFS-Ganesha); the installer adds nfs-ganesha only there.
 file_store_host =
 file_store_mount_root = /var/lib/cloudx/fs
+container_api_url = http://127.0.0.1:8018
+# Set on every node that runs cloudx-container-worker; the installer adds Docker (iptables off) only there.
+container_host =
 dns_platform_domain = cloud.lab
 dns_public_address = 172.20.0.120
 dns_resolver_address = 172.20.0.118

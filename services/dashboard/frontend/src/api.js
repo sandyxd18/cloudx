@@ -270,6 +270,11 @@ export const api = {
   deleteBucketType: (ref) => request('DELETE', `/object-store/admin/bucket-types/${ref}`),
 
   // Load Balancer
+  getContainers: () => request('GET', '/container/containers'),
+  createContainer: (b) => request('POST', '/container/containers', b),
+  containerAction: (id, a) => request('POST', `/container/containers/${id}/${a}`),
+  deleteContainer: (id) => request('DELETE', `/container/containers/${id}`),
+  getContainerLogs: (id) => request('GET', `/container/containers/${id}/logs`),
   getShares: () => request('GET', '/file-store/shares'),
   createShare: (b) => request('POST', '/file-store/shares', b),
   extendShare: (id, size_gb) => request('POST', `/file-store/shares/${id}/extend`, { size_gb }),

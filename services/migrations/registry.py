@@ -16,6 +16,7 @@ SERVICES = {
     "dns":           ("dns-api",           ["DATABASE_URL"],                                  "cloudx",               "services.dns.app.main"),
     "event":         ("event-api",         ["EVENT_DATABASE_URL", "DATABASE_URL"],            "cloudx_events",        "services.event.app.main"),
     "file_store":    ("file-store-api",    ["DATABASE_URL"],                                  "cloudx",               "services.file_store.app.main"),
+    "container":     ("container-api",     ["DATABASE_URL"],                                  "cloudx",               "services.container.app.main"),
     "image":         ("image-api",         ["DATABASE_URL"],                                  "cloudx",               "services.image.app.main"),
     "k8s_engine":    ("k8s-engine-api",    ["DATABASE_URL"],                                  "cloudx_k8s_engine",    "services.k8s_engine.app.main"),
     "key_manager":   ("key-manager-api",   ["KEY_MANAGER_DATABASE_URL", "DATABASE_URL"],      "cloudx_key_manager",   "services.key_manager.app.main"),

@@ -21,6 +21,7 @@ from cloudx_cli.commands import (  # noqa: F401
     alarm,
     auth,
     compute,
+    container,
     dns,
     file_store,
     image,

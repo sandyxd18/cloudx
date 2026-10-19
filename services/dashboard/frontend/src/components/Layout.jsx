@@ -39,6 +39,7 @@ const NAV_ITEMS = [
     text: 'Containers',
     defaultExpanded: true,
     items: [
+      { type: 'link', text: 'Containers',        href: '/containers' },
       { type: 'link', text: 'Kubernetes Engine', href: '/k8s-engine' },
     ],
   },
@@ -137,6 +138,7 @@ const CRUMBS = {
   '/volume-types/create': [{ text: 'Administration', href: '/admin' }, { text: 'Volume types', href: '/volume-types' }, { text: 'Create volume type', href: '/volume-types/create' }],
   '/bucket-types':        [{ text: 'Administration', href: '/admin' }, { text: 'Bucket types', href: '/bucket-types' }],
   '/object-store':     [{ text: 'Storage', href: '/volumes' }, { text: 'Object Store', href: '/object-store' }],
+  '/containers':       [{ text: 'Containers', href: '/containers' }],
   '/file-store':       [{ text: 'Storage', href: '/volumes' }, { text: 'File Store', href: '/file-store' }],
   '/networks':         [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }],
   '/networks/create':  [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }, { text: 'Create network', href: '/networks/create' }],
