@@ -162,6 +162,11 @@ def require_user_or_internal(request: Request) -> dict:
     return auth_func()
 
 
+def require_admin_or_internal(request: Request) -> dict:
+    """Admin JWT, or a service holding INTERNAL_TOKEN. Never open, unlike require_internal."""
+    return require_admin(require_user_or_internal(request))
+
+
 def optional_auth(request: Request) -> dict | None:
     """Returns payload if authenticated, None otherwise. For endpoints that work either way."""
     try:
@@ -174,4 +179,5 @@ CurrentUser  = Annotated[dict, Depends(require_auth)]
 AdminUser    = Annotated[dict, Depends(require_admin)]
 OptionalAuth = Annotated[dict | None, Depends(optional_auth)]
 UserOrInternal = Annotated[dict, Depends(require_user_or_internal)]
+AdminOrInternal = Annotated[dict, Depends(require_admin_or_internal)]
 InternalAuth = Depends(require_internal)  # `dependencies=[InternalAuth]` on /internal routes

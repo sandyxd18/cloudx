@@ -68,6 +68,18 @@ def create_volume_internal(payload: VolumeInternalIn, db: DB):
     return _create_volume_record(db, payload, project_id=payload.project_id)
 
 
+@router.post("/internal/fence", dependencies=[InternalAuth])
+def fence(payload: dict, db: DB):
+    """Revoke a dead compute node's iSCSI access to the given volumes. 200 even when some fail; the caller must read results."""
+    results = {}
+    for vid in payload.get("volume_ids", []):
+        try:
+            clients.call_worker(require_volume(db, vid).host, "unexport_volume", {"volume_id": vid, "initiator_iqn": payload["initiator_iqn"]})
+            results[vid] = "ok"
+        except Exception as exc:  # best-effort: per-volume failure is reported to the caller, not raised
+            results[vid] = f"error: {exc}"[:200]
+    return {"results": results}
+
 @router.get("/internal/volumes/{ref}", dependencies=[InternalAuth])
 def get_volume_internal(ref: str, db: DB):
     """No-auth endpoint for internal services (e.g. compute-worker) to poll volume status."""

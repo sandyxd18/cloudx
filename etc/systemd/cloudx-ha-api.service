@@ -1,0 +1,16 @@
+[Unit]
+Description=CloudX HA API Service (Masakari-like)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=cloudx
+Group=cloudx
+WorkingDirectory=/opt/cloudx/services/ha
+ExecStart=/opt/cloudx/venv/bin/gunicorn -w 1 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8020 app.main:app
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

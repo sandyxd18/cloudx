@@ -37,6 +37,7 @@ from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
 from . import libvirt_driver, volume_manager, worker  # noqa: E402
 from .config import COMPUTE_HOST, LIBVIRT_URI, NETWORKING_API_URL, OVS_BRIDGE, IMAGE_API_URL, BLOCK_STORE_API_URL, VM_NAME_PREFIX, endpoint  # noqa: E402
+HA_API_URL = os.getenv("HA_API_URL", "http://127.0.0.1:8020").rstrip("/")
 from shared.proc import CommandError, succeeds
 from .utils import run, tool_available  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -255,6 +256,22 @@ def sync_power_states() -> None:
                 server.get("name"), server.get("id"), domain_name, power_state, db_status, expected_status,
             )
             conductor_update_server(server["id"], {"status": expected_status})
+
+
+def send_heartbeat() -> None:
+    """Tell ha-api this node is alive (and which iSCSI initiator to fence if it is not). Never raises."""
+    try:
+        from . import iscsi
+        requests.post(f"{HA_API_URL}/internal/heartbeat/{COMPUTE_HOST}", json={"initiator_iqn": iscsi.initiator_iqn()},
+                      headers=internal_headers(), timeout=5)
+    except Exception as exc:  # best-effort: ha-api down or open-iscsi missing must not hurt the worker
+        log.debug("heartbeat failed: %s", exc)
+
+
+def heartbeat_loop() -> None:
+    while True:
+        send_heartbeat()
+        time.sleep(10)
 
 
 def sync_power_states_loop() -> None:
@@ -1121,6 +1138,7 @@ def main():
         sys.exit(1)
 
     threading.Thread(target=sync_power_states_loop, daemon=True).start()
+    threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=collect_metrics_loop, daemon=True).start()
     threading.Thread(target=placement_registration_loop, daemon=True).start()
 

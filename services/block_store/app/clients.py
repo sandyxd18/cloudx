@@ -68,6 +68,15 @@ def cast_to_worker(method: str, payload: dict) -> None:
              payload.get("volume_id") or payload.get("snapshot_id", "?"), host or "any")
 
 
+def call_worker(host: str | None, method: str, payload: dict, timeout: int = 30) -> dict:
+    """Synchronous RPC to the block-store-worker on *host*; raises when the broker is missing or the worker answers with an error."""
+    if _rpc is None:
+        raise RuntimeError("RPC broker not connected")
+    reply = _rpc.call(host_queue("block-store", host), method, payload, timeout=timeout)
+    if reply.get("error"):
+        raise RuntimeError(reply["error"])
+    return reply
+
 def start_rpc(url: str) -> None:
     global _rpc
     _rpc = RPCClient(url)

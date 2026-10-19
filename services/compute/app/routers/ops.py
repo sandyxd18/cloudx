@@ -3,7 +3,7 @@ from datetime import datetime
 
 import requests
 from fastapi import APIRouter, HTTPException, Request
-from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth, UserOrInternal
+from shared.auth_middleware import AdminOrInternal, AdminUser, CurrentUser, InternalAuth, UserOrInternal
 from shared.internal import internal_headers
 from sqlalchemy import select
 
@@ -125,7 +125,7 @@ def list_services(_: UserOrInternal, db: DB):
 
 
 @router.put("/os-services/{host}")
-def update_service(host: str, payload: ServiceUpdateIn, _: AdminUser, db: DB):
+def update_service(host: str, payload: ServiceUpdateIn, _: AdminOrInternal, db: DB):
     row = db.get(ComputeService, host) or ComputeService(host=host, disabled=False, forced_down=False)
     db.add(row)
     for k, v in payload.model_dump(exclude_unset=True).items():
@@ -193,5 +193,5 @@ def migrate(ref: str, current: AdminUser, db: DB, payload: MoveIn | None = None)
 
 
 @router.post("/servers/{ref}/evacuate", status_code=202)
-def evacuate(ref: str, current: AdminUser, db: DB, payload: MoveIn | None = None):
+def evacuate(ref: str, current: AdminOrInternal, db: DB, payload: MoveIn | None = None):
     return _relocate(ref, payload.host if payload else None, current, db, True)

@@ -45,6 +45,7 @@ import DnsPage from './pages/Dns.jsx'
 import FileStorePage from './pages/FileStore.jsx'
 import ContainersPage from './pages/Containers.jsx'
 import DatabasesPage from './pages/Databases.jsx'
+import HighAvailabilityPage from './pages/HighAvailability.jsx'
 import DnsZoneDetailPage from './pages/DnsZoneDetail.jsx'
 import LoadBalancersPage from './pages/LoadBalancers.jsx'
 import LoadBalancerCreatePage from './pages/LoadBalancerCreate.jsx'
@@ -228,6 +229,7 @@ function AppRoutes() {
           <Route path="file-store" element={<FileStorePage />} />
           <Route path="containers" element={<ContainersPage />} />
         <Route path="databases" element={<DatabasesPage />} />
+        <Route path="ha" element={<HighAvailabilityPage />} />
           <Route path="dns/:id" element={<DnsZoneDetailPage />} />
           <Route path="load-balancers" element={<LoadBalancersPage />} />
           <Route path="load-balancers/create" element={<LoadBalancerCreatePage />} />

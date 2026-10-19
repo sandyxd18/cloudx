@@ -41,6 +41,7 @@ const NAV_ITEMS = [
     items: [
       { type: 'link', text: 'Containers',        href: '/containers' },
       { type: 'link', text: 'Databases',         href: '/databases' },
+    { type: 'link', text: 'High availability', href: '/ha' },
       { type: 'link', text: 'Kubernetes Engine', href: '/k8s-engine' },
     ],
   },
@@ -141,6 +142,7 @@ const CRUMBS = {
   '/object-store':     [{ text: 'Storage', href: '/volumes' }, { text: 'Object Store', href: '/object-store' }],
   '/containers':       [{ text: 'Containers', href: '/containers' }],
   '/databases':        [{ text: 'Containers', href: '/containers' }, { text: 'Databases', href: '/databases' }],
+  '/ha':               [{ text: 'High availability', href: '/ha' }],
   '/file-store':       [{ text: 'Storage', href: '/volumes' }, { text: 'File Store', href: '/file-store' }],
   '/networks':         [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }],
   '/networks/create':  [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }, { text: 'Create network', href: '/networks/create' }],

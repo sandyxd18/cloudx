@@ -42,6 +42,8 @@ container_host =
 database_api_url = http://127.0.0.1:8019
 # Address database VMs use to reach database-api (cloud-init ready callback); must be reachable from the tenant network.
 database_public_url = http://127.0.0.1:8019
+# Compute workers send a heartbeat here every 10 s; ha-api fences and evacuates protected servers of a silent host.
+ha_api_url = http://127.0.0.1:8020
 dns_platform_domain = cloud.lab
 dns_public_address = 172.20.0.120
 dns_resolver_address = 172.20.0.118

@@ -45,6 +45,7 @@ SERVICES=(
     "file-store-api"
     "container-api"
     "database-api"
+    "ha-api"
 )
 
 for svc in "${SERVICES[@]}"; do
