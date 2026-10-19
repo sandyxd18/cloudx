@@ -70,6 +70,13 @@ def test_flow(ct):
     assert ("DELETE", "/ports/port1", None) in ct.calls
 
 
+def test_data_path(ct):
+    beat(ct)
+    assert ct.post("/containers", json={**BODY, "data_path": "/etc"}).status_code == 422
+    assert ct.post("/containers", json={**BODY, "data_path": "/var/lib/data"}).status_code == 201
+    assert beat(ct)["containers"][0]["data_path"] == "/var/lib/data"
+
+
 def test_validation(ct):
     beat(ct)
     for bad in ({"image": "nginx; rm"}, {"image": "-v"}, {"env": {"1A": "x"}}, {"cpu": 9}, {"memory_mb": 1},

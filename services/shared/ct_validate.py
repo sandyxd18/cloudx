@@ -28,3 +28,11 @@ def check_limits(cpu: float, memory_mb: int) -> tuple[float, int]:
     if not 64 <= memory_mb <= 4096:
         raise ValueError("memory_mb must be between 64 and 4096")
     return cpu, memory_mb
+
+_BAD_PATHS = ("/etc", "/proc", "/sys", "/dev", "/boot", "/root", "/run", "/var/run")
+_PATH = re.compile(r"\A/[A-Za-z0-9_./-]{1,200}\Z")
+
+def check_data_path(s: str) -> str:
+    if not isinstance(s, str) or not _PATH.match(s) or ".." in s.split("/") or any(s == p or s.startswith(p + "/") for p in _BAD_PATHS):
+        raise ValueError("data_path must be an absolute path outside system directories")
+    return s

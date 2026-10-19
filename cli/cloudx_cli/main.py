@@ -22,6 +22,7 @@ from cloudx_cli.commands import (  # noqa: F401
     auth,
     compute,
     container,
+    database,
     dns,
     file_store,
     image,

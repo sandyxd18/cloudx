@@ -20,7 +20,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 from shared.auth_middleware import CurrentUser, InternalAuth
 from shared.cors import cors_origins
-from shared.ct_validate import check_env, check_image, check_limits
+from shared.ct_validate import check_data_path, check_env, check_image, check_limits
 from shared.domain import can_see, owns, visible_projects
 from shared.internal import internal_headers
 from shared.request_id_middleware import RequestIDMiddleware
@@ -64,6 +64,7 @@ class Container(Base):
     prefix: Mapped[int | None] = mapped_column(Integer, nullable=True)
     gateway: Mapped[str | None] = mapped_column(String, nullable=True)
     dns: Mapped[list] = mapped_column(JSON, default=list)
+    data_path: Mapped[str | None] = mapped_column(String, nullable=True)
     host: Mapped[str] = mapped_column(String, index=True)
     status: Mapped[str] = mapped_column(String, default="creating")  # creating | running | stopped | error | deleting
     want: Mapped[str] = mapped_column(String, default="running")  # running | stopped | deleting
@@ -117,7 +118,7 @@ def _release_port(port_id: str | None) -> None:
 
 def _out(c: Container) -> dict:
     return {"id": c.id, "name": c.name, "project_id": c.project_id, "image": c.image, "command": c.command, "env": c.env,
-            "cpu": c.cpu, "memory_mb": c.memory_mb, "network_id": c.network_id, "ip": c.ip, "host": c.host,
+            "cpu": c.cpu, "memory_mb": c.memory_mb, "network_id": c.network_id, "ip": c.ip, "host": c.host, "data_path": c.data_path,
             "status": c.status, "error": c.error, "created_at": c.created_at.isoformat()}
 
 def _get(db: Session, ref: str, current: dict, write: bool = False) -> Container:
@@ -148,6 +149,12 @@ class ContainerIn(BaseModel):
     cpu: float = 0.5
     memory_mb: int = 128
     security_group_ids: list[str] = []
+    data_path: str | None = None
+
+    @field_validator("data_path")
+    @classmethod
+    def _data_path(cls, v):
+        return check_data_path(v) if v is not None else v
 
     @field_validator("image")
     @classmethod
@@ -197,7 +204,7 @@ def create_container(body: ContainerIn, current: CurrentUser, db: DB):
                   cpu=body.cpu, memory_mb=body.memory_mb, network_id=body.network_id, subnet_id=fixed["subnet_id"],
                   port_id=port["id"], port_name=port["name"], ip=fixed["ip_address"], mac=port["mac_address"],
                   prefix=int(subnet["cidr"].split("/")[1]), gateway=subnet.get("gateway_ip"),
-                  dns=subnet.get("dns_nameservers") or [], host=host)
+                  dns=subnet.get("dns_nameservers") or [], data_path=body.data_path, host=host)
     db.add(c)
     try:
         db.commit()
@@ -266,7 +273,7 @@ def agent_state(host: str, db: DB):
     rows = db.scalars(select(Container).where(Container.host == host))
     return {"containers": [{"id": c.id, "image": c.image, "command": c.command, "env": c.env, "cpu": c.cpu,
                             "memory_mb": c.memory_mb, "port_name": c.port_name, "mac": c.mac, "ip": c.ip,
-                            "prefix": c.prefix, "gateway": c.gateway, "dns": c.dns, "want": c.want} for c in rows]}
+                            "prefix": c.prefix, "gateway": c.gateway, "dns": c.dns, "data_path": c.data_path, "want": c.want} for c in rows]}
 
 class ItemIn(BaseModel):
     state: str

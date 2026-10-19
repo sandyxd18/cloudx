@@ -2,7 +2,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
-from shared.ct_validate import check_env, check_image, check_limits
+from shared.ct_validate import check_data_path, check_env, check_image, check_limits
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -51,3 +51,10 @@ def test_plan():
     assert plan({"a": {"want": "restart"}}, {}) == [("create", "a")]
     assert plan({"a": {"want": "deleting"}}, {}) == [("delete", "a")]
     assert plan({"a": {"want": "deleting"}}, {"a": "running"}) == [("delete", "a")]
+
+
+def test_data_path():
+    assert check_data_path("/var/lib/postgresql/data") == "/var/lib/postgresql/data"
+    for bad in ("data", "/", "/etc", "/etc/x", "/a/../b", "a b", "/a b", "/proc/1", "/dev/x", ""):
+        with pytest.raises(ValueError):
+            check_data_path(bad)

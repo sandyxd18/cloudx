@@ -38,6 +38,10 @@ def sh(*cmd: str, ok: bool = False, timeout: int = 120) -> str:
         raise RuntimeError(f"{' '.join(cmd[:3])} failed: {(p.stderr or p.stdout).strip()[:300]}")
     return p.stdout
 
+def logs_of(cid: str) -> str:
+    p = run(["docker", "logs", "--tail", "200", names(cid)[0]], check=False, timeout=30)  # docker replays the container's stderr on ours
+    return (p.stdout or "") + (p.stderr or "")
+
 def names(cid: str) -> tuple[str, str]:
     return f"ct-{cid}", f"ct{cid[:8]}"
 
@@ -53,6 +57,8 @@ def create(c: dict) -> None:
     args = ["docker", "create", "--name", name, "--network", "none", "--cpus", str(c["cpu"]), "--memory", f"{c['memory_mb']}m",
             "--pids-limit", "256", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "-v", f"{d / 'resolv.conf'}:/etc/resolv.conf:ro"]
+    if c.get("data_path"):
+        args += ["-v", f"{name}-data:{c['data_path']}"]
     for k in CAPS:
         args += ["--cap-add", k]
     for k, v in c["env"].items():
@@ -81,7 +87,8 @@ def plumb(c: dict) -> None:
 
 def remove(cid: str) -> None:
     name, dev = names(cid)
-    sh("docker", "rm", "-f", name, ok=True)
+    sh("docker", "rm", "-f", "-v", name, ok=True)
+    sh("docker", "volume", "rm", "-f", f"{name}-data", ok=True)
     sh("ovs-vsctl", "--if-exists", "del-port", "br-int", dev, ok=True)
     sh("ip", "netns", "del", dev, ok=True)
     d = STATE / cid
@@ -133,14 +140,14 @@ def tick() -> None:
         if st == "running":
             try:
                 plumb(c)
-                logs = sh("docker", "logs", "--tail", "200", names(cid)[0], ok=True)
+                logs = logs_of(cid)
                 report[cid] = {"state": "running", "logs": logs[-LOG_CAP:]}
             except RuntimeError as exc:
                 log.error("container %s plumb: %s", cid, exc)
                 report[cid] = {"state": "error", "error": str(exc)[:300]}
         elif st:
             _pids.pop(cid, None)
-            report[cid] = {"state": "stopped", "logs": sh("docker", "logs", "--tail", "200", names(cid)[0], ok=True)[-LOG_CAP:]}
+            report[cid] = {"state": "stopped", "logs": logs_of(cid)[-LOG_CAP:]}
     if report:
         requests.post(f"{API}/internal/ct-agent/{HOST}/report", json={"containers": report}, headers=internal_headers(),
                       timeout=10).raise_for_status()
