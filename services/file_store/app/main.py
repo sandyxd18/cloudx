@@ -7,7 +7,7 @@ load_service_config("file-store-api")
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated
 
 import requests
@@ -56,6 +56,7 @@ class ShareNetwork(Base):
     switch: Mapped[str | None] = mapped_column(String, nullable=True)
     host: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="creating")  # creating | active | deleting | error
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # first time it was usable; the reaper never deletes these
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 class Share(Base):
@@ -67,6 +68,7 @@ class Share(Base):
     share_network_id: Mapped[str] = mapped_column(ForeignKey("fs_share_networks.id"), index=True)
     size_gb: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String, default="creating")  # creating | available | extending | deleting | error
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # first time it was usable; the reaper never deletes these
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 class AccessRule(Base):
@@ -319,6 +321,8 @@ def agent_report(host: str, body: ReportIn, db: DB):
             db.delete(s)
         elif s.status != "deleting":  # a delete request must not be overwritten by a late report
             s.status = st
+            if st == "available" and not s.ready_at:
+                s.ready_at = datetime.utcnow()
     for nid, st in body.share_networks.items():
         n = db.get(ShareNetwork, nid)
         if not n:
@@ -328,5 +332,16 @@ def agent_report(host: str, body: ReportIn, db: DB):
             db.delete(n)
         elif n.status != "deleting":
             n.status = st
+            if st == "active" and not n.ready_at:
+                n.ready_at = datetime.utcnow()
     db.commit()
     return {"ok": True}
+
+@app.get("/internal/stale-errors", dependencies=[InternalAuth])
+def stale_errors(hours: float, db: DB):
+    """Shares, then share networks, that failed before ever becoming ready and are older than `hours` (the reaper deletes these, in this order)."""
+    cut = datetime.utcnow() - timedelta(hours=hours)
+    items = [{"id": r.id, "kind": k}
+             for k, M in (("share", Share), ("share-network", ShareNetwork))
+             for r in db.scalars(select(M).where(M.status == "error", M.ready_at.is_(None), M.created_at < cut))]
+    return {"items": items}

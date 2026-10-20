@@ -11,6 +11,16 @@ def test_send_heartbeat_never_raises_and_posts_iqn(monkeypatch):
     main.send_heartbeat()
     assert posts == [(f"{main.HA_API_URL}/internal/heartbeat/{main.COMPUTE_HOST}", {"initiator_iqn": "iqn.me"})]
 
+    main.HA_API_URL = "http://a:1, http://b:1/"
+    posts.clear()
+    def first_down(url, **kw):
+        if "//a:" in url:
+            raise OSError("down")
+        posts.append(url)
+    monkeypatch.setattr(main.requests, "post", first_down)
+    main.send_heartbeat()
+    assert posts == [f"http://b:1/internal/heartbeat/{main.COMPUTE_HOST}"]   # first answering instance only
+
     def boom(*a, **k):
         raise OSError("ha-api down")
     monkeypatch.setattr(main.requests, "post", boom)

@@ -109,6 +109,7 @@ fi
 
 echo "===> Creating runtime data directories under /var/lib/cloudx..."
 mkdir -p /var/lib/cloudx/images /var/lib/cloudx/object-store /var/lib/cloudx/compute
+mkdir -p /etc/cloudx/reaper
 mkdir -p /var/lib/cloudx/ha-watchdog /etc/cloudx/ha-watchdog  # root-only watchdog state; unit is enabled on compute nodes only
 chown -R "${CLOUDX_USER}:${CLOUDX_GROUP}" /var/lib/cloudx
 # DNS (controller only): BIND runs from /var/lib/cloudx/dns/<role>, rendered by cloudx-dns-worker (root).

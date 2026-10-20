@@ -1,0 +1,15 @@
+[Unit]
+Description=CloudX Reaper (deletes build-failed Database, Container and File Store rows)
+After=network.target cloudx-auth-api.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/cloudx/services/reaper
+ExecStart=/opt/cloudx/venv/bin/python -m app.main
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

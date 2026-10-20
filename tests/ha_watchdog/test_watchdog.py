@@ -121,3 +121,21 @@ def test_http_error_or_refused_counts_as_reachable(monkeypatch, w):
 
     monkeypatch.setattr(w.requests, "request", timeout)
     assert w.fetch("GET", "/x")[0] is False
+
+
+def test_any_ha_api_instance_answering_counts(monkeypatch, w):
+    import requests
+
+    importlib.reload(w)
+    w.HA_APIS = ["http://a", "http://b"]
+    def req(method, url, **k):
+        if url.startswith("http://a"):
+            raise requests.Timeout("t")
+        return Resp(200, {"domains": ["d"]})
+    monkeypatch.setattr(w.requests, "request", req)
+    ok, r = w.fetch("GET", "/x")
+    assert ok is True and r.json() == {"domains": ["d"]}
+    monkeypatch.setattr(w.requests, "request", lambda *a, **k: (_ for _ in ()).throw(requests.Timeout("t")))
+    assert w.fetch("GET", "/x") == (False, None)   # all silent: unreachable
+    monkeypatch.setattr(w.requests, "request", lambda m, u, **k: Resp(503) if u.startswith("http://a") else Resp(200))
+    assert w.fetch("GET", "/x")[1].status_code == 200   # a healthy instance beats a 5xx one

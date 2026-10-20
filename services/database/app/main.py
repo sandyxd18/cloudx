@@ -9,17 +9,17 @@ import hmac
 import logging
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, field_validator
-from sqlalchemy import DateTime, Integer, String, UniqueConstraint, create_engine, func, select
+from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy import Boolean, DateTime, Integer, String, UniqueConstraint, create_engine, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from shared.auth_middleware import CurrentUser
+from shared.auth_middleware import CurrentUser, InternalAuth
 from shared.cors import cors_origins
 from shared.db_cloudinit import PORTS
 from shared.db_validate import check_backend_storage, check_cidr, check_engine, check_password, check_size, gen_password
@@ -68,6 +68,9 @@ class Instance(Base):
     share_net_id: Mapped[str | None] = mapped_column(String, nullable=True)
     rule_id: Mapped[str | None] = mapped_column(String, nullable=True)
     token_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # first time it was usable; the reaper never deletes these
+    backup_every_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)  # scheduled backups, run by the reaper
+    backup_keep: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 class Backup(Base):
@@ -81,6 +84,7 @@ class Backup(Base):
     volume_backup_id: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="creating")  # creating | available | error
     error: Mapped[str | None] = mapped_column(String, nullable=True)
+    scheduled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # only these are deleted by retention
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 RESTORING: set[str] = set()  # ponytail: in memory; lost on restart (an interrupted restore is already marked error)
@@ -126,6 +130,7 @@ def _out(i: Instance, password: str | None = None) -> dict:
     d = {"id": i.id, "name": i.name, "project_id": i.project_id, "engine": i.engine, "backend": i.backend,
          "storage": i.storage, "status": i.status, "error": i.error, "network_id": i.network_id, "size_gb": i.size_gb,
          "host": i.ip, "port": PORTS[i.engine], "admin_user": ADMIN_USER[i.engine], "allowed_cidr": i.allowed_cidr,
+         "backup_every_hours": i.backup_every_hours, "backup_keep": i.backup_keep,
          "created_at": i.created_at.isoformat() if i.created_at else None}
     if password:
         d["password"] = password
@@ -261,7 +266,7 @@ def db_ready(iid: str, db: DB, x_ready_token: Annotated[str, Header()] = ""):
     if not i or i.status != "building" or not i.token_hash or not x_ready_token \
             or not hmac.compare_digest(provision.token_hash(x_ready_token), i.token_hash):
         raise HTTPException(403, "Not allowed")
-    i.status, i.token_hash = "active", None
+    i.status, i.token_hash, i.ready_at = "active", None, datetime.utcnow()
     db.commit()
     return {"ok": True}
 
@@ -270,7 +275,8 @@ def db_ready(iid: str, db: DB, x_ready_token: Annotated[str, Header()] = ""):
 
 def _bout(b: Backup) -> dict:
     return {"id": b.id, "name": b.name, "instance_id": b.instance_id, "engine": b.engine, "size_gb": b.size_gb,
-            "status": b.status, "error": b.error, "created_at": b.created_at.isoformat() if b.created_at else None}
+            "status": b.status, "error": b.error, "scheduled": bool(b.scheduled),
+            "created_at": b.created_at.isoformat() if b.created_at else None}
 
 def _get_backup(db: Session, bid: str, current: dict, write: bool = False) -> Backup:
     b = db.get(Backup, bid)
@@ -302,15 +308,16 @@ class RestoreIn(BaseModel):
         return check_cidr(v) if v is not None else v
 
 @app.post("/instances/{iid}/backups", status_code=202)
-def create_backup(iid: str, body: BackupIn, request: Request, current: CurrentUser, db: DB):
+def create_backup(iid: str, body: BackupIn, request: Request, current: CurrentUser, db: DB, scheduled: bool = False):
     i = _get(db, iid, current, write=True)
     if i.backend != "vm" or i.storage != "block":
         raise HTTPException(422, "backups are only supported for a vm with block storage")
     if i.status != "active" or not i.volume_id:
         raise HTTPException(409, f"Instance is {i.status}; a backup needs an active instance")
     api = make_api(_auth_headers(request))
-    b = Backup(instance_id=i.id, project_id=i.project_id, name=body.name or f"{i.name}-backup", engine=i.engine,
-               size_gb=i.size_gb or 1)
+    b = Backup(instance_id=i.id, project_id=i.project_id,
+               name=body.name or f"{i.name}-backup" + (f"-{datetime.utcnow():%Y%m%d%H%M}" if scheduled else ""), engine=i.engine,
+               size_gb=i.size_gb or 1, scheduled=scheduled)
     db.add(b)
     db.commit()
     try:
@@ -322,6 +329,49 @@ def create_backup(iid: str, body: BackupIn, request: Request, current: CurrentUs
     db.commit()
     run_async(provision.backup_watch, SessionLocal, Backup, b.id, api)
     return _bout(b)
+
+class ScheduleIn(BaseModel):
+    every_hours: int | None = Field(None, ge=1, le=8760)
+    keep: int | None = Field(None, ge=1, le=1000)
+
+    @model_validator(mode="after")
+    def _both_or_none(self):
+        if (self.every_hours is None) != (self.keep is None):
+            raise ValueError("every_hours and keep must be set together (or both null to turn the schedule off)")
+        return self
+
+@app.put("/instances/{iid}/backup-schedule")
+def set_backup_schedule(iid: str, body: ScheduleIn, current: CurrentUser, db: DB):
+    i = _get(db, iid, current, write=True)
+    if body.every_hours and (i.backend != "vm" or i.storage != "block"):
+        raise HTTPException(422, "backups are only supported for a vm with block storage")
+    i.backup_every_hours, i.backup_keep = body.every_hours, body.keep
+    db.commit()
+    return _out(i)
+
+@app.get("/internal/backup-due", dependencies=[InternalAuth])
+def backup_due(db: DB):
+    """Active instances whose schedule says a backup is due (the reaper creates it)."""
+    now = datetime.utcnow()
+    out = []
+    for i in db.scalars(select(Instance).where(Instance.backup_every_hours.is_not(None), Instance.status == "active")):
+        mine = list(db.scalars(select(Backup).where(Backup.instance_id == i.id).order_by(Backup.created_at.desc())))
+        last = next((b for b in mine if b.scheduled), None)
+        if any(b.status == "creating" for b in mine):
+            continue
+        if last is None or last.created_at < now - timedelta(hours=i.backup_every_hours):
+            out.append({"id": i.id, "kind": "database"})
+    return {"items": out}
+
+@app.get("/internal/backup-expired", dependencies=[InternalAuth])
+def backup_expired(db: DB):
+    """Scheduled, available backups beyond the instance's `keep` newest. Manual and failed backups are never listed."""
+    out = []
+    for i in db.scalars(select(Instance).where(Instance.backup_keep.is_not(None))):
+        ok = db.scalars(select(Backup).where(Backup.instance_id == i.id, Backup.scheduled.is_(True), Backup.status == "available")
+                        .order_by(Backup.created_at.desc()))
+        out += [{"id": b.id, "kind": "backup"} for b in list(ok)[i.backup_keep:]]
+    return {"items": out}
 
 @app.get("/backups")
 def list_backups(current: CurrentUser, db: DB):
@@ -377,3 +427,10 @@ def restore_backup(bid: str, body: RestoreIn, request: Request, current: Current
     RESTORING.add(bid)
     run_async(_restore_job, bid, SessionLocal, Instance, i.id, make_api(headers), spec)
     return _out(i, password)
+
+@app.get("/internal/stale-errors", dependencies=[InternalAuth])
+def stale_errors(hours: float, db: DB):
+    """Rows that failed before ever becoming ready and are older than `hours` (the reaper deletes these)."""
+    cut = datetime.utcnow() - timedelta(hours=hours)
+    rows = db.scalars(select(Instance).where(Instance.status == "error", Instance.ready_at.is_(None), Instance.created_at < cut))
+    return {"items": [{"id": r.id, "kind": "database"} for r in rows]}

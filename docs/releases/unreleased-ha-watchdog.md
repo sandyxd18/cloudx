@@ -16,4 +16,3 @@ Self-fencing for Instance HA. There are **upgrade steps**.
 - Not power fencing (Masakari uses Pacemaker/Corosync with STONITH/IPMI). A frozen kernel or a hung watchdog does not fence itself; the timing margin (kill at about 45 s, evacuate at 90 s) is not a hard guarantee.
 - Needs at least two compute nodes. If a partition cuts a node from ha-api and every peer, the node kills its protected VMs while ha-api may be unable to evacuate them.
 - The protected list is cached and can be a few seconds stale; unprotecting a VM inside that window can still get it killed once.
-- Cleanup of the old domains and iSCSI sessions after an evacuation is still manual.

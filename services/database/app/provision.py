@@ -10,6 +10,7 @@ import logging
 import os
 import secrets
 import time
+from datetime import datetime
 
 import requests
 
@@ -123,7 +124,7 @@ def _build(sf, Inst, iid, api, s):
             i = logs.rfind(INIT_DONE[engine])
             return d if i >= 0 and READY[engine] in logs[i:] else None
         d = wait(container_up, TIMEOUT["container"], "the database container")
-        up(ip=d["ip"], status="active")
+        up(ip=d["ip"], status="active", ready_at=datetime.utcnow())
         return
     storage, nfs, vol, share_id = s["storage"], None, None, None
     if storage == "block":

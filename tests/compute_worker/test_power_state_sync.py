@@ -124,6 +124,7 @@ def test_reconcile_stale_domains_destroys_domain_when_api_host_differs(monkeypat
 
     monkeypatch.setattr(main.requests, "get", lambda url, **kw: FakeResponse())
     deleted_domains = []
+    monkeypatch.setattr(main.libvirt_driver, "iscsi_sessions", lambda name: [])
     monkeypatch.setattr(main.libvirt_driver, "delete", lambda name: deleted_domains.append(name))
 
     main.reconcile_stale_domains()

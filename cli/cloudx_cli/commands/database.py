@@ -74,6 +74,19 @@ def backup_list(ctx):
     _output(_api("get", _u("/backups"), ctx.obj["profile"])["items"], ctx.obj["fmt"],
             ["id", "name", "engine", "size_gb", "status", "instance_id"])
 
+@backup.command("schedule")
+@click.argument("instance")
+@click.option("--every", "every_hours", type=int, help="hours between backups (minimum 1)")
+@click.option("--keep", type=int, help="scheduled backups to keep")
+@click.option("--off", is_flag=True, help="turn the schedule off")
+@click.pass_context
+def backup_schedule(ctx, instance, every_hours, keep, off):
+    """Automatic backups (run by cloudx-reaper). Only scheduled backups are deleted by --keep."""
+    if off == bool(every_hours or keep):
+        raise click.UsageError("use --off, or --every and --keep together")
+    body = {"every_hours": None, "keep": None} if off else {"every_hours": every_hours, "keep": keep}
+    _output(_api("put", _u(f"/instances/{instance}/backup-schedule"), ctx.obj["profile"], json=body), ctx.obj["fmt"])
+
 @backup.command("delete")
 @click.argument("ref")
 @click.pass_context

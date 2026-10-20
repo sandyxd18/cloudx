@@ -26,7 +26,7 @@ from shared.proc import run
 from shared.watchdog_logic import decide
 
 log = logging.getLogger("ha-watchdog")
-HA_API = os.getenv("HA_API_URL", "http://127.0.0.1:8020").rstrip("/")
+HA_APIS = [u.strip().rstrip("/") for u in os.getenv("HA_API_URL", "http://127.0.0.1:8020").split(",") if u.strip()]  # several ha-api instances
 HOST = os.getenv("HA_WATCHDOG_HOST") or os.getenv("COMPUTE_HOST") or os.getenv("NODE_NAME", "")
 PEERS = [p.strip().rstrip("/") for p in os.getenv("HA_WATCHDOG_PEERS", "").split(",") if p.strip()]
 TIMEOUT = float(os.getenv("HA_WATCHDOG_TIMEOUT", "45"))
@@ -49,12 +49,19 @@ class State:
 
 def fetch(method: str, path: str):
     """(reachable, response). Any HTTP answer, even a 5xx or a refused connection, means the network path works."""
-    try:
-        return True, requests.request(method, HA_API + path, headers=internal_headers(), timeout=5)
-    except requests.ConnectionError as exc:
-        return "refused" in str(exc).lower() or "111" in str(exc), None
-    except requests.RequestException:
-        return False, None
+    reachable, fallback = False, None
+    for base in HA_APIS:  # first instance that answers properly wins; a 5xx only counts as reachable
+        try:
+            r = requests.request(method, base + path, headers=internal_headers(), timeout=5)
+        except requests.ConnectionError as exc:
+            reachable = reachable or "refused" in str(exc).lower() or "111" in str(exc)
+            continue
+        except requests.RequestException:
+            continue
+        if r.status_code < 500:
+            return True, r
+        reachable, fallback = True, fallback or r
+    return reachable, fallback
 
 
 def ask_peers() -> list[bool]:

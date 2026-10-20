@@ -93,3 +93,25 @@ def test_other_project_cannot_see(fs):
     assert fs.get(f"/shares/{sid}").status_code == 404
     assert fs.get("/shares").json()["items"] == []
     assert fs.post(f"/shares/{sid}/access", json={"to": "10.0.0.5", "level": "rw"}).status_code == 404
+
+
+def test_ready_at_is_set_once_and_stale_errors_list_only_never_ready(fs):
+    from datetime import datetime, timedelta
+    m = importlib.import_module("services.file_store.app.main")
+    sn = mk_net(fs)
+    activate(fs, sn["id"])
+    sh = fs.post("/shares", json={"name": "ok", "size_gb": 1, "share_network_id": sn["id"]}).json()
+    fs.post("/internal/fs-agent/node1/report", json={"shares": {sh["id"]: "available"}})
+    bad = fs.post("/shares", json={"name": "bad", "size_gb": 1, "share_network_id": sn["id"]}).json()
+    fs.post("/internal/fs-agent/node1/report", json={"shares": {bad["id"]: "error"}})
+    old = datetime.utcnow() - timedelta(hours=30)
+    with m.SessionLocal() as s:
+        assert s.get(m.Share, sh["id"]).ready_at is not None
+        assert s.get(m.ShareNetwork, sn["id"]).ready_at is not None
+        for row in (s.get(m.Share, sh["id"]), s.get(m.Share, bad["id"])):
+            row.created_at = old
+        s.get(m.Share, sh["id"]).status = "error"   # was ready once, then broke: not reaped
+        s.commit()
+    items = fs.get("/internal/stale-errors?hours=24").json()["items"]
+    assert items == [{"id": bad["id"], "kind": "share"}]
+    assert fs.get("/internal/stale-errors?hours=48").json()["items"] == []

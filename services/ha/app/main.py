@@ -14,7 +14,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import DateTime, Integer, String, create_engine, select
+from sqlalchemy import DateTime, Integer, String, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth
@@ -81,11 +81,45 @@ DB = Annotated[Session, Depends(get_db)]
 def make_api():  # tests replace this with a fake
     return monitor.Api()
 
+LOCK_KEY = 80200001  # pg advisory lock: whoever holds it runs the monitor
+_lock_conn = None
+
+def is_leader() -> bool:
+    """True while this process holds the monitor lock; takes it over when free.
+
+    Session-level lock on a dedicated connection, so it vanishes with the process or connection: no lease to renew.
+    ponytail: SQLite (tests, single instance) is always leader; a half-open PG connection frees the lock only after the server notices.
+    """
+    global _lock_conn
+    if engine.dialect.name != "postgresql":
+        return True
+    if _lock_conn is not None:
+        try:
+            _lock_conn.execute(text("SELECT 1"))
+            return True
+        except Exception:  # best-effort: a dead lock connection means the lock is gone; fall through to retake it
+            log.warning("ha leader lock lost")
+            _lock_conn.close()
+            _lock_conn = None
+    conn = engine.connect()
+    if not conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": LOCK_KEY}).scalar():
+        conn.close()
+        return False
+    _lock_conn = conn
+    log.warning("ha leader lock taken: this instance now runs the monitor")
+    with SessionLocal() as db:  # hosts were judged by the previous leader; give each a fresh 60 s
+        for h in db.scalars(select(Host)):
+            h.last_seen = datetime.utcnow()
+        db.commit()
+    return True
+
 def start_monitor():  # tests replace this with a no-op
     def loop():
         while True:
             time.sleep(monitor.POLL)
             try:
+                if not is_leader():
+                    continue
                 with SessionLocal() as db:
                     monitor.cycle(db, make_api(), datetime.utcnow())
             except Exception:  # best-effort: one bad cycle must not kill the monitor thread
@@ -95,10 +129,6 @@ def start_monitor():  # tests replace this with a no-op
 @app.on_event("startup")
 def startup():
     require_schema(engine, "ha")
-    with SessionLocal() as db:  # after a restart give every host a fresh 60 s before judging it
-        for h in db.scalars(select(Host)):
-            h.last_seen = datetime.utcnow()
-        db.commit()
     start_monitor()
 
 @app.get("/health")

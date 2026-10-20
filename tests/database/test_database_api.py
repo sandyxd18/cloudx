@@ -3,7 +3,7 @@ import importlib
 import pytest
 from fastapi.testclient import TestClient
 
-from shared.auth_middleware import require_auth
+from shared.auth_middleware import require_auth, require_internal
 
 
 class Fake:
@@ -92,6 +92,7 @@ def db(monkeypatch, tmp_path):
     monkeypatch.setattr(m, "make_api", lambda headers: fake)
     who = {"project_id": "p1", "role": "member"}
     m.app.dependency_overrides[require_auth] = lambda: who
+    m.app.dependency_overrides[require_internal] = lambda: None
     c = TestClient(m.app, headers={"X-Auth-Token": "t"})
     c.who, c.fake, c.m = who, fake, m
     fake.on_server = lambda sid: None
@@ -335,3 +336,51 @@ def test_backup_in_use_cannot_be_deleted_and_restart_marks_creating_as_error(db)
     db.m.require_schema = lambda *a: None  # sqlite test db has no alembic version table
     db.m.startup()
     assert db.get(f"/backups/{bid}").json()["status"] == "error"
+
+
+# ── reaper support: ready_at + stale-errors ───────────────────────────────────
+
+def test_ready_at_and_stale_errors(db):
+    from datetime import datetime, timedelta
+    ok, _ = vm_ready(db, {**VM, "name": "good"})
+    bad = db.post("/instances", json={**VM, "name": "bad", "image": "ubuntu"}).json()["id"]
+    old = datetime.utcnow() - timedelta(hours=30)
+    with db.m.SessionLocal() as s:
+        assert s.get(db.m.Instance, ok.json()["id"]).ready_at is not None
+        b = s.get(db.m.Instance, bad)
+        b.status, b.ready_at, b.created_at = "error", None, old
+        g = s.get(db.m.Instance, ok.json()["id"])
+        g.status, g.created_at = "error", old   # was ready once: not reaped
+        s.commit()
+    assert db.get("/internal/stale-errors?hours=24").json()["items"] == [{"id": bad, "kind": "database"}]
+    assert db.get("/internal/stale-errors?hours=48").json()["items"] == []
+
+
+# ── backup schedule ───────────────────────────────────────────────────────────
+
+def test_schedule_validation_and_due_and_retention(db):
+    from datetime import datetime, timedelta
+    iid = active_block(db)
+    put = lambda b: db.put(f"/instances/{iid}/backup-schedule", json=b)
+    assert put({"every_hours": 0, "keep": 1}).status_code == 422
+    assert put({"every_hours": 6}).status_code == 422          # keep missing
+    assert put({"every_hours": 6, "keep": 2}).json()["backup_keep"] == 2
+    due = lambda: [x["id"] for x in db.get("/internal/backup-due").json()["items"]]
+    assert due() == [iid]                                        # never backed up
+    manual = db.post(f"/instances/{iid}/backups", json={}).json()["id"]
+    assert due() == [iid]                                        # a manual backup does not satisfy the schedule
+    ids = [db.post(f"/instances/{iid}/backups?scheduled=1", json={}).json()["id"] for _ in range(3)]
+    assert due() == []
+    with db.m.SessionLocal() as s:
+        for n, b in enumerate(ids):                              # oldest first
+            s.get(db.m.Backup, b).created_at = datetime.utcnow() - timedelta(hours=30 - n)
+        s.get(db.m.Backup, manual).created_at = datetime.utcnow() - timedelta(hours=99)
+        s.commit()
+    assert due() == [iid]                                        # newest scheduled is 28 h old, > 6 h
+    assert [x["id"] for x in db.get("/internal/backup-expired").json()["items"]] == [ids[0]]   # keep 2 newest; manual untouched
+    assert put({"every_hours": None, "keep": None}).json()["backup_every_hours"] is None
+    assert due() == [] and db.get("/internal/backup-expired").json()["items"] == []
+
+def test_schedule_rejects_local_storage(db):
+    r, _ = vm_ready(db, {**VM, "name": "loc"})
+    assert db.put(f"/instances/{r.json()['id']}/backup-schedule", json={"every_hours": 1, "keep": 1}).status_code == 422

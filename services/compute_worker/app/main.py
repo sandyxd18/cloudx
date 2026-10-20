@@ -36,9 +36,9 @@ import requests
 from shared.internal import internal_headers  # noqa: E402
 from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
-from . import libvirt_driver, volume_manager, worker  # noqa: E402
+from . import iscsi, libvirt_driver, volume_manager, worker  # noqa: E402
 from .config import COMPUTE_HOST, LIBVIRT_URI, NETWORKING_API_URL, OVS_BRIDGE, IMAGE_API_URL, BLOCK_STORE_API_URL, VM_NAME_PREFIX, endpoint  # noqa: E402
-HA_API_URL = os.getenv("HA_API_URL", "http://127.0.0.1:8020").rstrip("/")
+HA_API_URL = os.getenv("HA_API_URL", "http://127.0.0.1:8020").rstrip("/")  # may list several ha-api instances, comma-separated
 FENCED_FLAG = Path("/var/lib/cloudx/ha-watchdog/fenced")  # written by cloudx-ha-watchdog after it destroyed VMs
 from shared.proc import CommandError, succeeds
 from .utils import run, tool_available  # noqa: E402
@@ -167,9 +167,16 @@ def reconcile_stale_domains() -> None:
         if api_host and api_host != COMPUTE_HOST:
             log.warning("[reconcile] domain %s host in API is %s (this node=%s) — destroying stale domain", domain_name, api_host, COMPUTE_HOST)
             try:
+                sessions = libvirt_driver.iscsi_sessions(domain_name)  # read before the domain is undefined
                 libvirt_driver.delete(domain_name)
             except Exception as exc:
                 log.error("[reconcile] failed to destroy stale domain %s: %s", domain_name, exc)
+                continue
+            for portal, target in sessions:  # the evacuated VM lives elsewhere; drop its leftover session here
+                try:
+                    iscsi.logout(portal, target)
+                except Exception as exc:  # best-effort: the domain is already gone; a stale session only wastes a login
+                    log.warning("[reconcile] could not log out %s: %s", target, exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -266,8 +273,15 @@ def send_heartbeat() -> None:
     """Tell ha-api this node is alive (and which iSCSI initiator to fence if it is not). Never raises."""
     try:
         from . import iscsi
-        requests.post(f"{HA_API_URL}/internal/heartbeat/{COMPUTE_HOST}", json={"initiator_iqn": iscsi.initiator_iqn()},
-                      headers=internal_headers(), timeout=5)
+        body, last = {"initiator_iqn": iscsi.initiator_iqn()}, None
+        for base in (u.strip().rstrip("/") for u in HA_API_URL.split(",") if u.strip()):
+            try:
+                requests.post(f"{base}/internal/heartbeat/{COMPUTE_HOST}", json=body, headers=internal_headers(), timeout=5)
+                return  # state lives in the shared DB, one instance is enough
+            except Exception as exc:  # best-effort: try the next ha-api
+                last = exc
+        if last:
+            raise last
     except Exception as exc:  # best-effort: ha-api down or open-iscsi missing must not hurt the worker
         log.debug("heartbeat failed: %s", exc)
 

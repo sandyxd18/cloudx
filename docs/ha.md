@@ -59,6 +59,23 @@ Dua VM CirrOS (satu root di storage-node, satu di compute-node), keduanya dilind
 - Blip: worker dihentikan 20 detik lalu dinyalakan. Tidak ada tindakan; host kembali `up`.
 - Temuan saat uji: `PUT /os-services` dan `evacuate` semula hanya menerima JWT admin sehingga ha-api ditolak (401). Diperbaiki dengan `AdminOrInternal`.
 
+## Dua instance ha-api
+
+Instance kedua boleh dijalankan di node lain (unit `cloudx-ha-api` yang sama). Semua endpoint aktif di keduanya; hanya loop monitor yang dijalankan satu instance, pemegang `pg_try_advisory_lock` pada PostgreSQL bersama. Lock lepas otomatis saat proses atau koneksinya mati, lalu instance lain mengambilnya dalam sekitar 10 detik. Pemimpin baru memberi semua host `last_seen` baru (masa 60 detik sebelum dinilai).
+
+Pasang di node kedua:
+1. `/etc/cloudx/ha-api/ha-api.conf` (`[DEFAULT]`) dengan `database_url` ke PostgreSQL controller, dan `compute_api_url`, `block_store_api_url`, `auth_api_url` ke controller.
+2. Di controller: baris `pg_hba.conf` untuk IP node itu saja (`/32`, `scram-sha-256`) dan buka 5432 hanya dari node itu.
+3. Di semua node compute: `ha_api_url = http://controller:8020,http://node2:8020`. compute-worker mengirim heartbeat ke instance pertama yang menjawab; watchdog menganggap ha-api terjangkau bila salah satu menjawab.
+
+Batas: PostgreSQL, compute-api, block-store-api dan auth tetap di controller. Bila controller mati, instance kedua hidup tetapi tidak bisa mengevakuasi. Dashboard hanya tahu satu URL ha-api.
+
+Hasil uji lab (dua instance: controller dan compute-node): tepat satu leader; ha-api controller dihentikan lalu compute-node mengambil lock dalam 2 detik; dengan leader lama mati, compute-worker dan libvirtd di compute-node dihentikan dan instance kedua mengevakuasi VM terlindungi ke storage-node (recovery `done`); ha-api lama dinyalakan lagi, menjadi follower, dan tidak ada evakuasi ganda. Dengan controller ha-api mati, heartbeat dan proteksi tetap bisa lewat instance kedua.
+
+## Pembersihan setelah evacuate
+
+Saat node lama pulih, compute-worker menghapus domain yang menurut API sudah pindah host, lalu logout sesi iSCSI dari disk domain itu. Sesi yatim tanpa domain tidak dibersihkan.
+
 ## Batas
 
 Lihat catatan rilis (`docs/releases/v0.8.5.md`).

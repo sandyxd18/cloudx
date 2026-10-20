@@ -44,6 +44,8 @@ database_api_url = http://127.0.0.1:8019
 database_public_url = http://127.0.0.1:8019
 # Compute workers send a heartbeat here every 10 s; ha-api fences and evacuates protected servers of a silent host.
 ha_api_url = http://127.0.0.1:8020
+# Two ha-api instances (leader lock in PostgreSQL): list both, comma-separated, e.g.
+# ha_api_url = http://controller:8020,http://compute-01:8020
 # HA watchdog (compute nodes only; put these in /etc/cloudx/ha-watchdog/ha-watchdog.conf under [DEFAULT]):
 # ha_watchdog_host = <node_name>
 # ha_watchdog_peers = http://<other compute node>:8021
@@ -55,3 +57,9 @@ dns_resolver_address = 172.20.0.118
 dns_upstream = 1.1.1.1,8.8.8.8
 # CIDRs allowed to recurse through the resolver. VM traffic is source-NATed to the compute/gateway node address (seen in the lab: the node IP, not the VM IP), so include the node network.
 dns_resolver_clients = 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+
+# Reaper (controller; put these in /etc/cloudx/reaper/reaper.conf under [DEFAULT]):
+# Deletes Database, Container and File Store rows that failed during build and were never ready.
+# reaper_max_age_hours = 24
+# reaper_interval = 600
+# reaper_dry_run = false

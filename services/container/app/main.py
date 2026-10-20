@@ -70,6 +70,7 @@ class Container(Base):
     want: Mapped[str] = mapped_column(String, default="running")  # running | stopped | deleting
     logs: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(String, nullable=True)
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # first time it was usable; the reaper never deletes these
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 class Host(Base):
@@ -299,7 +300,16 @@ def agent_report(host: str, body: ReportIn, db: DB):
             continue
         if it.state in ("running", "stopped", "error"):
             c.status, c.error = it.state, it.error
+            if it.state == "running" and not c.ready_at:
+                c.ready_at = now()
             if it.state == "running" and c.want == "restart":  # the worker restarts before it reports
                 c.want = "running"
     db.commit()
     return {"ok": True}
+
+@app.get("/internal/stale-errors", dependencies=[InternalAuth])
+def stale_errors(hours: float, db: DB):
+    """Rows that failed before ever becoming ready and are older than `hours` (the reaper deletes these)."""
+    cut = now() - timedelta(hours=hours)
+    rows = db.scalars(select(Container).where(Container.status == "error", Container.ready_at.is_(None), Container.created_at < cut))
+    return {"items": [{"id": r.id, "kind": "container"} for r in rows]}

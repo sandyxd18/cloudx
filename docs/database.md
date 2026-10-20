@@ -53,6 +53,19 @@ cloudx database backup delete <backup>
 
 Pembanding: Trove menyimpan backup di Swift dan restore membuat instance baru (docs.openstack.org/trove, "Backup and restore a database"). Perbedaannya: backup di sini adalah salinan volume, bukan dump logis lewat guest agent.
 
+### Jadwal dan retensi
+
+```
+cloudx database backup schedule <instance> --every 6 --keep 7
+cloudx database backup schedule <instance> --off
+```
+
+`cloudx-reaper` yang menjalankannya (satu siklus tiap `reaper_interval`, jadi presisi sekitar 10 menit): instance `active` yang backup terjadwal terakhirnya lebih tua dari `--every` jam (atau belum ada) dibuatkan backup baru. Lalu backup terjadwal yang `available` di luar `--keep` terbaru dihapus. Backup manual dan backup `error` tidak pernah dihapus otomatis. Jadwal hanya untuk VM + block; `--every` minimal 1. Reaper mati berarti tidak ada backup terjadwal maupun retensi.
+
+## Pembersihan otomatis
+
+Unit `cloudx-reaper` (controller, root) menghapus instance `error` yang gagal saat build (belum pernah `ready_at`) dan lebih tua dari `reaper_max_age_hours` (24) di `/etc/cloudx/reaper/reaper.conf`. Yang pernah aktif lalu error tidak disentuh. Berlaku juga untuk Container dan File Store. `reaper_dry_run = true` hanya mencatat log. Backup `error` tidak dibersihkan.
+
 ## Terbukti di lab
 
 container + postgres/mariadb (koneksi, sandi salah ditolak, data bertahan stop/start, delete bersih); vm + postgres + block (koneksi, data); vm + mariadb + file (port terbuka, auth ditolak, SSH tertutup oleh SG). Hapus tidak meninggalkan volume, share, security group.

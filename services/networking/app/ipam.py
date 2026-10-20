@@ -1,7 +1,7 @@
 import ipaddress
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .models import FloatingIP, Network, Port, Router, Subnet
@@ -140,6 +140,9 @@ def resolve_association_port(db: Session, payload: FloatingIPAssociateIn) -> Por
     raise HTTPException(status_code=400, detail="floating IP association requires --server or --port")
 
 def allocate_fixed_ip(db: Session, subnet: Subnet, requested: str | None = None) -> str:
+    if db.get_bind().dialect.name == "postgresql":
+        # Serialize allocation per subnet across gunicorn workers; released at the caller's commit/rollback.
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": subnet.id})
     network = ipaddress.ip_network(subnet.cidr, strict=False)
     gateway_str = subnet.gateway_ip or subnet.gateway
     gateway_ip = ipaddress.ip_address(gateway_str) if gateway_str else None

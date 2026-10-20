@@ -96,15 +96,37 @@ def test_reset_admin_only(ha):
     assert ha.post("/hosts/nope/reset").status_code == 404
 
 
-def test_startup_refreshes_last_seen(ha):
+def test_taking_the_leader_lock_refreshes_last_seen_and_a_follower_does_not(ha):
     old = datetime.utcnow() - timedelta(hours=1)
     with ha.m.SessionLocal() as db:
         db.add(ha.m.Host(host="h9", last_seen=old, state="up", fails=0))
         db.commit()
-    ha.m.require_schema = lambda *a: None
-    ha.m.startup()
-    with ha.m.SessionLocal() as db:
-        assert db.get(ha.m.Host, "h9").last_seen > old + timedelta(minutes=59)
+
+    class Conn:
+        def __init__(self, got): self.got, self.closed, self.dead = got, False, False
+        def execute(self, q, p=None):
+            if self.dead: raise RuntimeError("gone")
+            class R:
+                def scalar(s, got=self.got): return got
+            return R()
+        def close(self): self.closed = True
+
+    m = ha.m
+    m.engine = type("E", (), {"dialect": type("D", (), {"name": "postgresql"})(), "connect": lambda s: nxt[0]})()
+    m._lock_conn = None
+    nxt = [Conn(False)]
+    assert m.is_leader() is False and nxt[0].closed
+    with m.SessionLocal() as db:                      # follower: last_seen untouched
+        assert db.get(m.Host, "h9").last_seen == old
+    nxt[0] = held = Conn(True)
+    assert m.is_leader() is True
+    with m.SessionLocal() as db:
+        assert db.get(m.Host, "h9").last_seen > old + timedelta(minutes=59)
+    assert m.is_leader() is True                      # keeps it without retaking
+    held.dead = True
+    nxt[0] = Conn(False)
+    assert m.is_leader() is False and held.closed     # lock connection died, another instance holds the lock
+    m._lock_conn = None
 
 def test_watchdog_endpoints(ha):
     for u in ("/internal/protected-domains/h1", "/internal/hosts/h1"):

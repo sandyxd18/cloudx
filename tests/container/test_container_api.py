@@ -103,3 +103,21 @@ def test_delete_from_error_and_isolation(ct):
     assert ct.get("/containers").json()["items"] == []
     ct.who.update(project_id="p1")
     assert ct.delete(f"/containers/{cid}").status_code == 202
+
+
+def test_ready_at_and_stale_errors(ct):
+    from datetime import timedelta
+    m = importlib.import_module("services.container.app.main")
+    beat(ct)
+    a = ct.post("/containers", json=BODY).json()
+    b = ct.post("/containers", json={**BODY, "name": "web2"}).json()
+    ct.post("/internal/ct-agent/node1/report", json={"containers": {a["id"]: {"state": "running"}}})
+    ct.post("/internal/ct-agent/node1/report", json={"containers": {b["id"]: {"state": "error", "error": "pull failed"}}})
+    with m.SessionLocal() as s:
+        ra, rb = s.get(m.Container, a["id"]), s.get(m.Container, b["id"])
+        assert ra.ready_at is not None and rb.ready_at is None
+        ra.status = "error"
+        ra.created_at = rb.created_at = m.now() - timedelta(hours=30)
+        s.commit()
+    assert ct.get("/internal/stale-errors?hours=24").json()["items"] == [{"id": b["id"], "kind": "container"}]
+    assert ct.get("/internal/stale-errors?hours=48").json()["items"] == []

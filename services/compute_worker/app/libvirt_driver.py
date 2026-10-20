@@ -1,4 +1,5 @@
 import logging
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -318,6 +319,24 @@ def reboot(name: str) -> None:
     finally:
         conn.close()
 
+
+_BY_PATH = re.compile(r"/dev/disk/by-path/ip-(\S+?)-iscsi-(\S+)-lun-\d+\Z")
+
+def iscsi_sessions_from_xml(xml: str) -> list[tuple[str, str]]:
+    """(portal, target iqn) of every cross-node iSCSI disk of a domain (they are plain by-path block disks)."""
+    found = []
+    for src in ET.fromstring(xml).findall("./devices/disk/source"):
+        m = _BY_PATH.match(src.attrib.get("dev", ""))
+        if m:
+            found.append((m.group(1), m.group(2)))
+    return found
+
+def iscsi_sessions(name: str) -> list[tuple[str, str]]:
+    conn = connect()
+    try:
+        return iscsi_sessions_from_xml(conn.lookupByName(name).XMLDesc(0))
+    finally:
+        conn.close()
 
 def delete(name: str) -> None:
     conn = connect()
