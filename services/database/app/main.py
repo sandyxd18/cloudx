@@ -70,6 +70,21 @@ class Instance(Base):
     token_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
+class Backup(Base):
+    __tablename__ = "db_backups"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    instance_id: Mapped[str | None] = mapped_column(String, nullable=True)  # no FK: the backup outlives the instance
+    project_id: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    engine: Mapped[str] = mapped_column(String)
+    size_gb: Mapped[int] = mapped_column(Integer)
+    volume_backup_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="creating")  # creating | available | error
+    error: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+RESTORING: set[str] = set()  # ponytail: in memory; lost on restart (an interrupted restore is already marked error)
+
 app = FastAPI(title="cloudx database-api", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=cors_origins(), allow_methods=["*"], allow_headers=["*"])
 if RequestIDMiddleware:
@@ -96,6 +111,8 @@ def startup():
     with SessionLocal() as db:  # a restart killed the worker threads: nothing will finish these rows
         for row in db.scalars(select(Instance).where(Instance.status.in_(("building", "deleting")))):
             row.status, row.error = "error", "interrupted by a database-api restart; delete and recreate"
+        for b in db.scalars(select(Backup).where(Backup.status == "creating")):
+            b.status, b.error = "error", "interrupted by a database-api restart"
         db.commit()
 
 @app.get("/health")
@@ -247,3 +264,116 @@ def db_ready(iid: str, db: DB, x_ready_token: Annotated[str, Header()] = ""):
     i.status, i.token_hash = "active", None
     db.commit()
     return {"ok": True}
+
+
+# ── backup / restore (VM + block only: a crash-consistent copy of the data volume) ──
+
+def _bout(b: Backup) -> dict:
+    return {"id": b.id, "name": b.name, "instance_id": b.instance_id, "engine": b.engine, "size_gb": b.size_gb,
+            "status": b.status, "error": b.error, "created_at": b.created_at.isoformat() if b.created_at else None}
+
+def _get_backup(db: Session, bid: str, current: dict, write: bool = False) -> Backup:
+    b = db.get(Backup, bid)
+    if not b or not can_see(current, b.project_id):
+        raise HTTPException(404, "Database backup not found")
+    if write and not owns(current, b.project_id):
+        raise HTTPException(403, "Not allowed")
+    return b
+
+class BackupIn(BaseModel):
+    name: str | None = None
+
+class RestoreIn(BaseModel):
+    name: str
+    network_id: str
+    image: str
+    flavor: str
+    allowed_cidr: str | None = None
+    password: str | None = None
+
+    @field_validator("password")
+    @classmethod
+    def _pw(cls, v):
+        return check_password(v) if v is not None else v
+
+    @field_validator("allowed_cidr")
+    @classmethod
+    def _cidr(cls, v):
+        return check_cidr(v) if v is not None else v
+
+@app.post("/instances/{iid}/backups", status_code=202)
+def create_backup(iid: str, body: BackupIn, request: Request, current: CurrentUser, db: DB):
+    i = _get(db, iid, current, write=True)
+    if i.backend != "vm" or i.storage != "block":
+        raise HTTPException(422, "backups are only supported for a vm with block storage")
+    if i.status != "active" or not i.volume_id:
+        raise HTTPException(409, f"Instance is {i.status}; a backup needs an active instance")
+    api = make_api(_auth_headers(request))
+    b = Backup(instance_id=i.id, project_id=i.project_id, name=body.name or f"{i.name}-backup", engine=i.engine,
+               size_gb=i.size_gb or 1)
+    db.add(b)
+    db.commit()
+    try:
+        b.volume_backup_id = api.call("block", "POST", f"/volumes/{i.volume_id}/backup", {"name": b.name})["id"]
+    except provision.Failure as exc:
+        db.delete(b)
+        db.commit()
+        raise HTTPException(502, str(exc)) from None
+    db.commit()
+    run_async(provision.backup_watch, SessionLocal, Backup, b.id, api)
+    return _bout(b)
+
+@app.get("/backups")
+def list_backups(current: CurrentUser, db: DB):
+    ids = visible_projects(current)
+    q = select(Backup).order_by(Backup.created_at)
+    if ids is not None:
+        q = q.where(Backup.project_id.in_(ids or [_pid(current)]))
+    return {"items": [_bout(b) for b in db.scalars(q)]}
+
+@app.get("/backups/{bid}")
+def get_backup(bid: str, current: CurrentUser, db: DB):
+    return _bout(_get_backup(db, bid, current))
+
+@app.delete("/backups/{bid}", status_code=202)
+def delete_backup(bid: str, request: Request, current: CurrentUser, db: DB):
+    b = _get_backup(db, bid, current, write=True)
+    if bid in RESTORING:
+        raise HTTPException(409, "Backup is being restored")
+    if b.volume_backup_id:
+        try:
+            make_api(_auth_headers(request)).call("block", "DELETE", f"/backups/{b.volume_backup_id}", ok=(200, 202, 204, 404))
+        except provision.Failure as exc:
+            raise HTTPException(502, str(exc)) from None
+    db.delete(b)
+    db.commit()
+    return {"id": bid, "status": "deleting"}
+
+def _restore_job(bid, *args):
+    try:
+        provision.build(*args)
+    finally:
+        RESTORING.discard(bid)
+
+@app.post("/backups/{bid}/restore", status_code=201)
+def restore_backup(bid: str, body: RestoreIn, request: Request, current: CurrentUser, db: DB):
+    b = _get_backup(db, bid, current, write=True)
+    if b.status != "available" or not b.volume_backup_id:
+        raise HTTPException(409, f"Backup is {b.status}; restore needs an available backup")
+    headers = _auth_headers(request)
+    password = body.password or gen_password()
+    i = Instance(name=body.name, project_id=b.project_id, engine=b.engine, backend="vm", storage="block",
+                 network_id=body.network_id, size_gb=b.size_gb, image=body.image, flavor=body.flavor,
+                 allowed_cidr=body.allowed_cidr)
+    db.add(i)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Database instance name already exists") from None
+    spec = {"engine": b.engine, "backend": "vm", "storage": "block", "network_id": body.network_id, "size_gb": b.size_gb,
+            "image": body.image, "flavor": body.flavor, "allowed_cidr": body.allowed_cidr, "password": password,
+            "public_url": PUBLIC_URL, "backup_volume_id": b.volume_backup_id, "restore": True}
+    RESTORING.add(bid)
+    run_async(_restore_job, bid, SessionLocal, Instance, i.id, make_api(headers), spec)
+    return _out(i, password)

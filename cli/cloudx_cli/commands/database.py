@@ -56,3 +56,39 @@ for _n in ("start", "stop"):
 @click.pass_context
 def database_delete(ctx, ref):
     _api("delete", _u(f"/instances/{ref}"), ctx.obj["profile"])
+
+@database.group("backup")
+def backup():
+    """Backups of a VM + block database (crash-consistent copy of the data volume)"""
+
+@backup.command("create")
+@click.argument("instance")
+@click.option("--name", default=None)
+@click.pass_context
+def backup_create(ctx, instance, name):
+    _output(_api("post", _u(f"/instances/{instance}/backups"), ctx.obj["profile"], json={"name": name}), ctx.obj["fmt"])
+
+@backup.command("list")
+@click.pass_context
+def backup_list(ctx):
+    _output(_api("get", _u("/backups"), ctx.obj["profile"])["items"], ctx.obj["fmt"],
+            ["id", "name", "engine", "size_gb", "status", "instance_id"])
+
+@backup.command("delete")
+@click.argument("ref")
+@click.pass_context
+def backup_delete(ctx, ref):
+    _api("delete", _u(f"/backups/{ref}"), ctx.obj["profile"])
+
+@backup.command("restore")
+@click.argument("ref")
+@click.argument("name")
+@click.option("--network", "network_id", required=True, help="Tenant network id")
+@click.option("--image", required=True, help="Same Ubuntu image (same engine major version) as the original")
+@click.option("--flavor", required=True)
+@click.option("--allowed-cidr", default=None)
+@click.option("--password", default=None, help="Generated if omitted; shown once")
+@click.pass_context
+def backup_restore(ctx, ref, name, **kw):
+    body = {"name": name, **{k: v for k, v in kw.items() if v is not None}}
+    _output(_api("post", _u(f"/backups/{ref}/restore"), ctx.obj["profile"], json=body), ctx.obj["fmt"])

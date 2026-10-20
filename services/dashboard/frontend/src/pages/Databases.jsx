@@ -26,6 +26,8 @@ export default function DatabasesPage() {
   const toast = useToast()
   const [loading, setLoading] = useState(true)
   const [items, setItems] = useState([])
+  const [backups, setBackups] = useState([])
+  const [selB, setSelB] = useState([])
   const [networks, setNetworks] = useState([])
   const [images, setImages] = useState([])
   const [flavors, setFlavors] = useState([])
@@ -48,8 +50,9 @@ export default function DatabasesPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [d, n, i, f] = await Promise.all([api.getDatabases(), api.getNetworks(), api.getImages(), api.getFlavors()])
+      const [d, n, i, f, b] = await Promise.all([api.getDatabases(), api.getNetworks(), api.getImages(), api.getFlavors(), api.getDatabaseBackups()])
       setItems(d.items || [])
+      setBackups(b.items || [])
       setNetworks((n.networks || n.items || n || []).filter(x => !x.external))
       setImages(i.images || i.items || i || [])
       setFlavors(f.flavors || f.items || f || [])
@@ -76,6 +79,10 @@ export default function DatabasesPage() {
     }
   }
 
+  const oneB = selB.length === 1 ? selB[0] : null
+  const backupOk = one && one.status === 'active' && one.backend === 'vm' && one.storage === 'block'
+  const restore = () => run(async () => { setSecret(await api.restoreDatabaseBackup(oneB.id, { name, network_id: net.value, image: image.value, flavor: flavor.value })) }, () => { setName(''); setSelB([]) })
+
   const create = () => {
     const body = { name, engine: engine.value, backend: backend.value, network_id: net.value, storage: vm ? storage.value : 'local' }
     if (vm) { body.image = image.value; body.flavor = flavor.value }
@@ -97,6 +104,7 @@ export default function DatabasesPage() {
               <Button iconName="refresh" onClick={load} ariaLabel="Refresh" />
               <Button disabled={!one || one.status !== 'stopped'} onClick={() => run(() => api.databaseAction(one.id, 'start'))}>Start</Button>
               <Button disabled={!one || one.status !== 'active'} onClick={() => run(() => api.databaseAction(one.id, 'stop'))}>Stop</Button>
+              <Button disabled={!backupOk} onClick={() => run(() => api.createDatabaseBackup(one.id, `${one.name}-backup`))}>Backup</Button>
               <Button disabled={!selected.length} onClick={() => setModal('delete')}>Delete</Button>
               <Button variant="primary" onClick={() => setModal('create')}>Create database</Button>
             </SpaceBetween>
@@ -124,6 +132,51 @@ export default function DatabasesPage() {
         loading={loading}
         empty={<TableEmpty title="No databases" description="Create a PostgreSQL or MariaDB instance." />}
       />
+      <Table
+        variant="container"
+        header={<Header variant="h2" counter={`(${backups.length})`}
+          actions={<SpaceBetween direction="horizontal" size="xs">
+            <Button disabled={!oneB || oneB.status !== 'available'} onClick={() => setModal('restore')}>Restore</Button>
+            <Button disabled={!oneB} onClick={() => run(() => api.deleteDatabaseBackup(oneB.id), () => setSelB([]))}>Delete backup</Button>
+          </SpaceBetween>}>Backups</Header>}
+        selectionType="single"
+        selectedItems={selB}
+        onSelectionChange={({ detail }) => setSelB(detail.selectedItems)}
+        trackBy="id"
+        columnDefinitions={[
+          { id: 'name', header: 'Name', cell: b => b.name },
+          { id: 'engine', header: 'Engine', cell: b => b.engine },
+          { id: 'size', header: 'Size (GB)', cell: b => b.size_gb },
+          { id: 'status', header: 'Status', cell: b => <StatusIndicator type={b.status === 'available' ? 'success' : b.status === 'error' ? 'error' : 'pending'}>{b.status}</StatusIndicator> },
+          { id: 'error', header: 'Error', cell: b => b.error || '-' },
+        ]}
+        items={backups}
+        empty={<TableEmpty title="No backups" description="Select an active VM database with block storage and choose Backup." />}
+      />
+      {modal === 'restore' && (
+        <Modal visible onDismiss={() => setModal(null)} header="Restore backup as a new database"
+          footer={<SpaceBetween direction="horizontal" size="xs">
+            <Button variant="link" onClick={() => setModal(null)}>Cancel</Button>
+            <Button variant="primary" loading={busy} disabled={!name || !net || !image || !flavor} onClick={restore}>Restore</Button>
+          </SpaceBetween>}>
+          <SpaceBetween size="m">
+            <Alert type="info">Use the same Ubuntu image as the original so the engine version matches.</Alert>
+            <FormField label="New name"><Input value={name} onChange={({ detail }) => setName(detail.value)} /></FormField>
+            <FormField label="Network">
+              <Select selectedOption={net} onChange={({ detail }) => setNet(detail.selectedOption)}
+                options={networks.map(n => ({ value: n.id, label: n.name }))} placeholder="Choose a network" />
+            </FormField>
+            <FormField label="Image">
+              <Select selectedOption={image} onChange={({ detail }) => setImage(detail.selectedOption)}
+                options={images.map(n => ({ value: n.id, label: n.name }))} placeholder="Choose an image" />
+            </FormField>
+            <FormField label="Flavor">
+              <Select selectedOption={flavor} onChange={({ detail }) => setFlavor(detail.selectedOption)}
+                options={flavors.map(n => ({ value: n.name, label: n.name }))} placeholder="Choose a flavor" />
+            </FormField>
+          </SpaceBetween>
+        </Modal>
+      )}
       {modal === 'create' && (
         <Modal visible onDismiss={() => setModal(null)} header="Create database"
           footer={<SpaceBetween direction="horizontal" size="xs">

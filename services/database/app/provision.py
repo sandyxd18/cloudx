@@ -25,7 +25,7 @@ URLS = {
     "container": os.getenv("CONTAINER_API_URL", "http://127.0.0.1:8018"),
 }
 POLL = 5  # seconds between status polls (tests set 0)
-TIMEOUT = {"vm": 900, "container": 300, "step": 300}
+TIMEOUT = {"vm": 900, "container": 300, "step": 300, "backup": 3600}
 IMAGES = {"postgresql": "postgres:16", "mariadb": "mariadb:11"}
 CONTAINER_ENV = {
     "postgresql": lambda pw: {"POSTGRES_PASSWORD": pw, "PGDATA": "/var/lib/postgresql/data/pgdata"},
@@ -74,6 +74,17 @@ def _fail(sf, Inst, iid, exc):
     log.error("database %s: %s", iid, exc)
     _upd(sf, Inst, iid, status="error", error=str(exc)[:300])
 
+def backup_watch(sf, Backup, bid: str, api) -> None:
+    """Follow the block-store backup until it is available or failed."""
+    with sf() as db:
+        vb = db.get(Backup, bid).volume_backup_id
+    try:
+        d = wait(lambda: (lambda x: x if x["status"] in ("available", "error") else None)(api.call("block", "GET", f"/backups/{vb}")),
+                 TIMEOUT["backup"], "the volume backup")
+        _upd(sf, Backup, bid, status=d["status"], error=(d.get("error") or "backup failed") if d["status"] == "error" else None)
+    except Exception as exc:  # best-effort: record on the row; the user can delete the backup and retry
+        _upd(sf, Backup, bid, status="error", error=str(exc)[:300])
+
 def build(sf, Inst, iid: str, api, s: dict) -> None:
     try:
         _build(sf, Inst, iid, api, s)
@@ -116,8 +127,13 @@ def _build(sf, Inst, iid, api, s):
         return
     storage, nfs, vol, share_id = s["storage"], None, None, None
     if storage == "block":
-        vol = api.call("block", "POST", "/volumes", {"name": name, "size_gb": s["size_gb"]})
-        up(volume_id=vol["id"])
+        if s.get("backup_volume_id"):  # restore: the data volume comes from the backup, not an empty one
+            vol = api.call("block", "POST", f"/backups/{s['backup_volume_id']}/restore", {"name": name})
+            up(volume_id=vol["id"])
+            wait(lambda: api.call("block", "GET", f"/volumes/{vol['id']}")["status"] == "available", TIMEOUT["step"], "the restored volume")
+        else:
+            vol = api.call("block", "POST", "/volumes", {"name": name, "size_gb": s["size_gb"]})
+            up(volume_id=vol["id"])
     elif storage == "file":
         sn = api.call("file", "POST", "/share-networks", {"name": name, "network_id": s["network_id"]})
         up(share_net_id=sn["id"])
@@ -130,7 +146,7 @@ def _build(sf, Inst, iid, api, s):
         nfs = f"{sn['ip']}:/{share_id}"
     token = secrets.token_urlsafe(24)
     up(token_hash=token_hash(token))
-    user_data = render(engine, storage, s["password"], f"{s['public_url']}/internal/db-ready/{iid}", token, cidr=cidr, nfs=nfs)
+    user_data = render(engine, storage, s["password"], f"{s['public_url']}/internal/db-ready/{iid}", token, cidr=cidr, nfs=nfs, restore=bool(s.get("restore")))
     srv = api.call("compute", "POST", "/servers", {"name": name, "image": s["image"], "flavor": s["flavor"],
                                                    "network": s["network_id"], "security_groups": [sg["id"]],
                                                    "user_data": user_data})

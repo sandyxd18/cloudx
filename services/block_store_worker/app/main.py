@@ -648,12 +648,17 @@ def handle_backup_volume(args: dict) -> None:
     object_key  = args["object_key"]
 
     log.info("Backing up volume %s (%s) → %s/%s", args.get("volume_id"), backend, BACKUP_BUCKET, object_key)
-    tmp = None
+    tmp = snap = None
     try:
         _mc_alias()
         with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as f:
             tmp = f.name
-        _export_volume_to_file(volume_path, backend, tmp)
+        source = volume_path
+        if backend == "lvm":  # a volume in use changes under the copy; export a frozen snapshot (crash-consistent)
+            snap = _snap_lv_name(backup_id)
+            gb = max(1, -(-int(args.get("size_gb", 1)) // 5))
+            source = lvm.snapshot(volume_path.split("/")[-1], snap, gb)
+        _export_volume_to_file(source, backend, tmp)
         _mc(["cp", tmp, f"cloudx/{BACKUP_BUCKET}/{object_key}"], timeout=7200)
         conductor_update_backup(backup_id, {"status": "available", "object_key": object_key})
         log.info("Backup %s uploaded to %s/%s", backup_id, BACKUP_BUCKET, object_key)
@@ -663,6 +668,11 @@ def handle_backup_volume(args: dict) -> None:
     finally:
         if tmp:
             Path(tmp).unlink(missing_ok=True)
+        if snap:
+            try:
+                lvm.delete(snap)
+            except Exception as exc:  # best-effort: the backup result is already recorded; a leftover snapshot is logged
+                log.warning("could not remove backup snapshot %s: %s", snap, exc)
 
 
 def handle_restore_backup(args: dict) -> None:

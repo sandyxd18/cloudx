@@ -16,6 +16,7 @@ class Fake:
         self.n = 0
         self.server_status = "ACTIVE"
         self.on_server = None  # called when a server is created (the VM "calls back")
+        self.backup_status = "available"
 
     def _new(self, kind):
         self.n += 1
@@ -49,6 +50,14 @@ class Fake:
             if self.on_server:
                 self.on_server(sid)
             return {"id": sid}
+        if method == "POST" and path.endswith("/backup"):
+            return {"id": self._new("bk"), "status": "creating"}
+        if method == "POST" and path.endswith("/restore"):
+            return {"id": self._new("vol")}
+        if method == "GET" and parts[0] == "backups":
+            return {"status": self.backup_status}
+        if method == "GET" and parts[0] == "volumes":
+            return {"status": "available"}
         if method == "POST" and path.endswith("/access"):
             return {"id": self._new("rule")}
         if method == "GET":
@@ -76,7 +85,7 @@ def db(monkeypatch, tmp_path):
     import services.database.app.main as m
     m = importlib.reload(m)
     m.provision.POLL = 0
-    m.provision.TIMEOUT = {"vm": 1, "container": 1, "step": 1}
+    m.provision.TIMEOUT = {"vm": 1, "container": 1, "step": 1, "backup": 1}
     m.Base.metadata.create_all(bind=m.engine)
     fake = Fake()
     monkeypatch.setattr(m, "run_async", lambda fn, *a: fn(*a))
@@ -225,3 +234,104 @@ def test_restart_marks_stale_rows(db):
     with TestClient(m.app):
         pass
     assert db.get("/instances/x").json()["status"] == "error"
+
+
+# ── backup / restore ──────────────────────────────────────────────────────────
+
+BLOCK = {**VM, "storage": "block", "size_gb": 5}
+
+def active_block(c, name="d1", engine="postgresql"):
+    r, _ = vm_ready(c, {**BLOCK, "name": name, "engine": engine})
+    return r.json()["id"]
+
+def test_backup_rejects_what_it_cannot_cover(db):
+    for body in ({**VM, "name": "loc"}, {**VM, "name": "ct", "backend": "container"}):
+        r, _ = vm_ready(db, body)
+        iid = r.json()["id"]
+        if body["backend"] == "container":
+            db.m.SessionLocal().execute(db.m.Instance.__table__.update().values(status="active"))
+        assert db.post(f"/instances/{iid}/backups", json={}).status_code == 422
+
+def test_backup_needs_an_active_instance(db):
+    iid = active_block(db)
+    with db.m.SessionLocal() as s:
+        s.get(db.m.Instance, iid).status = "stopped"
+        s.commit()
+    assert db.post(f"/instances/{iid}/backups", json={}).status_code == 409
+
+def test_backup_calls_block_store_and_completes(db):
+    iid = active_block(db)
+    vol = db.get(f"/instances/{iid}").json()
+    r = db.post(f"/instances/{iid}/backups", json={"name": "b1"})
+    assert r.status_code == 202
+    call = next(x for x in db.fake.calls if x[2].endswith("/backup"))
+    assert call[2].startswith("/volumes/vol")
+    b = db.get(f"/backups/{r.json()['id']}").json()
+    assert b["status"] == "available" and b["engine"] == "postgresql" and b["size_gb"] == 5 and vol["storage"] == "block"
+
+def test_backup_error_is_recorded(db):
+    iid = active_block(db)
+    db.fake.backup_status = "error"
+    bid = db.post(f"/instances/{iid}/backups", json={}).json()["id"]
+    assert db.get(f"/backups/{bid}").json()["status"] == "error"
+
+def test_backup_survives_instance_delete_and_is_tenant_scoped(db):
+    iid = active_block(db)
+    bid = db.post(f"/instances/{iid}/backups", json={}).json()["id"]
+    db.delete(f"/instances/{iid}")
+    assert db.get(f"/backups/{bid}").status_code == 200
+    db.who["project_id"] = "p2"
+    assert db.get(f"/backups/{bid}").status_code == 404
+    assert db.get("/backups").json()["items"] == []
+    assert db.delete(f"/backups/{bid}").status_code == 404
+    db.who["project_id"] = "p1"
+    assert db.delete(f"/backups/{bid}").status_code == 202
+    assert db.get(f"/backups/{bid}").status_code == 404
+    assert any(x[1] == "DELETE" and x[2].startswith("/backups/bk") for x in db.fake.calls)
+
+RESTORE = {"name": "r1", "network_id": "n1", "image": "ubuntu", "flavor": "small"}
+
+def test_restore_builds_from_the_backup_volume(db):
+    iid = active_block(db)
+    bid = db.post(f"/instances/{iid}/backups", json={}).json()["id"]
+    n = len(db.fake.calls)
+    seen = {}
+
+    def cb(_sid):
+        import re
+        ud = [x[3]["user_data"] for x in db.fake.calls if x[2] == "/servers"][-1]
+        seen["ud"] = ud
+        seen["r"] = ready_cb(db, re.search(r"db-ready/([^']+)'", ud).group(1), re.search(r"X-Ready-Token: (\S+)'", ud).group(1))
+    db.fake.on_server = cb
+    r = db.post(f"/backups/{bid}/restore", json=RESTORE)
+    assert r.status_code == 201 and r.json()["password"] and r.json()["engine"] == "postgresql"
+    new = db.fake.calls[n:]
+    assert not any(x[2] == "/volumes" for x in new)                     # not an empty volume
+    assert any(x[2].startswith("/backups/bk") and x[2].endswith("/restore") for x in new)
+    assert "mkfs" not in seen["ud"].split("DEV=")[0] and "pg_createcluster" not in seen["ud"]
+    assert db.get(f"/instances/{r.json()['id']}").json()["status"] == "active"
+
+def test_restore_refuses_unfinished_backup_and_duplicate_name(db):
+    iid = active_block(db)
+    db.fake.backup_status = "creating"
+    db.m.provision.TIMEOUT["backup"] = 0
+    bid = db.post(f"/instances/{iid}/backups", json={}).json()["id"]
+    assert db.post(f"/backups/{bid}/restore", json=RESTORE).status_code == 409
+    db.fake.backup_status = "available"
+    with db.m.SessionLocal() as s:
+        s.get(db.m.Backup, bid).status = "available"
+        s.commit()
+    assert db.post(f"/backups/{bid}/restore", json={**RESTORE, "name": "d1"}).status_code == 409
+
+def test_backup_in_use_cannot_be_deleted_and_restart_marks_creating_as_error(db):
+    iid = active_block(db)
+    bid = db.post(f"/instances/{iid}/backups", json={}).json()["id"]
+    db.m.RESTORING.add(bid)
+    assert db.delete(f"/backups/{bid}").status_code == 409
+    db.m.RESTORING.clear()
+    with db.m.SessionLocal() as s:
+        s.get(db.m.Backup, bid).status = "creating"
+        s.commit()
+    db.m.require_schema = lambda *a: None  # sqlite test db has no alembic version table
+    db.m.startup()
+    assert db.get(f"/backups/{bid}").json()["status"] == "error"

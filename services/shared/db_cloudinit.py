@@ -51,7 +51,7 @@ cat > /etc/mysql/mariadb.conf.d/99-cloudx.cnf <<CNF
 bind-address = 0.0.0.0
 CNF
 systemctl start mariadb
-mariadb -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('{pw}'); CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '{pw}'; GRANT ALL ON *.* TO 'root'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES"
+mariadb -e "ALTER USER 'root'@'localhost' IDENTIFIED VIA mysql_native_password USING PASSWORD('{pw}'); CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '{pw}'; ALTER USER 'root'@'%' IDENTIFIED BY '{pw}'; GRANT ALL ON *.* TO 'root'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES"
 """
 _MY_MOVE = """echo "alias /var/lib/mysql/ -> $DATA/mysql/," >> /etc/apparmor.d/tunables/alias
 systemctl reload apparmor || true
@@ -61,8 +61,23 @@ runuser -u mysql -- mysql_install_db --datadir=$DATA/mysql --auth-root-authentic
 sed -i "s|^datadir.*|datadir = $DATA/mysql|" /etc/mysql/mariadb.conf.d/50-server.cnf
 grep -q "^datadir" /etc/mysql/mariadb.conf.d/50-server.cnf || echo -e "[mysqld]\\ndatadir = $DATA/mysql" > /etc/mysql/mariadb.conf.d/60-cloudx-data.cnf"""
 
+# Restore: the data directory already holds a database from the backup, so point the engine at it (no initdb/install_db).
+_PG_RESTORE = """sed -i "s|^#\\?data_directory.*|data_directory = '$DATA/pgdata'|" /etc/postgresql/$V/main/postgresql.conf
+chown -R postgres:postgres $DATA/pgdata
+chmod 700 $DATA/pgdata"""
+_MY_RESTORE = """echo "alias /var/lib/mysql/ -> $DATA/mysql/," >> /etc/apparmor.d/tunables/alias
+systemctl reload apparmor || true
+sed -i "s|^datadir.*|datadir = $DATA/mysql|" /etc/mysql/mariadb.conf.d/50-server.cnf
+grep -q "^datadir" /etc/mysql/mariadb.conf.d/50-server.cnf || echo -e "[mysqld]\\ndatadir = $DATA/mysql" > /etc/mysql/mariadb.conf.d/60-cloudx-data.cnf
+# the backup's root@localhost has the old password and no socket login: reset it with grants off, no network
+systemctl set-environment MYSQLD_OPTS="--skip-grant-tables --skip-networking"
+systemctl start mariadb
+mariadb -e "FLUSH PRIVILEGES; ALTER USER 'root'@'localhost' IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('{pw}')"
+systemctl stop mariadb
+systemctl unset-environment MYSQLD_OPTS"""
+
 def render(engine: str, storage: str, password: str, callback_url: str, token: str, *, cidr: str,
-           nfs: str | None = None) -> str:
+           nfs: str | None = None, restore: bool = False) -> str:
     check_engine(engine)
     check_password(password)
     cidr = check_cidr(cidr)
@@ -77,9 +92,11 @@ def render(engine: str, storage: str, password: str, callback_url: str, token: s
     local = storage == "local"
     body = "" if local else _DATA.format(mount=_MOUNT[storage].format(nfs=nfs))
     if engine == "postgresql":
-        body += _PG.format(move="" if local else _PG_MOVE, cidr=cidr, pw=password)
+        move = "" if local else (_PG_RESTORE if restore else _PG_MOVE)
+        body += _PG.format(move=move, cidr=cidr, pw=password)
     else:
-        body += _MY.format(move="" if local else _MY_MOVE, pw=password)
+        move = "" if local else (_MY_RESTORE.format(pw=password) if restore else _MY_MOVE)
+        body += _MY.format(move=move, pw=password)
     body += f"""for i in $(seq 1 30); do curl -fsS -X POST -H 'X-Ready-Token: {token}' '{callback_url}' && break; sleep 10; done
 """
     script = "#!/bin/bash\nset -eu\nexec > >(tee -a /var/log/cloudx-db-setup.log >/dev/console) 2>&1\ntrap 'echo \"cloudx-db-setup FAILED at line $LINENO\"' ERR\n" + body

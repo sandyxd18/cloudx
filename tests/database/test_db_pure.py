@@ -60,3 +60,15 @@ def test_render_rejects_unsafe():
         render("postgresql", "local", PW, "http://x;rm", "t", cidr="10.0.0.0/24")
     with pytest.raises(ValueError):
         render("postgresql", "file", PW, URL, "t", cidr="10.0.0.0/24", nfs="a b:/x")
+
+@pytest.mark.parametrize("engine", ["postgresql", "mariadb"])
+def test_render_restore_keeps_the_data(engine):
+    ud = render(engine, "block", "pw1234567890", "http://1.2.3.4:8019/internal/db-ready/x", "tok", cidr="10.0.0.0/24", restore=True)
+    assert ("ALTER USER 'root'@'%'" in ud) or engine == "postgresql"  # a restored root@% keeps its old password otherwise
+    assert ('skip-grant-tables' in ud) == (engine == "mariadb")  # reset the restored root login before the normal start
+    assert "ALTER USER" in ud and "mysql_install_db" not in ud and "pg_createcluster" not in ud and "pg_dropcluster" not in ud
+    assert ("data_directory" in ud) if engine == "postgresql" else ("datadir" in ud)
+    # an empty data disk still gets a filesystem only when blkid finds none (unchanged guard)
+    assert 'blkid "$DEV" >/dev/null 2>&1 || mkfs.ext4' in ud
+    fresh = render(engine, "block", "pw1234567890", "http://1.2.3.4:8019/internal/db-ready/x", "tok", cidr="10.0.0.0/24")
+    assert ("mysql_install_db" in fresh) if engine == "mariadb" else ("pg_createcluster" in fresh)
