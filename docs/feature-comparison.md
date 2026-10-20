@@ -306,7 +306,7 @@
 | **Network Segment** | No manual VLAN/VXLAN segments |
 | **Trunk ports (VLAN-in-VLAN)** | None |
 | **IPv6** | IPv4 only |
-| **DNS Integration (Designate)** | None |
+| **DNS Integration (Designate)** | Per-port `dns_name` only; zones and recordsets are in the separate DNS service (docs/dns.md) |
 | **RBAC policies per network** | Multi-tenancy by project, not network RBAC |
 | **Port forwarding** | No per-port DNAT |
 | **Address scopes** | None |
@@ -632,10 +632,11 @@
 | **Magnum** | Container orchestration (Kubernetes-as-a-Service) | K3s clusters in CloudX VMs, not 1:1; see docs/k8s-engine.md |
 | **Octavia** | Load balancer as a Service | Deliberately excluded |
 | **Barbican** | Secret / certificate management | None |
-| **Designate** | DNS as a Service | None |
-| **Manila** | Shared file system (NFS, CIFS) | None |
-| **Zun** | Container service (Docker) | None |
-| **Masakari** | Instance HA / failover | Single-node |
+| **Designate** | DNS as a Service | BIND9 zones, recordsets, secondaries and automatic names, not 1:1; see docs/dns.md |
+| **Manila** | Shared file system (NFS, CIFS) | NFSv4 shares via NFS-Ganesha, access rules, extend; no snapshots, quotas or CIFS, not 1:1; see docs/file-store.md |
+| **Zun** | Container service (Docker) | Single containers with local storage, hardened by default; no block volumes or exec, not 1:1; see docs/container.md |
+| **Masakari** | Instance HA / failover | Heartbeat host monitor, iSCSI fencing, evacuate and a self-fencing watchdog; no IPMI/STONITH, ha-api is a single point of failure, not 1:1; see docs/ha.md |
+| **Trove** | Database as a Service | PostgreSQL and MariaDB on a VM or container, crash-consistent volume backup and restore; no guest agent, replication or PITR, not 1:1; see docs/database.md |
 | **Blazar** | Resource reservation | None |
 | **Senlin** | Clustering service | None |
 
