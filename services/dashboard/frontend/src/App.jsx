@@ -44,6 +44,8 @@ import BucketDetailPage from './pages/BucketDetail.jsx'
 import DnsPage from './pages/Dns.jsx'
 import FileStorePage from './pages/FileStore.jsx'
 import ContainersPage from './pages/Containers.jsx'
+import QueuesPage from './pages/Queues.jsx'
+import ReservationsPage from './pages/Reservations.jsx'
 import DatabasesPage from './pages/Databases.jsx'
 import HighAvailabilityPage from './pages/HighAvailability.jsx'
 import DnsZoneDetailPage from './pages/DnsZoneDetail.jsx'
@@ -228,6 +230,8 @@ function AppRoutes() {
           <Route path="dns" element={<DnsPage />} />
           <Route path="file-store" element={<FileStorePage />} />
           <Route path="containers" element={<ContainersPage />} />
+          <Route path="queues" element={<QueuesPage />} />
+          <Route path="reservations" element={<ReservationsPage />} />
         <Route path="databases" element={<DatabasesPage />} />
         <Route path="ha" element={<HighAvailabilityPage />} />
           <Route path="dns/:id" element={<DnsZoneDetailPage />} />

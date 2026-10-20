@@ -637,7 +637,8 @@
 | **Zun** | Container service (Docker) | Single containers with local storage, hardened by default; no block volumes or exec, not 1:1; see docs/container.md |
 | **Masakari** | Instance HA / failover | Heartbeat host monitor, iSCSI fencing, evacuate and a self-fencing watchdog; no IPMI/STONITH, ha-api is a single point of failure, not 1:1; see docs/ha.md |
 | **Trove** | Database as a Service | PostgreSQL and MariaDB on a VM or container, crash-consistent volume backup and restore; no guest agent, replication or PITR, not 1:1; see docs/database.md |
-| **Blazar** | Resource reservation | None |
+| **Blazar** | Resource reservation | Time-boxed flavor leases admitted against Placement VCPU / RAM; a ledger only, not enforced against compute, not 1:1; see docs/reservation.md |
+| **Zaqar** | Messaging / queues | Queues with post, claim and delete (at-least-once) in PostgreSQL; no topics, subscriptions or webhooks, not 1:1; see docs/messaging.md |
 | **Senlin** | Clustering service | None |
 
 ---

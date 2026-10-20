@@ -270,6 +270,13 @@ export const api = {
   deleteBucketType: (ref) => request('DELETE', `/object-store/admin/bucket-types/${ref}`),
 
   // Load Balancer
+  getQueues: () => request('GET', '/messaging/queues'),
+  getQueueStats: (n) => request('GET', `/messaging/queues/${n}/stats`),
+  createQueue: (n) => request('PUT', `/messaging/queues/${n}`),
+  deleteQueue: (n) => request('DELETE', `/messaging/queues/${n}`),
+  getLeases: () => request('GET', '/reservation/leases'),
+  createLease: (b) => request('POST', '/reservation/leases', b),
+  deleteLease: (id) => request('DELETE', `/reservation/leases/${id}`),
   getContainers: () => request('GET', '/container/containers'),
   createContainer: (b) => request('POST', '/container/containers', b),
   containerAction: (id, a) => request('POST', `/container/containers/${id}/${a}`),

@@ -46,6 +46,8 @@ SERVICES=(
     "container-api"
     "database-api"
     "ha-api"
+    "messaging-api"
+    "reservation-api"
 )
 
 for svc in "${SERVICES[@]}"; do

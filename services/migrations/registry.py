@@ -23,6 +23,8 @@ SERVICES = {
     "k8s_engine":    ("k8s-engine-api",    ["DATABASE_URL"],                                  "cloudx_k8s_engine",    "services.k8s_engine.app.main"),
     "key_manager":   ("key-manager-api",   ["KEY_MANAGER_DATABASE_URL", "DATABASE_URL"],      "cloudx_key_manager",   "services.key_manager.app.main"),
     "load_balancer": ("load-balancer-api", ["DATABASE_URL"],                                  "cloudx",               "services.load_balancer.app.main"),
+    "messaging":     ("messaging-api",     ["DATABASE_URL"],                                  "cloudx",               "services.messaging.app.main"),
+    "reservation":   ("reservation-api",   ["DATABASE_URL"],                                  "cloudx",               "services.reservation.app.main"),
     "networking":    ("networking-api",    ["DATABASE_URL"],                                  "cloudx",               "services.networking.app.models"),
     "object_store":  ("object-store-api",  ["DATABASE_URL"],                                  "cloudx",               "services.object_store.app.main"),
     "orchestration": ("orchestration-api", ["ORCHESTRATION_DATABASE_URL", "DATABASE_URL"],    "cloudx_orchestration", "services.orchestration.app.main"),

@@ -40,6 +40,8 @@ container_api_url = http://127.0.0.1:8018
 # Set on every node that runs cloudx-container-worker; the installer adds Docker (iptables off) only there.
 container_host =
 database_api_url = http://127.0.0.1:8019
+messaging_api_url = http://127.0.0.1:8022
+reservation_api_url = http://127.0.0.1:8023
 # Address database VMs use to reach database-api (cloud-init ready callback); must be reachable from the tenant network.
 database_public_url = http://127.0.0.1:8019
 # Compute workers send a heartbeat here every 10 s; ha-api fences and evacuates protected servers of a silent host.

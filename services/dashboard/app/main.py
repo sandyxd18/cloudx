@@ -49,6 +49,8 @@ LOAD_BALANCER_API_URL = os.getenv("LOAD_BALANCER_API_URL","http://load-balancer-
 DNS_API_URL = os.getenv("DNS_API_URL","http://dns-api:8016").rstrip("/")
 FILE_STORE_API_URL = os.getenv("FILE_STORE_API_URL","http://file-store-api:8017").rstrip("/")
 CONTAINER_API_URL = os.getenv("CONTAINER_API_URL","http://container-api:8018").rstrip("/")
+MESSAGING_API_URL = os.getenv("MESSAGING_API_URL","http://messaging-api:8022").rstrip("/")
+RESERVATION_API_URL = os.getenv("RESERVATION_API_URL","http://reservation-api:8023").rstrip("/")
 DATABASE_API_URL = os.getenv("DATABASE_API_URL","http://database-api:8019").rstrip("/")
 HA_API_URL = os.getenv("HA_API_URL","http://ha-api:8020").rstrip("/")
 TELEMETRY_API_URL  = os.getenv("TELEMETRY_API_URL",  "http://telemetry-api:8000").rstrip("/")
@@ -74,6 +76,8 @@ _ROUTES: list[tuple[str, str]] = [
     ("/api/dns", DNS_API_URL),
     ("/api/file-store", FILE_STORE_API_URL),
     ("/api/container", CONTAINER_API_URL),
+    ("/api/messaging", MESSAGING_API_URL),
+    ("/api/reservation", RESERVATION_API_URL),
     ("/api/database", DATABASE_API_URL),
     ("/api/ha", HA_API_URL),
     ("/api/telemetry",     TELEMETRY_API_URL),
