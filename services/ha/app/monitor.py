@@ -105,12 +105,14 @@ def recover(db, api, h) -> None:
         return
     for sid, why in skipped:
         _rec(db, h.host, sid, prot[sid], "skipped", why)
+    nowd = "" if h.watchdog_at and (datetime.utcnow() - h.watchdog_at).total_seconds() <= 120 else \
+        "no watchdog seen; old VMs may still run"
     for sid in ok:
-        r = _rec(db, h.host, sid, prot[sid], "running")
+        r = _rec(db, h.host, sid, prot[sid], "running", nowd or None)
         try:
             api.evacuate(sid)
             good = _wait_active(api, sid)
-            r.status, r.message = ("done", None) if good else ("failed", f"not ACTIVE within {VERIFY}s")
+            r.status, r.message = ("done", nowd or None) if good else ("failed", f"not ACTIVE within {VERIFY}s")
         except Exception as exc:  # best-effort: record and carry on with the next server
             r.status, r.message = "failed", str(exc)[:200]
         r.finished_at = datetime.utcnow()

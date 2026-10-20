@@ -25,6 +25,20 @@ Memulihkan VM yang dilindungi secara otomatis saat node compute mati. Setara fit
 2. `PUT /os-services/{host}` dengan `{"forced_down": false}`.
 3. `cloudx ha reset HOST`.
 
+## Watchdog (self-fencing)
+
+Tanpa BMC di lab, node yang terisolasi mematikan sendiri VM terlindungi miliknya. Unit `cloudx-ha-watchdog` (root, di setiap node compute, terpisah dari compute-worker) menyimpan daftar VM terlindungi dari ha-api. Bila ha-api tidak terjangkau 45 detik, ia menanyai peer (`GET /reach`):
+
+- ada peer yang masih menjangkau ha-api, atau tidak ada peer yang menjawab: node ini terisolasi, VM terlindungi di-`virsh destroy`;
+- semua peer juga tidak menjangkau ha-api: ha-api atau controller yang mati, tidak ada tindakan;
+- tanpa peer terkonfigurasi atau daftar kosong: tidak ada tindakan.
+
+Sebelum `destroy`, watchdog menulis `/var/lib/cloudx/ha-watchdog/fenced`; selama file itu ada, compute-worker tidak menghidupkan lagi VM yang mati. File dihapus watchdog setelah operator mengembalikan host ke `up` (`forced_down=false`, lalu `cloudx ha reset HOST`). Respons HTTP apa pun dari ha-api (termasuk 5xx) dianggap terjangkau. `ha_watchdog_dry_run = true` hanya mencatat log.
+
+Konfigurasi `/etc/cloudx/ha-watchdog/ha-watchdog.conf` (`[DEFAULT]`): `ha_watchdog_host` (nama node), `ha_watchdog_peers` (URL peer, dipisah koma), `ha_watchdog_timeout`, `ha_watchdog_dry_run`, `ha_watchdog_port` (8021). Migrasi `cloudx-db-migrate ha` (`ha_0002`). ha-api menaruh "no watchdog seen" di catatan recovery bila host tidak mengirim sinyal watchdog dalam 120 detik terakhir.
+
+Pembanding: Masakari mendeteksi lewat Pacemaker/Corosync dan memakai STONITH (IPMI) sebagai fencing eksternal (docs.openstack.org/masakari-monitors, hostmonitor). Watchdog ini bukan pengganti 1:1: ia bergantung pada node yang sehat cukup untuk mematikan VM-nya sendiri.
+
 ## Memakai
 
 - CLI: `cloudx ha hosts | protect SERVER | unprotect SERVER | protected | recoveries | reset HOST`.

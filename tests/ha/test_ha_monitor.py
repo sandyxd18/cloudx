@@ -151,3 +151,11 @@ def test_fenced_host_ignored_after_heartbeat_returns(env):
     db.commit()
     mon.cycle(db, api, T0 + timedelta(seconds=70))
     assert state(m, db) == "fenced" and len(api.calls) == n
+
+
+def test_recovery_notes_missing_watchdog(env):
+    m, mon, db, api = env
+    h = db.get(m.Host, "h1")
+    mon.recover(db, api, h)
+    r = db.scalars(m.select(m.Recovery).where(m.Recovery.server_id == "ok")).one()
+    assert r.status == "done" and "no watchdog seen" in r.message

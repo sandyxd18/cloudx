@@ -45,6 +45,7 @@ class Host(Base):
     state: Mapped[str] = mapped_column(String, default="up")  # up | suspect | recovering | fenced
     fails: Mapped[int] = mapped_column(Integer, default=0)
     suspect_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    watchdog_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 class Protected(Base):
     __tablename__ = "ha_protected"
@@ -120,6 +121,28 @@ def heartbeat(host: str, body: dict, db: DB):
     h.last_seen = datetime.utcnow()
     if iqn:
         h.initiator_iqn = iqn
+    db.commit()
+    return {"ok": True}
+
+@app.get("/internal/protected-domains/{host}", dependencies=[InternalAuth])
+def protected_domains(host: str, db: DB):
+    prot = set(db.scalars(select(Protected.server_id)))
+    return {"domains": [s["libvirt_domain_name"] for s in make_api().servers()
+                        if s["host"] == host and s["id"] in prot and s["status"] != "DELETED" and s.get("libvirt_domain_name")]}
+
+@app.get("/internal/hosts/{host}", dependencies=[InternalAuth])
+def internal_host(host: str, db: DB):
+    h = db.get(Host, host)
+    if not h:
+        raise HTTPException(404, "Host not found")
+    return {"state": h.state}
+
+@app.post("/internal/watchdog/{host}", dependencies=[InternalAuth])
+def watchdog_seen(host: str, db: DB):
+    h = db.get(Host, host)
+    if not h:
+        raise HTTPException(404, "Host not found")
+    h.watchdog_at = datetime.utcnow()
     db.commit()
     return {"ok": True}
 

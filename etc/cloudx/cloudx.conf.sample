@@ -44,6 +44,11 @@ database_api_url = http://127.0.0.1:8019
 database_public_url = http://127.0.0.1:8019
 # Compute workers send a heartbeat here every 10 s; ha-api fences and evacuates protected servers of a silent host.
 ha_api_url = http://127.0.0.1:8020
+# HA watchdog (compute nodes only; put these in /etc/cloudx/ha-watchdog/ha-watchdog.conf under [DEFAULT]):
+# ha_watchdog_host = <node_name>
+# ha_watchdog_peers = http://<other compute node>:8021
+# ha_watchdog_timeout = 45
+# ha_watchdog_dry_run = false
 dns_platform_domain = cloud.lab
 dns_public_address = 172.20.0.120
 dns_resolver_address = 172.20.0.118

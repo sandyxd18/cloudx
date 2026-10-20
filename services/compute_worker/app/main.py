@@ -28,6 +28,7 @@ import sys
 import threading
 import time
 from collections import deque
+from pathlib import Path
 
 import requests
 
@@ -38,6 +39,7 @@ from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 from . import libvirt_driver, volume_manager, worker  # noqa: E402
 from .config import COMPUTE_HOST, LIBVIRT_URI, NETWORKING_API_URL, OVS_BRIDGE, IMAGE_API_URL, BLOCK_STORE_API_URL, VM_NAME_PREFIX, endpoint  # noqa: E402
 HA_API_URL = os.getenv("HA_API_URL", "http://127.0.0.1:8020").rstrip("/")
+FENCED_FLAG = Path("/var/lib/cloudx/ha-watchdog/fenced")  # written by cloudx-ha-watchdog after it destroyed VMs
 from shared.proc import CommandError, succeeds
 from .utils import run, tool_available  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -239,6 +241,8 @@ def sync_power_states() -> None:
         expected_status = _EXPECTED_STATUS_FOR_POWER_STATE[power_state]
 
         if expected_status != db_status:
+            if db_status == "ACTIVE" and power_state in ("SHUTOFF", "MISSING") and FENCED_FLAG.exists():
+                continue  # self-fenced by the HA watchdog: leave it for the evacuation, never restart or rewrite it
             if AUTO_RECOVERY and db_status == "ACTIVE" and power_state in ("SHUTOFF", "MISSING"):
                 log.warning(
                     "[auto-recovery] server %s (%s): domain '%s' is %s on hypervisor — attempting auto-restart",

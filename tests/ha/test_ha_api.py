@@ -19,6 +19,11 @@ class FakeApi:
     def server_volume_hosts(self, sid):
         return self.vols
 
+    def servers(self):
+        return [{"id": "s1", "host": "h1", "libvirt_domain_name": "dom-s1", "status": "ACTIVE"},
+                {"id": "s2", "host": "h1", "libvirt_domain_name": "dom-s2", "status": "ACTIVE"},
+                {"id": "s3", "host": "h2", "libvirt_domain_name": "dom-s3", "status": "ACTIVE"}]
+
 
 @pytest.fixture
 def ha(monkeypatch, tmp_path):
@@ -100,3 +105,17 @@ def test_startup_refreshes_last_seen(ha):
     ha.m.startup()
     with ha.m.SessionLocal() as db:
         assert db.get(ha.m.Host, "h9").last_seen > old + timedelta(minutes=59)
+
+def test_watchdog_endpoints(ha):
+    for u in ("/internal/protected-domains/h1", "/internal/hosts/h1"):
+        assert ha.get(u).status_code in (401, 403)
+    assert ha.post("/internal/watchdog/h1").status_code in (401, 403)
+    ha.put("/protected/s1")
+    ha.fake.vols = ["h2"]
+    assert ha.get("/internal/protected-domains/h1", headers=HB).json() == {"domains": ["dom-s1"]}
+    assert ha.get("/internal/hosts/h1", headers=HB).status_code == 404
+    ha.post("/internal/heartbeat/h1", json={}, headers=HB)
+    assert ha.get("/internal/hosts/h1", headers=HB).json() == {"state": "up"}
+    assert ha.post("/internal/watchdog/h1", headers=HB).status_code == 200
+    with ha.m.SessionLocal() as db:
+        assert db.get(ha.m.Host, "h1").watchdog_at is not None
