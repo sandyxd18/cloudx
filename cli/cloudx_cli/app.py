@@ -1,6 +1,6 @@
 import click
 
-from cloudx_cli.common import _load_config
+from cloudx_cli.common import _load_config, set_profile
 
 # ── Main group ─────────────────────────────────────────────────────────────────
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
@@ -15,6 +15,7 @@ def cli(ctx, profile, fmt):
     """☁  cloudx — Cloud management CLI"""
     ctx.ensure_object(dict)
     ctx.obj["profile"] = profile
+    set_profile(profile)
     # Determine output format
     if fmt is None:
         cfg = _load_config(profile)
