@@ -2,7 +2,7 @@
 
 Cara memasang CloudX di Ubuntu 24.04 (amd64) dengan `apt`, satu paket per service, tanpa `scripts/install-systemd.sh`. Rancangannya ada di `superpowers/specs/2026-10-21-openstack-style-packaging-design.md`. Dokumen ini berisi cara membangun paket, memasangnya per peran, menyebar service ke beberapa node, mengoperasikannya, dan mengupgrade node lab yang dipasang dari tarball.
 
-Penting: runbook upgrade di bagian 7 belum diuji di node nyata. Jalankan di satu node dulu.
+Penting: runbook upgrade di bagian 7 baru diuji di satu node lab (lihat "Hasil uji" di bagian 7). Jalur node compute, node auth, dan rollback belum diuji. Jalankan di satu node dulu.
 
 ## 1. Isi paket
 
@@ -366,7 +366,16 @@ Pemasangan API baru me-reload nginx otomatis; bila `nginx -t` gagal, paket tetap
 
 ## 7. Upgrade node lab dari tarball
 
-Belum diverifikasi di node nyata. Urutan dan perintah di bawah disusun dari isi paket dan dari `install-systemd.sh`; jalankan dulu di satu node berisiko rendah (bukan node auth), periksa, baru lanjut. Catat hasilnya di dokumen ini setelah dicoba.
+Urutan dan perintah di bawah disusun dari isi paket dan dari `install-systemd.sh`; jalankan dulu di satu node berisiko rendah (bukan node auth), periksa, baru lanjut.
+
+**Hasil uji (2026-10-22).** Langkah 1 sampai 5 dan 7 dijalankan di `infra03` lab 6 node (Ubuntu 24.04, 10 service: container-api, database-api, file-store-api, ha-api, k8s-engine-api dan worker, messaging-api, orchestration-api dan worker, reservation-api; node ini juga memegang satu mon dan OSD Ceph). Hasilnya:
+
+- Sepuluh unit aktif sama dengan sebelum upgrade, tidak ada yang `failed`; 8 API menjawab `200` di `127.0.0.1` dan dari node lain lewat nginx; `nginx -t` lolos; `cloudx.conf` tetap `640 root:cloudx` dengan lima secret utuh.
+- Permintaan terautentikasi dari CLI di node lain (`container list`, `database list`, `stack list`, `cluster list`, `queue list`, `reservation list`, `ha hosts`) berhasil.
+- Dua galat ditemukan dan sudah diperbaiki di dokumen dan kode: langkah 4, 7, dan rollback membaca `/root/cloudx-active-before.txt` tanpa `sudo` (`/root` berizin `700`, jadi langkah 4 berhenti sebelum `apt install`), dan gunicorn mencatat `Control server error: Permission denied: '/opt/cloudx/.gunicorn'` di setiap API karena home user `cloudx` (`/opt/cloudx`) dimiliki root; launcher sekarang memakai `--no-control-socket`.
+- Sesaat setelah pemasangan, worker mencatat `Max retries exceeded` ke API-nya sendiri sampai API itu start (urutan start berurutan); hilang sendiri dalam hitungan detik.
+
+Belum diuji: node compute (`cloudx-setup-compute`, `libvirt-python`, langkah 6), node auth (`db sync`, `catalog sync`, yang butuh paket `cloudx-auth-api` di node itu), prosedur "Bila gagal", pemasangan bersih tanpa tarball sebelumnya, dan `--no-control-socket` pada paket yang sudah dibangun ulang (diuji lewat tes unit dengan gunicorn sungguhan, belum di node).
 
 Mengapa tidak bisa langsung `apt install`:
 
@@ -391,6 +400,8 @@ Urutan antar node: node yang hanya menjalankan beberapa service dulu, node denga
    ls -d /etc/systemd/system/cloudx-*.service.d 2>/dev/null
    ```
 
+   `/root` berizin `700`, jadi file-file di sana hanya terbaca dengan `sudo`. Itu sebabnya langkah 4, 7, dan rollback memakai `sudo cat`.
+
    Direktori `*.service.d` (drop-in, misalnya `provider-network.conf` dari SETUP.md 2.7) tetap berlaku sesudah unit lama dihapus dan bisa menimpa unit paket. Pindahkan isinya ke conf unit (`Environment=PROVIDER_CIDR=...` menjadi `provider_cidr = ...`) lalu hapus drop-in-nya.
 
 2. Hentikan dan nonaktifkan semua unit lama, lalu hapus.
@@ -414,7 +425,7 @@ Urutan antar node: node yang hanya menjalankan beberapa service dulu, node denga
 4. Pasang paket untuk setiap service yang tadi berjalan di node ini.
 
    ```bash
-   PKGS=$(sed -e 's/\.service$//' -e '/^cloudx-named-/d' /root/cloudx-active-before.txt)
+   PKGS=$(sudo cat /root/cloudx-active-before.txt | sed -e 's/\.service$//' -e '/^cloudx-named-/d')
    sudo apt update
    sudo apt install -o Dpkg::Options::=--force-confold cloudx-common $PKGS
    ```
@@ -443,7 +454,7 @@ Urutan antar node: node yang hanya menjalankan beberapa service dulu, node denga
 
    ```bash
    # unit yang aktif sama dengan sebelumnya (selisih hanya boleh unit cloudx-named-*)
-   diff <(sort /root/cloudx-active-before.txt) <(systemctl list-units 'cloudx-*.service' --state=active --no-legend | awk '{print $1}' | sort)
+   diff <(sudo cat /root/cloudx-active-before.txt | sort) <(systemctl list-units 'cloudx-*.service' --state=active --no-legend | awk '{print $1}' | sort)
 
    # tiap API yang terpasang di node ini; port yang tidak terpasang menjawab 000
    for p in 8001 8002 8003 8004 8005 8006 8008 8010 8011 8012 8013 8014 8015 8016 8017 8018 8019 8020 8022 8023; do
@@ -516,7 +527,7 @@ Bahan untuk kembali: `/opt/cloudx.tarball`, `/root/cloudx-units.tgz` (unit lama)
    ```bash
    sudo tar xzf /root/cloudx-units.tgz -C / etc/systemd/system
    sudo systemctl daemon-reload
-   grep -v '^cloudx-named-' /root/cloudx-active-before.txt | xargs -r sudo systemctl enable --now
+   sudo cat /root/cloudx-active-before.txt | grep -v '^cloudx-named-' | xargs -r sudo systemctl enable --now
    ```
 
 Langkah di atas tidak menyentuh `/etc/cloudx`, dan `cloudx-etc.tgz` jangan dibuka menyeluruh ke `/`: itu mengembalikan `cloudx.conf` ke keadaan cadangan. Pulihkan hanya file yang memang perlu dibatalkan, misalnya:

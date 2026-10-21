@@ -26,12 +26,14 @@ def gunicorn_argv(app_dir: str, bind: str, workers: int, frontend: str) -> List[
 
     --forwarded-allow-ips is never '*': uvicorn would take the first X-Forwarded-For entry, which the client
     supplies. Behind nginx it is empty so the header is ignored; direct services keep gunicorn's default.
+    The control socket is off: gunicorn 26 would create it under the service user's home, which is not writable.
     """
     argv = [
         "-k", "uvicorn.workers.UvicornWorker",
         "-w", str(workers),
         "--bind", bind,
         "--chdir", app_dir,
+        "--no-control-socket",
     ]
     if frontend == "nginx":
         argv.append("--forwarded-allow-ips=")

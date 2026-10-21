@@ -49,6 +49,14 @@ def test_direct_binds_tcp_and_never_passes_a_wildcard_for_forwarded_ips():
     assert not any(a.startswith("--forwarded-allow-ips") for a in argv)
 
 
+@pytest.mark.parametrize("frontend", ["nginx", "direct"])
+def test_control_socket_is_disabled(frontend):
+    # gunicorn 26 opens a control socket in $HOME of the service user (/opt/cloudx, root-owned, no-create-home)
+    # and logs "Control server error: Permission denied" on every start; nothing here uses it.
+    argv = gunicorn_argv("/opt/cloudx/services/image", "0.0.0.0:8002", 1, frontend)
+    assert "--no-control-socket" in argv
+
+
 def test_run_daemon_changes_directory_and_runs_app_main(monkeypatch):
     calls = []
     monkeypatch.setattr(launcher, "load_service_config", lambda name: calls.append(("config", name)) or {})
