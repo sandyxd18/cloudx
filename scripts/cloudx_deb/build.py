@@ -1,4 +1,5 @@
-"""Build the CloudX .deb packages (cloudx-common, cloudx-db, one per api/daemon unit) from the manifest."""
+"""Build the CloudX .deb packages (cloudx-common, cloudx-db, one per api/daemon unit, role meta packages and
+cloudx-cli) from the manifest."""
 import re
 import shutil
 import subprocess
@@ -11,20 +12,28 @@ ROOT = Path(__file__).resolve().parents[2]
 REVISION = "1"
 MAINTAINER = "CloudX <root@localhost>"
 VENV = "/opt/cloudx/venv"
+CLI_VENV = "/opt/cloudx/cli/venv"
 SERVICES = "opt/cloudx/services"
 UNIT_DIR = "lib/systemd/system"
 TMPFILES = "/usr/lib/tmpfiles.d/cloudx.conf"
 CONF_SAMPLE = "/usr/share/cloudx/cloudx.conf.sample"
 EXCLUDE_ANYWHERE = {"__pycache__", "tests", "node_modules", ".pytest_cache"}
 EXCLUDE_TOP = {"migrations", "frontend"}
-_TRAMPOLINE = re.compile(rb"\A#!/bin/sh\n'''exec' \"?(" + re.escape(VENV).encode()
-                         + rb"/bin/python[0-9.]*)\"? \"\$0\" \"\$@\"\n' '''\n")
+META_RECOMMENDS = {
+    "controller": ["postgresql", "rabbitmq-server", "memcached", "ovn-central"],
+    "compute": ["libvirt-daemon-system", "qemu-kvm", "openvswitch-switch", "ovn-host", "qemu-utils"],
+    "storage": [],
+}
+HOST_SCRIPTS = {"usr/sbin/cloudx-setup-compute": "setup-compute-node.sh",
+                "usr/sbin/cloudx-setup-ceph-secret": "setup-ceph-libvirt-secret.sh"}
 _DEFAULT_SECRET = re.compile(r"^auth_secret_key *= *cloudx-secret-key-change-in-production.*(\n|$)", re.MULTILINE)
 
 
-def control_file(pkg: str, version: str, depends: list[str], description: str) -> str:
+def control_file(pkg: str, version: str, depends: list[str], description: str,
+                 recommends: list[str] | None = None) -> str:
+    rec = f"Recommends: {', '.join(recommends)}\n" if recommends else ""
     return (f"Package: {pkg}\nVersion: {version}\nArchitecture: amd64\nMaintainer: {MAINTAINER}\n"
-            f"Section: admin\nPriority: optional\nDepends: {', '.join(depends)}\nDescription: {description}\n")
+            f"Section: admin\nPriority: optional\nDepends: {', '.join(depends)}\n{rec}Description: {description}\n")
 
 
 def strip_default_secret(text: str) -> str:
@@ -32,10 +41,12 @@ def strip_default_secret(text: str) -> str:
     return _DEFAULT_SECRET.sub("", text)
 
 
-def relocate(data: bytes, staging_venv: bytes) -> bytes:
-    """Point a venv text file at /opt/cloudx/venv. pip writes a /bin/sh trampoline instead of a shebang when the
-    staging path is too long for one; that becomes a plain shebang again."""
-    return _TRAMPOLINE.sub(rb"#!\1\n", data.replace(staging_venv, VENV.encode()), count=1)
+def relocate(data: bytes, staging_venv: bytes, venv: str = VENV) -> bytes:
+    """Point a venv text file at `venv` (default /opt/cloudx/venv). pip writes a /bin/sh trampoline instead of a
+    shebang when the staging path is too long for one; that becomes a plain shebang again."""
+    trampoline = re.compile(rb"\A#!/bin/sh\n'''exec' \"?(" + re.escape(venv).encode()
+                            + rb"/bin/python[0-9.]*)\"? \"\$0\" \"\$@\"\n' '''\n")
+    return trampoline.sub(rb"#!\1\n", data.replace(staging_venv, venv.encode()), count=1)
 
 
 def _write(path: Path, text: str, mode: int = 0o644) -> None:
@@ -133,12 +144,27 @@ fi
 """)
 
 
-def _build_venv(staging: Path, work_dir: Path) -> None:
-    venv = staging / VENV.lstrip("/")
+def _new_venv(staging: Path, target: str, requirements: Path) -> tuple[Path, list[str]]:
+    venv = staging / target.lstrip("/")
     # The system interpreter, so venv/bin/python points at /usr/bin/python3 on the target too.
     subprocess.run(["/usr/bin/python3", "-m", "venv", str(venv)], check=True)
     pip = [str(venv / "bin/python"), "-m", "pip", "install", "--quiet", "--no-cache-dir"]
-    subprocess.run([*pip, "-r", str(ROOT / "requirements.txt")], check=True)
+    subprocess.run([*pip, "-r", str(requirements)], check=True)
+    return venv, pip
+
+
+def _relocate_venv(venv: Path, target: str) -> None:
+    prefix = str(venv).encode()
+    for f in [*(venv / "bin").iterdir(), venv / "pyvenv.cfg"]:
+        if f.is_symlink() or not f.is_file():
+            continue
+        data = f.read_bytes()
+        if prefix in data and b"\0" not in data:
+            f.write_bytes(relocate(data, prefix, target))
+
+
+def _build_venv(staging: Path, work_dir: Path) -> None:
+    venv, pip = _new_venv(staging, VENV, ROOT / "requirements.txt")
     # Install the shared library from a copy so pip leaves no build/ or egg-info in the repo.
     src = work_dir / "shared-src"
     if src.exists():
@@ -147,13 +173,17 @@ def _build_venv(staging: Path, work_dir: Path) -> None:
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"))
     shutil.copy2(ROOT / "services/pyproject.toml", src / "pyproject.toml")
     subprocess.run([*pip, "--no-deps", str(src)], check=True)
-    prefix = str(venv).encode()
-    for f in [*(venv / "bin").iterdir(), venv / "pyvenv.cfg"]:
-        if f.is_symlink() or not f.is_file():
-            continue
-        data = f.read_bytes()
-        if prefix in data and b"\0" not in data:
-            f.write_bytes(relocate(data, prefix))
+    _relocate_venv(venv, VENV)
+
+
+def _build_cli_venv(staging: Path, work_dir: Path) -> None:
+    venv, pip = _new_venv(staging, CLI_VENV, ROOT / "cli/requirements.txt")
+    src = work_dir / "cli-src"
+    if src.exists():
+        shutil.rmtree(src)
+    shutil.copytree(ROOT / "cli", src, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "build", "*.egg-info"))
+    subprocess.run([*pip, "--no-deps", str(src)], check=True)
+    _relocate_venv(venv, CLI_VENV)
 
 
 def _stage_common(staging: Path, version: str, work_dir: Path, with_venv: bool) -> None:
@@ -180,6 +210,34 @@ def _stage_db(staging: Path, version: str) -> None:
     _write(staging / "DEBIAN/control", control_file(
         "cloudx-db", version, [f"cloudx-common (= {version})"],
         "CloudX database migrations (apply with cloudx-manage db sync)"))
+
+
+def _stage_cli(staging: Path, version: str, work_dir: Path, with_venv: bool) -> None:
+    if with_venv:
+        _build_cli_venv(staging, work_dir)
+    (staging / "usr/bin").mkdir(parents=True)
+    (staging / "usr/bin/cloudx").symlink_to(f"{CLI_VENV}/bin/cloudx")
+    _write(staging / "DEBIAN/control", control_file(
+        "cloudx-cli", version, ["python3 (>= 3.12)", "python3 (<< 3.13)"],
+        "CloudX command line client (cloudx), installable on its own"))
+
+
+def _stage_meta(staging: Path, version: str, role: str, packaged: list[Unit]) -> None:
+    members = [u for u in packaged if role in u.roles]
+    # A unit with extra apt dependencies (dns-worker -> bind9) is only recommended, so the meta package never
+    # pulls a distro service in by itself.
+    depends = [f"{u.package} (= {version})" for u in members if not u.depends]
+    recommends = [f"{u.package} (= {version})" for u in members if u.depends]
+    if role == "controller":
+        depends.append(f"cloudx-db (= {version})")
+    recommends += ["cloudx-cli", *META_RECOMMENDS[role]]
+    _write(staging / "DEBIAN/control", control_file(
+        f"cloudx-{role}", version, depends, f"CloudX {role} node: every {role} service", recommends))
+    if role == "compute":
+        for dest, source in HOST_SCRIPTS.items():
+            (staging / dest).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / "scripts" / source, staging / dest)  # bytes: the scripts hold non-ASCII text
+            (staging / dest).chmod(0o755)
 
 
 def _stage_unit(staging: Path, version: str, u: Unit, bundled: list[Unit]) -> None:
@@ -243,13 +301,13 @@ def build_all(out_dir: Path, version: str, *, with_venv: bool = True, only: list
               work_dir: Path | None = None) -> list[Path]:
     """Build the packages into out_dir; `version` is the VERSION file, the Debian revision is appended.
 
-    `only` names packages without the cloudx- prefix ("common", "db", "image-api", ...).
+    `only` names packages without the cloudx- prefix ("common", "db", "image-api", "compute", "cli", ...).
     """
     out_dir, work_dir = Path(out_dir), Path(work_dir or ROOT / "build" / "deb")
     deb_version = f"{version}-{REVISION}"
     units = load_manifest()
     packaged = [u for u in units if u.kind != "unit"]
-    names = ["common", "db", *(u.name for u in packaged)]
+    names = ["common", "db", *(u.name for u in packaged), *META_RECOMMENDS, "cli"]
     unknown = sorted(set(only or ()) - set(names))
     if unknown:
         raise ValueError(f"no such package: {', '.join(unknown)}")
@@ -268,6 +326,10 @@ def build_all(out_dir: Path, version: str, *, with_venv: bool = True, only: list
             _stage_common(staging, deb_version, work_dir, with_venv)
         elif name == "db":
             _stage_db(staging, deb_version)
+        elif name == "cli":
+            _stage_cli(staging, deb_version, work_dir, with_venv)
+        elif name in META_RECOMMENDS:
+            _stage_meta(staging, deb_version, name, packaged)
         else:
             u = next(u for u in packaged if u.name == name)
             _stage_unit(staging, deb_version, u, [b for b in units if b.bundle_with == name])

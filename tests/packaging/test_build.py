@@ -71,8 +71,10 @@ def test_relocate_rewrites_the_staging_prefix_and_pip_trampolines():
     assert relocate(activate, staging) == b'VIRTUAL_ENV="/opt/cloudx/venv"\n'
 
 
-def test_one_package_per_api_and_daemon_plus_common_and_db(debs):
-    expected = {u.package for u in load_manifest() if u.kind != "unit"} | {"cloudx-common", "cloudx-db"}
+def test_one_package_per_api_and_daemon_plus_common_db_meta_and_cli(debs):
+    expected = {u.package for u in load_manifest() if u.kind != "unit"} | {
+        "cloudx-common", "cloudx-db", "cloudx-controller", "cloudx-compute", "cloudx-storage", "cloudx-cli"}
+    assert len(expected) == 47
     assert set(debs) == expected
 
 
