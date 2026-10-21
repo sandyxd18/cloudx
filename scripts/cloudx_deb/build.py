@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from .manifest import Unit, load_manifest
-from .render import render_api_unit, render_daemon_unit, render_wrapper
+from .render import render_api_unit, render_daemon_unit, render_nginx, render_wrapper
 
 ROOT = Path(__file__).resolve().parents[2]
 REVISION = "1"
@@ -14,6 +14,8 @@ VENV = "/opt/cloudx/venv"
 SERVICES = "opt/cloudx/services"
 UNIT_DIR = "lib/systemd/system"
 TMPFILES = "/usr/lib/tmpfiles.d/cloudx.conf"
+NGINX_DROP_IN = "/etc/systemd/system/nginx.service.d/cloudx.conf"
+NGINX_MARKER = "/var/lib/cloudx/.nginx-group-applied"
 CONF_SAMPLE = "/usr/share/cloudx/cloudx.conf.sample"
 EXCLUDE_ANYWHERE = {"__pycache__", "tests", "node_modules", ".pytest_cache"}
 EXCLUDE_TOP = {"migrations", "frontend"}
@@ -92,6 +94,29 @@ fi
     return {"postinst": _script(postinst), "prerm": _script(prerm), "postrm": _script(postrm)}
 
 
+def _nginx_postinst() -> str:
+    """Appended to an nginx-fronted package's postinst. A broken nginx config never fails the install. The drop-in's
+    supplementary group only reaches nginx on a restart, so the first successful check restarts it and later ones reload."""
+    return f"""
+if [ "$1" = "configure" ] && [ -d /run/systemd/system ] && command -v nginx >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+    if nginx -t; then
+        if [ ! -e {NGINX_MARKER} ]; then
+            if deb-systemd-invoke restart nginx.service; then
+                touch {NGINX_MARKER}
+            else
+                echo "warning: nginx did not restart; the cloudx sockets stay unreachable until it does" >&2
+            fi
+        else
+            deb-systemd-invoke reload nginx.service || echo "warning: nginx did not reload" >&2
+        fi
+    else
+        echo "warning: nginx -t failed, so nginx was not reloaded; fix the config shown above and reload nginx" >&2
+    fi
+fi
+"""
+
+
 def _common_postinst() -> str:
     var_lib = " ".join(f"/var/lib/cloudx/{d}" for d in ("images", "object-store", "compute", "ha-watchdog", "fs-state"))
     return _script(f"""if [ "$1" = "configure" ]; then
@@ -153,6 +178,8 @@ def _stage_common(staging: Path, version: str, work_dir: Path, with_venv: bool) 
     (staging / "usr/bin").mkdir(parents=True)
     for cmd in ("cloudx-manage", "cloudx-db-migrate"):
         (staging / "usr/bin" / cmd).symlink_to(f"{VENV}/bin/{cmd}")
+    _write(staging / NGINX_DROP_IN.lstrip("/"), "[Service]\nSupplementaryGroups=cloudx\n")
+    _write(staging / "DEBIAN/conffiles", f"{NGINX_DROP_IN}\n")
     _write(staging / "DEBIAN/control", control_file(
         "cloudx-common", version, ["python3 (>= 3.12)", "python3 (<< 3.13)"],
         "CloudX common files: Python environment, cloudx user, cloudx.conf and cloudx-manage"))
@@ -180,13 +207,21 @@ def _stage_unit(staging: Path, version: str, u: Unit, bundled: list[Unit]) -> No
     sample = ROOT / "etc/cloudx" / u.name / f"{u.name}.conf.sample"
     conf = f"/etc/cloudx/{u.name}/{u.name}.conf"
     _write(staging / conf.lstrip("/"), strip_default_secret(sample.read_text()) if sample.exists() else "[DEFAULT]\n")
-    _write(staging / "DEBIAN/conffiles", f"{conf}\n")
-
+    conffiles = [conf]
     depends = [f"cloudx-common (= {version})", "init-system-helpers", *u.depends]
+    nginx = u.kind == "api" and u.frontend == "nginx"
+    if nginx:
+        snippet = f"/etc/nginx/conf.d/cloudx-{u.name}.conf"
+        _write(staging / snippet.lstrip("/"), render_nginx(u))
+        conffiles.append(snippet)
+        depends.append("nginx")
+    _write(staging / "DEBIAN/conffiles", "".join(f"{c}\n" for c in conffiles))
     depends += [d for b in bundled for d in b.depends if d not in depends]
     port = f", port {u.port}" if u.port else ""
     _write(staging / "DEBIAN/control", control_file(u.package, version, depends, f"CloudX {u.name} ({u.kind}{port})"))
     scripts = _systemd_scripts([u.unit_file, *(b.unit_file for b in bundled)], u.unit_file)
+    if nginx:
+        scripts["postinst"] = scripts["postinst"].removesuffix("exit 0\n") + _nginx_postinst().lstrip("\n") + "exit 0\n"
     for name, text in scripts.items():
         _write(staging / "DEBIAN" / name, text, 0o755)
 

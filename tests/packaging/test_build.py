@@ -8,7 +8,7 @@ import pytest
 
 from cloudx_deb.build import build_all, control_file, relocate, strip_default_secret
 from cloudx_deb.manifest import load_manifest
-from cloudx_deb.render import render_api_unit, render_wrapper
+from cloudx_deb.render import render_api_unit, render_nginx, render_wrapper
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = (ROOT / "VERSION").read_text().strip()
@@ -216,6 +216,86 @@ def test_common_postinst(debs, tmp_path):
     assert "chmod 750 /etc/cloudx\n" in after
     for sub in ("images", "object-store", "compute", "dns", "ha-watchdog", "fs-state"):
         assert f"/var/lib/cloudx/{sub}" in postinst
+
+
+def _units():
+    return {u.name: u for u in load_manifest()}
+
+
+def test_nginx_api_ships_its_snippet_as_a_conffile(debs, tmp_path):
+    image = _units()["image-api"]
+    deb = debs["cloudx-image-api"]
+    snippet = "/etc/nginx/conf.d/cloudx-image-api.conf"
+    assert contents(deb)[snippet] == "-rw-r--r--"
+    assert snippet in control_member(deb, "conffiles", tmp_path).splitlines()
+    assert "/etc/cloudx/image-api/image-api.conf" in control_member(deb, "conffiles", tmp_path).splitlines()
+    dpkg_deb("-x", str(deb), str(tmp_path / "x"))
+    assert (tmp_path / "x" / snippet.lstrip("/")).read_text() == render_nginx(image)
+    depends = dpkg_deb("--field", str(deb), "Depends")
+    assert "nginx" in [d.strip() for d in depends.split(",")]
+    assert f"cloudx-common (= {DEB_VERSION})" in depends
+    assert "init-system-helpers" in depends
+
+
+def test_nginx_api_unit_and_wrapper_use_the_nginx_variant(debs, tmp_path):
+    dpkg_deb("-x", str(debs["cloudx-image-api"]), str(tmp_path))
+    unit = (tmp_path / "lib/systemd/system/cloudx-image-api.service").read_text()
+    assert "ExecStart=/usr/bin/cloudx-image-api\n" in unit
+    wrapper = (tmp_path / "usr/bin/cloudx-image-api").read_text()
+    assert 'frontend="nginx"' in wrapper
+    assert "port=8002" in wrapper
+    assert "run_api(" in wrapper
+
+
+def test_direct_api_has_no_snippet_and_no_nginx_dependency(debs, tmp_path):
+    deb = debs["cloudx-object-store-api"]
+    assert not any(p.startswith("/etc/nginx/") for p in contents(deb))
+    assert not any("nginx" in line for line in control_member(deb, "conffiles", tmp_path).splitlines())
+    depends = [d.strip() for d in dpkg_deb("--field", str(deb), "Depends").split(",")]
+    assert "nginx" not in depends
+    assert "nginx" not in control_member(deb, "postinst", tmp_path)
+
+
+def test_every_nginx_api_ships_exactly_its_own_snippet(debs):
+    for name, u in _units().items():
+        if u.kind != "api":
+            continue
+        snippets = [p for p, mode in contents(debs[u.package]).items()
+                    if p.startswith("/etc/nginx/") and not mode.startswith("d")]
+        assert snippets == ([f"/etc/nginx/conf.d/cloudx-{name}.conf"] if u.frontend == "nginx" else []), name
+
+
+def test_common_ships_the_nginx_group_drop_in(debs, tmp_path):
+    drop_in = "/etc/systemd/system/nginx.service.d/cloudx.conf"
+    assert contents(debs["cloudx-common"])[drop_in] == "-rw-r--r--"
+    assert drop_in in control_member(debs["cloudx-common"], "conffiles", tmp_path).splitlines()
+    dpkg_deb("-x", str(debs["cloudx-common"]), str(tmp_path / "x"))
+    assert (tmp_path / "x" / drop_in.lstrip("/")).read_text() == "[Service]\nSupplementaryGroups=cloudx\n"
+    for pkg, deb in debs.items():
+        if pkg != "cloudx-common":
+            assert drop_in not in contents(deb), pkg
+
+
+def test_nginx_postinst_checks_config_then_restarts_once_or_reloads(debs, tmp_path):
+    postinst = control_member(debs["cloudx-image-api"], "postinst", tmp_path)
+    subprocess.run(["sh", "-n", str(tmp_path / f"ctrl-{debs['cloudx-image-api'].stem}" / "postinst")], check=True)
+    own = postinst.index("deb-systemd-invoke $_action 'cloudx-image-api.service'")
+    guard = postinst.index("command -v nginx", own)
+    assert "/run/systemd/system" in postinst[own:guard]
+    test_cfg = postinst.index("nginx -t", guard)
+    assert postinst.index("systemctl daemon-reload", guard) < test_cfg
+    assert "nginx -t; then" in postinst
+    assert 'echo "warning: nginx -t failed' in postinst and ">&2" in postinst[test_cfg:]
+    marker = "/var/lib/cloudx/.nginx-group-applied"
+    check = postinst.index(f"[ ! -e {marker} ]", test_cfg)
+    restart = postinst.index("deb-systemd-invoke restart nginx.service", test_cfg)
+    reload = postinst.index("deb-systemd-invoke reload nginx.service", test_cfg)
+    assert check < restart < postinst.index(f"touch {marker}") < reload
+    assert postinst.count("restart nginx.service") == 1
+    assert "else" in postinst[postinst.index(f"touch {marker}"):reload]
+    assert postinst.index(f"touch {marker}") > postinst.index("if deb-systemd-invoke restart nginx.service; then")
+    for deb in (debs["cloudx-object-store-api"], debs["cloudx-compute-worker"]):
+        assert "nginx" not in control_member(deb, "postinst", tmp_path)
 
 
 @pytest.mark.skipif(os.environ.get("CLOUDX_DEB_FULL_BUILD") != "1", reason="set CLOUDX_DEB_FULL_BUILD=1 (needs network)")

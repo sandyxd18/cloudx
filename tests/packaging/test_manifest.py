@@ -60,11 +60,17 @@ def test_names_and_ports_are_unique(units):
     assert len(ports) == len(set(ports))
 
 
-def test_frontend_values(units):
-    assert {u.frontend for u in units if u.kind == "api"} <= {"nginx", "direct"}
-    by = _by_name(units)
-    for name in ("object-store-api", "metadata-api", "metadata-proxy", "dashboard"):
-        assert by[name].frontend == "direct", name
+NGINX_APIS = {"auth-api", "billing-api", "block-store-api", "compute-api", "container-api", "database-api",
+              "dns-api", "event-api", "file-store-api", "ha-api", "image-api", "k8s-engine-api", "key-manager-api",
+              "load-balancer-api", "messaging-api", "networking-api", "orchestration-api", "placement-api",
+              "reservation-api", "telemetry-api"}
+DIRECT_APIS = {"object-store-api", "metadata-api", "metadata-proxy", "dashboard"}
+
+
+def test_frontend_split(units):
+    apis = [u for u in units if u.kind == "api"]
+    assert {u.name for u in apis if u.frontend == "nginx"} == NGINX_APIS
+    assert {u.name for u in apis if u.frontend == "direct"} == DIRECT_APIS
 
 
 def test_catalog_and_streaming(units):
