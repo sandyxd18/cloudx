@@ -441,6 +441,8 @@ RestartSec=5s
 WantedBy=multi-user.target
 ```
 
+The worker finds every service other than placement (set above) through the catalog served by auth, which seeds each service with `http://127.0.0.1:<port>`. Before starting it, put the controller's reachable URLs in `/etc/cloudx/auth-api/auth-api.conf` on the controller and run `sudo CLOUDX_SERVICES_DIR=/opt/cloudx/services /opt/cloudx/venv/bin/cloudx-manage catalog sync --dry-run`, then the same without `--dry-run` (see `docs/multi-node-deployment.md`, Step 2, item 3). Otherwise the worker gets a `ConnectionError` to its own loopback.
+
 Start the worker daemons:
 ```bash
 sudo systemctl daemon-reload
