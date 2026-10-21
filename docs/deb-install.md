@@ -13,7 +13,7 @@ Penting: runbook upgrade di bagian 7 belum diuji di node nyata. Jalankan di satu
 | `cloudx-common` | `/opt/cloudx/venv` (dependensi dan modul `shared`), user dan grup `cloudx`, `/etc/cloudx/cloudx.conf` (dibuat saat pemasangan pertama), `/var/lib/cloudx`, `/run/cloudx` (tmpfiles), `/usr/bin/cloudx-manage` |
 | `cloudx-db` | migrasi Alembic untuk `cloudx-manage db sync`; tidak berjalan sendiri |
 | `cloudx-<unit>` (41 paket) | kode service di `/opt/cloudx/services/<dir>`, unit systemd di `/lib/systemd/system`, perintah `/usr/bin/cloudx-<unit>`, conf `/etc/cloudx/<unit>/<unit>.conf`; API di belakang nginx juga membawa `/etc/nginx/conf.d/cloudx-<unit>.conf` |
-| `cloudx-controller`, `cloudx-compute`, `cloudx-storage` | paket meta, hanya `Depends` ke paket service sesuai peran |
+| `cloudx-controller`, `cloudx-compute`, `cloudx-storage` | paket meta: `Depends` ke paket service sesuai peran, `Recommends` ke `cloudx-cli` dan paket distro (lihat di bawah) |
 | `cloudx-cli` | perintah `cloudx` dengan venv sendiri di `/opt/cloudx/cli/venv`, bisa dipasang sendirian |
 
 Dua unit BIND (`cloudx-named-auth`, `cloudx-named-resolver`) ikut di dalam `cloudx-dns-worker` dan tidak punya paket sendiri.
@@ -28,7 +28,7 @@ Dua unit BIND (`cloudx-named-auth`, `cloudx-named-resolver`) ikut di dalam `clou
 
 `cloudx-file-store-worker` dan `cloudx-container-worker` tidak masuk peran mana pun: keduanya terikat ke satu node tertentu dan dipasang sendiri.
 
-Paket meta juga `Recommends` ke `cloudx-cli` dan paket distro yang tidak dikonfigurasi oleh CloudX: PostgreSQL, RabbitMQ, memcached, dan OVN Central di controller; libvirt, QEMU, Open vSwitch, `ovn-host`, dan `qemu-utils` di compute. Tambahkan `--no-install-recommends` bila PostgreSQL atau RabbitMQ ada di host lain.
+Paket meta juga `Recommends` ke `cloudx-cli` dan paket distro yang tidak dikonfigurasi oleh CloudX: PostgreSQL, RabbitMQ, memcached, dan OVN Central di controller; libvirt, QEMU, Open vSwitch, `ovn-host`, dan `qemu-utils` di compute. `apt install` memasang `Recommends` secara bawaan. Untuk `cloudx-controller` itu berarti `cloudx-dns-worker` dan `bind9` ikut terpasang, dan `named` bawaan distro langsung berebut port 53 sebelum host disiapkan (bagian 8). Karena itu bagian 4.1 memasang controller dengan `--no-install-recommends` dan menyebut paket Recommends-nya satu per satu, kecuali `cloudx-dns-worker`. Hilangkan PostgreSQL dan RabbitMQ dari daftar itu bila keduanya ada di host lain.
 
 ### API dan port
 
@@ -106,8 +106,11 @@ Urutan pertama kali:
 1. Pasang paketnya.
 
    ```bash
-   sudo apt install cloudx-controller
+   sudo apt install --no-install-recommends cloudx-controller \
+        postgresql rabbitmq-server memcached ovn-central cloudx-cli
    ```
+
+   Daftar sesudah `cloudx-controller` adalah `Recommends` paket meta itu tanpa `cloudx-dns-worker`. DNS bersifat opsional dan butuh persiapan host lebih dulu, jadi dipasang terpisah di langkah 8.
 
 2. Siapkan prasyarat yang tidak dikonfigurasi paket. Ikuti `../SETUP.md`: 2.2 (PostgreSQL: listen ke jaringan manajemen, user `cloudx`, database `cloudx`, `cloudx_orchestration`, `cloudx_events`, `cloudx_billing`, `cloudx_k8s_engine`, `cloudx_key_manager`), 2.3 (user RabbitMQ `cloudx`), dan 2.4 (listener OVN Central 6641 dan 6642). Di Ubuntu 24.04 PostgreSQL adalah versi 16, jadi `14` di jalur `/etc/postgresql/14/main` pada SETUP.md dibaca `16`. Bagian 2.5 di SETUP.md (tarball, venv, unit, migrasi) tidak dipakai; 2.6 dan 2.7 tetap berlaku.
 
@@ -136,16 +139,32 @@ Urutan pertama kali:
 
    `cloudx-db-migrate` tetap ada sebagai alias. Aman dijalankan ulang.
 
-5. Isi service catalog di auth.
+5. Tulis URL service di `/etc/cloudx/auth-api/auth-api.conf`.
+
+   Instalasi satu node: lewati langkah ini dan langkah 6. Bawaannya (`http://127.0.0.1:<port>`) sudah benar.
+
+   Banyak node: auth mendaftarkan setiap service saat start pertama dari kunci `<nama>_api_url` yang ia baca, atau `http://127.0.0.1:<port>` bila tidak ada, dan sesudah itu tidak pernah mengubah entri yang sudah ada. `/etc/cloudx/cloudx.conf` hanya berisi `auth_api_url`, jadi `catalog sync` tidak punya URL lain untuk dibaca kecuali Anda menulisnya di tempat yang dibaca auth, yaitu `/etc/cloudx/auth-api/auth-api.conf` di node yang menjalankan `auth-api`. Tulis alamat yang bisa dijangkau node lain untuk setiap service yang tidak berjalan di node auth, dan juga untuk yang berjalan di node auth bila node lain atau CLI perlu menjangkaunya (`127.0.0.1` hanya terjangkau dari node itu sendiri):
+
+   ```ini
+   [DEFAULT]
+   image_api_url = http://infra02:8002
+   compute_api_url = http://192.168.10.10:8003
+   # opsional: URL yang diberikan ke pengguna bila berbeda dari yang dipakai antar service
+   # image_api_public_url = http://cloud.example.com:8002
+   ```
+
+   Kuncinya adalah kolom `url_key` di `services/shared/services.py`: `compute_api_url`, `image_api_url`, `networking_api_url`, `block_store_api_url`, `placement_api_url`, `object_store_api_url`, `load_balancer_api_url`, `metadata_api_url`, `telemetry_api_url`, `billing_api_url`, `event_api_url`, `orchestration_api_url`, `key_manager_api_url`, `k8s_engine_api_url`, `dns_api_url`, `file_store_api_url`, `container_api_url`, `database_api_url`, `ha_api_url`, `messaging_api_url`, `reservation_api_url` (dan `auth_api_url` dari `cloudx.conf`). Varian publiknya `<nama>_api_public_url`. Bila nilainya beberapa URL dipisah koma (`ha_api_url`), yang didaftarkan hanya URL pertama.
+
+6. Isi service catalog di auth.
 
    ```bash
    sudo cloudx-manage catalog sync --dry-run   # hanya mencetak perubahan
    sudo cloudx-manage catalog sync
    ```
 
-   Lihat bagian 5 untuk URL yang dibaca perintah ini.
+   Baca keluaran `--dry-run` dulu: `+` berarti service atau endpoint baru, `~` berarti URL yang sudah terdaftar diubah (`<lama> -> <baru>`). Sesudah `db sync`, auth biasanya sudah sempat start dan mendaftarkan semua service dengan `127.0.0.1`, jadi banyak baris `~` di sini normal. Jalankan tanpa `--dry-run` bila daftarnya benar. Bagian 5 menjelaskan aturan lengkapnya.
 
-6. Restart service dan periksa.
+7. Restart service dan periksa.
 
    ```bash
    sudo systemctl restart 'cloudx-*'
@@ -154,18 +173,26 @@ Urutan pertama kali:
    cloudx auth login --username admin --auth-url http://192.168.10.10:8005
    ```
 
+8. (Opsional) DNS. Siapkan host dulu seperti di bagian 8 ("DNS"), lalu pasang `cloudx-dns-worker`.
+
 Jaringan provider dan floating IP dibuat setelah itu (`../SETUP.md` 2.7).
 
 ### 4.2 Node compute
 
-1. Salin `/etc/cloudx/cloudx.conf` dari controller ke node ini sebelum memasang, supaya secret sama di semua node. Paket tidak menimpa file yang sudah ada.
+1. Salin `/etc/cloudx/cloudx.conf` dari controller ke node ini sebelum memasang, supaya secret sama di semua node. Paket tidak menimpa file yang sudah ada. Grup `cloudx` belum ada sebelum paket dipasang, jadi file dipasang dulu dengan izin `600 root:root`; postinst `cloudx-common` mengubahnya menjadi `640 root:cloudx`.
 
    ```bash
-   sudo install -d /etc/cloudx
-   # salin cloudx.conf dari controller ke /etc/cloudx/cloudx.conf
+   # ~/cloudx.conf adalah salinan dari controller (salin dengan izin 600 dan hapus sesudahnya: berisi secret)
+   sudo install -d -m 750 /etc/cloudx
+   sudo install -m 600 -o root -g root ~/cloudx.conf /etc/cloudx/cloudx.conf
+   rm ~/cloudx.conf
    ```
 
-   Bila paket sudah terlanjur dipasang, timpa file hasil bangkitan dengan salinan dari controller lalu restart service. Izin `root:cloudx` `640` diatur ulang oleh paket pada pemasangan atau upgrade berikutnya.
+   Bila paket sudah terlanjur dipasang, ganti file hasil bangkitan dengan salinan dari controller dalam satu perintah yang langsung memberi izin benar, lalu restart service:
+
+   ```bash
+   sudo install -m 640 -o root -g cloudx ~/cloudx.conf /etc/cloudx/cloudx.conf
+   ```
 
 2. Pasang paketnya dan jalankan skrip host.
 
@@ -244,18 +271,24 @@ Satu paket API bisa dipasang di node mana saja, tidak harus di controller. Pemas
 
 Service saling menemukan lewat service catalog di auth. Urutan pencarian URL: kunci `<nama>_api_url` di conf atau environment bila ada (override), lalu catalog dari `GET /internal/catalog` (cache `catalog_cache_ttl`, bawaan 60 detik), lalu galat `CatalogError` yang menyebut nama service. Hanya `auth_api_url` yang wajib ada di setiap node.
 
-Mengubah lokasi sebuah API:
+URL setiap service hanya ditulis di satu tempat, yaitu tempat catalog diisi: `/etc/cloudx/auth-api/auth-api.conf` di node yang menjalankan `auth-api`. Jangan menaruhnya di `cloudx.conf`: kunci di sana dibaca semua service sebagai override dan mengalahkan catalog. Untuk instalasi satu node bawaan `127.0.0.1` sudah benar dan tidak ada yang perlu ditulis.
 
-1. Di node yang menjalankan auth, tulis URL service itu di `/etc/cloudx/auth-api/auth-api.conf` (bukan di `cloudx.conf`, karena kunci di `cloudx.conf` dibaca semua service sebagai override dan mengalahkan catalog):
+Memasang atau memindahkan sebuah API ke node lain:
+
+1. Pasang paket API di node tujuan (dengan `cloudx.conf` yang sama, lihat atas).
+2. Di node auth, tulis URL service itu di `/etc/cloudx/auth-api/auth-api.conf`, dengan alamat yang bisa dijangkau dari node lain:
 
    ```ini
    [DEFAULT]
    image_api_url = http://192.168.10.20:8002
    ```
 
-2. Jalankan `sudo cloudx-manage catalog sync` di node itu.
+3. Jalankan `sudo cloudx-manage catalog sync --dry-run` di node auth, baca baris `+` dan `~`, lalu jalankan `sudo cloudx-manage catalog sync` tanpa `--dry-run`.
+4. Hentikan dan lepas paket API di node lama bila sebelumnya ada.
 
-`catalog sync` hanya menambah service dan memperbarui endpoint yang URL-nya berbeda, mencetak setiap perubahan, dan tidak pernah menghapus. Kunci yang tidak ada atau kosong dibiarkan. Bila nilainya beberapa URL dipisah koma (misalnya `ha_api_url`), hanya URL pertama yang didaftarkan. Kunci `<nama>_api_public_url` (misalnya `image_api_public_url`) mengisi endpoint `public` bila berbeda dari `internal`. Endpoint yang sudah ada tidak diubah oleh start biasa, hanya oleh `catalog sync`, jadi suntingan admin lewat API tidak tertimpa diam-diam. Service lain mengambil perubahan dalam satu masa cache, tanpa restart.
+Daftar kunci ada di 4.1 langkah 5.
+
+`catalog sync` hanya menambah service dan memperbarui endpoint yang URL-nya berbeda, mencetak setiap perubahan, dan tidak pernah menghapus. Kunci yang tidak ada atau kosong dibiarkan. Bila nilainya beberapa URL dipisah koma (misalnya `ha_api_url`), hanya URL pertama yang didaftarkan. Kunci `<nama>_api_public_url` (misalnya `image_api_public_url`) mengisi endpoint `public` bila berbeda dari `internal`. Start biasa hanya mendaftarkan service yang belum punya endpoint dan tidak mengubah yang sudah ada; hanya `catalog sync` yang mengubahnya. Jadi suntingan admin lewat API tidak tertimpa diam-diam, dan URL baru di `auth-api.conf` tidak berlaku sebelum `catalog sync` dijalankan. Service lain mengambil perubahan dalam satu masa cache, tanpa restart.
 
 CLI memakai endpoint `public` dari catalog di respons login. `CLOUDX_<SVC>_URL` tetap berlaku sebagai override.
 
@@ -276,7 +309,7 @@ CLI memakai endpoint `public` dari catalog di respons login. `CLOUDX_<SVC>_URL` 
 
 ### 6.1 Jumlah worker API
 
-Kunci `workers` di `/etc/cloudx/<unit>/<unit>.conf` menentukan jumlah worker gunicorn. Prioritas: conf unit, lalu `cloudx.conf`, lalu nilai manifest (`/usr/share/cloudx/manifest.toml`, asalnya `packaging/manifest.toml`).
+Kunci `workers` di `/etc/cloudx/<unit>/<unit>.conf` menentukan jumlah worker gunicorn. Prioritas: conf unit, lalu `cloudx.conf`, lalu nilai bawaan yang ditanam di `/usr/bin/cloudx-<unit>` saat build (dari `packaging/manifest.toml`). `/usr/share/cloudx/manifest.toml` hanya salinan untuk dibaca; menyuntingnya tidak mengubah apa pun.
 
 ```ini
 [DEFAULT]
@@ -349,7 +382,8 @@ Urutan antar node: node yang hanya menjalankan beberapa service dulu, node denga
    sudo grep -cE '^(auth_secret_key|auth_admin_password|key_manager_master_key|metrics_token|internal_token) *= *[^ ]' /etc/cloudx/cloudx.conf
 
    systemctl list-units 'cloudx-*.service' --state=active --no-legend | awk '{print $1}' | sudo tee /root/cloudx-active-before.txt
-   sudo tar czf /root/cloudx-old.tgz /etc/cloudx /etc/systemd/system/cloudx-*
+   sudo tar czf /root/cloudx-etc.tgz /etc/cloudx                    # berisi secret, simpan di tempat aman
+   sudo tar czf /root/cloudx-units.tgz /etc/systemd/system/cloudx-*
    ls -d /etc/systemd/system/cloudx-*.service.d 2>/dev/null
    ```
 
@@ -392,7 +426,16 @@ Urutan antar node: node yang hanya menjalankan beberapa service dulu, node denga
    sudo systemctl restart nginx
    ```
 
-6. Verifikasi.
+6. Node compute: pasang lagi `libvirt-python`. Venv tarball memilikinya, venv paket tidak. Tanpa itu `compute-worker` jatuh ke `virsh` dan `telemetry-worker` tidak bisa mengimpor libvirt, sementara systemd tetap melaporkan unitnya `active`.
+
+   ```bash
+   sudo /opt/cloudx/venv/bin/pip install libvirt-python
+   sudo systemctl restart 'cloudx-*'
+   ```
+
+   Alat build yang dibutuhkan (`libvirt-dev`, `pkg-config`, `build-essential`, `python3-dev`) sudah ada dari `setup-compute-node.sh` yang dulu dijalankan; bila tidak, lihat 4.2 langkah 2 dan 3.
+
+7. Verifikasi.
 
    ```bash
    # unit yang aktif sama dengan sebelumnya (selisih hanya boleh unit cloudx-named-*)
@@ -413,11 +456,55 @@ Urutan antar node: node yang hanya menjalankan beberapa service dulu, node denga
    sudo cloudx-manage catalog sync --dry-run   # hanya mencetak: "catalog already up to date" atau daftar perubahan
    ```
 
+   Di node compute, `import libvirt` harus berhasil (status `active` saja tidak membuktikannya):
+
+   ```bash
+   /opt/cloudx/venv/bin/python -c "import libvirt"
+   ```
+
    Dari node yang punya CLI: `cloudx server list` harus tetap bekerja.
 
 ### Bila gagal
 
-`/opt/cloudx.tarball`, `/root/cloudx-old.tgz`, dan `/etc/cloudx` (tidak disentuh) cukup untuk kembali: hentikan unit paket, `sudo apt remove` paket CloudX di node itu, `sudo rm -rf /opt/cloudx`, `sudo mv /opt/cloudx.tarball /opt/cloudx`, kembalikan unit lama dari `/root/cloudx-old.tgz` (`tar xzf` ke `/`), lalu `sudo systemctl daemon-reload` dan `enable --now` unit yang tadi aktif. Prosedur kembali ini juga belum dicoba.
+Bahan untuk kembali: `/opt/cloudx.tarball`, `/root/cloudx-units.tgz` (unit lama), `/root/cloudx-etc.tgz` (cadangan `/etc/cloudx`), dan `/root/cloudx-active-before.txt`. Prosedur ini juga belum dicoba. Urutannya penting karena nginx masih memegang port 8001 sampai 8023 selama snippet paket ada.
+
+1. Hentikan unit paket dan lepas paketnya. Pakai `remove`, bukan `purge`: `purge` ikut menghapus `/etc/cloudx/<unit>/<unit>.conf`, yang di node ini adalah file Anda.
+
+   ```bash
+   sudo systemctl stop 'cloudx-*'
+   sudo apt remove $(dpkg-query -W -f='${Package} ' 'cloudx-*')
+   ```
+
+2. Buang snippet nginx (conffile tetap ada setelah `remove`) dan lepaskan port, sebelum unit lama dinyalakan:
+
+   ```bash
+   sudo rm /etc/nginx/conf.d/cloudx-*.conf
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+3. Kembalikan isi tarball. Isi `/opt/cloudx` dari paket dibuang dulu (tarball asli aman di `/opt/cloudx.tarball`):
+
+   ```bash
+   sudo rm -rf /opt/cloudx
+   sudo mv /opt/cloudx.tarball /opt/cloudx
+   sudo ln -s /opt/cloudx/venv/bin/cloudx /usr/local/bin/cloudx   # hanya bila tautan ini ada sebelumnya
+   ```
+
+4. Kembalikan unit lama saja, lalu nyalakan unit yang tadi aktif:
+
+   ```bash
+   sudo tar xzf /root/cloudx-units.tgz -C / etc/systemd/system
+   sudo systemctl daemon-reload
+   grep -v '^cloudx-named-' /root/cloudx-active-before.txt | xargs -r sudo systemctl enable --now
+   ```
+
+Langkah di atas tidak menyentuh `/etc/cloudx`, dan `cloudx-etc.tgz` jangan dibuka menyeluruh ke `/`: itu mengembalikan `cloudx.conf` ke keadaan cadangan. Pulihkan hanya file yang memang perlu dibatalkan, misalnya:
+
+```bash
+sudo tar xzf /root/cloudx-etc.tgz -C / etc/cloudx/image-api/image-api.conf
+```
+
+Bila Anda sudah terlanjur memakai `apt purge`, pulihkan `/etc/cloudx/<unit>/<unit>.conf` yang terhapus dengan cara yang sama, satu per satu, dan jangan menyentuh `etc/cloudx/cloudx.conf`.
 
 ## 8. Batas dan langkah manual
 
@@ -434,11 +521,12 @@ Urutan antar node: node yang hanya menjalankan beberapa service dulu, node denga
 
 `install-systemd.sh` mengerjakan beberapa hal di host yang tidak dikerjakan paket. Lakukan manual di node yang bersangkutan.
 
-**DNS (controller, `cloudx-dns-worker`).** Paket ini hanya `Recommends` dari `cloudx-controller` karena menarik `bind9`, dan instance `named` bawaan distro akan berebut port 53. Siapkan host dulu, baru pasang:
+**DNS (controller, `cloudx-dns-worker`).** Paket ini hanya `Recommends` dari `cloudx-controller` karena menarik `bind9`, dan instance `named` bawaan distro akan berebut port 53. Karena itu 4.1 tidak memasangnya. Siapkan host dulu, baru pasang:
 
 ```bash
 sudo apt install bind9 bind9utils
-sudo systemctl disable --now named bind9
+sudo systemctl disable --now named bind9 || true   # di Ubuntu 24.04 salah satu nama bisa berupa alias
+systemctl is-active bind9                          # harus inactive
 sudo mkdir -p /var/lib/cloudx/dns/auth /var/lib/cloudx/dns/resolver
 echo '/var/lib/cloudx/dns/** rwk,' | sudo tee /etc/apparmor.d/local/usr.sbin.named
 sudo apparmor_parser -r /etc/apparmor.d/usr.sbin.named
@@ -450,7 +538,7 @@ Isi `dns_public_address` (BIND otoritatif) dan `dns_resolver_address` (BIND reso
 **Prometheus (controller).** Prometheus membaca `/metrics` dengan token dari `metrics_token`. Bila Prometheus terpasang di node yang sama:
 
 ```bash
-sudo grep '^metrics_token' /etc/cloudx/cloudx.conf | cut -d= -f2- | tr -d ' \n' | sudo tee /etc/prometheus/metrics_token >/dev/null
+( umask 037; sudo grep '^metrics_token' /etc/cloudx/cloudx.conf | cut -d= -f2- | tr -d ' \n' | sudo tee /etc/prometheus/metrics_token >/dev/null )
 sudo chgrp prometheus /etc/prometheus/metrics_token
 sudo chmod 640 /etc/prometheus/metrics_token
 ```
