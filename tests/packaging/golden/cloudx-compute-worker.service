@@ -1,0 +1,16 @@
+[Unit]
+Description=CloudX Compute Worker Service
+After=network.target libvirtd.service openvswitch-switch.service rabbitmq-server.service
+Wants=libvirtd.service openvswitch-switch.service rabbitmq-server.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/cloudx/services/compute_worker
+ExecStart=/usr/bin/cloudx-compute-worker
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

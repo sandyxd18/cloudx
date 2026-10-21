@@ -1,0 +1,17 @@
+[Unit]
+Description=CloudX Image API Service
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=cloudx
+Group=cloudx
+UMask=0007
+WorkingDirectory=/opt/cloudx/services/image
+ExecStart=/usr/bin/cloudx-image-api
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

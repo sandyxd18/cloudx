@@ -37,6 +37,12 @@ def test_api_fields_match_the_current_unit(units):
         assert u.workers == (int(w.group(1)) if w else 1), u.name
 
 
+def test_api_user_matches_the_current_unit(units):
+    for u in (u for u in units if u.kind == "api"):
+        m = re.search(r"^User=(\S+)", (SYSTEMD / u.unit_file).read_text(), re.M)
+        assert u.user == (m.group(1) if m else "root"), u.name
+
+
 def test_daemon_dirs_match_the_current_unit(units):
     daemons = [u for u in units if u.kind == "daemon"]
     assert daemons
@@ -120,6 +126,7 @@ def test_load_returns_frozen_units(tmp_path):
     assert units == [Unit(name="x", kind="daemon", dir="x", port=None, workers=None,
                           frontend=None, streaming=False, catalog=None, roles=(),
                           depends=(), bundle_with=None)]
+    assert units[0].user is None
     with pytest.raises(AttributeError):
         units[0].name = "y"
 
@@ -134,6 +141,8 @@ def test_bad_manifest_raises(tmp_path):
         load_manifest(_write(tmp_path, _entry("a", "service")))
     with pytest.raises(ManifestError):
         load_manifest(_write(tmp_path, _entry("a", "api", 'dir = "x"')))
+    with pytest.raises(ManifestError):
+        load_manifest(_write(tmp_path, _entry("a", "api", api + 'frontend = "nginx"')))
     with pytest.raises(ManifestError):
         load_manifest(_write(tmp_path, _entry("a", extra='bogus = 1')))
     with pytest.raises(ManifestError):

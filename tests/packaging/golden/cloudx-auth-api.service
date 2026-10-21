@@ -1,0 +1,17 @@
+[Unit]
+Description=CloudX Auth API Service
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=cloudx
+Group=cloudx
+UMask=0007
+WorkingDirectory=/opt/cloudx/services/auth
+ExecStart=/usr/bin/cloudx-auth-api
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

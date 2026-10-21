@@ -7,6 +7,7 @@ dir = "auth"
 port = 8005
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "identity"
 roles = ["controller"]
 
@@ -23,6 +24,7 @@ dir = "billing"
 port = 8011
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "billing"
 roles = ["controller"]
 
@@ -39,6 +41,7 @@ dir = "block_store"
 port = 8004
 workers = 2
 frontend = "direct"
+user = "root"
 catalog = "volume"
 roles = ["controller"]
 
@@ -55,6 +58,7 @@ dir = "compute"
 port = 8003
 workers = 4
 frontend = "direct"
+user = "cloudx"
 catalog = "compute"
 roles = ["controller"]
 
@@ -77,6 +81,7 @@ dir = "container"
 port = 8018
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "container"
 roles = ["controller"]
 
@@ -93,6 +98,7 @@ dir = "dashboard"
 port = 8080
 workers = 1
 frontend = "direct"
+user = "root"
 roles = ["controller"]
 
 [[unit]]
@@ -102,6 +108,7 @@ dir = "database"
 port = 8019
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "database"
 roles = ["controller"]
 
@@ -112,6 +119,7 @@ dir = "dns"
 port = 8016
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "dns"
 roles = ["controller"]
 
@@ -129,6 +137,7 @@ dir = "event"
 port = 8012
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "event"
 roles = ["controller"]
 
@@ -145,6 +154,7 @@ dir = "file_store"
 port = 8017
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "file-store"
 roles = ["controller"]
 
@@ -161,6 +171,7 @@ dir = "ha"
 port = 8020
 workers = 1
 frontend = "direct"
+user = "cloudx"
 catalog = "ha"
 roles = ["controller"]
 
@@ -177,6 +188,7 @@ dir = "image"
 port = 8002
 workers = 2
 frontend = "direct"
+user = "cloudx"
 streaming = true
 catalog = "image"
 roles = ["controller"]
@@ -194,6 +206,7 @@ dir = "k8s_engine"
 port = 8015
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "k8s-engine"
 roles = ["controller"]
 
@@ -210,6 +223,7 @@ dir = "key_manager"
 port = 8014
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "key-manager"
 roles = ["controller"]
 
@@ -226,6 +240,7 @@ dir = "load_balancer"
 port = 8008
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "load-balancer"
 roles = ["controller"]
 
@@ -236,6 +251,7 @@ dir = "messaging"
 port = 8022
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "messaging"
 roles = ["controller"]
 
@@ -246,6 +262,7 @@ dir = "metadata"
 port = 8775
 workers = 2
 frontend = "direct"
+user = "root"
 catalog = "metadata"
 roles = ["controller"]
 
@@ -256,6 +273,7 @@ dir = "metadata_proxy"
 port = 8776
 workers = 2
 frontend = "direct"
+user = "root"
 roles = ["compute"]
 
 [[unit]]
@@ -277,6 +295,7 @@ dir = "networking"
 port = 8001
 workers = 4
 frontend = "direct"
+user = "cloudx"
 catalog = "network"
 roles = ["controller"]
 
@@ -287,6 +306,7 @@ dir = "object_store"
 port = 8007
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "object-store"
 roles = ["controller"]
 
@@ -297,6 +317,7 @@ dir = "orchestration"
 port = 8013
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "orchestration"
 roles = ["controller"]
 
@@ -313,6 +334,7 @@ dir = "placement"
 port = 8006
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "placement"
 roles = ["controller"]
 
@@ -329,6 +351,7 @@ dir = "reservation"
 port = 8023
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "reservation"
 roles = ["controller"]
 
@@ -339,6 +362,7 @@ dir = "telemetry"
 port = 8010
 workers = 2
 frontend = "direct"
+user = "cloudx"
 catalog = "telemetry"
 roles = ["controller"]
 

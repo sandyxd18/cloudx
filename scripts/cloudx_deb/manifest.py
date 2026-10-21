@@ -9,7 +9,7 @@ KINDS = ("api", "daemon", "unit")
 FRONTENDS = ("nginx", "direct")
 ROLES = ("controller", "compute", "storage")
 FIELDS = {"name", "kind", "dir", "port", "workers", "frontend", "streaming", "catalog",
-          "roles", "depends", "bundle_with"}
+          "roles", "depends", "bundle_with", "user"}
 
 
 class ManifestError(ValueError):
@@ -29,6 +29,7 @@ class Unit:
     roles: tuple[str, ...]
     depends: tuple[str, ...]
     bundle_with: str | None
+    user: str | None = None
 
     @property
     def package(self) -> str:
@@ -56,7 +57,7 @@ def _unit(raw: dict) -> Unit:
     bad_roles = set(roles) - set(ROLES)
     if bad_roles:
         raise ManifestError(f"{name}: unknown roles {sorted(bad_roles)}")
-    required = {"api": ("dir", "port", "workers", "frontend"), "daemon": ("dir",), "unit": ()}[kind]
+    required = {"api": ("dir", "port", "workers", "frontend", "user"), "daemon": ("dir",), "unit": ()}[kind]
     for key in required:
         if raw.get(key) is None:
             raise ManifestError(f"{name}: kind {kind} requires {key}")
@@ -72,6 +73,7 @@ def _unit(raw: dict) -> Unit:
         roles=roles,
         depends=tuple(raw.get("depends", ())),
         bundle_with=raw.get("bundle_with"),
+        user=raw.get("user"),
     )
 
 
