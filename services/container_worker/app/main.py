@@ -16,13 +16,13 @@ import time
 from pathlib import Path
 
 import requests
+from shared import catalog
 from shared.internal import internal_headers
 from shared.proc import run
 
 from .plan import plan
 
 log = logging.getLogger("container-worker")
-API = os.getenv("CONTAINER_API_URL", "http://127.0.0.1:8018").rstrip("/")
 HOST = os.getenv("CONTAINER_HOST") or os.getenv("NODE_NAME", "")
 STATE = Path(os.getenv("CONTAINER_STATE_DIR", "/var/lib/cloudx/ct-state"))
 INTERVAL = int(os.getenv("CONTAINER_WORKER_INTERVAL", "5"))
@@ -100,7 +100,8 @@ def remove(cid: str) -> None:
     _failed.pop(cid, None)
 
 def tick() -> None:
-    r = requests.get(f"{API}/internal/ct-agent/{HOST}", headers=internal_headers(), timeout=10)
+    api = catalog.url("container").rstrip("/")
+    r = requests.get(f"{api}/internal/ct-agent/{HOST}", headers=internal_headers(), timeout=10)
     r.raise_for_status()
     want = {c["id"]: c for c in r.json()["containers"]}
     have = docker_state()
@@ -149,7 +150,7 @@ def tick() -> None:
             _pids.pop(cid, None)
             report[cid] = {"state": "stopped", "logs": logs_of(cid)[-LOG_CAP:]}
     if report:
-        requests.post(f"{API}/internal/ct-agent/{HOST}/report", json={"containers": report}, headers=internal_headers(),
+        requests.post(f"{api}/internal/ct-agent/{HOST}/report", json={"containers": report}, headers=internal_headers(),
                       timeout=10).raise_for_status()
 
 def main() -> None:

@@ -8,7 +8,8 @@ E = datetime(2026, 10, 1, 11, tzinfo=timezone.utc)
 
 
 @pytest.fixture
-def w():
+def w(monkeypatch):
+    monkeypatch.setenv("EVENT_API_URL", "http://event.test:8012")
     from services.billing_worker.app import main
     return main
 

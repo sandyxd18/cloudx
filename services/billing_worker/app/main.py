@@ -23,19 +23,13 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import requests
+from shared import catalog
 from shared.internal import internal_headers
 
 
 log = logging.getLogger("billing-worker")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BILLING_API_URL = os.getenv("BILLING_API_URL", "http://billing-api:8011").rstrip("/")
-TELEMETRY_API_URL = os.getenv("TELEMETRY_API_URL", "http://telemetry-api:8010").rstrip("/")
-COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
-BLOCK_STORE_API_URL = os.getenv("BLOCK_STORE_API_URL", "http://block-store-api:8000").rstrip("/")
-NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
-LOAD_BALANCER_API_URL = os.getenv("LOAD_BALANCER_API_URL", "http://load-balancer-api:8008").rstrip("/")
-EVENT_API_URL = os.getenv("EVENT_API_URL", "http://event-api:8012").rstrip("/")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 
 AGGREGATION_INTERVAL = int(os.getenv("AGGREGATION_INTERVAL", "3600"))  # 1 hour
@@ -48,6 +42,10 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+def _billing_api() -> str:
+    return catalog.url("billing").rstrip("/")
+
 
 def _request(method: str, url: str, **kw) -> requests.Response:
     headers = {**kw.pop("headers", {}), "Content-Type": "application/json", **internal_headers()}
@@ -75,8 +73,9 @@ def overlap_hours(created, deleted, start, end) -> Decimal:
 
 # ── Resource Discovery ────────────────────────────────────────────────────────
 
-def _list(url: str, key: str) -> list[dict] | None:
+def _list(service: str, path: str, key: str) -> list[dict] | None:
     try:
+        url = f"{catalog.url(service).rstrip('/')}{path}"
         r = _request("GET", url, timeout=10)
         if r.status_code in (200, 201):
             data = r.json()
@@ -91,19 +90,19 @@ def _list(url: str, key: str) -> list[dict] | None:
 
 
 def _get_active_servers() -> list[dict] | None:
-    return _list(f"{COMPUTE_API_URL}/servers?all_tenants=true", "servers")
+    return _list("compute", "/servers?all_tenants=true", "servers")
 
 
 def _get_volumes() -> list[dict] | None:
-    return _list(f"{BLOCK_STORE_API_URL}/volumes?all_tenants=true", "volumes")
+    return _list("volume", "/volumes?all_tenants=true", "volumes")
 
 
 def _get_floating_ips() -> list[dict] | None:
-    return _list(f"{NETWORKING_API_URL}/floating-ips?all_tenants=true", "floatingips")
+    return _list("network", "/floating-ips?all_tenants=true", "floatingips")
 
 
 def _get_load_balancers() -> list[dict] | None:
-    return _list(f"{LOAD_BALANCER_API_URL}/load-balancers?all_tenants=true", "loadbalancers")
+    return _list("load-balancer", "/load-balancers?all_tenants=true", "loadbalancers")
 
 
 # ── Usage Aggregation ─────────────────────────────────────────────────────────
@@ -175,7 +174,7 @@ def _send_usage_records(records: list[dict]) -> bool:
     if not records:
         return True
     try:
-        r = _request("POST", f"{BILLING_API_URL}/billing/usage-records/batch", json=records, timeout=30)
+        r = _request("POST", f"{_billing_api()}/billing/usage-records/batch", json=records, timeout=30)
         if r.status_code in (200, 201):
             res = r.json()
             log.info("Usage records: %s created, skipped %s", res.get("created"), res.get("skipped"))
@@ -198,6 +197,7 @@ def _generate_monthly_invoices():
     log.info("Generating invoices for %d-%02d", prev_year, prev_month)
 
     try:
+        billing = _billing_api()
         r = _request("GET", f"{AUTH_API_URL}/auth/projects", timeout=10)
         if r.status_code != 200:
             log.error("Failed to get projects: %s", r.text)
@@ -209,7 +209,7 @@ def _generate_monthly_invoices():
                 continue
             try:
                 r = _request(
-                    "POST", f"{BILLING_API_URL}/billing/invoices",
+                    "POST", f"{billing}/billing/invoices",
                     params={"project_id": project_id, "year": prev_year, "month": prev_month},
                     timeout=30,
                 )
@@ -230,7 +230,7 @@ def _generate_monthly_invoices():
 def _cleanup_old_records():
     """Clean up usage records older than retention period."""
     try:
-        r = _request("POST", f"{BILLING_API_URL}/billing/cleanup?days={CLEANUP_DAYS}", timeout=30)
+        r = _request("POST", f"{_billing_api()}/billing/cleanup?days={CLEANUP_DAYS}", timeout=30)
         if r.status_code in (200, 201):
             log.info("Cleaned up old records: %s", r.json())
     except Exception as e:
@@ -260,7 +260,7 @@ def _save_state(state: dict) -> None:
 def _lookup_deleted_at(resource_id: str) -> str | None:
     """Query event-api for deletion event timestamp of a vanished resource."""
     try:
-        r = _request("GET", f"{EVENT_API_URL}/events/logs", params={"resource_id": resource_id, "limit": 10}, timeout=5)
+        r = _request("GET", f"{catalog.url('event').rstrip('/')}/events/logs", params={"resource_id": resource_id, "limit": 10}, timeout=5)
         if r.status_code == 200:
             events = r.json()
             if isinstance(events, list):
@@ -270,6 +270,18 @@ def _lookup_deleted_at(resource_id: str) -> str | None:
     except Exception as e:
         log.warning("Failed to lookup delete event for %s: %s", resource_id, e)
     return None
+
+
+def _event_api_resolvable(old: dict, now: dict) -> bool:
+    """Once per run, so vanished resources do not each wait for a failing catalog; they fall back to the estimate."""
+    if all(k in now for k in old):
+        return True
+    try:
+        catalog.url("event")
+    except catalog.CatalogError as e:
+        log.warning("Cannot look up delete events, estimating deletion times: %s", e)
+        return False
+    return True
 
 
 def _with_ghosts(kind: str, listed: list[dict] | None, state: dict, start, end) -> list[dict]:
@@ -283,9 +295,10 @@ def _with_ghosts(kind: str, listed: list[dict] | None, state: dict, start, end) 
     died = start + (end - start) / 2
     state[kind] = now
     ghosts = []
+    lookup = _lookup_deleted_at if _event_api_resolvable(old, now) else (lambda _id: None)
     for k, r in old.items():
         if k not in now:
-            del_at = _lookup_deleted_at(k) or died.isoformat()
+            del_at = lookup(k) or died.isoformat()
             ghosts.append({**r, "deleted_at": del_at})
     return listed + ghosts
 

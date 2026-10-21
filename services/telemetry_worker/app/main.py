@@ -21,6 +21,7 @@ import time
 import xml.etree.ElementTree as ET
 
 import requests
+from shared import catalog
 from shared.internal import internal_headers
 from shared.proc import run
 
@@ -28,8 +29,6 @@ from shared.proc import run
 log = logging.getLogger("telemetry-worker")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-TELEMETRY_API_URL = os.getenv("TELEMETRY_API_URL", "http://127.0.0.1:8010").rstrip("/")
-COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 COMPUTE_HOST = os.getenv("COMPUTE_HOST", "single-node")
 
@@ -197,7 +196,7 @@ def _get_active_instances() -> list[dict]:
     
     # Try compute-api first
     try:
-        r = _api("GET", f"{COMPUTE_API_URL}/servers?all_tenants=true&status=ACTIVE", timeout=10)
+        r = _api("GET", f"{catalog.url('compute').rstrip('/')}/servers?all_tenants=true&status=ACTIVE", timeout=10)
         if r.status_code in (200, 201):
             data = r.json()
             for s in data.get("servers", []):
@@ -234,7 +233,7 @@ def _get_active_instances() -> list[dict]:
 
 # ── Metrics sender ────────────────────────────────────────────────────────────
 
-def _send_metrics_batch(metrics: list[dict]) -> bool:
+def _send_metrics_batch(metrics: list[dict], base: str) -> bool:
     """Send metrics batch to telemetry-api."""
     if not metrics:
         return True
@@ -251,7 +250,7 @@ def _send_metrics_batch(metrics: list[dict]) -> bool:
                 "host": COMPUTE_HOST,
             })
         
-        r = _api("POST", f"{TELEMETRY_API_URL}/telemetry/metrics/batch", json=payload, timeout=30)
+        r = _api("POST", f"{base}/telemetry/metrics/batch", json=payload, timeout=30)
         if r.status_code in (200, 201):
             log.debug("Sent %d metrics", len(metrics))
             return True
@@ -271,6 +270,12 @@ def collect_and_send():
     if not instances:
         log.debug("No active instances found")
         return
+    try:
+        base = catalog.url("telemetry").rstrip("/")
+    except catalog.CatalogError as e:
+        log.error("Error sending metrics: %s", e)
+        return
+
     live = {i["id"] for i in instances}
     for k in [k for k in _prev if k not in live]:
         del _prev[k]
@@ -333,12 +338,12 @@ def collect_and_send():
     batch_size = 100
     for i in range(0, len(all_metrics), batch_size):
         batch = all_metrics[i:i + batch_size]
-        _send_metrics_batch(batch)
+        _send_metrics_batch(batch, base)
 
 
 def _cleanup_old_metrics() -> None:
     try:
-        r = _api("DELETE", f"{TELEMETRY_API_URL}/telemetry/metrics/cleanup?days={RETENTION_DAYS}", timeout=60)
+        r = _api("DELETE", f"{catalog.url('telemetry').rstrip('/')}/telemetry/metrics/cleanup?days={RETENTION_DAYS}", timeout=60)
         if r.status_code >= 300:
             log.warning("Metrics cleanup failed: %s %s", r.status_code, r.text)
     except Exception as e:

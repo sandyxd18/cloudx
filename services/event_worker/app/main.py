@@ -24,13 +24,13 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import requests
+from shared import catalog
 from shared.internal import internal_headers
 
 
 log = logging.getLogger("event-worker")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-EVENT_API_URL = os.getenv("EVENT_API_URL", "http://event-api:8012").rstrip("/")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "10"))  # seconds
@@ -100,7 +100,7 @@ def _deliver_webhook(endpoint_url: str, secret: str, event_type: str, event_id: 
 
 def _api(method: str, path: str, **kw) -> requests.Response:
     headers = {**kw.pop("headers", {}), "Content-Type": "application/json", **internal_headers()}
-    return requests.request(method, f"{EVENT_API_URL}{path}", headers=headers, timeout=10, **kw)
+    return requests.request(method, f"{catalog.url('event').rstrip('/')}{path}", headers=headers, timeout=10, **kw)
 
 
 def _get_pending_deliveries() -> list[dict]:

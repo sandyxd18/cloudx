@@ -21,16 +21,13 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import requests
+from shared import catalog
 from shared.internal import internal_headers
 
 
 log = logging.getLogger("orchestration-worker")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-ORCHESTRATION_API_URL = os.getenv("ORCHESTRATION_API_URL", "http://orchestration-api:8013").rstrip("/")
-COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
-TELEMETRY_API_URL = os.getenv("TELEMETRY_API_URL", "http://telemetry-api:8010").rstrip("/")
-LOAD_BALANCER_API_URL = os.getenv("LOAD_BALANCER_API_URL", "http://load-balancer-api:8008").rstrip("/")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 
 MONITOR_INTERVAL = int(os.getenv("MONITOR_INTERVAL", "30"))  # seconds
@@ -45,13 +42,32 @@ def _api_headers() -> dict:
     return {"Content-Type": "application/json", **internal_headers()}
 
 
+def _peer(service: str) -> str:
+    return catalog.url(service).rstrip("/")
+
+
+def _scaling_peers(group: dict) -> list[str]:
+    return ["compute", "orchestration", *(["load-balancer"] if group.get("load_balancer_pool_id") else [])]
+
+
+def _peers_resolvable(services: list[str]) -> bool:
+    """True when every peer resolves; checked before a scaling action so it does not stop half-way."""
+    try:
+        for service in services:
+            _peer(service)
+    except catalog.CatalogError as e:
+        log.error("Skipping scaling action: %s", e)
+        return False
+    return True
+
+
 # ── API Helpers ───────────────────────────────────────────────────────────────
 
 def _get_scaling_groups() -> list[dict]:
     """Get all active scaling groups."""
     try:
         r = requests.get(
-            f"{ORCHESTRATION_API_URL}/scaling-groups?active_only=true",
+            f"{_peer('orchestration')}/scaling-groups?active_only=true",
             headers=_api_headers(),
             timeout=10,
         )
@@ -66,7 +82,7 @@ def _get_group_instances(group_id: str) -> list[dict]:
     """Get instances in a scaling group."""
     try:
         r = requests.get(
-            f"{ORCHESTRATION_API_URL}/scaling-groups/{group_id}/instances",
+            f"{_peer('orchestration')}/scaling-groups/{group_id}/instances",
             headers=_api_headers(),
             timeout=10,
         )
@@ -81,7 +97,7 @@ def _get_server(server_id: str) -> dict | None:
     """Get server details from compute-api."""
     try:
         r = requests.get(
-            f"{COMPUTE_API_URL}/servers/{server_id}",
+            f"{_peer('compute')}/servers/{server_id}",
             headers=_api_headers(),
             timeout=10,
         )
@@ -101,10 +117,16 @@ def _get_instance_avg_cpu(server_ids: list[str]) -> float | None:
     count = 0
     from_time = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
     
+    try:
+        telemetry = _peer("telemetry")
+    except catalog.CatalogError as e:
+        log.error("Failed to get CPU for %s: %s", server_ids, e)
+        return None
+
     for server_id in server_ids:
         try:
             r = requests.get(
-                f"{TELEMETRY_API_URL}/telemetry/metrics?instance_id={server_id}&metric_type=cpu_percent&from_time={from_time}&limit=10",
+                f"{telemetry}/telemetry/metrics?instance_id={server_id}&metric_type=cpu_percent&from_time={from_time}&limit=10",
                 headers=_api_headers(),
                 timeout=10,
             )
@@ -133,7 +155,7 @@ def _spawn_server(group: dict, name: str) -> dict | None:
     
     try:
         r = requests.post(
-            f"{COMPUTE_API_URL}/servers",
+            f"{_peer('compute')}/servers",
             headers=_api_headers(),
             json=payload,
             timeout=30,
@@ -151,7 +173,7 @@ def _terminate_server(server_id: str) -> bool:
     """Terminate a server via compute-api."""
     try:
         r = requests.delete(
-            f"{COMPUTE_API_URL}/servers/{server_id}",
+            f"{_peer('compute')}/servers/{server_id}",
             headers=_api_headers(),
             timeout=30,
         )
@@ -173,7 +195,7 @@ def _add_member_to_pool(pool_id: str, server: dict) -> bool:
     
     try:
         r = requests.post(
-            f"{LOAD_BALANCER_API_URL}/pools/{pool_id}/members",
+            f"{_peer('load-balancer')}/pools/{pool_id}/members",
             headers=_api_headers(),
             json={
                 "address": ip_address,
@@ -196,7 +218,7 @@ def _remove_member_from_pool(pool_id: str, server_id: str) -> bool:
     
     try:
         r = requests.delete(
-            f"{LOAD_BALANCER_API_URL}/pools/{pool_id}/members/{server_id}",
+            f"{_peer('load-balancer')}/pools/{pool_id}/members/{server_id}",
             headers=_api_headers(),
             timeout=30,
         )
@@ -221,7 +243,7 @@ def _record_history(
     """Record scaling history via orchestration-api."""
     try:
         requests.post(
-            f"{ORCHESTRATION_API_URL}/scaling-groups/{group_id}/history",
+            f"{_peer('orchestration')}/scaling-groups/{group_id}/history",
             headers=_api_headers(),
             json={
                 "action": action,
@@ -276,6 +298,9 @@ def _check_group(group: dict):
         new_count = min(instance_count + 1, group["max_instances"])
         to_add = new_count - instance_count
         
+        if not _peers_resolvable(_scaling_peers(group)):
+            return
+
         log.info("Scaling out group %s: %d -> %d (avg CPU %.1f%%)",
                  group_id, instance_count, new_count, avg_cpu)
         
@@ -319,6 +344,9 @@ def _check_group(group: dict):
             reverse=True,
         )
         
+        if not _peers_resolvable(_scaling_peers(group)):
+            return
+
         log.info("Scaling in group %s: %d -> %d (avg CPU %.1f%%)",
                  group_id, instance_count, new_count, avg_cpu)
         

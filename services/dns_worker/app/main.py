@@ -18,13 +18,12 @@ import time
 from pathlib import Path
 
 import requests
-from shared import dns_names
+from shared import catalog, dns_names
 from shared.dns_render import hostmaster_from_email, render_named_conf, render_zone
 from shared.internal import internal_headers
 from shared.proc import run
 
 log = logging.getLogger("dns-worker")
-API = os.getenv("DNS_API_URL", "http://127.0.0.1:8016").rstrip("/")
 ROOT = Path(os.getenv("DNS_STATE_DIR", "/var/lib/cloudx/dns"))
 INTERVAL = int(os.getenv("DNS_WORKER_INTERVAL", "5"))
 SWEEP_INTERVAL = int(os.getenv("DNS_SWEEP_INTERVAL", "60"))
@@ -116,24 +115,25 @@ def _get(url: str, path: str) -> list:
 
 def collect_want() -> list[dict]:
     base = dns_names.base()
-    url = lambda n, d: os.getenv(f"{n}_API_URL", d).rstrip("/")  # noqa: E731
-    r = requests.get(f"{url('AUTH', 'http://127.0.0.1:8005')}/internal/projects", headers=internal_headers(), timeout=20)
+    auth = os.getenv("AUTH_API_URL", "http://127.0.0.1:8005").rstrip("/")
+    networking, load_balancer, compute = (catalog.url(s).rstrip("/") for s in ("network", "load-balancer", "compute"))
+    r = requests.get(f"{auth}/internal/projects", headers=internal_headers(), timeout=20)
     r.raise_for_status()
     names = r.json()["projects"]
     want = []
-    for f in _get(url("NETWORKING", "http://127.0.0.1:8001"), "/floating-ips"):
+    for f in _get(networking, "/floating-ips"):
         ip = f.get("floating_ip_address")
         if ip:
             want.append({"owner": f"floating_ip:{f['id']}", "project_id": f.get("project_id"), "scope": "public", "type": "A",
                          "fqdn": dns_names.fip_fqdn(ip, base), "records": [ip]})
-    for lb in _get(url("LOAD_BALANCER", "http://127.0.0.1:8008"), "/load-balancers"):
+    for lb in _get(load_balancer, "/load-balancers"):
         pname = names.get(lb["project_id"], lb["project_id"])
         want.append({"owner": f"load_balancer_internal:{lb['id']}", "project_id": lb["project_id"], "scope": "internal", "type": "A",
                      "fqdn": dns_names.internal_fqdn(lb["name"], pname, base), "records": [lb["vip_address"]]})
         if lb.get("vip_floating_ip"):
             want.append({"owner": f"load_balancer:{lb['id']}", "project_id": lb["project_id"], "scope": "public", "type": "A",
                          "fqdn": dns_names.lb_fqdn(lb["name"], lb["id"], base), "records": [lb["vip_floating_ip"]]})
-    for s in _get(url("COMPUTE", "http://127.0.0.1:8003"), "/servers?limit=1000"):
+    for s in _get(compute, "/servers?limit=1000"):
         if s.get("ip_address") and s.get("status") != "DELETED":
             pname = names.get(s["project_id"], s["project_id"])
             want.append({"owner": f"server:{s['id']}", "project_id": s["project_id"], "scope": "internal", "type": "A",
@@ -142,18 +142,20 @@ def collect_want() -> list[dict]:
 
 
 def run_sweep() -> None:
-    have = requests.get(f"{API}/internal/records", headers=internal_headers(), timeout=10).json()["records"]
+    api = catalog.url("dns").rstrip("/")
+    have = requests.get(f"{api}/internal/records", headers=internal_headers(), timeout=10).json()["records"]
     todo, gone = sweep(collect_want(), have)
     for w in todo:
-        r = requests.post(f"{API}/internal/records", json=w, headers=internal_headers(), timeout=10)
+        r = requests.post(f"{api}/internal/records", json=w, headers=internal_headers(), timeout=10)
         if r.status_code >= 400:
             log.warning("sweep register %s: %s %s", w["owner"], r.status_code, r.text[:120])
     for o in gone:
-        requests.delete(f"{API}/internal/records", params={"owner": o}, headers=internal_headers(), timeout=10)
+        requests.delete(f"{api}/internal/records", params={"owner": o}, headers=internal_headers(), timeout=10)
 
 
 def tick() -> None:
-    r = requests.get(f"{API}/internal/state", headers=internal_headers(), timeout=10)
+    api = catalog.url("dns").rstrip("/")
+    r = requests.get(f"{api}/internal/state", headers=internal_headers(), timeout=10)
     r.raise_for_status()
     state = r.json()
     ok = True
@@ -163,7 +165,7 @@ def tick() -> None:
             ok &= reload(role)
     if ok:
         for z in state["zones"]:
-            requests.post(f"{API}/internal/zones/{z['id']}/status", json={"serial": z["serial"]}, headers=internal_headers(), timeout=10)
+            requests.post(f"{api}/internal/zones/{z['id']}/status", json={"serial": z["serial"]}, headers=internal_headers(), timeout=10)
 
 
 def main() -> None:

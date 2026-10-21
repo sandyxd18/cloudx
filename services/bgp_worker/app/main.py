@@ -13,12 +13,12 @@ import time
 from pathlib import Path
 
 import requests
+from shared import catalog
 from shared.bird_cfg import render
 from shared.internal import internal_headers
 from shared.proc import run
 
 log = logging.getLogger("bgp-worker")
-API = os.getenv("NETWORKING_API_URL", "http://127.0.0.1:8001").rstrip("/")
 HOST = os.getenv("NODE_NAME") or os.getenv("COMPUTE_HOST", "")
 ROOT = Path(os.getenv("BGP_STATE_DIR", "/var/lib/cloudx/bgp"))
 INTERVAL = int(os.getenv("BGP_WORKER_INTERVAL", "5"))
@@ -249,7 +249,8 @@ def check_speaker_status(spk: dict) -> dict[str, dict]:
 
 def tick() -> None:
     global _last_apply_failed
-    r = requests.get(f"{API}/internal/bgp-agent/{HOST}", headers=internal_headers(), timeout=10)
+    api = catalog.url("network").rstrip("/")
+    r = requests.get(f"{api}/internal/bgp-agent/{HOST}", headers=internal_headers(), timeout=10)
     r.raise_for_status()
     speakers = r.json().get("speakers", [])
     want = {spk["id"]: spk for spk in speakers}
@@ -316,7 +317,7 @@ def tick() -> None:
 
     if status_updates:
         try:
-            requests.post(f"{API}/internal/bgp-agent/{HOST}/status", json={"peers": status_updates},
+            requests.post(f"{api}/internal/bgp-agent/{HOST}/status", json={"peers": status_updates},
                           headers=internal_headers(), timeout=10).raise_for_status()
             _reported.update(status_updates)
         except Exception as exc:  # best-effort: status report failure

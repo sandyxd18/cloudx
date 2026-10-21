@@ -26,6 +26,8 @@ class Env:
         self.clusters, self.calls, self.fail_create, self.fail_delete, self.seq = [], [], False, set(), 0
         self.gone = set()
         mp.setenv("INTERNAL_TOKEN", IT)
+        mp.setenv("K8S_ENGINE_API_URL", "http://k8s-engine.test:8015")
+        mp.setenv("COMPUTE_API_URL", "http://compute.test:8003")
         w.CALLBACK_URL = "http://172.17.0.1:8015"
         mp.setattr(w.requests, "get", lambda url, **k: self._r(200, self.clusters))
         mp.setattr(w.requests, "post", self.post)

@@ -26,6 +26,7 @@ class Env:
         self.cmds, self.posts, self.speakers = [], [], [SP]
         self.protos, self.routes, self.netns = PROTOS, ROUTES, ""
         self.root = tmp / "bgp"
+        mp.setenv("NETWORKING_API_URL", "http://networking.test:8001")
         w.ROOT, w.HOST = self.root, "h1"
         w._applied.clear(); w._reported.clear()
         mp.setattr(w, "run", self.run)

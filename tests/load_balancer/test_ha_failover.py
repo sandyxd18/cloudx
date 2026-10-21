@@ -152,6 +152,7 @@ def test_no_alive_host_leaves_error(monkeypatch, tmp_path):
 def test_worker_teardown_unowned_lbs(monkeypatch, tmp_path):
     monkeypatch.setenv("NODE_NAME", "node-1")
     monkeypatch.setenv("LB_STATE_DIR", str(tmp_path / "lb_state"))
+    monkeypatch.setenv("LOAD_BALANCER_API_URL", "http://lb.test:8008")
 
     import services.lb_worker.app.main as w
     importlib.reload(w)
