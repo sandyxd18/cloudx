@@ -102,7 +102,8 @@ fi
 echo "===> [5/5] Generating Multi-Node Environment & Config Files..."
 mkdir -p /var/lib/cloudx/compute
 
-# /etc/cloudx/cloudx.conf (copied from the controller) holds the secrets; this node's services point at the controller.
+# /etc/cloudx/cloudx.conf (copied from the controller) holds the secrets; this node's services reach the controller for
+# the database, RabbitMQ and auth. Every other service URL comes from the catalog that auth serves.
 # The compute worker names itself after this node (placement provider, server.host, its own RPC queue). Two compute
 # nodes must never share a name, so it is set per node here.
 for svc in compute-worker metadata-proxy telemetry-worker lb-worker vpn-worker bgp-worker; do
@@ -115,12 +116,6 @@ host_ip = ${NODE_IP}
 rabbitmq_url = amqp://cloudx:cloudx@${CONTROLLER_IP}:5672/
 database_url = postgresql+psycopg2://cloudx:cloudx@${CONTROLLER_IP}:5432/cloudx
 auth_api_url = http://${CONTROLLER_IP}:8005
-placement_api_url = http://${CONTROLLER_IP}:8006
-networking_api_url = http://${CONTROLLER_IP}:8001
-compute_api_url = http://${CONTROLLER_IP}:8003
-image_api_url = http://${CONTROLLER_IP}:8002
-telemetry_api_url = http://${CONTROLLER_IP}:8010
-load_balancer_api_url = http://${CONTROLLER_IP}:8008
 EOF
 done
 echo ""

@@ -24,6 +24,7 @@ def test_lb_agent_heartbeat(monkeypatch, tmp_path):
 
 def test_pick_host_among_alive_hosts(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/lb.db")
+    monkeypatch.setenv("COMPUTE_API_URL", "http://compute.test:8003")
     import services.load_balancer.app.main as m
     importlib.reload(m)
     m.Base.metadata.create_all(m.engine)
@@ -54,6 +55,7 @@ def test_pick_host_among_alive_hosts(monkeypatch, tmp_path):
 
 def test_stale_host_triggers_failover(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/lb.db")
+    monkeypatch.setenv("COMPUTE_API_URL", "http://compute.test:8003")
     import services.load_balancer.app.main as m
     importlib.reload(m)
     m.Base.metadata.create_all(m.engine)
@@ -107,6 +109,7 @@ def test_stale_host_triggers_failover(monkeypatch, tmp_path):
 
 def test_no_alive_host_leaves_error(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/lb.db")
+    monkeypatch.setenv("COMPUTE_API_URL", "http://compute.test:8003")
     import services.load_balancer.app.main as m
     importlib.reload(m)
     m.Base.metadata.create_all(m.engine)
@@ -149,6 +152,7 @@ def test_no_alive_host_leaves_error(monkeypatch, tmp_path):
 def test_worker_teardown_unowned_lbs(monkeypatch, tmp_path):
     monkeypatch.setenv("NODE_NAME", "node-1")
     monkeypatch.setenv("LB_STATE_DIR", str(tmp_path / "lb_state"))
+    monkeypatch.setenv("LOAD_BALANCER_API_URL", "http://lb.test:8008")
 
     import services.lb_worker.app.main as w
     importlib.reload(w)

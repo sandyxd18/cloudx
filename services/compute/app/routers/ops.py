@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from .. import clients
 from ..clients import response_detail
-from ..config import AUTH_API_URL, BLOCK_STORE_API_URL, NETWORKING_API_URL
+from ..config import AUTH_API_URL, block_store_api_url, networking_api_url
 from ..db import DB
 from ..lookups import get_flavor, get_server, require_server
 from ..models import ComputeService, Flavor, Server, ServerAction
@@ -161,9 +161,10 @@ def _relocate(ref: str, host: str | None, current: dict, db, evacuate: bool) -> 
              if v.get("attached_to_server_id") == server.id and v["id"] != server.root_volume_id]
     data_vols = [{"id": v["id"], "target_device": (v.get("target_device") or v.get("mountpoint") or "sdb").split("/")[-1]} for v in extra]
     flavor = _flavor_of(db, server)
-    port = clients.api_get(f"{NETWORKING_API_URL}/ports/{server.port_id}")
-    ports = [port] + [clients.api_get(f"{NETWORKING_API_URL}/ports/{p}") for p in (server.extra_port_ids or "").split(",") if p]
+    port = clients.api_get(f"{networking_api_url()}/ports/{server.port_id}")
+    ports = [port] + [clients.api_get(f"{networking_api_url()}/ports/{p}") for p in (server.extra_port_ids or "").split(",") if p]
     root = clients.block_get(f"/volumes/{server.root_volume_id}")
+    block_store_url = block_store_api_url()
     target = claim_host(db, server.id, server.project_id, flavor, host=host, avoid=(old,))
     if target is None:
         target = fallback_host(db, flavor, host=host, avoid=(old,))
@@ -173,7 +174,7 @@ def _relocate(ref: str, host: str | None, current: dict, db, evacuate: bool) -> 
     server.host, server.status = target, "REBUILD" if evacuate else "MIGRATING"
     db.commit()
     build = server_worker_payload(server, port, ports, root)
-    build["_root_volume_id"], build["_block_store_url"] = server.root_volume_id, BLOCK_STORE_API_URL
+    build["_root_volume_id"], build["_block_store_url"] = server.root_volume_id, block_store_url
     build["_target_status"] = target_status
     if data_vols:
         build["_data_volumes"] = data_vols
@@ -183,7 +184,7 @@ def _relocate(ref: str, host: str | None, current: dict, db, evacuate: bool) -> 
         clients.cast_to_worker("build_instance", build)
     else:  # source worker tears the domain down, then casts the build to the target (keeps the order)
         clients.cast_to_worker("relocate_out", {**old_payload, "_build": build, "_target_host": target,
-                                                "_root_volume_id": server.root_volume_id, "_block_store_url": BLOCK_STORE_API_URL})
+                                                "_root_volume_id": server.root_volume_id, "_block_store_url": block_store_url})
     return {"server_id": server.id, "from": old, "to": target, "status": server.status}
 
 

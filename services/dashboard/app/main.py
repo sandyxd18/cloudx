@@ -33,60 +33,45 @@ from pydantic import BaseModel
 from pymemcache.client.base import PooledClient as MemcacheClient
 
 # Import shared RPC EventConsumer
+from shared import catalog
 from shared.rpc import EventConsumer
 from shared.cors import cors_origins
 
 log = logging.getLogger("dashboard")
 
 AUTH_API_URL       = os.getenv("AUTH_API_URL",       "http://auth-api:8000").rstrip("/")
-COMPUTE_API_URL    = os.getenv("COMPUTE_API_URL",    "http://compute-api:8000").rstrip("/")
-NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
-IMAGE_API_URL      = os.getenv("IMAGE_API_URL",      "http://image-api:8000").rstrip("/")
-BLOCK_STORE_API_URL= os.getenv("BLOCK_STORE_API_URL","http://block-store-api:8000").rstrip("/")
-PLACEMENT_API_URL  = os.getenv("PLACEMENT_API_URL",  "http://placement-api:8000").rstrip("/")
-OBJECT_STORE_API_URL = os.getenv("OBJECT_STORE_API_URL","http://object-store-api:8000").rstrip("/")
-LOAD_BALANCER_API_URL = os.getenv("LOAD_BALANCER_API_URL","http://load-balancer-api:8000").rstrip("/")
-DNS_API_URL = os.getenv("DNS_API_URL","http://dns-api:8016").rstrip("/")
-FILE_STORE_API_URL = os.getenv("FILE_STORE_API_URL","http://file-store-api:8017").rstrip("/")
-CONTAINER_API_URL = os.getenv("CONTAINER_API_URL","http://container-api:8018").rstrip("/")
-MESSAGING_API_URL = os.getenv("MESSAGING_API_URL","http://messaging-api:8022").rstrip("/")
-RESERVATION_API_URL = os.getenv("RESERVATION_API_URL","http://reservation-api:8023").rstrip("/")
-DATABASE_API_URL = os.getenv("DATABASE_API_URL","http://database-api:8019").rstrip("/")
-HA_API_URL = os.getenv("HA_API_URL","http://ha-api:8020").rstrip("/")
-TELEMETRY_API_URL  = os.getenv("TELEMETRY_API_URL",  "http://telemetry-api:8000").rstrip("/")
-BILLING_API_URL    = os.getenv("BILLING_API_URL",    "http://billing-api:8000").rstrip("/")
-EVENT_API_URL      = os.getenv("EVENT_API_URL",      "http://event-api:8000").rstrip("/")
-ORCHESTRATION_API_URL = os.getenv("ORCHESTRATION_API_URL","http://orchestration-api:8000").rstrip("/")
-KEY_MANAGER_API_URL = os.getenv("KEY_MANAGER_API_URL","http://key-manager-api:8000").rstrip("/")
-K8S_ENGINE_API_URL = os.getenv("K8S_ENGINE_API_URL", "http://k8s-engine-api:8000").rstrip("/")
 RABBITMQ_URL       = os.getenv("RABBITMQ_URL",       "amqp://cloudx:cloudx@127.0.0.1:5672/")
 MEMCACHED_URL      = os.getenv("MEMCACHED_URL",      "memcached:11211")
 SESSION_COOKIE_NAME = "cloudx_session"
 
-# Route prefix → backend URL
-_ROUTES: list[tuple[str, str]] = [
-    ("/api/auth",          AUTH_API_URL),
-    ("/api/compute",       COMPUTE_API_URL),
-    ("/api/networking",    NETWORKING_API_URL),
-    ("/api/image",         IMAGE_API_URL),
-    ("/api/block-store",   BLOCK_STORE_API_URL),
-    ("/api/placement",     PLACEMENT_API_URL),
-    ("/api/object-store",  OBJECT_STORE_API_URL),
-    ("/api/load-balancer", LOAD_BALANCER_API_URL),
-    ("/api/dns", DNS_API_URL),
-    ("/api/file-store", FILE_STORE_API_URL),
-    ("/api/container", CONTAINER_API_URL),
-    ("/api/messaging", MESSAGING_API_URL),
-    ("/api/reservation", RESERVATION_API_URL),
-    ("/api/database", DATABASE_API_URL),
-    ("/api/ha", HA_API_URL),
-    ("/api/telemetry",     TELEMETRY_API_URL),
-    ("/api/billing",       BILLING_API_URL),
-    ("/api/event",         EVENT_API_URL),
-    ("/api/orchestration", ORCHESTRATION_API_URL),
-    ("/api/key-manager",   KEY_MANAGER_API_URL),
-    ("/api/k8s-engine",    K8S_ENGINE_API_URL),
+# Route prefix → catalog service name (None = auth, which is always read from AUTH_API_URL)
+_ROUTES: list[tuple[str, str | None]] = [
+    ("/api/auth",          None),
+    ("/api/compute",       "compute"),
+    ("/api/networking",    "network"),
+    ("/api/image",         "image"),
+    ("/api/block-store",   "volume"),
+    ("/api/placement",     "placement"),
+    ("/api/object-store",  "object-store"),
+    ("/api/load-balancer", "load-balancer"),
+    ("/api/dns",           "dns"),
+    ("/api/file-store",    "file-store"),
+    ("/api/container",     "container"),
+    ("/api/messaging",     "messaging"),
+    ("/api/reservation",   "reservation"),
+    ("/api/database",      "database"),
+    ("/api/ha",            "ha"),
+    ("/api/telemetry",     "telemetry"),
+    ("/api/billing",       "billing"),
+    ("/api/event",         "event"),
+    ("/api/orchestration", "orchestration"),
+    ("/api/key-manager",   "key-manager"),
+    ("/api/k8s-engine",    "k8s-engine"),
 ]
+
+
+def _backend_url(service: str | None) -> str:
+    return AUTH_API_URL if service is None else catalog.url(service).rstrip("/")
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -805,7 +790,7 @@ async def ws_xide_proxy(ws: WebSocket, path: str = ""):
 
 
 def _resolve_backend(path: str) -> tuple[str, str] | None:
-    for prefix, backend in _ROUTES:
+    for prefix, service in _ROUTES:
         if path.startswith(prefix):
             rel = path[len(prefix):]
             if not rel.startswith("/"):
@@ -819,14 +804,17 @@ def _resolve_backend(path: str) -> tuple[str, str] | None:
                 rel = f"/events{rel}"
             elif prefix == "/api/placement" and rel.startswith("/resource-providers"):
                 rel = rel.replace("/resource-providers", "/resource_providers", 1)
-            return backend, rel
+            return _backend_url(service), rel
     return None
 
 
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def proxy(path: str, request: Request):
     full_path = f"/api/{path}"
-    resolved = _resolve_backend(full_path)
+    try:
+        resolved = await asyncio.to_thread(_resolve_backend, full_path)  # may fetch the catalog (blocking)
+    except catalog.CatalogError as exc:
+        return Response(content=f"service catalog error: {exc}", status_code=502)
     if resolved is None:
         return Response(content="unknown api prefix", status_code=404)
     backend_url, backend_path = resolved
@@ -878,7 +866,11 @@ async def proxy(path: str, request: Request):
 @app.get("/storage/{bucket_name}/", include_in_schema=False)
 async def storage_gateway_list(bucket_name: str, request: Request):
     """List objects in a bucket via the storage gateway."""
-    target = f"{OBJECT_STORE_API_URL}/buckets/{bucket_name}/objects"
+    try:
+        store = await asyncio.to_thread(_backend_url, "object-store")
+    except catalog.CatalogError as exc:
+        return Response(content=f"storage gateway error: {exc}", status_code=502)
+    target = f"{store}/buckets/{bucket_name}/objects"
     qs = str(request.url.query)
     if qs:
         target = f"{target}?{qs}"
@@ -917,7 +909,11 @@ async def storage_gateway(bucket_name: str, key: str, request: Request):
     Forwards X-Forwarded-For so object-store-api can enforce network scope.
     Auth tokens from session cookie are forwarded for private bucket access.
     """
-    target = f"{OBJECT_STORE_API_URL}/buckets/{bucket_name}/objects/{key}"
+    try:
+        store = await asyncio.to_thread(_backend_url, "object-store")
+    except catalog.CatalogError as exc:
+        return Response(content=f"storage gateway error: {exc}", status_code=502)
+    target = f"{store}/buckets/{bucket_name}/objects/{key}"
     qs = str(request.url.query)
     if qs:
         target = f"{target}?{qs}"

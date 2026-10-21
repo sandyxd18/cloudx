@@ -1,10 +1,10 @@
 import logging
 import os
 
+from shared import catalog
+
 log = logging.getLogger("block-store-api")
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
-COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
-IMAGE_API_URL   = os.getenv("IMAGE_API_URL", "http://image-api:8000").rstrip("/")
 RABBITMQ_URL    = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
 RPC_CALL_TIMEOUT = int(os.getenv("RPC_CALL_TIMEOUT", "30"))
 # These are kept only for the health endpoint — the API itself doesn't use drivers
@@ -16,3 +16,11 @@ CEPH_POOL    = os.getenv("CEPH_POOL", "")
 # Storage nodes that hold LVM volumes, as named by BLOCK_STORE_HOST on each block-store-worker
 # (comma separated). Empty = single shared queue, as before multi-node LVM.
 LVM_HOSTS = [h.strip() for h in os.getenv("BLOCK_STORE_LVM_HOSTS", "").split(",") if h.strip()]
+
+
+def compute_api_url() -> str:
+    return catalog.url("compute").rstrip("/")
+
+
+def image_api_url() -> str:
+    return catalog.url("image").rstrip("/")

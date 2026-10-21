@@ -23,12 +23,12 @@ from pathlib import Path
 import requests
 
 # Append parent so shared/ is importable
+from shared import catalog  # noqa: E402
 from shared.internal import internal_headers  # noqa: E402
 from shared.rpc import RPCConsumer  # noqa: E402
 
 # ── Config ────────────────────────────────────────────────────────────────────
 RABBITMQ_URL          = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
-IMAGE_API_URL         = os.getenv("IMAGE_API_URL", "http://127.0.0.1:8002").rstrip("/")
 IMAGE_STORE_PATH      = Path(os.getenv("IMAGE_STORE_PATH", "/var/lib/cloudx/images"))
 IMAGE_STORAGE_BACKEND = os.getenv("IMAGE_STORAGE_BACKEND", "file").lower()
 MINIO_ENDPOINT        = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
@@ -100,16 +100,20 @@ def _save_image(stream, object_name: str) -> tuple[int, str]:
 
 # ── image-api HTTP helpers ────────────────────────────────────────────────────
 
+def _image_api() -> str:
+    return catalog.url("image").rstrip("/")
+
+
 def _patch_task(task_id: str, payload: dict) -> None:
     try:
-        requests.patch(f"{IMAGE_API_URL}/v2/tasks/{task_id}", json=payload, headers=internal_headers(), timeout=10)
+        requests.patch(f"{_image_api()}/v2/tasks/{task_id}", json=payload, headers=internal_headers(), timeout=10)
     except Exception as exc:
         log.warning("Failed to update task %s: %s", task_id, exc)
 
 
 def _patch_image(image_id: str, payload: dict) -> None:
     try:
-        requests.patch(f"{IMAGE_API_URL}/images/{image_id}", json=payload, headers=internal_headers(), timeout=10)
+        requests.patch(f"{_image_api()}/images/{image_id}", json=payload, headers=internal_headers(), timeout=10)
     except Exception as exc:
         log.warning("Failed to update image %s: %s", image_id, exc)
 
@@ -132,6 +136,7 @@ def handle_import_image_task(args: dict) -> None:
     image_props  = args.get("image_properties", {})
 
     log.info("Starting image import task=%s image=%s url=%s", task_id, image_id, import_from)
+    _image_api()  # fail before downloading anything when image-api cannot be resolved
 
     if not import_from:
         _patch_task(task_id, {"status": "failure", "message": "import_from URL is required"})
@@ -192,7 +197,6 @@ def main():
     log.info("=" * 60)
     log.info("cloudx Image Worker starting (AMQP consumer)")
     log.info("  RabbitMQ:  %s", RABBITMQ_URL.split("@")[-1])
-    log.info("  Image API: %s", IMAGE_API_URL)
     log.info("  Storage:   %s", IMAGE_STORAGE_BACKEND)
     log.info("  Handlers:  %s", ", ".join(HANDLERS.keys()))
     log.info("=" * 60)

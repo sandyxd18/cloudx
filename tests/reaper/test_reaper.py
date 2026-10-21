@@ -1,4 +1,15 @@
+import pytest
 import services.reaper.app.main as r
+from shared import catalog
+
+FILE_STORE, DATABASE, CONTAINER = "http://127.0.0.1:8017", "http://127.0.0.1:8019", "http://127.0.0.1:8018"
+
+
+@pytest.fixture(autouse=True)
+def _peers(monkeypatch):
+    monkeypatch.setenv("FILE_STORE_API_URL", FILE_STORE)
+    monkeypatch.setenv("DATABASE_API_URL", DATABASE + "/")
+    monkeypatch.setenv("CONTAINER_API_URL", CONTAINER)
 
 
 class Fake:
@@ -36,9 +47,9 @@ def run(monkeypatch, stale, dry=False, fail=()):
     return f
 
 
-S = {r.SERVICES["file-store"]: [{"id": "sh1", "kind": "share"}, {"id": "sn1", "kind": "share-network"}],
-     r.SERVICES["database"]: [{"id": "db1", "kind": "database"}],
-     r.SERVICES["container"]: [{"id": "c1", "kind": "container"}]}
+S = {FILE_STORE: [{"id": "sh1", "kind": "share"}, {"id": "sn1", "kind": "share-network"}],
+     DATABASE: [{"id": "db1", "kind": "database"}],
+     CONTAINER: [{"id": "c1", "kind": "container"}]}
 
 
 def test_deletes_each_stale_row_through_the_public_delete(monkeypatch):
@@ -71,7 +82,7 @@ def test_failed_login_skips_the_whole_cycle(monkeypatch):
 
 
 def test_scheduled_backups_are_created_and_expired_ones_deleted(monkeypatch):
-    base = r.SERVICES["database"]
+    base = DATABASE
     calls = []
 
     def req(method, url, **kw):
@@ -92,3 +103,48 @@ def test_scheduled_backups_are_created_and_expired_ones_deleted(monkeypatch):
     monkeypatch.setattr(r, "DRY_RUN", False)
     r.cycle()
     assert ("POST", f"{base}/instances/i1/backups") in calls and ("DELETE", f"{base}/backups/b1") in calls
+
+
+def _catalog_only(monkeypatch, hosts, asked=None):
+    for key in ("FILE_STORE_API_URL", "DATABASE_API_URL", "CONTAINER_API_URL"):
+        monkeypatch.delenv(key)
+
+    def fake(service, interface="internal"):
+        if asked is not None:
+            asked.append(service)
+        if service not in hosts:
+            raise catalog.CatalogError(f"cannot resolve service '{service}'")
+        return hosts[service]
+
+    monkeypatch.setattr(catalog, "url", fake)
+
+
+def test_with_no_override_the_calls_go_to_the_catalog_hosts(monkeypatch):
+    asked = []
+    _catalog_only(monkeypatch, {"file-store": "http://fs-host:1/", "database": "http://db-host:2", "container": "http://ct-host:3"}, asked)
+    stale = {"http://fs-host:1": [{"id": "sh1", "kind": "share"}], "http://db-host:2": [{"id": "db1", "kind": "database"}],
+             "http://ct-host:3": [{"id": "c1", "kind": "container"}]}
+    f = run(monkeypatch, stale)
+    assert sorted(f.deleted) == ["http://ct-host:3/containers/c1", "http://db-host:2/instances/db1", "http://fs-host:1/shares/sh1"]
+    assert asked == ["file-store", "database", "container"]  # once per cycle, before anything is touched
+
+
+def test_the_override_wins_over_the_catalog(monkeypatch):
+    monkeypatch.setattr(catalog, "_catalog", lambda service: pytest.fail("the override must not consult the catalog"))
+    f = run(monkeypatch, S)
+    assert len(f.deleted) == 4 and all(u.startswith("http://127.0.0.1:") for u in f.deleted)
+
+
+def test_a_service_the_catalog_cannot_resolve_is_skipped_like_an_unreachable_one(monkeypatch, caplog):
+    _catalog_only(monkeypatch, {"file-store": FILE_STORE, "container": CONTAINER})
+    f = run(monkeypatch, S)
+    assert sorted(u.split(":", 2)[2].split("/", 1)[1] for u in f.deleted) == ["containers/c1", "share-networks/sn1", "shares/sh1"]
+    assert "cannot resolve service 'database'" in caplog.text
+
+
+def test_cycle_survives_a_catalog_that_is_down_and_recovers(monkeypatch, caplog):
+    _catalog_only(monkeypatch, {})
+    f = run(monkeypatch, S)
+    assert f.deleted == [] and "cannot resolve service" in caplog.text
+    monkeypatch.setattr(catalog, "url", lambda service, interface="internal": {"file-store": FILE_STORE, "database": DATABASE, "container": CONTAINER}[service])
+    assert len(run(monkeypatch, S).deleted) == 4

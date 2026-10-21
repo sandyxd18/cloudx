@@ -1,4 +1,4 @@
-.PHONY: start stop status restart logs install-systemd migrate generate-certs reset package install-cli test test-live lint test-real-vm test-floating-ip test-metadata test-security-group test-volume-boot test-multi-network \
+.PHONY: start stop status restart logs install-systemd migrate generate-certs reset package deb install-cli test test-live lint test-real-vm test-floating-ip test-metadata test-security-group test-volume-boot test-multi-network \
         cleanup-network cleanup-compute cleanup-storage cleanup-all \
         node-bootstrap dashboard-dev
 
@@ -54,6 +54,10 @@ cleanup-all:
 # ── Release packaging ────────────────────────────────────────────────────────
 package:
 	./scripts/build-tarball.sh
+
+# .deb packages from packaging/manifest.toml into dist/deb/ (needs dpkg-deb, fakeroot and network for the venv).
+deb:
+	bash ./scripts/build-deb.sh
 
 # ── CLI install ───────────────────────────────────────────────────────────────
 install-cli:

@@ -107,6 +107,7 @@ def test_http_error_or_refused_counts_as_reachable(monkeypatch, w):
     import requests
 
     importlib.reload(w)  # real fetch
+    monkeypatch.setenv("HA_API_URL", "http://ha:8020")
     monkeypatch.setattr(w.requests, "request", lambda *a, **k: Resp(503))
     assert w.fetch("GET", "/x")[0] is True
 
@@ -127,7 +128,7 @@ def test_any_ha_api_instance_answering_counts(monkeypatch, w):
     import requests
 
     importlib.reload(w)
-    w.HA_APIS = ["http://a", "http://b"]
+    monkeypatch.setenv("HA_API_URL", "http://a, http://b/")  # a comma list is returned verbatim by the catalog
     def req(method, url, **k):
         if url.startswith("http://a"):
             raise requests.Timeout("t")

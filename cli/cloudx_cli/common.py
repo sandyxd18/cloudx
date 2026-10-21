@@ -1,4 +1,6 @@
 import configparser
+import contextlib
+import io
 import json
 import os
 import sys
@@ -29,29 +31,109 @@ Examples:
 CLOUDX_DIR = Path.home() / ".cloudx"
 CONFIG_FILE = CLOUDX_DIR / "config"
 CREDS_FILE  = CLOUDX_DIR / "credentials"
-DEFAULT_URLS = {
-    "auth":          os.getenv("CLOUDX_AUTH_URL",          "http://127.0.0.1:8005"),
-    "compute":       os.getenv("CLOUDX_COMPUTE_URL",       "http://127.0.0.1:8003"),
-    "network":       os.getenv("CLOUDX_NETWORK_URL",       "http://127.0.0.1:8001"),
-    "image":         os.getenv("CLOUDX_IMAGE_URL",         "http://127.0.0.1:8002"),
-    "volume":        os.getenv("CLOUDX_VOLUME_URL",        "http://127.0.0.1:8004"),
-    "placement":     os.getenv("CLOUDX_PLACEMENT_URL",     "http://127.0.0.1:8006"),
-    "object-store":  os.getenv("CLOUDX_OBJECT_STORE_URL",  "http://127.0.0.1:8007"),
-    "load-balancer": os.getenv("CLOUDX_LOAD_BALANCER_URL", "http://127.0.0.1:8008"),
-    "dns": os.getenv("CLOUDX_DNS_URL", "http://127.0.0.1:8016"),
-    "file_store": os.getenv("CLOUDX_FILE_STORE_URL", "http://127.0.0.1:8017"),
-    "container": os.getenv("CLOUDX_CONTAINER_URL", "http://127.0.0.1:8018"),
-    "messaging": os.getenv("CLOUDX_MESSAGING_URL", "http://127.0.0.1:8022"),
-    "reservation": os.getenv("CLOUDX_RESERVATION_URL", "http://127.0.0.1:8023"),
-    "database": os.getenv("CLOUDX_DATABASE_URL", "http://127.0.0.1:8019"),
-    "ha": os.getenv("CLOUDX_HA_URL", "http://127.0.0.1:8020"),
-    "telemetry":     os.getenv("CLOUDX_TELEMETRY_URL",     "http://127.0.0.1:8010"),
-    "billing":       os.getenv("CLOUDX_BILLING_URL",       "http://127.0.0.1:8011"),
-    "event":         os.getenv("CLOUDX_EVENT_URL",         "http://127.0.0.1:8012"),
-    "orchestration": os.getenv("CLOUDX_ORCHESTRATION_URL", "http://127.0.0.1:8013"),
-    "key-manager":   os.getenv("CLOUDX_KEY_MANAGER_URL",   "http://127.0.0.1:8014"),
-    "k8s-engine":   os.getenv("CLOUDX_K8S_ENGINE_URL",   "http://127.0.0.1:8015"),
-}
+# (key, env var, default port, catalog service name); "auth" is never read from the catalog
+_SERVICES = (
+    ("auth",          "CLOUDX_AUTH_URL",          8005, "identity"),
+    ("compute",       "CLOUDX_COMPUTE_URL",       8003, "compute"),
+    ("network",       "CLOUDX_NETWORK_URL",       8001, "network"),
+    ("image",         "CLOUDX_IMAGE_URL",         8002, "image"),
+    ("volume",        "CLOUDX_VOLUME_URL",        8004, "volume"),
+    ("placement",     "CLOUDX_PLACEMENT_URL",     8006, "placement"),
+    ("object-store",  "CLOUDX_OBJECT_STORE_URL",  8007, "object-store"),
+    ("load-balancer", "CLOUDX_LOAD_BALANCER_URL", 8008, "load-balancer"),
+    ("dns",           "CLOUDX_DNS_URL",           8016, "dns"),
+    ("file_store",    "CLOUDX_FILE_STORE_URL",    8017, "file-store"),
+    ("container",     "CLOUDX_CONTAINER_URL",     8018, "container"),
+    ("messaging",     "CLOUDX_MESSAGING_URL",     8022, "messaging"),
+    ("reservation",   "CLOUDX_RESERVATION_URL",   8023, "reservation"),
+    ("database",      "CLOUDX_DATABASE_URL",      8019, "database"),
+    ("ha",            "CLOUDX_HA_URL",            8020, "ha"),
+    ("telemetry",     "CLOUDX_TELEMETRY_URL",     8010, "telemetry"),
+    ("billing",       "CLOUDX_BILLING_URL",       8011, "billing"),
+    ("event",         "CLOUDX_EVENT_URL",         8012, "event"),
+    ("orchestration", "CLOUDX_ORCHESTRATION_URL", 8013, "orchestration"),
+    ("key-manager",   "CLOUDX_KEY_MANAGER_URL",   8014, "key-manager"),
+    ("k8s-engine",    "CLOUDX_K8S_ENGINE_URL",    8015, "k8s-engine"),
+)
+
+_UNLOADED = object()
+_catalog = _UNLOADED   # service catalog: list, None (none available) or _UNLOADED
+_profile = "default"
+
+
+def set_profile(name: str) -> None:
+    global _profile
+    _profile = name
+
+
+def _reset_catalog() -> None:
+    global _catalog, _profile
+    _catalog = _UNLOADED
+    _profile = "default"
+
+
+def _fetch_catalog():
+    """Catalog from the login done by _get_token, else from GET /v3/auth/catalog; None on any failure."""
+    global _catalog
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                token = _get_token(_profile)
+            except SystemExit:
+                return None
+        if isinstance(_catalog, list):
+            return _catalog
+        if not token:
+            return None
+        r = requests.get(
+            f"{DEFAULT_URLS['auth']}/v3/auth/catalog",
+            headers={"X-Auth-Token": token},
+            timeout=5,
+        )
+        catalog = r.json()["catalog"] if r.status_code == 200 else None
+        return catalog if isinstance(catalog, list) else None
+    except Exception:  # best-effort: any catalog failure falls back to the default URLs
+        return None
+
+
+def _catalog_url(service: str):
+    global _catalog
+    if _catalog is _UNLOADED:
+        _catalog = None
+        _catalog = _fetch_catalog()
+    for svc in _catalog or []:
+        if isinstance(svc, dict) and svc.get("name") == service:
+            for ep in svc.get("endpoints") or []:
+                if isinstance(ep, dict) and ep.get("interface") == "public" and ep.get("url"):
+                    return ep["url"]
+    return None
+
+
+class _LazyUrls(dict):
+    """Service URLs: CLOUDX_<X>_URL, else the public endpoint in the catalog, else 127.0.0.1:<port>."""
+
+    def __init__(self):
+        super().__init__()
+        self._explicit = set()
+        self._catalog_names = {}
+        for key, env, port, service in _SERVICES:
+            value = os.getenv(env)
+            if value:
+                self._explicit.add(key)
+            self[key] = value or f"http://127.0.0.1:{port}"
+            self._catalog_names[key] = service
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        if key == "auth" or key in self._explicit:
+            return value
+        return _catalog_url(self._catalog_names[key]) or value
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+
+DEFAULT_URLS = _LazyUrls()
 
 
 def _load_config(profile: str = "default") -> dict:
@@ -82,6 +164,16 @@ def _load_creds(profile: str = "default") -> dict:
     return creds
 
 
+def _remember_login_catalog(response) -> None:
+    global _catalog
+    try:
+        catalog = response.json().get("catalog")
+    except Exception:  # best-effort: a login response without a catalog just means no catalog
+        return
+    if isinstance(catalog, list):
+        _catalog = catalog
+
+
 def _get_token(profile: str = "default") -> str | None:
     """Obtain a JWT token via access key exchange.
 
@@ -104,6 +196,7 @@ def _get_token(profile: str = "default") -> str | None:
                 timeout=5,
             )
             if r.status_code == 201:
+                _remember_login_catalog(r)
                 return r.json()["token"]
             click.echo(f"❌ Username/password authentication failed (HTTP {r.status_code})", err=True)
             sys.exit(1)

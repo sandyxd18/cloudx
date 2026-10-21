@@ -4,7 +4,7 @@ from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
 from sqlalchemy import select
 
 from .. import clients
-from ..config import BLOCK_STORE_API_URL, IMAGE_API_URL, NETWORKING_API_URL, log
+from ..config import block_store_api_url, image_api_url, networking_api_url, log
 from ..db import DB
 from ..lookups import (
     free_deleted_server_name,
@@ -53,7 +53,9 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
                                        ServerGroup.project_id == current["project_id"]))
         if not sg:
             raise HTTPException(status_code=404, detail="server group not found")
-    network = clients.api_get(f"{NETWORKING_API_URL}/networks/{payload.network}")
+    networking_url, block_store_url = networking_api_url(), block_store_api_url()
+    image_url = image_api_url() if payload.image else None
+    network = clients.api_get(f"{networking_url}/networks/{payload.network}")
     server_id = new_id()
     root_volume = None
     auto_root_volume = False
@@ -68,7 +70,7 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
         if host is None:
             host = fallback_host(db, flavor, group=sg, az=payload.availability_zone)
         if payload.image:
-            image = clients.api_get(f"{IMAGE_API_URL}/images/{payload.image}")
+            image = clients.api_get(f"{image_url}/images/{payload.image}")
             image_id = image["id"]
             # EC2-style block device mapping: the root volume size is chosen
             # entirely by the user (default 8 GiB) — flavors are instance-type
@@ -107,9 +109,9 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
                 seen_networks.append(item)
         ports = []
         for index, network_ref in enumerate(seen_networks):
-            net = network if index == 0 else clients.api_get(f"{NETWORKING_API_URL}/networks/{network_ref}")
+            net = network if index == 0 else clients.api_get(f"{networking_url}/networks/{network_ref}")
             port = clients.api_post(
-                f"{NETWORKING_API_URL}/ports",
+                f"{networking_url}/ports",
                 {
                     "name": server_port_name(payload.name, server_id) if index == 0 else f"{payload.name}-{server_id[:8]}-port{index}",
                     "network": net["id"],
@@ -163,7 +165,7 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
         #   4. Call conductor to set status ACTIVE
         worker_payload = server_worker_payload(server, port, ports, root_volume)
         worker_payload["_root_volume_id"] = root_volume["id"]
-        worker_payload["_block_store_url"] = BLOCK_STORE_API_URL
+        worker_payload["_block_store_url"] = block_store_url
         clients.cast_to_worker("build_instance", worker_payload)
         # Emit OpenStack-style event so subscribers (dashboard, monitoring) know a build started
         try:
@@ -183,7 +185,7 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
         if claimed:
             release_allocation(server_id)
         for created in created_ports:
-            clients.api_delete(f"{NETWORKING_API_URL}/ports/{created['id']}")
+            clients.api_delete(f"{networking_url}/ports/{created['id']}")
         if auto_root_volume and root_volume:
             clients.block_delete(f"/volumes/{root_volume['id']}")
         existing = db.get(Server, server_id)

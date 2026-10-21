@@ -18,6 +18,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
+from shared import catalog
 from shared.auth_middleware import CurrentUser, InternalAuth
 from shared.cors import cors_origins
 from shared.domain import can_see, owns, visible_projects
@@ -27,7 +28,6 @@ from shared.request_id_middleware import RequestIDMiddleware
 from shared.schema import require_schema
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx")
-NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://127.0.0.1:8001").rstrip("/")
 HOST = os.getenv("FILE_STORE_HOST", "")
 log = logging.getLogger("file-store-api")
 
@@ -107,7 +107,7 @@ def _pid(current: dict) -> str:
 
 def _net(method: str, path: str, **kw) -> dict:
     headers = {**kw.pop("headers", {}), "Content-Type": "application/json", **internal_headers()}
-    r = requests.request(method, f"{NETWORKING_API_URL}{path}", headers=headers, timeout=15, **kw)
+    r = requests.request(method, f"{catalog.url('network').rstrip('/')}{path}", headers=headers, timeout=15, **kw)
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -116,7 +116,7 @@ def _release_port(port_id: str | None) -> None:
         return
     try:
         _net("DELETE", f"/ports/{port_id}")
-    except requests.RequestException as exc:
+    except (requests.RequestException, catalog.CatalogError) as exc:
         log.warning("failed to release port %s: %s", port_id, exc)
 
 def _sn_out(n: ShareNetwork) -> dict:
@@ -161,7 +161,7 @@ def create_share_network(body: ShareNetworkIn, current: CurrentUser, db: DB):
         fixed = port["fixed_ips"][0]
         subnet = _net("GET", f"/subnets/{fixed['subnet_id']}")
         net = _net("GET", f"/networks/{port['network_id']}")
-    except (requests.RequestException, KeyError, IndexError, ValueError) as exc:
+    except (requests.RequestException, catalog.CatalogError, KeyError, IndexError, ValueError) as exc:
         log.error("share network port allocation failed: %s", exc)
         raise HTTPException(502, f"Port allocation failed: {exc}") from None
     n = ShareNetwork(name=body.name, project_id=_pid(current), network_id=body.network_id, subnet_id=fixed["subnet_id"],

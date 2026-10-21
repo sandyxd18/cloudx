@@ -22,12 +22,12 @@ import time
 
 import requests
 
+from shared import catalog
 from shared.internal import internal_headers
 
 log = logging.getLogger("image-reconciler")
 
 RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL_SECONDS", "60"))
-IMAGE_API_URL = os.getenv("IMAGE_API_URL", "http://127.0.0.1:8002").rstrip("/")
 IMAGE_STORE_PATH = os.getenv("IMAGE_STORE_PATH", "/var/lib/cloudx/images")
 IMAGE_STORAGE_BACKEND = os.getenv("IMAGE_STORAGE_BACKEND", "file").lower()
 
@@ -36,6 +36,10 @@ MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "cloudx-images")
+
+
+def _image_api() -> str:
+    return catalog.url("image").rstrip("/")
 
 
 def _image_exists(object_name: str) -> bool | None:
@@ -74,7 +78,7 @@ def _patch_image_status(image_id: str, status: str, error_msg: str | None = None
         payload["error_message"] = error_msg
     try:
         resp = requests.patch(
-            f"{IMAGE_API_URL}/images/{image_id}",
+            f"{_image_api()}/images/{image_id}",
             json=payload,
             headers=internal_headers(),
             timeout=10,
@@ -89,7 +93,7 @@ def _delete_image_record(image_id: str) -> None:
     """Hard-delete image record via image-api HTTP endpoint."""
     try:
         resp = requests.delete(
-            f"{IMAGE_API_URL}/images/{image_id}",
+            f"{_image_api()}/images/{image_id}",
             headers=internal_headers(),
             timeout=10,
         )
@@ -107,7 +111,7 @@ def reconcile_images() -> None:
     """One pass: compare all DB image records against physical storage."""
     try:
         resp = requests.get(
-            f"{IMAGE_API_URL}/images",
+            f"{_image_api()}/images",
             params={"limit": 10000},
             headers=internal_headers(),
             timeout=15,

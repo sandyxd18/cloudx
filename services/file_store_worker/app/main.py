@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 import requests
+from shared import catalog
 from shared.ganesha_cfg import render
 from shared.internal import internal_headers
 from shared.proc import run
@@ -28,7 +29,6 @@ from shared.proc import run
 from .plan import plan
 
 log = logging.getLogger("file-store-worker")
-API = os.getenv("FILE_STORE_API_URL", "http://127.0.0.1:8017").rstrip("/")
 HOST = os.getenv("FILE_STORE_HOST") or os.getenv("NODE_NAME", "")
 VG = os.getenv("FILE_STORE_VG", "vg-cloudx")
 MOUNTS = Path(os.getenv("FILE_STORE_MOUNT_ROOT", "/var/lib/cloudx/fs"))
@@ -180,7 +180,8 @@ def reconcile_network(n: dict, shares: list[dict], report: dict) -> None:
         report["share_networks"][n["id"]] = "active"
 
 def tick() -> None:
-    r = requests.get(f"{API}/internal/fs-agent/{HOST}", headers=internal_headers(), timeout=10)
+    api = catalog.url("file-store").rstrip("/")
+    r = requests.get(f"{api}/internal/fs-agent/{HOST}", headers=internal_headers(), timeout=10)
     r.raise_for_status()
     state = r.json()
     report: dict = {"share_networks": {}, "shares": {}}
@@ -195,7 +196,7 @@ def tick() -> None:
     report["shares"] = {k: v for k, v in report["shares"].items()
                         if next((s["status"] for s in state["shares"] if s["id"] == k), None) != v}
     if report["shares"] or report["share_networks"]:
-        requests.post(f"{API}/internal/fs-agent/{HOST}/report", json=report, headers=internal_headers(),
+        requests.post(f"{api}/internal/fs-agent/{HOST}/report", json=report, headers=internal_headers(),
                       timeout=10).raise_for_status()
 
 def main() -> None:

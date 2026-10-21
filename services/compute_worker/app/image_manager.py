@@ -1,8 +1,9 @@
 from pathlib import Path
 
 import requests
+from shared import catalog
 
-from .config import IMAGE_API_URL, IMAGE_CACHE_DIR
+from .config import IMAGE_CACHE_DIR
 from .utils import ensure_dir, run
 
 
@@ -13,7 +14,7 @@ def cached_image_path(image: dict) -> Path:
 
 def fetch_image_meta(image_ref: str) -> dict:
     """Fetch image metadata from image-api by id or name."""
-    response = requests.get(f"{IMAGE_API_URL}/images/{image_ref}", timeout=15)
+    response = requests.get(f"{catalog.url('image').rstrip('/')}/images/{image_ref}", timeout=15)
     response.raise_for_status()
     return response.json()
 
@@ -24,8 +25,8 @@ def download_image(image: dict) -> Path:
     expected_size = image.get("size")
     if target.exists() and (not expected_size or target.stat().st_size == expected_size):
         return target
+    url = f"{catalog.url('image').rstrip('/')}/images/{image['id']}/download"
     tmp = target.with_suffix(target.suffix + ".part")
-    url = f"{IMAGE_API_URL}/images/{image['id']}/download"
     with requests.get(url, stream=True, timeout=60) as response:
         response.raise_for_status()
         with tmp.open("wb") as handle:

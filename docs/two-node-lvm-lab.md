@@ -63,7 +63,8 @@ node's `/dev/sdb` are lost when the disk is re-purposed: delete or back up the v
    sudo CONTROLLER_IP=192.168.10.10 NODE_IP=192.168.10.12 NODE_NAME=cloudx-storage-01 PROVIDER_IF=<provider nic> \
         ./scripts/setup-compute-node.sh
    ```
-   then install the CloudX services as in `SETUP.md` section 4.4 and
+   The script writes only `auth_api_url`; the other service URLs come from the catalog, which auth seeds with `127.0.0.1`. Before starting the worker, put the controller's reachable URLs in `/etc/cloudx/auth-api/auth-api.conf` on the controller and run `catalog sync` (see `multi-node-deployment.md`, Step 2, item 3), or add `<name>_api_url` overrides to this node's worker confs.
+   Then install the CloudX services as in `SETUP.md` section 4.4 and
    `sudo systemctl enable --now cloudx-compute-worker cloudx-metadata-proxy`. Check `COMPUTE_HOST` on both nodes
    (`systemctl show cloudx-compute-worker -p Environment`): they must differ.
 4. **Controller.** In `/etc/cloudx/block-store-api/block-store-api.conf` set

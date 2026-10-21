@@ -1,10 +1,11 @@
 import requests
 from fastapi import HTTPException
+from shared.catalog import CatalogError
 from shared.internal import internal_headers
 from shared.rpc import RPCClient, host_queue
 
 from .config import (
-    BLOCK_STORE_API_URL,
+    block_store_api_url,
     RPC_CALL_TIMEOUT,
     log,
 )
@@ -71,8 +72,8 @@ def call_worker(method: str, payload: dict, timeout: int | None = None) -> dict:
 
 def release_server_volumes(server_id: str) -> dict | None:
     try:
-        response = requests.post(f"{BLOCK_STORE_API_URL}/servers/{server_id}/volumes/detach-all", headers=internal_headers(), timeout=20)
-    except requests.RequestException:
+        response = requests.post(f"{block_store_api_url()}/servers/{server_id}/volumes/detach-all", headers=internal_headers(), timeout=20)
+    except (requests.RequestException, CatalogError):
         return None
     if response.status_code >= 400:
         return None
@@ -80,15 +81,15 @@ def release_server_volumes(server_id: str) -> dict | None:
 
 
 def block_get(path: str) -> dict:
-    return api_get(f"{BLOCK_STORE_API_URL}{path}")
+    return api_get(f"{block_store_api_url()}{path}")
 
 
 def block_post(path: str, payload: dict) -> dict:
-    return api_post(f"{BLOCK_STORE_API_URL}{path}", payload)
+    return api_post(f"{block_store_api_url()}{path}", payload)
 
 
 def block_delete(path: str) -> None:
-    api_delete(f"{BLOCK_STORE_API_URL}{path}")
+    api_delete(f"{block_store_api_url()}{path}")
 
 
 def start_rpc() -> None:

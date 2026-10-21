@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 
 [project.scripts]
 cloudx-db-migrate = "shared.migrate:main"
+cloudx-manage = "shared.manage:main"
 
 [tool.setuptools]
 packages = ["shared"]

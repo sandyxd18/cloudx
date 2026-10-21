@@ -16,14 +16,11 @@ import os
 import time
 
 import requests
+from shared import catalog
 from shared.internal import internal_headers
 
 log = logging.getLogger("reaper")
-SERVICES = {
-    "file-store": os.getenv("FILE_STORE_API_URL", "http://127.0.0.1:8017").rstrip("/"),
-    "database": os.getenv("DATABASE_API_URL", "http://127.0.0.1:8019").rstrip("/"),
-    "container": os.getenv("CONTAINER_API_URL", "http://127.0.0.1:8018").rstrip("/"),
-}
+SERVICES = ("file-store", "database", "container")  # catalog names, in the order they are swept
 # kind reported by /internal/stale-errors -> public DELETE path. File Store lists shares before share networks,
 # and a share network that still has a share is refused (409) and simply retried on the next pass.
 DELETE = {"share": "/shares/", "share-network": "/share-networks/", "database": "/instances/", "container": "/containers/"}
@@ -43,12 +40,26 @@ def login() -> str | None:
         return None
 
 
+def resolve_services() -> dict[str, str]:
+    """name -> base URL of each service the catalog can name; one that it cannot is skipped, like an unreachable one."""
+    bases = {}
+    for name in SERVICES:
+        try:
+            bases[name] = catalog.url(name).rstrip("/")
+        except catalog.CatalogError as exc:
+            log.warning("%s: URL not resolved, skipped this pass: %s", name, exc)
+    return bases
+
+
 def cycle() -> None:
+    bases = resolve_services()  # once per pass, before anything is touched
+    if not bases:
+        return
     token = login()
     if not token:
         log.warning("no admin token; skipping this pass")
         return
-    for name, base in SERVICES.items():
+    for name, base in bases.items():
         try:
             r = requests.request("GET", f"{base}/internal/stale-errors", params={"hours": MAX_AGE_HOURS},
                                  headers=internal_headers(), timeout=10)
@@ -67,12 +78,12 @@ def cycle() -> None:
                 log.info("deleted %s %s (failed during build, older than %sh)", it["kind"], it["id"], MAX_AGE_HOURS)
             except Exception as exc:  # best-effort: record and carry on; retried next pass
                 log.warning("could not delete %s %s: %s", it["kind"], it["id"], exc)
-    backups(token)
+    if "database" in bases:
+        backups(token, bases["database"])
 
 
-def backups(token: str) -> None:
+def backups(token: str, base: str) -> None:
     """Scheduled database backups: create the due ones, then delete scheduled backups beyond `keep`."""
-    base = SERVICES["database"]
     for path, what in (("backup-due", "create"), ("backup-expired", "delete")):
         try:
             r = requests.request("GET", f"{base}/internal/{path}", headers=internal_headers(), timeout=10)

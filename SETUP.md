@@ -429,6 +429,7 @@ Environment=COMPUTE_HOST=cloudx-compute-01
 Environment=RABBITMQ_URL=amqp://cloudx:cloudx@192.168.10.10:5672/
 Environment=DATABASE_URL=postgresql+psycopg://cloudx:cloudx@192.168.10.10:5432/cloudx
 Environment=PLACEMENT_API_URL=http://192.168.10.10:8006
+Environment=AUTH_API_URL=http://192.168.10.10:8005
 Type=simple
 User=root
 Group=root
@@ -439,6 +440,14 @@ RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
+```
+
+The worker finds every service other than placement (set above) through the catalog served by auth, so it needs `AUTH_API_URL` to read it; without it the worker fails with `CatalogError: auth_api_url is not set`. Auth seeds each catalog entry with `http://127.0.0.1:<port>`, which is unreachable from this node. On the controller (the node that runs `cloudx-auth-api`), put the reachable URLs in `/etc/cloudx/auth-api/auth-api.conf` and run `sudo CLOUDX_SERVICES_DIR=/opt/cloudx/services /opt/cloudx/venv/bin/cloudx-manage catalog sync --dry-run`, then the same without `--dry-run` (see `docs/multi-node-deployment.md`, Step 2, item 3). With the URLs unsynced the worker gets a `ConnectionError` to its own loopback instead.
+
+`cloudx-metadata-proxy` resolves networking and metadata the same way. Give it the auth URL with a drop-in (`sudo systemctl edit cloudx-metadata-proxy`):
+```ini
+[Service]
+Environment=AUTH_API_URL=http://192.168.10.10:8005
 ```
 
 Start the worker daemons:

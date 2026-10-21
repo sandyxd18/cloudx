@@ -2,13 +2,14 @@ import time
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from shared.auth_middleware import CurrentUser
+from shared.catalog import CatalogError
 
 from .. import clients
 from ..config import (
-    BLOCK_STORE_API_URL,
+    block_store_api_url,
     DEFAULT_VM_USER,
-    IMAGE_API_URL,
-    NETWORKING_API_URL,
+    image_api_url,
+    networking_api_url,
     NOVNC_BASE_URL,
     ONLY_BACKEND,
     RPC_CALL_TIMEOUT,
@@ -120,12 +121,16 @@ def shelve_server(ref: str, current: CurrentUser, db: DB):
     if not server.root_volume_id:
         raise HTTPException(status_code=409, detail="shelve requires a root volume (boot-from-volume)")
 
+    try:
+        image_url, block_store_url = image_api_url(), block_store_api_url()
+    except CatalogError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     server.status = "SHELVING"
     db.commit()
     clients.cast_to_worker("shelve", {
         **server_worker_payload(server),
-        "_image_api_url": IMAGE_API_URL,
-        "_block_store_url": BLOCK_STORE_API_URL,
+        "_image_api_url": image_url,
+        "_block_store_url": block_store_url,
     })
     return {"server": server.name, "status": "shelving"}
 
@@ -142,13 +147,17 @@ def unshelve_server(ref: str, current: CurrentUser, db: DB):
     if server.status != "SHELVED_OFFLOADED":
         raise HTTPException(status_code=409, detail=f"server must be SHELVED_OFFLOADED to unshelve (current: {server.status})")
 
+    try:
+        image_url, block_store_url, networking_url = image_api_url(), block_store_api_url(), networking_api_url()
+    except CatalogError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     server.status = "UNSHELVING"
     db.commit()
     clients.cast_to_worker("unshelve", {
         **server_worker_payload(server),
-        "_image_api_url": IMAGE_API_URL,
-        "_block_store_url": BLOCK_STORE_API_URL,
-        "_networking_url": NETWORKING_API_URL,
+        "_image_api_url": image_url,
+        "_block_store_url": block_store_url,
+        "_networking_url": networking_url,
     })
     return {"server": server.name, "status": "unshelving"}
 

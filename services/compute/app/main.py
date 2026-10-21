@@ -4,8 +4,10 @@ load_service_config("compute-api")
 
 import threading
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from shared.catalog import CatalogError
 from shared.request_id_middleware import RequestIDMiddleware
 from shared.cors import cors_origins
 from shared.schema import require_schema
@@ -31,6 +33,12 @@ from .routers import (
 )
 
 app = FastAPI(title="cloudx compute-api", version="1.0.0")
+
+
+@app.exception_handler(CatalogError)
+async def _catalog_unavailable(_: Request, exc: CatalogError):
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins(),

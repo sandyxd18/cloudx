@@ -31,6 +31,7 @@ from urllib.parse import quote
 import requests
 
 # Append parent so shared/ is importable
+from shared import catalog  # noqa: E402
 from shared.proc import run  # noqa: E402
 from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
@@ -39,7 +40,6 @@ from .drivers import lvm, ceph, nfs, iscsi  # noqa: E402
 # ── Config ────────────────────────────────────────────────────────────────────
 
 RABBITMQ_URL  = os.getenv("RABBITMQ_URL",  "amqp://cloudx:cloudx@127.0.0.1:5672/")
-IMAGE_API_URL = os.getenv("IMAGE_API_URL", "http://image-api:8000").rstrip("/")
 LOG_LEVEL     = os.getenv("LOG_LEVEL", "INFO")
 
 STORAGE_LVM_DRIVER      = os.getenv("STORAGE_LVM_DRIVER", "false").lower() == "true"
@@ -136,6 +136,16 @@ def _snap_lv_name(snapshot_id: str) -> str:
 # Image download helper
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _image_api_url(args: dict) -> str:
+    """The worker's own IMAGE_API_URL, else the catalog, else the address in the message (the API sends its own, often
+    loopback, address: wrong on a storage node), else the old default. A catalog failure only skips to the next."""
+    try:
+        return catalog.url("image").rstrip("/")
+    except catalog.CatalogError as exc:
+        log.info("IMAGE_API_URL: %s; using the address in the message or the default", exc)
+    return (args.get("_image_api_url") or "http://image-api:8000").rstrip("/")
+
+
 def download_image(image_ref: str, image_api_url: str) -> tuple[str, dict]:
     """Download an image to a tmp file. Returns (tmp_path, image_dict)."""
     resp = requests.get(f"{image_api_url}/images/{image_ref}", timeout=15)
@@ -221,7 +231,7 @@ def handle_create_volume(args: dict) -> None:
     snapshot_path  = args.get("snapshot_path")     # device path of snapshot
     source_volume_id = args.get("source_volume_id")
     source_path    = args.get("source_path")        # device path of source volume
-    image_api_url  = (os.environ.get("IMAGE_API_URL") or args.get("_image_api_url") or IMAGE_API_URL).rstrip("/")  # own env wins: the API sends its own (loopback) address
+    image_api_url  = _image_api_url(args) if image_ref else ""
     lvm_type       = args.get("lvm_type", "default")  # default | thin
     max_iops       = args.get("max_iops")           # QoS: from volume type
     max_throughput = args.get("max_throughput")     # QoS: from volume type (MB/s)

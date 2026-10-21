@@ -115,7 +115,27 @@ VirtualBox Host-Only Network subnet (`vboxnet0`): **`192.168.10.0/24`**
    sudo CONTROLLER_IP=192.168.10.10 NODE_IP=192.168.10.11 PROVIDER_IF=enp0s8 ./scripts/setup-compute-node.sh
    ```
 
-3. Start the worker daemons (`compute-worker`):
+3. Fill the service catalog with addresses the compute node can reach.
+
+   `setup-compute-node.sh` writes only `auth_api_url` for services; the worker finds placement, networking, image and block-store through the catalog served by auth. Auth seeds every service with `http://127.0.0.1:<port>` at its first start, which on VM 2 points at VM 2 itself: the worker would fail with a plain `ConnectionError` and no compute host would appear in placement. On the control plane (VM 1), write the reachable URL of each service in `/etc/cloudx/auth-api/auth-api.conf`. The keys are the `url_key` column of `services/shared/services.py` (`placement_api_url`, `networking_api_url`, `image_api_url`, `block_store_api_url`, `compute_api_url`, `metadata_api_url`, `load_balancer_api_url`, `telemetry_api_url`, `ha_api_url`, and so on):
+   ```ini
+   [DEFAULT]
+   placement_api_url = http://192.168.10.10:8006
+   networking_api_url = http://192.168.10.10:8001
+   image_api_url = http://192.168.10.10:8002
+   block_store_api_url = http://192.168.10.10:8004
+   compute_api_url = http://192.168.10.10:8003
+   ```
+   Then preview and apply the change (no restart of `cloudx-auth-api` is needed; the command reads the conf itself):
+   ```bash
+   sudo CLOUDX_SERVICES_DIR=/opt/cloudx/services /opt/cloudx/venv/bin/cloudx-manage catalog sync --dry-run   # read the + and ~ lines
+   sudo CLOUDX_SERVICES_DIR=/opt/cloudx/services /opt/cloudx/venv/bin/cloudx-manage catalog sync
+   ```
+   `~` lines are expected: they replace the `127.0.0.1` entries seeded at first start. `cloudx-manage` is installed into the venv by `install-systemd.sh` (it pip-installs `/opt/cloudx/services`).
+
+   Alternative that still works: put `<name>_api_url = ...` override lines under `[DEFAULT]` in this node's worker confs (`/etc/cloudx/compute-worker/compute-worker.conf`, and the same for `metadata-proxy`, `telemetry-worker`, `lb-worker`, `vpn-worker`, `bgp-worker`). An override beats the catalog but has to be repeated per worker and per node.
+
+4. Start the worker daemons (`compute-worker`):
    ```bash
    sudo systemctl enable --now cloudx-compute-worker
    ```

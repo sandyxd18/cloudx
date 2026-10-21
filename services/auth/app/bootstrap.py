@@ -2,6 +2,7 @@ from shared.schema import require_schema
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .catalog_sync import sync_catalog
 from .config import (
     _CLOUDX_SERVICES,
     ADMIN_EMAIL,
@@ -10,7 +11,7 @@ from .config import (
     ADMIN_USERNAME,
 )
 from .db import SessionLocal, engine
-from .models import Domain, Project, ServiceCatalogEntry, ServiceEndpoint, User
+from .models import Domain, Project, User
 from .tokens import _hash_password
 
 
@@ -92,38 +93,7 @@ def _bootstrap():
 
 
 def _bootstrap_service_catalog(db: Session) -> None:
-    """Register all CloudX services into the service catalog if not already present."""
-    for svc_def in _CLOUDX_SERVICES:
-        existing = db.scalar(select(ServiceCatalogEntry).where(ServiceCatalogEntry.name == svc_def["name"]))
-        if not existing:
-            svc = ServiceCatalogEntry(
-                name=svc_def["name"],
-                type=svc_def["type"],
-                description=f"CloudX {svc_def['name']} service",
-            )
-            db.add(svc)
-            db.flush()  # get svc.id without full commit
-            # Add public + internal endpoints
-            for iface in ("public", "internal"):
-                db.add(ServiceEndpoint(
-                    service_id=svc.id,
-                    interface=iface,
-                    region="RegionOne",
-                    url=svc_def["url"],
-                ))
-            db.commit()
-            print(f"[auth] bootstrap: service catalog entry '{svc_def['name']}' registered", flush=True)
-        else:
-            # Ensure endpoint URLs are up to date
-            endpoints = db.scalars(
-                select(ServiceEndpoint).where(ServiceEndpoint.service_id == existing.id)
-            ).all()
-            if not endpoints:
-                for iface in ("public", "internal"):
-                    db.add(ServiceEndpoint(
-                        service_id=existing.id,
-                        interface=iface,
-                        region="RegionOne",
-                        url=svc_def["url"],
-                    ))
-                db.commit()
+    """Register services missing from the catalog; an existing entry is never changed (`cloudx-manage catalog sync` does that)."""
+    urls = {svc["url_key"]: svc["url"] for svc in _CLOUDX_SERVICES}
+    for change in sync_catalog(db, urls, create_only=True):
+        print(f"[auth] bootstrap: service catalog {change}", flush=True)

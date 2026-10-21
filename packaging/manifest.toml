@@ -1,0 +1,379 @@
+# One [[unit]] per file in etc/systemd/. Consumed by scripts/cloudx_deb.
+
+[[unit]]
+name = "auth-api"
+kind = "api"
+dir = "auth"
+port = 8005
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "identity"
+roles = ["controller"]
+
+[[unit]]
+name = "bgp-worker"
+kind = "daemon"
+dir = "bgp_worker"
+roles = ["compute"]
+
+[[unit]]
+name = "billing-api"
+kind = "api"
+dir = "billing"
+port = 8011
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "billing"
+roles = ["controller"]
+
+[[unit]]
+name = "billing-worker"
+kind = "daemon"
+dir = "billing_worker"
+roles = ["controller"]
+
+[[unit]]
+name = "block-store-api"
+kind = "api"
+dir = "block_store"
+port = 8004
+workers = 2
+frontend = "nginx"
+user = "root"
+catalog = "volume"
+roles = ["controller"]
+
+[[unit]]
+name = "block-store-worker"
+kind = "daemon"
+dir = "block_store_worker"
+roles = ["storage"]
+
+[[unit]]
+name = "compute-api"
+kind = "api"
+dir = "compute"
+port = 8003
+workers = 4
+frontend = "nginx"
+user = "cloudx"
+catalog = "compute"
+roles = ["controller"]
+
+[[unit]]
+name = "compute-worker"
+kind = "daemon"
+dir = "compute_worker"
+roles = ["compute"]
+
+[[unit]]
+name = "conductor"
+kind = "daemon"
+dir = "conductor"
+roles = ["controller"]
+
+[[unit]]
+name = "container-api"
+kind = "api"
+dir = "container"
+port = 8018
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "container"
+roles = ["controller"]
+
+[[unit]]
+name = "container-worker"
+kind = "daemon"
+dir = "container_worker"
+roles = []
+
+[[unit]]
+name = "dashboard"
+kind = "api"
+dir = "dashboard"
+port = 8080
+workers = 1
+frontend = "direct"
+user = "root"
+roles = ["controller"]
+
+[[unit]]
+name = "database-api"
+kind = "api"
+dir = "database"
+port = 8019
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "database"
+roles = ["controller"]
+
+[[unit]]
+name = "dns-api"
+kind = "api"
+dir = "dns"
+port = 8016
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "dns"
+roles = ["controller"]
+
+[[unit]]
+name = "dns-worker"
+kind = "daemon"
+dir = "dns_worker"
+roles = ["controller"]
+depends = ["bind9"]
+
+[[unit]]
+name = "event-api"
+kind = "api"
+dir = "event"
+port = 8012
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "event"
+roles = ["controller"]
+
+[[unit]]
+name = "event-worker"
+kind = "daemon"
+dir = "event_worker"
+roles = ["controller"]
+
+[[unit]]
+name = "file-store-api"
+kind = "api"
+dir = "file_store"
+port = 8017
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "file-store"
+roles = ["controller"]
+
+[[unit]]
+name = "file-store-worker"
+kind = "daemon"
+dir = "file_store_worker"
+roles = []
+
+[[unit]]
+name = "ha-api"
+kind = "api"
+dir = "ha"
+port = 8020
+workers = 1
+frontend = "nginx"
+user = "cloudx"
+catalog = "ha"
+roles = ["controller"]
+
+[[unit]]
+name = "ha-watchdog"
+kind = "daemon"
+dir = "ha_watchdog"
+roles = ["compute"]
+
+[[unit]]
+name = "image-api"
+kind = "api"
+dir = "image"
+port = 8002
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+streaming = true
+catalog = "image"
+roles = ["controller"]
+
+[[unit]]
+name = "image-worker"
+kind = "daemon"
+dir = "image_worker"
+roles = ["controller"]
+
+[[unit]]
+name = "k8s-engine-api"
+kind = "api"
+dir = "k8s_engine"
+port = 8015
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "k8s-engine"
+roles = ["controller"]
+
+[[unit]]
+name = "k8s-engine-worker"
+kind = "daemon"
+dir = "k8s_engine_worker"
+roles = ["controller"]
+
+[[unit]]
+name = "key-manager-api"
+kind = "api"
+dir = "key_manager"
+port = 8014
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "key-manager"
+roles = ["controller"]
+
+[[unit]]
+name = "lb-worker"
+kind = "daemon"
+dir = "lb_worker"
+roles = ["compute"]
+
+[[unit]]
+name = "load-balancer-api"
+kind = "api"
+dir = "load_balancer"
+port = 8008
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "load-balancer"
+roles = ["controller"]
+
+[[unit]]
+name = "messaging-api"
+kind = "api"
+dir = "messaging"
+port = 8022
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "messaging"
+roles = ["controller"]
+
+[[unit]]
+name = "metadata-api"
+kind = "api"
+dir = "metadata"
+port = 8775
+workers = 2
+frontend = "direct"
+user = "root"
+catalog = "metadata"
+roles = ["controller"]
+
+[[unit]]
+name = "metadata-proxy"
+kind = "api"
+dir = "metadata_proxy"
+port = 8776
+workers = 2
+frontend = "direct"
+user = "root"
+roles = ["compute"]
+
+[[unit]]
+name = "named-auth"
+kind = "unit"
+bundle_with = "dns-worker"
+roles = []
+
+[[unit]]
+name = "named-resolver"
+kind = "unit"
+bundle_with = "dns-worker"
+roles = []
+
+[[unit]]
+name = "networking-api"
+kind = "api"
+dir = "networking"
+port = 8001
+workers = 4
+frontend = "nginx"
+user = "cloudx"
+catalog = "network"
+roles = ["controller"]
+
+[[unit]]
+name = "object-store-api"
+kind = "api"
+dir = "object_store"
+port = 8007
+workers = 2
+frontend = "direct"
+user = "cloudx"
+catalog = "object-store"
+roles = ["controller"]
+
+[[unit]]
+name = "orchestration-api"
+kind = "api"
+dir = "orchestration"
+port = 8013
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "orchestration"
+roles = ["controller"]
+
+[[unit]]
+name = "orchestration-worker"
+kind = "daemon"
+dir = "orchestration_worker"
+roles = ["controller"]
+
+[[unit]]
+name = "placement-api"
+kind = "api"
+dir = "placement"
+port = 8006
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "placement"
+roles = ["controller"]
+
+[[unit]]
+name = "reaper"
+kind = "daemon"
+dir = "reaper"
+roles = ["controller"]
+
+[[unit]]
+name = "reservation-api"
+kind = "api"
+dir = "reservation"
+port = 8023
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "reservation"
+roles = ["controller"]
+
+[[unit]]
+name = "telemetry-api"
+kind = "api"
+dir = "telemetry"
+port = 8010
+workers = 2
+frontend = "nginx"
+user = "cloudx"
+catalog = "telemetry"
+roles = ["controller"]
+
+[[unit]]
+name = "telemetry-worker"
+kind = "daemon"
+dir = "telemetry_worker"
+roles = ["compute"]
+
+[[unit]]
+name = "vpn-worker"
+kind = "daemon"
+dir = "vpn_worker"
+roles = ["compute"]

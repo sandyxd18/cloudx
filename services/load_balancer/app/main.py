@@ -39,7 +39,7 @@ from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
 from shared.schema import require_schema
 from shared.request_id_middleware import RequestIDMiddleware
 from shared.cors import cors_origins
-from shared import dns_names
+from shared import catalog, dns_names
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -50,8 +50,6 @@ DATABASE_URL = os.getenv(
 from shared.internal import internal_headers
 
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
-NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://networking-api:8000").rstrip("/")
-COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LB_FAILOVER_TIMEOUT = int(os.getenv("LB_FAILOVER_TIMEOUT", "30"))
 
@@ -511,7 +509,7 @@ def _get_driver(lb: LoadBalancer):
 
 def _net(method: str, path: str, **kw) -> dict:
     headers = {**kw.pop("headers", {}), "Content-Type": "application/json", **internal_headers()}
-    r = requests.request(method, f"{NETWORKING_API_URL}{path}", headers=headers, timeout=15, **kw)
+    r = requests.request(method, f"{catalog.url('network').rstrip('/')}{path}", headers=headers, timeout=15, **kw)
     r.raise_for_status()
     return r.json() if r.content else {}
 
@@ -558,7 +556,7 @@ def _fetch_server_group_members(server_group_id: str, project_id: str) -> list[d
     """Fetch instances from compute-api belonging to a server group."""
     try:
         resp = requests.get(
-            f"{COMPUTE_API_URL}/servers",
+            f"{catalog.url('compute').rstrip('/')}/servers",
             params={"server_group_id": server_group_id},
             headers=internal_headers(),
             timeout=10,
@@ -668,7 +666,7 @@ def _pick_host(db: Session | None = None, exclude_host: str | None = None) -> st
 
     compute_hosts = []
     try:
-        r = requests.get(f"{COMPUTE_API_URL}/os-services", headers=internal_headers(), timeout=10)
+        r = requests.get(f"{catalog.url('compute').rstrip('/')}/os-services", headers=internal_headers(), timeout=10)
         r.raise_for_status()
         compute_hosts = [s["host"] for s in r.json().get("services", [])
                          if s.get("status") == "enabled" and not s.get("forced_down")]

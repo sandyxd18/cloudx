@@ -21,12 +21,12 @@ import time
 from pathlib import Path
 
 import requests
+from shared import catalog
 from shared.haproxy_cfg import render
 from shared.internal import internal_headers
 from shared.proc import run
 
 log = logging.getLogger("lb-worker")
-API = os.getenv("LOAD_BALANCER_API_URL", "http://127.0.0.1:8008").rstrip("/")
 HOST = os.getenv("NODE_NAME") or os.getenv("COMPUTE_HOST", "")
 ROOT = Path(os.getenv("LB_STATE_DIR", "/var/lib/cloudx/lb"))
 INTERVAL = int(os.getenv("LB_WORKER_INTERVAL", "5"))
@@ -158,7 +158,8 @@ def member_status(lb_id: str) -> dict[str, str]:
 
 
 def tick() -> None:
-    r = requests.get(f"{API}/internal/lb-agent/{HOST}", headers=internal_headers(), timeout=10)
+    api = catalog.url("load-balancer").rstrip("/")
+    r = requests.get(f"{api}/internal/lb-agent/{HOST}", headers=internal_headers(), timeout=10)
     r.raise_for_status()
     want = {x["lb"]["id"]: x for x in r.json()["load_balancers"]}
     for lb_id, x in want.items():
@@ -197,7 +198,7 @@ def tick() -> None:
         except OSError:
             continue  # haproxy not up yet
     if changed:
-        requests.post(f"{API}/internal/lb-agent/{HOST}/members", json={"statuses": changed},
+        requests.post(f"{api}/internal/lb-agent/{HOST}/members", json={"statuses": changed},
                       headers=internal_headers(), timeout=10).raise_for_status()
         _reported.update(changed)
 
