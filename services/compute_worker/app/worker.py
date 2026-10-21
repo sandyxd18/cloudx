@@ -3,9 +3,10 @@ import shutil
 from pathlib import Path
 
 import requests
+from shared import catalog
 
 from . import cloudinit, libvirt_driver, network_manager
-from .config import COMPUTE_HOST, IMAGE_API_URL, INSTANCE_DIR, OVS_BRIDGE
+from .config import COMPUTE_HOST, INSTANCE_DIR, OVS_BRIDGE
 from shared.proc import succeeds
 
 from .utils import tool_available
@@ -14,7 +15,7 @@ log = logging.getLogger("compute-worker")
 
 
 def fetch_image(image_ref: str) -> dict:
-    response = requests.get(f"{IMAGE_API_URL}/images/{image_ref}", timeout=15)
+    response = requests.get(f"{catalog.url('image').rstrip('/')}/images/{image_ref}", timeout=15)
     response.raise_for_status()
     return response.json()
 

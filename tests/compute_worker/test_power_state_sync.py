@@ -122,6 +122,7 @@ def test_reconcile_stale_domains_destroys_domain_when_api_host_differs(monkeypat
                 {"id": "s2", "host": main.COMPUTE_HOST, "libvirt_domain_name": "mini-os-local-456", "status": "ACTIVE"},
             ]}
 
+    monkeypatch.setenv("COMPUTE_API_URL", "http://compute.test:8003")
     monkeypatch.setattr(main.requests, "get", lambda url, **kw: FakeResponse())
     deleted_domains = []
     monkeypatch.setattr(main.libvirt_driver, "iscsi_sessions", lambda name: [])

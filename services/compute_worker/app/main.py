@@ -33,12 +33,12 @@ from pathlib import Path
 import requests
 
 # Append parent so shared/ is importable
+from shared import catalog  # noqa: E402
 from shared.internal import internal_headers  # noqa: E402
 from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
 from . import iscsi, libvirt_driver, volume_manager, worker  # noqa: E402
-from .config import COMPUTE_HOST, LIBVIRT_URI, NETWORKING_API_URL, OVS_BRIDGE, IMAGE_API_URL, BLOCK_STORE_API_URL, VM_NAME_PREFIX, endpoint  # noqa: E402
-HA_API_URL = os.getenv("HA_API_URL", "http://127.0.0.1:8020").rstrip("/")  # may list several ha-api instances, comma-separated
+from .config import COMPUTE_HOST, LIBVIRT_URI, OVS_BRIDGE, VM_NAME_PREFIX, endpoint  # noqa: E402
 FENCED_FLAG = Path("/var/lib/cloudx/ha-watchdog/fenced")  # written by cloudx-ha-watchdog after it destroyed VMs
 from shared.proc import CommandError, succeeds
 from .utils import run, tool_available  # noqa: E402
@@ -48,7 +48,6 @@ from pathlib import Path  # noqa: E402
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
 LOG_LEVEL    = os.getenv("LOG_LEVEL", "INFO")
-PLACEMENT_API_URL = os.getenv("PLACEMENT_API_URL", "http://192.168.10.10:8006")
 
 def _meminfo_mb() -> int:
     with open("/proc/meminfo") as f:
@@ -58,9 +57,9 @@ def _meminfo_mb() -> int:
 def placement_registration_loop() -> None:
     """Background daemon loop — registers compute node in Placement API."""
     log.info("[placement] node registration loop started (host=%s)", COMPUTE_HOST)
-    base = f"{PLACEMENT_API_URL.rstrip('/')}/internal/resource_providers"
     while True:
         try:
+            base = f"{catalog.url('placement').rstrip('/')}/internal/resource_providers"
             r = requests.post(base, json={"name": COMPUTE_HOST}, headers=internal_headers(), timeout=5)
             if r.status_code in (200, 201, 409):
                 # Inventory is refreshed on every start; allocation ratios follow the OpenStack defaults.
@@ -131,7 +130,7 @@ def _notify_action_finish(server_id: str | None, result: str = "success", messag
     if not server_id:
         return
     try:
-        api_url = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
+        api_url = catalog.url("compute").rstrip("/")
         requests.post(
             f"{api_url}/internal/servers/{server_id}/actions/finish",
             json={"result": result, "message": message, "action": action},
@@ -152,7 +151,7 @@ def reconcile_stale_domains() -> None:
     if not domain_states:
         return
     try:
-        api_url = os.getenv("COMPUTE_API_URL", "http://compute-api:8000").rstrip("/")
+        api_url = catalog.url("compute").rstrip("/")
         resp = requests.get(f"{api_url}/internal/servers", headers=internal_headers(), timeout=5)
         if resp.status_code != 200:
             return
@@ -274,7 +273,7 @@ def send_heartbeat() -> None:
     try:
         from . import iscsi
         body, last = {"initiator_iqn": iscsi.initiator_iqn()}, None
-        for base in (u.strip().rstrip("/") for u in HA_API_URL.split(",") if u.strip()):
+        for base in (u.strip().rstrip("/") for u in catalog.url("ha").split(",") if u.strip()):  # the override may list several instances
             try:
                 requests.post(f"{base}/internal/heartbeat/{COMPUTE_HOST}", json=body, headers=internal_headers(), timeout=5)
                 return  # state lives in the shared DB, one instance is enough
@@ -596,7 +595,7 @@ def handle_build_instance(args: dict) -> None:
     """Spawn a new VM via libvirt. Orchestrates full build flow."""
     server_id = args.get("id")
     root_volume_id = args.get("_root_volume_id")
-    block_store_url = endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL", BLOCK_STORE_API_URL)
+    block_store_url = endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL")
     try:
         # ── Wait for root volume to be ready (async creation race condition) ──
         # block-store-worker creates the LV asynchronously via RabbitMQ.
@@ -679,8 +678,8 @@ def handle_delete_instance(args: dict) -> None:
     root_volume_id = args.get("_root_volume_id")
     port_id = args.get("_port_id")
     extra_port_ids = args.get("_extra_port_ids", "")
-    block_store_url = endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL", BLOCK_STORE_API_URL)
-    networking_url = endpoint(args, "_networking_url", "NETWORKING_API_URL", NETWORKING_API_URL)
+    block_store_url = endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL")
+    networking_url = endpoint(args, "_networking_url", "NETWORKING_API_URL")
 
     try:
         # 1. Destroy libvirt domain
@@ -725,9 +724,10 @@ def handle_delete_instance(args: dict) -> None:
 def handle_relocate_out(args: dict) -> None:
     """Cold migrate, source side: drop the domain and the iSCSI session, free the volume, then cast the build to the target."""
     server_id, root_volume_id = args.get("id"), args.get("_root_volume_id")
+    block_store_url = endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL")  # before the domain is dropped
     try:
         worker.delete_server(server_id, args)
-        bs_url = _probe_block_store_url(endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL", BLOCK_STORE_API_URL))
+        bs_url = _probe_block_store_url(block_store_url)
         if root_volume_id:
             _disconnect_volume(root_volume_id, _volume_host(bs_url, root_volume_id))
         _http_post(f"{bs_url}/servers/{server_id}/volumes/detach-all", {})
@@ -904,8 +904,8 @@ def handle_shelve(args: dict) -> None:
     """
     server_id = args.get("id")
     root_volume_id = args.get("root_volume_id") or args.get("_root_volume_id")
-    image_api_url = endpoint(args, "_image_api_url", "IMAGE_API_URL", IMAGE_API_URL)
-    block_store_url = endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL", BLOCK_STORE_API_URL)
+    image_api_url = endpoint(args, "_image_api_url", "IMAGE_API_URL")
+    block_store_url = endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL")
 
     try:
         # Stop VM
@@ -978,13 +978,13 @@ def handle_unshelve(args: dict) -> None:
     server_id = args.get("id")
     shelved_image_id = args.get("shelved_image_id")
     root_volume_id = args.get("root_volume_id") or args.get("_root_volume_id") or args.get("root_volume", {}).get("id")
-    image_api_url = endpoint(args, "_image_api_url", "IMAGE_API_URL", IMAGE_API_URL)
+    image_api_url = endpoint(args, "_image_api_url", "IMAGE_API_URL")
 
     try:
         # If we have a shelved image, restore it
         if shelved_image_id and root_volume_id:
             try:
-                bsu = _probe_block_store_url(endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL", BLOCK_STORE_API_URL))
+                bsu = _probe_block_store_url(endpoint(args, "_block_store_url", "BLOCK_STORE_API_URL"))
                 vol_resp = requests.get(f"{bsu}/internal/volumes/{root_volume_id}", headers=internal_headers(), timeout=10)
                 if vol_resp.status_code == 200:
                     vol = vol_resp.json()

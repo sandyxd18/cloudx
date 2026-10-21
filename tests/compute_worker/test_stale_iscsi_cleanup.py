@@ -25,6 +25,7 @@ def test_stale_domain_gets_its_iscsi_session_logged_out_after_delete(monkeypatch
         status_code = 200
         def json(self):
             return {"servers": [{"host": "other", "libvirt_domain_name": "moved"}, {"host": main.COMPUTE_HOST, "libvirt_domain_name": "mine"}]}
+    monkeypatch.setenv("COMPUTE_API_URL", "http://compute.test:8003")
     monkeypatch.setattr(main.requests, "get", lambda *a, **k: R())
     main.reconcile_stale_domains()
     assert order == [("delete", "moved"), ("logout", "iqn:moved")]
@@ -44,6 +45,7 @@ def test_a_failed_logout_does_not_stop_the_next_domain(monkeypatch):
         status_code = 200
         def json(self):
             return {"servers": [{"host": "x", "libvirt_domain_name": "a"}, {"host": "x", "libvirt_domain_name": "b"}]}
+    monkeypatch.setenv("COMPUTE_API_URL", "http://compute.test:8003")
     monkeypatch.setattr(main.requests, "get", lambda *a, **k: R())
     main.reconcile_stale_domains()
     assert done == ["a", "b"]

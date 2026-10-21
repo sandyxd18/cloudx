@@ -21,12 +21,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import requests
+from shared import catalog
 from shared.internal import internal_headers
 from shared.proc import run
 from shared.watchdog_logic import decide
 
 log = logging.getLogger("ha-watchdog")
-HA_APIS = [u.strip().rstrip("/") for u in os.getenv("HA_API_URL", "http://127.0.0.1:8020").split(",") if u.strip()]  # several ha-api instances
 HOST = os.getenv("HA_WATCHDOG_HOST") or os.getenv("COMPUTE_HOST") or os.getenv("NODE_NAME", "")
 PEERS = [p.strip().rstrip("/") for p in os.getenv("HA_WATCHDOG_PEERS", "").split(",") if p.strip()]
 TIMEOUT = float(os.getenv("HA_WATCHDOG_TIMEOUT", "45"))
@@ -50,7 +50,12 @@ class State:
 def fetch(method: str, path: str):
     """(reachable, response). Any HTTP answer, even a 5xx or a refused connection, means the network path works."""
     reachable, fallback = False, None
-    for base in HA_APIS:  # first instance that answers properly wins; a 5xx only counts as reachable
+    try:
+        bases = [u.strip().rstrip("/") for u in catalog.url("ha").split(",") if u.strip()]  # several ha-api instances
+    except catalog.CatalogError as exc:
+        log.warning("ha-api URL unresolved, counted as silent: %s", exc)  # same as every instance timing out
+        return False, None
+    for base in bases:  # first instance that answers properly wins; a 5xx only counts as reachable
         try:
             r = requests.request(method, base + path, headers=internal_headers(), timeout=5)
         except requests.ConnectionError as exc:
