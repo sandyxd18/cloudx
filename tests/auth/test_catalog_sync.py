@@ -132,17 +132,62 @@ def test_dry_run_changes_nothing(db):
     assert sync_catalog(db, urls) == expected  # a real run reports the same lines
 
 
-def test_create_only_never_updates_existing(db):
+IMAGE = {"image_api_url": "http://new:8002"}
+
+
+def add_image(db, *endpoint_specs):
+    """An existing `image` entry with (interface, region, url) endpoints."""
+    entry = ServiceCatalogEntry(name="image", type="image")
+    db.add(entry)
+    db.flush()
+    for interface, region, url in endpoint_specs:
+        db.add(ServiceEndpoint(service_id=entry.id, interface=interface, region=region, url=url))
+    db.commit()
+
+
+def test_create_only_adds_new_services_but_never_updates_existing(db):
     sync_catalog(db, {"image_api_url": "http://old:8002"})
-    drop_internal_endpoints(db)
-    urls = {"image_api_url": "http://new:8002", "dns_api_url": "http://dns:8016"}
+    urls = {**IMAGE, "dns_api_url": "http://dns:8016"}
     assert sync_catalog(db, urls, create_only=True) == [
-        "+ image internal http://new:8002",
         "+ dns public http://dns:8016",
         "+ dns internal http://dns:8016",
     ]
     assert endpoints(db)[("image", "public")] == ("RegionOne", "http://old:8002")
     assert sync_catalog(db, urls, create_only=True) == []
+
+
+def test_create_only_leaves_an_entry_with_only_public_alone(db):
+    add_image(db, ("public", "RegionOne", "http://pub:8002"))
+    assert sync_catalog(db, IMAGE, create_only=True) == []
+    assert endpoints(db) == {("image", "public"): ("RegionOne", "http://pub:8002")}
+
+
+def test_create_only_does_not_restore_a_deleted_endpoint(db):
+    sync_catalog(db, IMAGE)
+    drop_internal_endpoints(db)
+    assert sync_catalog(db, IMAGE, create_only=True) == []
+    assert set(endpoints(db)) == {("image", "public")}
+
+
+def test_create_only_fills_an_entry_without_endpoints(db):
+    add_image(db)
+    assert sync_catalog(db, IMAGE, create_only=True) == [
+        "+ image public http://new:8002",
+        "+ image internal http://new:8002",
+    ]
+    assert set(endpoints(db)) == {("image", "public"), ("image", "internal")}
+
+
+def test_sync_still_adds_the_missing_interface_of_an_entry_with_only_public(db):
+    add_image(db, ("public", "RegionOne", "http://new:8002"))
+    assert sync_catalog(db, IMAGE) == ["+ image internal http://new:8002"]
+    assert set(endpoints(db)) == {("image", "public"), ("image", "internal")}
+
+
+def test_create_only_leaves_an_entry_with_endpoints_in_another_region_alone(db):
+    add_image(db, ("public", "RegionTwo", "http://r2:8002"), ("internal", "RegionTwo", "http://r2:8002"))
+    assert sync_catalog(db, IMAGE, create_only=True) == []
+    assert set(db.scalars(select(ServiceEndpoint.region)).all()) == {"RegionTwo"}
 
 
 # ── cloudx-manage catalog sync ────────────────────────────────────────────────

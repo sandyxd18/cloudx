@@ -19,7 +19,8 @@ def sync_catalog(db: Session, urls: Mapping[str, str], *, dry_run: bool = False,
     """Add and update catalog endpoints from `urls` (lowercase conf key -> URL); returns one line per change.
 
     A service whose key is absent or empty in `urls` is left alone, and nothing is ever deleted.
-    `create_only` only adds what is missing, `dry_run` reports without writing.
+    `create_only` (plain startup) only registers services that are new or have no endpoint at all, and never edits
+    an existing entry; `dry_run` reports without writing.
     """
     changes: list[str] = []
     for svc in SERVICES:
@@ -29,15 +30,19 @@ def sync_catalog(db: Session, urls: Mapping[str, str], *, dry_run: bool = False,
         wanted = {"public": _first_url(urls.get(public_key(svc.url_key))) or internal, "internal": internal}
 
         entry = db.scalar(select(ServiceCatalogEntry).where(ServiceCatalogEntry.name == svc.name))
-        if entry is None and not dry_run:
+        existing = []
+        if entry is not None:
+            existing = db.scalars(select(ServiceEndpoint).where(ServiceEndpoint.service_id == entry.id)
+                                  .order_by(ServiceEndpoint.created_at, ServiceEndpoint.id)).all()
+            if create_only and existing:
+                continue  # plain startup only fills an entry that has no endpoint at all
+        elif not dry_run:
             entry = ServiceCatalogEntry(name=svc.name, type=svc.type, description=f"CloudX {svc.name} service")
             db.add(entry)
             db.flush()
         current = {}
-        if entry is not None:
-            for ep in db.scalars(select(ServiceEndpoint)
-                                 .where(ServiceEndpoint.service_id == entry.id, ServiceEndpoint.region == REGION)
-                                 .order_by(ServiceEndpoint.created_at, ServiceEndpoint.id)):
+        for ep in existing:
+            if ep.region == REGION:
                 current.setdefault(ep.interface, ep)
 
         for interface, url in wanted.items():
