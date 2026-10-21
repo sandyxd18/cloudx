@@ -7,6 +7,8 @@ from tests.stack import fresh_service
 
 def test_compute_server_create_flow_mocked_worker(monkeypatch, tmp_path: Path):
     db_path = tmp_path / "compute.sqlite"
+    for key in ("IMAGE_API_URL", "NETWORKING_API_URL", "BLOCK_STORE_API_URL"):
+        monkeypatch.setenv(key, "http://peer.test:1")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
     compute_main = fresh_service("compute", monkeypatch, tmp_path)
     compute_main.bootstrap_flavors()

@@ -60,6 +60,7 @@ def _network_list(monkeypatch):
         def json(self):
             return {"networks": [{"id": "n1", "name": "net1", "status": "ACTIVE"}]}
 
+    monkeypatch.setenv("NETWORKING_API_URL", "http://networking.test:8001")
     monkeypatch.setattr(net_reconciler.requests, "get", lambda *a, **k: Resp())
     patched = []
     monkeypatch.setattr(net_reconciler, "_patch_network_status", lambda nid, status: patched.append((nid, status)))

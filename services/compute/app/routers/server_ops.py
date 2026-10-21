@@ -5,10 +5,10 @@ from shared.auth_middleware import CurrentUser
 
 from .. import clients
 from ..config import (
-    BLOCK_STORE_API_URL,
+    block_store_api_url,
     DEFAULT_VM_USER,
-    IMAGE_API_URL,
-    NETWORKING_API_URL,
+    image_api_url,
+    networking_api_url,
     NOVNC_BASE_URL,
     ONLY_BACKEND,
     RPC_CALL_TIMEOUT,
@@ -124,8 +124,8 @@ def shelve_server(ref: str, current: CurrentUser, db: DB):
     db.commit()
     clients.cast_to_worker("shelve", {
         **server_worker_payload(server),
-        "_image_api_url": IMAGE_API_URL,
-        "_block_store_url": BLOCK_STORE_API_URL,
+        "_image_api_url": image_api_url(),
+        "_block_store_url": block_store_api_url(),
     })
     return {"server": server.name, "status": "shelving"}
 
@@ -146,9 +146,9 @@ def unshelve_server(ref: str, current: CurrentUser, db: DB):
     db.commit()
     clients.cast_to_worker("unshelve", {
         **server_worker_payload(server),
-        "_image_api_url": IMAGE_API_URL,
-        "_block_store_url": BLOCK_STORE_API_URL,
-        "_networking_url": NETWORKING_API_URL,
+        "_image_api_url": image_api_url(),
+        "_block_store_url": block_store_api_url(),
+        "_networking_url": networking_api_url(),
     })
     return {"server": server.name, "status": "unshelving"}
 

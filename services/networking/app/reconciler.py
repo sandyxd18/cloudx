@@ -22,13 +22,13 @@ import threading
 import time
 
 import requests
+from shared import catalog
 from shared.proc import run
 
 log = logging.getLogger("network-reconciler")
 
 RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL_SECONDS", "60"))
 OVN_NB_DB = os.getenv("OVN_NB_DB", "tcp:127.0.0.1:6641")
-NETWORKING_API_URL = os.getenv("NETWORKING_API_URL", "http://127.0.0.1:8001")
 
 
 def _ovn_find(table: str, columns: str = "_uuid,name") -> list[dict]:
@@ -68,7 +68,7 @@ def _patch_network_status(network_id: str, status: str) -> None:
     """Patch network status via networking-api HTTP endpoint."""
     try:
         resp = requests.patch(
-            f"{NETWORKING_API_URL}/networks/{network_id}",
+            f"{catalog.url('network')}/networks/{network_id}",
             json={"status": status},
             timeout=10,
         )
@@ -82,7 +82,7 @@ def _delete_network_record(network_id: str) -> None:
     """Hard-delete network record via networking-api HTTP endpoint."""
     try:
         resp = requests.delete(
-            f"{NETWORKING_API_URL}/networks/{network_id}",
+            f"{catalog.url('network')}/networks/{network_id}",
             timeout=10,
         )
         if resp.status_code not in (200, 204, 404):
@@ -95,7 +95,7 @@ def _patch_subnet_status(subnet_id: str, status: str) -> None:
     """Patch subnet status via networking-api HTTP endpoint."""
     try:
         resp = requests.patch(
-            f"{NETWORKING_API_URL}/subnets/{subnet_id}",
+            f"{catalog.url('network')}/subnets/{subnet_id}",
             json={"status": status},
             timeout=10,
         )
@@ -109,7 +109,7 @@ def _delete_subnet_record(subnet_id: str) -> None:
     """Hard-delete subnet record via networking-api HTTP endpoint."""
     try:
         resp = requests.delete(
-            f"{NETWORKING_API_URL}/subnets/{subnet_id}",
+            f"{catalog.url('network')}/subnets/{subnet_id}",
             timeout=10,
         )
         if resp.status_code not in (200, 204, 404):
@@ -122,7 +122,7 @@ def _patch_router_status(router_id: str, status: str) -> None:
     """Patch router status via networking-api HTTP endpoint."""
     try:
         resp = requests.patch(
-            f"{NETWORKING_API_URL}/routers/{router_id}",
+            f"{catalog.url('network')}/routers/{router_id}",
             json={"status": status},
             timeout=10,
         )
@@ -136,7 +136,7 @@ def _delete_router_record(router_id: str) -> None:
     """Hard-delete router record via networking-api HTTP endpoint."""
     try:
         resp = requests.delete(
-            f"{NETWORKING_API_URL}/routers/{router_id}",
+            f"{catalog.url('network')}/routers/{router_id}",
             timeout=10,
         )
         if resp.status_code not in (200, 204, 404):
@@ -153,7 +153,7 @@ def reconcile_networks() -> None:
     """One pass: compare all DB network records against OVN logical_switches."""
     try:
         resp = requests.get(
-            f"{NETWORKING_API_URL}/networks",
+            f"{catalog.url('network')}/networks",
             params={"limit": 10000},
             timeout=15,
         )
@@ -208,7 +208,7 @@ def reconcile_subnets() -> None:
     """One pass: compare all DB subnet records against OVN DHCP_Options."""
     try:
         resp = requests.get(
-            f"{NETWORKING_API_URL}/subnets",
+            f"{catalog.url('network')}/subnets",
             params={"limit": 10000},
             timeout=15,
         )
@@ -264,7 +264,7 @@ def reconcile_routers() -> None:
     """One pass: compare all DB router records against OVN logical_routers."""
     try:
         resp = requests.get(
-            f"{NETWORKING_API_URL}/routers",
+            f"{catalog.url('network')}/routers",
             params={"limit": 10000},
             timeout=15,
         )

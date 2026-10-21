@@ -65,6 +65,8 @@ def test_quota_set_maps_names_and_rejects_unknown(compute, monkeypatch):
 
 
 def test_relocate_preserves_shutoff_status_and_supports_data_volumes(compute, monkeypatch):
+    for key in ("IMAGE_API_URL", "NETWORKING_API_URL", "BLOCK_STORE_API_URL"):
+        monkeypatch.setenv(key, "http://peer.test:1")
     svc, db = compute
     ops = svc.ops
 

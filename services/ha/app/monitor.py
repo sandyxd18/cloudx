@@ -9,11 +9,11 @@ from datetime import datetime
 import requests
 from sqlalchemy import select
 
+from shared import catalog
 from shared.ha_logic import is_stale, next_state, partition
 
 log = logging.getLogger("ha-api")
-URLS = {"compute": os.getenv("COMPUTE_API_URL", "http://127.0.0.1:8003"),
-        "block": os.getenv("BLOCK_STORE_API_URL", "http://127.0.0.1:8004")}
+SERVICES = {"compute": "compute", "block": "volume"}
 POLL = 10     # seconds between cycles
 CONFIRM = 30  # a suspect host must still be silent this long after it was first flagged
 VERIFY = 300  # seconds an evacuated server gets to turn ACTIVE
@@ -29,7 +29,7 @@ class Api:
 
     def call(self, svc, method, path, body=None):
         h = {"X-Internal-Token": os.getenv("INTERNAL_TOKEN", "")}
-        r = requests.request(method, URLS[svc] + path, headers=h, json=body, timeout=10)
+        r = requests.request(method, catalog.url(SERVICES[svc]) + path, headers=h, json=body, timeout=10)
         if r.status_code >= 400:
             raise Failure(f"{method} {svc}{path} -> {r.status_code} {r.text[:150]}")
         return r.json() if r.content else {}

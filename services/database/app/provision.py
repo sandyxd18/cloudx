@@ -7,24 +7,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import secrets
 import time
 from datetime import datetime
 
 import requests
 
+from shared import catalog
 from shared.db_cloudinit import PORTS, READY, render
 from shared.db_validate import check_cidr
 
 log = logging.getLogger("database-api")
-URLS = {
-    "net": os.getenv("NETWORKING_API_URL", "http://127.0.0.1:8001"),
-    "compute": os.getenv("COMPUTE_API_URL", "http://127.0.0.1:8003"),
-    "block": os.getenv("BLOCK_STORE_API_URL", "http://127.0.0.1:8004"),
-    "file": os.getenv("FILE_STORE_API_URL", "http://127.0.0.1:8017"),
-    "container": os.getenv("CONTAINER_API_URL", "http://127.0.0.1:8018"),
-}
+SERVICES = {"net": "network", "compute": "compute", "block": "volume", "file": "file-store", "container": "container"}
 POLL = 5  # seconds between status polls (tests set 0)
 TIMEOUT = {"vm": 900, "container": 300, "step": 300, "backup": 3600}
 IMAGES = {"postgresql": "postgres:16", "mariadb": "mariadb:11"}
@@ -43,7 +37,7 @@ class Api:
         self.headers = headers
 
     def call(self, svc, method, path, body=None, ok=(200, 201, 202, 204)):
-        r = requests.request(method, URLS[svc] + path, headers=self.headers, json=body, timeout=60)
+        r = requests.request(method, catalog.url(SERVICES[svc]) + path, headers=self.headers, json=body, timeout=60)
         if r.status_code == 404 and 404 in ok:
             return None
         if r.status_code not in ok:

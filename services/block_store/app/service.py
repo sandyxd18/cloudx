@@ -1,12 +1,13 @@
 import requests
 from fastapi import HTTPException
 from shared.auth_middleware import CurrentUser
+from shared.catalog import CatalogError
 from shared.internal import internal_headers
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import clients
-from .config import AUTH_API_URL, COMPUTE_API_URL, IMAGE_API_URL, LVM_HOSTS, log
+from .config import AUTH_API_URL, LVM_HOSTS, compute_api_url, image_api_url, log
 from .db import DB
 from .lookups import (
     _resolve_volume_type,
@@ -89,11 +90,16 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
     snapshot_id = None
     source_volume_id = None
     snapshot_path = source_path = None  # device paths the worker copies from
+    image_url = None  # resolved before the record exists, so a catalog failure leaves nothing behind
 
     # Validate sources exist before creating record
     if image_ref:
         source_type = "image"
         bootable = True
+        try:
+            image_url = image_api_url()
+        except CatalogError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     elif snapshot_ref:
         snap = require_snapshot(db, snapshot_ref)
         if snap.status != "available" or not snap.path:
@@ -161,7 +167,7 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
         "lvm_type":        getattr(vt, "lvm_type", "default"),
         "max_iops":        getattr(vt, "max_iops", None),       # Ceph QoS: IOPS limit
         "max_throughput":  getattr(vt, "max_throughput", None), # Ceph QoS: MB/s limit
-        "_image_api_url":  IMAGE_API_URL,
+        "_image_api_url":  image_url,
     })
     try:
         clients._rpc.publish_event("volume.create.start", {
@@ -193,7 +199,7 @@ def _reconcile_orphan_volumes(db: DB):
         .where(Volume.attached_to_server_id.isnot(None))
     )
     try:
-        resp = requests.get(f"{COMPUTE_API_URL}/servers", headers=internal_headers(), timeout=5)
+        resp = requests.get(f"{compute_api_url()}/servers", headers=internal_headers(), timeout=5)
         if resp.status_code == 200:
             servers = resp.json().get("items", [])
             active_ids = {s.get("id") for s in servers}

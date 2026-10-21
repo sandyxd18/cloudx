@@ -1,5 +1,5 @@
 from . import clients
-from .config import IMAGE_API_URL, NETWORKING_API_URL, log
+from .config import image_api_url, networking_api_url, log
 from .models import Server
 
 
@@ -26,7 +26,7 @@ def server_to_dict(server: Server) -> dict:
             data["image_name"] = cached
         else:
             try:
-                image = clients.api_get(f"{IMAGE_API_URL}/images/{server.image_id}")
+                image = clients.api_get(f"{image_api_url()}/images/{server.image_id}")
                 name = image.get("name")
                 if name:
                     _image_name_cache[server.image_id] = name
@@ -38,20 +38,20 @@ def server_to_dict(server: Server) -> dict:
     # security_groups: read the port's security_group_ids, map to names
     if server.port_id:
         try:
-            port = clients.api_get(f"{NETWORKING_API_URL}/ports/{server.port_id}")
+            port = clients.api_get(f"{networking_api_url()}/ports/{server.port_id}")
             sg_ids = port.get("security_group_ids") or []
             if sg_ids:
                 sg_names = []
                 for sg_id in sg_ids:
                     try:
-                        sg = clients.api_get(f"{NETWORKING_API_URL}/security-groups/{sg_id}")
+                        sg = clients.api_get(f"{networking_api_url()}/security-groups/{sg_id}")
                         sg_names.append(sg.get("name", sg_id))
                     except Exception as exc:
                         log.debug("security group name lookup failed: %s", exc)
                         sg_names.append(sg_id)
                 data["security_groups"] = sg_names
             # floating_ip: query for a floating IP bound to this port
-            fips = clients.api_get(f"{NETWORKING_API_URL}/floating-ips")
+            fips = clients.api_get(f"{networking_api_url()}/floating-ips")
             fip_items = fips.get("items", [])
             for fip in fip_items:
                 if fip.get("port_id") == server.port_id or fip.get("fixed_ip_address") == server.ip_address:

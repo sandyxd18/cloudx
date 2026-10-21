@@ -1,12 +1,13 @@
 import requests
 from fastapi import APIRouter, HTTPException
 from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth, UserOrInternal
+from shared.catalog import CatalogError
 from shared.internal import internal_headers
 from sqlalchemy import select
 
 from .. import clients
 from ..clients import _response_detail, get_server
-from ..config import COMPUTE_API_URL
+from ..config import compute_api_url
 from ..db import DB
 from ..lookups import next_target_device, require_volume
 from ..models import Volume, VolumeQuota
@@ -239,7 +240,7 @@ def attach_volume(ref: str, payload: AttachIn, current: CurrentUser, db: DB):
     # Call compute-api which casts to compute-worker
     try:
         resp = requests.post(
-            f"{COMPUTE_API_URL}/servers/{server['id']}/volumes/attach",
+            f"{compute_api_url()}/servers/{server['id']}/volumes/attach",
             json={
                 "volume_id":   volume.id,
                 "volume_name": volume.name,
@@ -253,7 +254,7 @@ def attach_volume(ref: str, payload: AttachIn, current: CurrentUser, db: DB):
         )
         if resp.status_code >= 400:
             raise HTTPException(status_code=502, detail=f"compute-api attach failed: {_response_detail(resp)}")
-    except requests.RequestException as exc:
+    except (requests.RequestException, CatalogError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     volume.attached_to_server_id = server["id"]
@@ -275,7 +276,7 @@ def detach_volume(ref: str, current: CurrentUser, db: DB):
         raise HTTPException(status_code=409, detail="volume is not attached")
     try:
         resp = requests.post(
-            f"{COMPUTE_API_URL}/servers/{volume.attached_to_server_id}/volumes/detach",
+            f"{compute_api_url()}/servers/{volume.attached_to_server_id}/volumes/detach",
             json={
                 "volume_id":   volume.id,
                 "volume_name": volume.name,
@@ -297,7 +298,7 @@ def detach_volume(ref: str, current: CurrentUser, db: DB):
             return obj_to_dict(volume)
         if resp.status_code >= 400:
             raise HTTPException(status_code=502, detail=f"compute-api detach failed: {_response_detail(resp)}")
-    except requests.RequestException as exc:
+    except (requests.RequestException, CatalogError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     volume.attached_to_server_id = None
     volume.target_device = None

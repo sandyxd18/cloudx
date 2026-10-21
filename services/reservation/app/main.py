@@ -20,6 +20,7 @@ from sqlalchemy import DateTime, Integer, String, UniqueConstraint, create_engin
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
+from shared import catalog
 from shared.auth_middleware import CurrentUser
 from shared.cors import cors_origins
 from shared.domain import owns, visible_projects
@@ -27,8 +28,6 @@ from shared.request_id_middleware import RequestIDMiddleware
 from shared.schema import require_schema
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx")
-COMPUTE_API_URL = os.getenv("COMPUTE_API_URL", "http://127.0.0.1:8003").rstrip("/")
-PLACEMENT_API_URL = os.getenv("PLACEMENT_API_URL", "http://127.0.0.1:8006").rstrip("/")
 MAX_WINDOW = timedelta(days=30)
 NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
 
@@ -95,11 +94,12 @@ def health():
 def _pid(current: dict) -> str:
     return current.get("project_id") or current.get("tenant_id") or "default"
 
-def _call(request: Request, base: str, path: str):
+def _call(request: Request, service: str, path: str):
     h = {k: v for k, v in request.headers.items() if k.lower() in ("x-auth-token", "authorization")}
     try:
+        base = catalog.url(service).rstrip("/")
         r = requests.get(f"{base}{path}", headers=h, timeout=10)
-    except requests.RequestException as exc:
+    except (requests.RequestException, catalog.CatalogError) as exc:
         raise HTTPException(503, f"upstream unreachable: {exc}") from None
     if r.status_code == 404:
         raise HTTPException(404, "not found")
@@ -110,8 +110,8 @@ def _call(request: Request, base: str, path: str):
 def cluster_capacity(request: Request) -> tuple[int, int]:
     """(vcpus, ram_mb) schedulable in Placement: sum of (total - reserved) x allocation_ratio over all providers."""
     v = r = 0
-    for rp in _call(request, PLACEMENT_API_URL, "/resource_providers").get("resource_providers", []):
-        inv = _call(request, PLACEMENT_API_URL, f"/resource_providers/{rp['uuid']}/inventories")["inventories"]
+    for rp in _call(request, "placement", "/resource_providers").get("resource_providers", []):
+        inv = _call(request, "placement", f"/resource_providers/{rp['uuid']}/inventories")["inventories"]
         for rc, acc in (("VCPU", "v"), ("MEMORY_MB", "r")):
             if rc in inv:
                 n = int((inv[rc]["total"] - inv[rc]["reserved"]) * inv[rc]["allocation_ratio"])
@@ -156,7 +156,7 @@ def create_lease(data: LeaseIn, request: Request, current: CurrentUser, db: DB):
         raise HTTPException(422, "start_at is in the past")
     if end <= start or end - start > MAX_WINDOW:
         raise HTTPException(422, "end_at must be after start_at, at most 30 days later")
-    fl = _call(request, COMPUTE_API_URL, f"/flavors/{data.flavor}")
+    fl = _call(request, "compute", f"/flavors/{data.flavor}")
     v, r = fl["vcpus"] * data.amount, fl["ram_mb"] * data.amount
     cap_v, cap_r = cluster_capacity(request)
     if db.get_bind().dialect.name == "postgresql":  # two admissions at once must not both see the same free capacity

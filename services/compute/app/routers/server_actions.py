@@ -5,10 +5,10 @@ from shared.internal import internal_headers
 
 from .. import clients
 from ..config import (
-    BLOCK_STORE_API_URL,
-    IMAGE_API_URL,
-    NETWORKING_API_URL,
-    PLACEMENT_API_URL,
+    block_store_api_url,
+    image_api_url,
+    networking_api_url,
+    placement_api_url,
     log,
 )
 from ..db import DB
@@ -158,7 +158,7 @@ def revert_resize(ref: str, current: CurrentUser, db: DB):
 @router.post("/servers/{ref}/rebuild")
 def rebuild_server(ref: str, payload: ServerRebuildIn, current: CurrentUser, db: DB):
     server = require_server(db, ref, current)
-    image = clients.api_get(f"{IMAGE_API_URL}/images/{payload.image}")
+    image = clients.api_get(f"{image_api_url()}/images/{payload.image}")
     server.image_id = image["id"]
     server.status = "REBUILD"
     db.commit()
@@ -172,7 +172,7 @@ def rescue_server(ref: str, payload: ServerRescueIn, current: CurrentUser, db: D
     server = require_server(db, ref, current)
     rescue_image_id = server.image_id
     if payload.image:
-        rescue_img = clients.api_get(f"{IMAGE_API_URL}/images/{payload.image}")
+        rescue_img = clients.api_get(f"{image_api_url()}/images/{payload.image}")
         rescue_image_id = rescue_img["id"]
     server.status = "RESCUE"
     db.commit()
@@ -225,8 +225,8 @@ def delete_server(ref: str, current: UserOrInternal, db: DB, keep_root_volume: b
         "_root_volume_id": server.root_volume_id,
         "_port_id": server.port_id,
         "_extra_port_ids": server.extra_port_ids,
-        "_block_store_url": BLOCK_STORE_API_URL,
-        "_networking_url": NETWORKING_API_URL,
+        "_block_store_url": block_store_api_url(),
+        "_networking_url": networking_api_url(),
     })
     try:
         clients._rpc.publish_event("compute.instance.delete.start", {
@@ -267,7 +267,7 @@ def list_migration_candidates(ref: str, current: CurrentUser, db: DB):
     server = require_server(db, ref, current)
     try:
         r = requests.get(
-            f"{PLACEMENT_API_URL}/compute_nodes",
+            f"{placement_api_url()}/compute_nodes",
             headers=internal_headers(),
             timeout=10,
         )
@@ -289,7 +289,7 @@ def create_server_snapshot(ref: str, payload: ServerSnapshotIn, current: Current
         raise HTTPException(status_code=409, detail="server has no root volume")
     snap = clients.block_post(f"/volumes/{server.root_volume_id}/snapshots", {"name": f"{payload.name}-root"})
     image = clients.api_post(
-        f"{IMAGE_API_URL}/images/import-path",
+        f"{image_api_url()}/images/import-path",
         {"name": payload.name, "path": snap["path"], "disk_format": "qcow2", "container_format": "bare", "visibility": "private"},
     )
     return {"server": server.name, "snapshot": snap, "image": image}
@@ -300,7 +300,7 @@ def add_server_port(ref: str, payload: ServerPortIn, current: CurrentUser, db: D
     server = require_server(db, ref, current)
     if server.status != "ACTIVE":
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE to add a port; current status is {server.status}")
-    port = clients.api_get(f"{NETWORKING_API_URL}/ports/{payload.port}")
+    port = clients.api_get(f"{networking_api_url()}/ports/{payload.port}")
     if port["id"] in [server.port_id, *comma_list(server.extra_port_ids)]:
         raise HTTPException(status_code=409, detail="port is already attached to server metadata")
     # Update DB immediately, cast hotplug to worker
@@ -315,7 +315,7 @@ def add_server_port(ref: str, payload: ServerPortIn, current: CurrentUser, db: D
 def remove_server_port(ref: str, port_ref: str, current: CurrentUser, db: DB):
     server = require_server(db, ref, current)
     extra = comma_list(server.extra_port_ids)
-    port = clients.api_get(f"{NETWORKING_API_URL}/ports/{port_ref}")
+    port = clients.api_get(f"{networking_api_url()}/ports/{port_ref}")
     if port["id"] not in extra:
         raise HTTPException(status_code=404, detail="port is not an attached secondary port")
     server.extra_port_ids = format_comma_list([item for item in extra if item != port["id"]])

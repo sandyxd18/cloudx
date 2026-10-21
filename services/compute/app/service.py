@@ -13,14 +13,15 @@ from sqlalchemy.orm import Session
 
 from . import clients
 from .clients import response_detail
+from shared.catalog import CatalogError
 from shared.internal import internal_headers
 from .config import (
     AUTH_API_URL,
     COMPUTE_BACKEND,
     COMPUTE_HOSTS,
-    NETWORKING_API_URL,
+    networking_api_url,
     ONLY_BACKEND,
-    PLACEMENT_API_URL,
+    placement_api_url,
     log,
 )
 from .models import Aggregate, AggregateHost, ComputeService, Flavor, Server, ServerAction, ServerGroup
@@ -62,11 +63,11 @@ def compute_hosts() -> list[str]:
     if COMPUTE_HOSTS:
         return COMPUTE_HOSTS
     try:
-        response = requests.get(f"{PLACEMENT_API_URL}/resource_providers", headers=internal_headers(), timeout=5)
+        response = requests.get(f"{placement_api_url()}/resource_providers", headers=internal_headers(), timeout=5)
         response.raise_for_status()
         body = response.json()
         return [rp["name"] for rp in (body.get("resource_providers", body) if isinstance(body, dict) else body)]
-    except (requests.RequestException, ValueError, KeyError) as exc:
+    except (requests.RequestException, CatalogError, ValueError, KeyError) as exc:
         log.warning("cannot list compute nodes from placement (%s): new servers go to any worker", exc)
         return []
 
@@ -130,10 +131,10 @@ def claim_host(db: Session, server_id: str, project_id: str, flavor: Flavor, dis
     exclude, only = _constraints(db, flavor, group, az, host, avoid)
     resources = {"VCPU": flavor.vcpus, "MEMORY_MB": flavor.ram_mb}
     try:
-        r = requests.post(f"{PLACEMENT_API_URL}/internal/claim", headers=internal_headers(), timeout=10, json={
+        r = requests.post(f"{placement_api_url()}/internal/claim", headers=internal_headers(), timeout=10, json={
             "consumer_uuid": server_id, "project_id": project_id, "resources": resources,
             "exclude_hosts": exclude, "only_hosts": only})
-    except requests.RequestException as exc:
+    except (requests.RequestException, CatalogError) as exc:
         log.warning("placement unreachable (%s): falling back to least-servers scheduling", exc)
         return None
     if r.status_code == 503:
@@ -146,8 +147,8 @@ def claim_host(db: Session, server_id: str, project_id: str, flavor: Flavor, dis
 
 def release_allocation(server_id: str) -> None:
     try:
-        requests.delete(f"{PLACEMENT_API_URL}/internal/allocations/{server_id}", headers=internal_headers(), timeout=5)
-    except requests.RequestException as exc:
+        requests.delete(f"{placement_api_url()}/internal/allocations/{server_id}", headers=internal_headers(), timeout=5)
+    except (requests.RequestException, CatalogError) as exc:
         log.warning("could not release placement allocation of %s: %s", server_id, exc)
 
 
@@ -216,7 +217,7 @@ def server_metadata_payload(server: Server) -> dict:
     if server.keypair_name and server.public_key_snapshot:
         public_keys[server.keypair_name] = server.public_key_snapshot
     try:
-        port = clients.api_get(f"{NETWORKING_API_URL}/ports/{server.port_id}")
+        port = clients.api_get(f"{networking_api_url()}/ports/{server.port_id}")
     except Exception as exc:
         log.warning("could not fetch the port for server metadata: %s", exc)
         port = {}

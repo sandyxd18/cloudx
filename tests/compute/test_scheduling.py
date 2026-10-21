@@ -51,6 +51,7 @@ def test_configured_hosts_win_over_placement(monkeypatch, compute):
 
 def test_hosts_come_from_placement_providers_otherwise(monkeypatch, compute):
     svc, _ = compute
+    monkeypatch.setenv("PLACEMENT_API_URL", "http://placement.test:8006")
     monkeypatch.setattr(svc.service, "COMPUTE_HOSTS", [])
 
     class Reply:
@@ -66,6 +67,7 @@ def test_hosts_come_from_placement_providers_otherwise(monkeypatch, compute):
 
 def test_placement_being_down_falls_back_to_any_worker(monkeypatch, compute):
     svc, _ = compute
+    monkeypatch.setenv("PLACEMENT_API_URL", "http://placement.test:8006")
     monkeypatch.setattr(svc.service, "COMPUTE_HOSTS", [])
 
     def down(*a, **k):

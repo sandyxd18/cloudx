@@ -8,20 +8,16 @@ from __future__ import annotations
 import graphlib
 import ipaddress
 import json
-import os
 import time
 import uuid
 
 import requests
 import yaml
+from shared import catalog
 from sqlalchemy import select
 
 POLL = 3  # seconds between status polls (tests set 0)
-URLS = {
-    "net": os.getenv("NETWORKING_API_URL", "http://127.0.0.1:8001"),
-    "compute": os.getenv("COMPUTE_API_URL", "http://127.0.0.1:8003"),
-    "block": os.getenv("BLOCK_STORE_API_URL", "http://127.0.0.1:8004"),
-}
+SERVICES = {"net": "network", "compute": "compute", "block": "volume"}
 
 
 class TemplateError(ValueError):
@@ -39,7 +35,7 @@ class Api:
         self.headers = {"Authorization": authorization}
 
     def call(self, svc, method, path, body=None, ok=(200, 201, 202, 204)):
-        r = requests.request(method, URLS[svc] + path, headers=self.headers, json=body, timeout=60)
+        r = requests.request(method, catalog.url(SERVICES[svc]) + path, headers=self.headers, json=body, timeout=60)
         if r.status_code == 404 and 404 in ok:
             return None
         if r.status_code not in ok:
