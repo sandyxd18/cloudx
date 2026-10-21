@@ -6,6 +6,7 @@ import unicodedata
 
 import requests
 
+from shared import catalog
 from shared.internal import internal_headers
 
 log = logging.getLogger("dns-names")
@@ -41,7 +42,7 @@ def public_address() -> str:
 
 
 def _url() -> str:
-    return os.getenv("DNS_API_URL", "http://127.0.0.1:8016").rstrip("/")
+    return catalog.url("dns").rstrip("/")
 
 
 def register(owner: str, project_id: str, fqdn: str, rtype: str, records: list[str], scope: str = "public") -> None:
