@@ -109,12 +109,13 @@ def _common_postinst() -> str:
     # BIND runs from here, rendered by cloudx-dns-worker (root).
     mkdir -p /var/lib/cloudx/dns
     systemd-tmpfiles --create {TMPFILES} || true
-    chown root:cloudx /etc/cloudx
-    chmod 750 /etc/cloudx
     # Creates cloudx.conf on first install and fills secrets that are missing; existing secrets are never changed.
     {VENV}/bin/cloudx-manage conf init --path /etc/cloudx/cloudx.conf --sample {CONF_SAMPLE}
     chown root:cloudx /etc/cloudx/cloudx.conf
     chmod 640 /etc/cloudx/cloudx.conf
+    # Per-unit confs ship 0644 and may hold DB passwords; the directory keeps them private.
+    chown root:cloudx /etc/cloudx
+    chmod 750 /etc/cloudx
 fi
 """)
 

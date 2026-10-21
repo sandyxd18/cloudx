@@ -57,7 +57,7 @@ package:
 
 # .deb packages from packaging/manifest.toml into dist/deb/ (needs dpkg-deb, fakeroot and network for the venv).
 deb:
-	./scripts/build-deb.sh
+	bash ./scripts/build-deb.sh
 
 # ── CLI install ───────────────────────────────────────────────────────────────
 install-cli:

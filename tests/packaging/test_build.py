@@ -211,6 +211,9 @@ def test_common_postinst(debs, tmp_path):
     after = postinst[postinst.index(init):]
     assert "chown root:cloudx /etc/cloudx/cloudx.conf" in after
     assert "chmod 640 /etc/cloudx/cloudx.conf" in after
+    # Per-unit confs ship 0644 and may hold DB passwords: the directory is what keeps them private.
+    assert "chown root:cloudx /etc/cloudx\n" in after
+    assert "chmod 750 /etc/cloudx\n" in after
     for sub in ("images", "object-store", "compute", "dns", "ha-watchdog", "fs-state"):
         assert f"/var/lib/cloudx/{sub}" in postinst
 
