@@ -32,6 +32,26 @@ def _isolate_environ():
     os.environ.update(saved)
 
 
+@pytest.fixture(autouse=True)
+def _reset_catalog_client():
+    """The catalog client keeps a cache and a retry backoff in module state; no test may inherit them.
+
+    Resets whichever copies are loaded (the repo imports it as `shared.catalog` and, in places, as
+    `services.shared.catalog`) without importing anything that is not already imported.
+    """
+    import sys
+
+    def reset():
+        for name in ("shared.catalog", "services.shared.catalog"):
+            module = sys.modules.get(name)
+            if module is not None:
+                module.invalidate()
+
+    reset()
+    yield
+    reset()
+
+
 @pytest.fixture
 def networking(monkeypatch, tmp_path):
     """networking-api freshly imported on a sqlite DB (see tests/stack.py)."""

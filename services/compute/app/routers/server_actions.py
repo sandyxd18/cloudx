@@ -292,9 +292,13 @@ def create_server_snapshot(ref: str, payload: ServerSnapshotIn, current: Current
     server = require_server(db, ref, current)
     if not server.root_volume_id:
         raise HTTPException(status_code=409, detail="server has no root volume")
+    try:
+        image_url = image_api_url()  # resolved before the first side effect: no orphan volume snapshot on failure
+    except CatalogError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     snap = clients.block_post(f"/volumes/{server.root_volume_id}/snapshots", {"name": f"{payload.name}-root"})
     image = clients.api_post(
-        f"{image_api_url()}/images/import-path",
+        f"{image_url}/images/import-path",
         {"name": payload.name, "path": snap["path"], "disk_format": "qcow2", "container_format": "bare", "visibility": "private"},
     )
     return {"server": server.name, "snapshot": snap, "image": image}

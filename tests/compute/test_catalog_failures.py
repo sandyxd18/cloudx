@@ -125,6 +125,18 @@ def test_create_resolves_its_peers_before_claiming_anything(api, monkeypatch):
     assert claims == []
 
 
+def test_snapshot_with_unresolvable_image_service_is_502_and_creates_no_volume_snapshot(api, monkeypatch):
+    """The image URL is resolved before block-store is asked to snapshot, so no orphan snapshot is left."""
+    svc, client, casts, _ = api
+    _server(svc, "ACTIVE")
+    _no_override(monkeypatch)
+    snapshots = []
+    monkeypatch.setattr(svc.clients, "block_post", lambda path, payload: snapshots.append(path) or {"path": "/p"})
+    r = client.post("/servers/srv1/snapshots", json={"name": "snap"})
+    assert r.status_code == 502 and "cannot resolve service 'image'" in r.json()["detail"]
+    assert snapshots == []
+
+
 def test_a_plain_runtime_error_is_still_a_500(api, monkeypatch):
     svc, client, casts, _ = api
     _server(svc, "ACTIVE")
