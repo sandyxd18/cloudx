@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from shared.auth_middleware import InternalAuth
 from sqlalchemy import select
 
 from ..db import DB
@@ -84,4 +85,10 @@ def delete_endpoint(endpoint_id: str, _: AdminUser, db: DB):
 @router.get("/v3/auth/catalog")
 def get_catalog(current: CurrentUser, db: DB):
     """Return the full service catalog for the authenticated user."""
+    return {"catalog": _build_catalog(db)}
+
+
+@router.get("/internal/catalog", dependencies=[InternalAuth])
+def internal_catalog(db: DB):
+    """Same catalog for services that resolve each other's URLs (shared/catalog.py)."""
     return {"catalog": _build_catalog(db)}
