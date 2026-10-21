@@ -2,6 +2,7 @@
 
     cloudx-manage db sync [service ...]                  apply database migrations (all services by default)
     cloudx-manage conf init [--path P] [--sample S]      create cloudx.conf from the sample and fill in missing secrets
+    cloudx-manage catalog sync [--dry-run]               make the service catalog match the service URLs in the conf
 
 `conf init` never changes a secret that already has a value: rotating auth_secret_key would invalidate every token.
 """
@@ -15,6 +16,7 @@ import tempfile
 from pathlib import Path
 
 from . import migrate
+from .config import load_service_config
 
 CONF_PATH = "/etc/cloudx/cloudx.conf"
 SAMPLE_PATH = "/usr/share/cloudx/cloudx.conf.sample"
@@ -73,6 +75,19 @@ def init_conf(path: Path, sample: Path) -> list[str]:
     return missing
 
 
+def sync_catalog(dry_run: bool) -> list[str]:
+    conf = load_service_config("auth-api")  # merges cloudx.conf and auth-api.conf, and fills os.environ for auth.app.config
+    missing = [k for k in ("auth_secret_key", "auth_admin_password") if not conf.get(k)]
+    if missing:
+        sys.exit(f"cannot sync the catalog: {', '.join(missing)} not set in the conf or the environment")
+    sys.path.insert(0, str(migrate.services_dir()))
+    from auth.app.catalog_sync import sync_catalog as sync
+    from auth.app.db import SessionLocal
+
+    with SessionLocal() as db:
+        return sync(db, conf, dry_run=dry_run)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="cloudx-manage", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -87,6 +102,10 @@ def main(argv: list[str] | None = None) -> int:
     init.add_argument("--path", default=CONF_PATH)
     init.add_argument("--sample", default=SAMPLE_PATH)
 
+    catalog = groups.add_parser("catalog", help="service catalog commands").add_subparsers(dest="action", required=True)
+    catalog_sync = catalog.add_parser("sync", help="register the conf's service URLs in the auth catalog")
+    catalog_sync.add_argument("--dry-run", action="store_true", help="print the changes without writing them")
+
     args = ap.parse_args(argv)
     if (args.group, args.action) == ("db", "sync"):
         migrate.main(args.services)  # exits non-zero by itself when a migration fails
@@ -96,6 +115,10 @@ def main(argv: list[str] | None = None) -> int:
             sys.exit(f"cannot create {args.path}: sample {args.sample} not found")
         generated = init_conf(Path(args.path), Path(args.sample))
         print(f"{args.path}: generated {', '.join(generated)}" if generated else f"{args.path}: nothing to generate")
+        return 0
+    if (args.group, args.action) == ("catalog", "sync"):
+        changes = sync_catalog(args.dry_run)
+        print("\n".join(changes) if changes else "catalog already up to date")
         return 0
     return 2
 

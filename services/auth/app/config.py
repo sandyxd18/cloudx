@@ -14,6 +14,6 @@ ADMIN_EMAIL    = os.getenv("AUTH_ADMIN_EMAIL",    "admin@cloudx.local")
 ADMIN_PROJECT  = os.getenv("AUTH_ADMIN_PROJECT",  "admin")
 # Service URLs for service catalog bootstrap
 _CLOUDX_SERVICES = [
-    {"name": s.name, "type": s.type, "url": os.getenv(s.url_key.upper(), f"http://127.0.0.1:{s.port}")}
+    {"name": s.name, "type": s.type, "url_key": s.url_key, "url": os.getenv(s.url_key.upper(), f"http://127.0.0.1:{s.port}")}
     for s in SERVICES
 ]
