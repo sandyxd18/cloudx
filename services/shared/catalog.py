@@ -2,8 +2,11 @@
 
 Order: the `<url_key>` override in the environment (the conf loader injects conf keys there),
 then the catalog served by auth (`GET /internal/catalog`), then CatalogError.
+After a failed fetch auth is not asked again for CATALOG_RETRY_BACKOFF seconds: callers get the stale
+catalog (or the same error) at once instead of each waiting out the fetch timeout.
 """
 import logging
+import math
 import os
 import threading
 import time
@@ -16,23 +19,34 @@ from shared.internal import internal_headers
 log = logging.getLogger("cloudx.catalog")
 
 DEFAULT_TTL = 60.0
+DEFAULT_BACKOFF = 5.0
 FETCH_TIMEOUT = 3
 REQUEST_TIMEOUT = 10
 
 _lock = threading.Lock()
 _cache: tuple[float, list] | None = None
+_retry: tuple[float, Exception] | None = None  # (no fetch before this time, why the last one failed)
 
 
 class CatalogError(RuntimeError):
     pass
 
 
-def _ttl() -> float:
+def _seconds(name: str, default: float) -> float:
     try:
-        ttl = float(os.environ.get("CATALOG_CACHE_TTL", ""))
+        value = float(os.environ.get(name, ""))
     except ValueError:
-        return DEFAULT_TTL
-    return ttl if ttl >= 0 else DEFAULT_TTL
+        return default
+    return value if value >= 0 else default
+
+
+def _ttl() -> float:
+    return _seconds("CATALOG_CACHE_TTL", DEFAULT_TTL)
+
+
+def _backoff() -> float:
+    value = _seconds("CATALOG_RETRY_BACKOFF", DEFAULT_BACKOFF)
+    return value if math.isfinite(value) else DEFAULT_BACKOFF
 
 
 def _override(entry: services.CatalogService) -> str | None:
@@ -76,20 +90,28 @@ def _fetch() -> list:
 
 
 def _catalog(service: str) -> list:
-    global _cache
+    global _cache, _retry
     with _lock:
-        cached = _cache
-    if cached is not None and time.monotonic() - cached[0] < _ttl():
+        cached, retry = _cache, _retry
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _ttl():
+        return cached[1]
+    if retry is not None and now < retry[0]:  # a fetch failed moments ago: do not wait for auth again
+        if cached is None:
+            raise CatalogError(f"cannot resolve service '{service}': {retry[1]}") from retry[1]
         return cached[1]
     try:
         entries = _fetch()
     except CatalogError as exc:
+        with _lock:
+            _retry = (time.monotonic() + _backoff(), exc)
         if cached is None:
             raise CatalogError(f"cannot resolve service '{service}': {exc}") from exc
         log.warning("catalog fetch failed (%s); serving the stale catalog", exc)
         return cached[1]
     with _lock:
         _cache = (time.monotonic(), entries)
+        _retry = None
     return entries
 
 
@@ -118,13 +140,15 @@ def url(service: str, interface: str = "internal") -> str:
 
 
 def invalidate() -> None:
-    global _cache
+    global _cache, _retry
     with _lock:
         _cache = None
+        _retry = None
 
 
 def _expire() -> None:
-    """Makes the cached catalog stale (refetched on next use) without discarding it as a fallback."""
+    """Makes the cached catalog stale (refetched on next use, unless a backoff
+    is active) without discarding it as a fallback."""
     global _cache
     with _lock:
         if _cache is not None:
