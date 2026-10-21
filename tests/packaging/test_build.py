@@ -265,35 +265,26 @@ def test_every_nginx_api_ships_exactly_its_own_snippet(debs):
         assert snippets == ([f"/etc/nginx/conf.d/cloudx-{name}.conf"] if u.frontend == "nginx" else []), name
 
 
-def test_common_ships_the_nginx_group_drop_in(debs, tmp_path):
-    drop_in = "/etc/systemd/system/nginx.service.d/cloudx.conf"
-    assert contents(debs["cloudx-common"])[drop_in] == "-rw-r--r--"
-    assert drop_in in control_member(debs["cloudx-common"], "conffiles", tmp_path).splitlines()
-    dpkg_deb("-x", str(debs["cloudx-common"]), str(tmp_path / "x"))
-    assert (tmp_path / "x" / drop_in.lstrip("/")).read_text() == "[Service]\nSupplementaryGroups=cloudx\n"
+def test_no_package_ships_an_nginx_systemd_drop_in(debs):
     for pkg, deb in debs.items():
-        if pkg != "cloudx-common":
-            assert drop_in not in contents(deb), pkg
+        assert not any(p.startswith("/etc/systemd/system/nginx.service.d") for p in contents(deb)), pkg
 
 
-def test_nginx_postinst_checks_config_then_restarts_once_or_reloads(debs, tmp_path):
+def test_nginx_postinst_checks_config_then_reloads(debs, tmp_path):
     postinst = control_member(debs["cloudx-image-api"], "postinst", tmp_path)
     subprocess.run(["sh", "-n", str(tmp_path / f"ctrl-{debs['cloudx-image-api'].stem}" / "postinst")], check=True)
     own = postinst.index("deb-systemd-invoke $_action 'cloudx-image-api.service'")
-    guard = postinst.index("command -v nginx", own)
-    assert "/run/systemd/system" in postinst[own:guard]
-    test_cfg = postinst.index("nginx -t", guard)
-    assert postinst.index("systemctl daemon-reload", guard) < test_cfg
-    assert "nginx -t; then" in postinst
-    assert 'echo "warning: nginx -t failed' in postinst and ">&2" in postinst[test_cfg:]
-    marker = "/var/lib/cloudx/.nginx-group-applied"
-    check = postinst.index(f"[ ! -e {marker} ]", test_cfg)
-    restart = postinst.index("deb-systemd-invoke restart nginx.service", test_cfg)
-    reload = postinst.index("deb-systemd-invoke reload nginx.service", test_cfg)
-    assert check < restart < postinst.index(f"touch {marker}") < reload
-    assert postinst.count("restart nginx.service") == 1
-    assert "else" in postinst[postinst.index(f"touch {marker}"):reload]
-    assert postinst.index(f"touch {marker}") > postinst.index("if deb-systemd-invoke restart nginx.service; then")
+    guard = postinst.index('if [ "$1" = "configure" ] && [ -d /run/systemd/system ] && command -v nginx', own)
+    check = postinst.index("nginx -t", guard)
+    reload = postinst.index("deb-systemd-invoke reload nginx.service", check)
+    warn = postinst.index('echo "warning: nginx -t failed', check)
+    assert own < guard < check < reload < warn
+    assert postinst.index("else", reload) < warn
+    assert postinst[warn:].split("\n", 1)[0].endswith(">&2")
+    assert "|| echo" in postinst[reload:].split("\n", 1)[0]
+    assert postinst.count("nginx.service") == 1
+    for gone in ("restart nginx", ".nginx-group-applied", "touch ", "SupplementaryGroups"):
+        assert gone not in postinst
     for deb in (debs["cloudx-object-store-api"], debs["cloudx-compute-worker"]):
         assert "nginx" not in control_member(deb, "postinst", tmp_path)
 

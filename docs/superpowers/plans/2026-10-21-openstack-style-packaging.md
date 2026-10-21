@@ -243,13 +243,13 @@
 
 **Interfaces:**
 - Consumes: `render_nginx`, `render_api_unit`.
-- Produces: pada paket API nginx: `/etc/nginx/conf.d/cloudx-<name>.conf` (conffile); pada `cloudx-common`: `/etc/systemd/system/nginx.service.d/cloudx.conf` berisi `[Service]` / `SupplementaryGroups=cloudx`; `Depends: nginx` pada paket API nginx.
+- Produces: pada paket API nginx: `/etc/nginx/conf.d/cloudx-<name>.conf` (conffile); `Depends: nginx` pada paket API nginx.
 
-- [ ] **Step 1: Tulis tes:** paket `cloudx-image-api` memuat snippet dan `conffiles` mencantumkannya; paket `cloudx-object-store-api` tidak; `cloudx-common` memuat drop-in; `postinst` paket API nginx lolos `sh -n` dan memuat `nginx -t` sebelum `systemctl reload nginx`, dengan restart nginx sekali memakai penanda `/var/lib/cloudx/.nginx-group-applied`; `test_manifest.py::test_frontend_split` (Task 1) sudah menjadi tes untuk pembagian 20/4.
+- [ ] **Step 1: Tulis tes:** paket `cloudx-image-api` memuat snippet dan `conffiles` mencantumkannya; paket `cloudx-object-store-api` tidak; `postinst` paket API nginx lolos `sh -n` dan memuat `nginx -t` sebelum reload nginx; `test_manifest.py::test_frontend_split` (Task 1) sudah menjadi tes untuk pembagian 20/4.
 - [ ] **Step 2: Jalankan, pastikan gagal.**
 - [ ] **Step 3: Ubah manifest dan builder.** Kegagalan `nginx -t` mencetak pesan tetapi tidak menggagalkan `dpkg`.
 - [ ] **Step 4: Jalankan tes** → PASS.
-- [ ] **Step 5: Verifikasi di node bersih:** pasang `cloudx-image-api` dan `cloudx-auth-api`; `ss -ltn` menunjukkan nginx pada 8002 dan 8005 dan gunicorn tidak mendengarkan TCP; `curl http://<node>:8002/health` 200; `ls -l /run/cloudx/*.sock` memberi `srw-rw---- cloudx cloudx`; unggah image besar (lebih dari 1 GB) lewat `cloudx image create` sukses (jalur streaming); `curl -H 'X-Forwarded-For: 6.6.6.6' .../health` tidak mengubah apa pun di log; reboot, kedua unit aktif.
+- [ ] **Step 5: Verifikasi di node bersih:** pasang `cloudx-image-api` dan `cloudx-auth-api`; `ss -ltn` menunjukkan nginx pada 8002 dan 8005 dan gunicorn tidak mendengarkan TCP; `curl http://<node>:8002/health` 200; `ls -l /run/cloudx/*.sock` memberi `srwxrwxrwx` (dibuat gunicorn; worker nginx bergantung padanya); unggah image besar (lebih dari 1 GB) lewat `cloudx image create` sukses (jalur streaming); `curl -H 'X-Forwarded-For: 6.6.6.6' .../health` tidak mengubah apa pun di log; reboot, kedua unit aktif.
 - [ ] **Step 6: Commit** `feat(packaging): front the 20 stateless APIs with nginx`.
 
 ---

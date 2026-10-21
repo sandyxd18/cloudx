@@ -14,8 +14,6 @@ VENV = "/opt/cloudx/venv"
 SERVICES = "opt/cloudx/services"
 UNIT_DIR = "lib/systemd/system"
 TMPFILES = "/usr/lib/tmpfiles.d/cloudx.conf"
-NGINX_DROP_IN = "/etc/systemd/system/nginx.service.d/cloudx.conf"
-NGINX_MARKER = "/var/lib/cloudx/.nginx-group-applied"
 CONF_SAMPLE = "/usr/share/cloudx/cloudx.conf.sample"
 EXCLUDE_ANYWHERE = {"__pycache__", "tests", "node_modules", ".pytest_cache"}
 EXCLUDE_TOP = {"migrations", "frontend"}
@@ -95,21 +93,11 @@ fi
 
 
 def _nginx_postinst() -> str:
-    """Appended to an nginx-fronted package's postinst. A broken nginx config never fails the install. The drop-in's
-    supplementary group only reaches nginx on a restart, so the first successful check restarts it and later ones reload."""
-    return f"""
+    """Appended to an nginx-fronted package's postinst. A missing, stopped or broken nginx never fails the install."""
+    return """
 if [ "$1" = "configure" ] && [ -d /run/systemd/system ] && command -v nginx >/dev/null 2>&1; then
-    systemctl daemon-reload || true
     if nginx -t; then
-        if [ ! -e {NGINX_MARKER} ]; then
-            if deb-systemd-invoke restart nginx.service; then
-                touch {NGINX_MARKER}
-            else
-                echo "warning: nginx did not restart; the cloudx sockets stay unreachable until it does" >&2
-            fi
-        else
-            deb-systemd-invoke reload nginx.service || echo "warning: nginx did not reload" >&2
-        fi
+        deb-systemd-invoke reload nginx.service || echo "warning: nginx did not reload; run: systemctl reload nginx" >&2
     else
         echo "warning: nginx -t failed, so nginx was not reloaded; fix the config shown above and reload nginx" >&2
     fi
@@ -178,8 +166,6 @@ def _stage_common(staging: Path, version: str, work_dir: Path, with_venv: bool) 
     (staging / "usr/bin").mkdir(parents=True)
     for cmd in ("cloudx-manage", "cloudx-db-migrate"):
         (staging / "usr/bin" / cmd).symlink_to(f"{VENV}/bin/{cmd}")
-    _write(staging / NGINX_DROP_IN.lstrip("/"), "[Service]\nSupplementaryGroups=cloudx\n")
-    _write(staging / "DEBIAN/conffiles", f"{NGINX_DROP_IN}\n")
     _write(staging / "DEBIAN/control", control_file(
         "cloudx-common", version, ["python3 (>= 3.12)", "python3 (<< 3.13)"],
         "CloudX common files: Python environment, cloudx user, cloudx.conf and cloudx-manage"))

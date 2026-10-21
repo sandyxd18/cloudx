@@ -1,6 +1,9 @@
+import os
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -150,3 +153,36 @@ def test_the_same_request_is_trusted_when_forwarded_ips_is_widened(tmp_path, asg
             for a in gunicorn_argv(str(asgi_dir), "unix:@SOCK@", 1, "nginx")]
     seen = _serve_and_get_client(tmp_path, argv)
     assert "6.6.6.6" in seen
+
+
+def test_nginx_socket_stays_connectable_by_nginx_workers_under_the_unit_umask(asgi_dir):
+    """nginx workers are not in the service's group, so the socket must be world-connectable, as gunicorn creates it
+    even under UMask=0007. A future --umask 007 would make it 0770 and nginx would answer 502 to every request."""
+    run_dir = Path(tempfile.mkdtemp(dir="/tmp"))  # unix socket paths are limited to ~108 bytes
+    sock = run_dir / "api.sock"
+    gunicorn = Path(sys.executable).parent / "gunicorn"
+    argv = [a.replace("@SOCK@", str(sock)) for a in gunicorn_argv(str(asgi_dir), "unix:@SOCK@", 1, "nginx")]
+    old = os.umask(0o007)
+    try:
+        proc = subprocess.Popen([str(gunicorn), *argv], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    finally:
+        os.umask(old)
+    try:
+        deadline = time.monotonic() + 20
+        while not sock.exists():
+            if proc.poll() is not None or time.monotonic() > deadline:
+                proc.terminate()
+                pytest.fail(f"gunicorn did not create {sock}:\n{proc.communicate(timeout=10)[0]}")
+            time.sleep(0.1)
+        mode = stat.S_IMODE(sock.stat().st_mode)
+        assert mode & 0o006 == 0o006, (
+            f"socket mode is {mode:04o}: nginx workers (not in the service group) could not connect; "
+            "do not add --umask to the nginx launcher")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        shutil.rmtree(run_dir, ignore_errors=True)

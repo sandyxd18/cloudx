@@ -58,7 +58,7 @@ Perilaku pemasangan mengikuti OpenStack di Ubuntu: unit di-enable dan distart sa
 Wrapper `/usr/bin/cloudx-<unit>` hanya memanggil `shared.launcher.run_api(name, app_dir, port, workers, frontend)`, yang memuat config (`load_service_config`), lalu `execv` gunicorn dengan `-k uvicorn.workers.UvicornWorker`.
 - `workers`: urutan prioritas `<unit>.conf` > `cloudx.conf` > manifest. Kunci `workers` di conf menggantikan `-w` yang sekarang tertanam di unit.
 - Bind: `frontend=nginx` memakai `unix:/run/cloudx/<unit>.sock`; `frontend=direct` memakai `0.0.0.0:<port>` seperti sekarang.
-- Unit: `User=` dari manifest, `Group=cloudx`, `UMask=0007` (socket berizin 0660, grup `cloudx`), `Restart=always`, `RestartSec=5s`.
+- Unit: `User=` dari manifest, `Group=cloudx`, `UMask=0007` (untuk file yang dibuat service; socket dibuat gunicorn berizin 0777 dan worker nginx bergantung pada itu), `Restart=always`, `RestartSec=5s`.
 - **`--forwarded-allow-ips` tidak boleh `*`.** Uvicorn dengan `*` memakai entri pertama `X-Forwarded-For` sebagai klien, dan entri itu dikirim klien (bisa dipalsukan). Untuk `frontend=nginx` nilainya kosong sehingga header diabaikan.
 - Gunicorn tetap dipakai: OpenStack menyebutnya server yang valid, dan tidak ada alasan teknis menggantinya. Ganti ke `uvicorn --workers` hanya mengubah launcher.
 - Daemon: wrapper memanggil `run_daemon(name, app_dir)` yang `chdir` ke `app_dir` lalu menjalankan `app.main` (`runpy`), jadi unit hanya berisi `ExecStart=/usr/bin/cloudx-<unit>`.
@@ -69,7 +69,7 @@ Nama paket `app` tidak diubah. Mengganti nama ke `cloudx_<svc>` menyentuh semua 
 Satu snippet per API di `/etc/nginx/conf.d/cloudx-<unit>.conf`, conffile yang dapat disunting:
 - `upstream` ke unix socket, `server { listen <port>; location / { proxy_pass ...; } }`, `proxy_http_version 1.1`, `proxy_set_header Host`, dan `X-Forwarded-For $remote_addr` (menimpa, bukan menambahkan).
 - `streaming = true`: `client_max_body_size 0`, `proxy_request_buffering off`, `proxy_read_timeout 3600` (setara pengecualian chunked untuk Glance dan Swift di devstack).
-- Drop-in `/etc/systemd/system/nginx.service.d/cloudx.conf` dengan `SupplementaryGroups=cloudx` supaya worker nginx bisa membuka socket tanpa mengubah keanggotaan grup user `www-data`. Postinst me-restart nginx sekali saat drop-in dibuat, dan `nginx -t` sebelum reload; bila gagal, paket tetap terpasang dan pesan error dicetak.
+- Postinst menjalankan `nginx -t`, lalu me-reload nginx; bila `nginx -t` gagal, paket tetap terpasang dan pesan error dicetak.
 - Port luar sama dengan sekarang, jadi `*_api_url`, CLI, dan dashboard tidak berubah. Path-based routing (`/image`) tidak termasuk: butuh `root_path` di tiap aplikasi dan berisiko merusak tautan di respons.
 
 `frontend = "nginx"` untuk 20 API: auth 8005, billing 8011, block-store 8004, compute 8003, container 8018, database 8019, dns 8016, event 8012, file-store 8017, ha 8020, image 8002, k8s-engine 8015, key-manager 8014, load-balancer 8008, messaging 8022, networking 8001, orchestration 8013, placement 8006, reservation 8023, telemetry 8010.
@@ -127,4 +127,4 @@ Fase 2 tidak bergantung pada 1. Fase 3 dan 4 bergantung pada 1. Fase 5 bergantun
 - **Unit lama menimpa unit paket:** node hasil tarball punya `/etc/systemd/system/cloudx-*.service` yang mengalahkan `/lib/systemd/system`. Runbook upgrade mewajibkan menghapus unit lama dan `systemctl disable --now` sebelum memasang paket; conffile `/etc/cloudx/*` dipertahankan (`--force-confold`).
 - **nginx dan gunicorn berebut port saat migrasi:** runbook menghentikan unit lama dulu; nginx baru dimuat ulang setelah itu.
 - **Service start sebelum dikonfigurasi:** `Restart=always`, seperti sekarang; paket mencetak langkah berikutnya (isi config, `db sync`, restart).
-- **Unit root (block-store-api, dashboard, metadata):** socket berizin 0660 grup `cloudx` karena `UMask=0007` dan `Group=cloudx`; diuji untuk block-store-api.
+- **Socket bisa disambungi siapa pun di host:** gunicorn membuat socket berizin 0777, jadi jangkauannya sama dengan listener TCP yang digantikan; semua rute tetap butuh token atau token internal. Opsi `--umask` di masa depan butuh mekanisme lain, bukan menambahkan `www-data` ke grup `cloudx` (worker nginx jadi bisa membaca `/etc/cloudx` yang berisi secret).
