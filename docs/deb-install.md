@@ -192,6 +192,8 @@ Jaringan provider dan floating IP dibuat setelah itu (`../SETUP.md` 2.7).
 
    ```bash
    sudo install -m 640 -o root -g cloudx ~/cloudx.conf /etc/cloudx/cloudx.conf
+   rm ~/cloudx.conf
+   sudo systemctl restart 'cloudx-*'
    ```
 
 2. Pasang paketnya dan jalankan skrip host.
@@ -235,7 +237,7 @@ Jaringan provider dan floating IP dibuat setelah itu (`../SETUP.md` 2.7).
         cloudx-lb-worker cloudx-vpn-worker cloudx-bgp-worker cloudx-ha-watchdog
    ```
 
-   Pengaturan `ha-watchdog` ada di `ha.md`.
+   Pengaturan `ha-watchdog` ada di `ha.md`. Node yang menjalankannya harus punya `ha_api_url` di conf miliknya sendiri, `/etc/cloudx/ha-watchdog/ha-watchdog.conf` (`[DEFAULT]`), bukan hanya di catalog. Bila ada beberapa instance `ha-api`, tulis dipisah koma: `ha_api_url = http://a:8020,http://b:8020`. Alasannya dua. Override mengalahkan catalog, jadi keputusan fencing watchdog tidak bergantung pada pencarian catalog: watchdog yang start dingin saat auth tidak terjangkau akan membaca pencarian yang gagal itu sebagai "ha-api diam". Selain itu catalog hanya menyimpan URL pertama dari daftar berkoma, jadi failover ke instance kedua hanya jalan lewat override ini.
 
 5. Node dengan disk Ceph RBD: setelah `/etc/ceph/ceph.conf` dan keyring user (bawaan `client.cloudx`) ada di node ini, jalankan:
 
@@ -290,7 +292,7 @@ Memasang atau memindahkan sebuah API ke node lain:
 
 Daftar kunci ada di 4.1 langkah 5.
 
-`catalog sync` hanya menambah service dan memperbarui endpoint yang URL-nya berbeda, mencetak setiap perubahan, dan tidak pernah menghapus. Kunci yang tidak ada atau kosong dibiarkan. Bila nilainya beberapa URL dipisah koma (misalnya `ha_api_url`), hanya URL pertama yang didaftarkan. Kunci `<nama>_api_public_url` (misalnya `image_api_public_url`) mengisi endpoint `public` bila berbeda dari `internal`. Start biasa hanya mendaftarkan service yang belum punya endpoint dan tidak mengubah yang sudah ada; hanya `catalog sync` yang mengubahnya. Jadi suntingan admin lewat API tidak tertimpa diam-diam, dan URL baru di `auth-api.conf` tidak berlaku sebelum `catalog sync` dijalankan. Service lain mengambil perubahan dalam satu masa cache, tanpa restart.
+`catalog sync` hanya menambah service dan memperbarui endpoint yang URL-nya berbeda, mencetak setiap perubahan, dan tidak pernah menghapus. Kunci yang tidak ada atau kosong dibiarkan. Bila nilainya beberapa URL dipisah koma (misalnya `ha_api_url`), hanya URL pertama yang didaftarkan. Kunci `<nama>_api_public_url` (misalnya `image_api_public_url`) mengisi endpoint `public` bila berbeda dari `internal`. Start biasa hanya mendaftarkan service yang belum punya endpoint dan tidak mengubah yang sudah ada; hanya `catalog sync` yang mengubahnya. Jadi suntingan admin lewat API tidak tertimpa diam-diam, dan URL baru di `auth-api.conf` tidak berlaku sebelum `catalog sync` dijalankan. Service lain mengambil perubahan dalam satu masa cache, tanpa restart. Catalog diambil paling sering sekali per `catalog_cache_ttl` (60 detik). Bila pengambilan gagal (auth mati atau lambat), klien tidak mencoba lagi selama 5 detik (`CATALOG_RETRY_BACKOFF`, `0` mematikannya) dan memakai cache lama selama itu, atau langsung mengembalikan `CatalogError` bila belum ada cache, tanpa menunggu timeout tiap permintaan.
 
 CLI memakai endpoint `public` dari catalog di respons login. `CLOUDX_<SVC>_URL` tetap berlaku sebagai override.
 
@@ -373,7 +375,7 @@ Mengapa tidak bisa langsung `apt install`:
 - nginx harus bisa memakai port yang dulu dipegang gunicorn, jadi unit lama harus berhenti dulu.
 - `/etc/cloudx` dan `/var/lib/cloudx` dipertahankan.
 
-Urutan antar node: node yang hanya menjalankan beberapa service dulu, node dengan auth dan PostgreSQL terakhir. Selama satu node dikerjakan, service di node itu mati (beberapa menit). Setelah naik ke paket, URL antar-node tidak berubah karena port luar sama. Kunci `*_api_url` yang masih ada di conf lama kini berlaku sebagai override yang mengalahkan catalog, jadi service di node itu tetap memakai alamat lama sampai kunci itu dihapus; periksa isi catalog dengan `catalog sync --dry-run` (langkah 7) sebelum menghapusnya.
+Urutan antar node: node yang hanya menjalankan beberapa service dulu, node dengan auth dan PostgreSQL terakhir. Selama satu node dikerjakan, service di node itu mati (beberapa menit). Setelah naik ke paket, URL antar-node tidak berubah karena port luar sama. Kunci `*_api_url` yang masih ada di conf lama kini berlaku sebagai override yang mengalahkan catalog, jadi service di node itu tetap memakai alamat lama sampai kunci itu dihapus; periksa isi catalog dengan `catalog sync --dry-run` (langkah 8) sebelum menghapusnya.
 
 ### Per node
 
@@ -458,17 +460,33 @@ Urutan antar node: node yang hanya menjalankan beberapa service dulu, node denga
    sudo cloudx-manage catalog sync --dry-run   # hanya mencetak: "catalog already up to date" atau daftar perubahan
    ```
 
+   Hasil `--dry-run` ini diperiksa di langkah 8.
+
    Di node compute, `import libvirt` harus berhasil (status `active` saja tidak membuktikannya):
 
    ```bash
    /opt/cloudx/venv/bin/python -c "import libvirt"
    ```
 
-   Dari node yang punya CLI: `cloudx server list` harus tetap bekerja.
+   Dari node yang punya CLI: `cloudx server list` harus tetap bekerja (lihat langkah 8 bila gagal untuk sebagian service).
+
+8. Samakan catalog di node auth, sesudah semua service di atas aktif. Pada lab tarball catalog berisi apa yang diisi auth saat start pertama, dan start biasa tidak pernah mengoreksinya. Untuk service yang `*_api_url`-nya tidak pernah ditulis, entrinya bisa berupa nama gaya docker yang tidak terjangkau (misalnya `http://compute-api:8000`, `http://telemetry-api:8010`, `http://metadata-api:8775`). Setelah upgrade CLI mengikuti endpoint `public` dari catalog, bukan lagi `127.0.0.1:<port>`, jadi entri seperti itu membuat CLI di node itu gagal untuk service yang bersangkutan (begitu pula service lain yang tidak punya override).
+
+   ```bash
+   sudo cloudx-manage catalog sync --dry-run
+   ```
+
+   Bila ada baris `~` yang mengganti nama gaya docker, atau URL lain yang tidak terjangkau dari node lain dan dari CLI, tulis URL yang benar di `/etc/cloudx/auth-api/auth-api.conf` (kunci `<nama>_api_url`, bentuknya seperti di 4.1 langkah 5; kunci yang sudah ada di `cloudx.conf` node itu juga terbaca), lalu jalankan sungguhan:
+
+   ```bash
+   sudo cloudx-manage catalog sync
+   ```
+
+   Service lain mengambil perubahan dalam satu masa cache (bagian 5). CLI mengambil catalog tiap kali dijalankan, jadi tidak perlu login ulang. `CLOUDX_<SVC>_URL` (misalnya `CLOUDX_COMPUTE_URL`) tetap mengalahkan catalog bila ada yang harus dipaksa.
 
 ### Bila gagal
 
-Bahan untuk kembali: `/opt/cloudx.tarball`, `/root/cloudx-units.tgz` (unit lama), `/root/cloudx-etc.tgz` (cadangan `/etc/cloudx`), dan `/root/cloudx-active-before.txt`. Prosedur ini juga belum dicoba. Urutannya penting karena nginx masih memegang port 8001 sampai 8023 selama snippet paket ada.
+Bahan untuk kembali: `/opt/cloudx.tarball`, `/root/cloudx-units.tgz` (unit lama), `/root/cloudx-etc.tgz` (cadangan `/etc/cloudx`), dan `/root/cloudx-active-before.txt`. Prosedur ini juga belum dicoba. Prosedur ini hanya berlaku bila langkah 3 upgrade (memindahkan `/opt/cloudx` ke `/opt/cloudx.tarball`) sudah dikerjakan di node ini; bila belum, `/opt/cloudx` masih tarball yang berjalan dan tidak ada yang perlu dibatalkan. Urutannya penting karena nginx masih memegang port 8001 sampai 8023 selama snippet paket ada.
 
 1. Hentikan unit paket dan lepas paketnya. Pakai `remove`, bukan `purge`: `purge` ikut menghapus `/etc/cloudx/<unit>/<unit>.conf`, yang di node ini adalah file Anda.
 
@@ -484,11 +502,12 @@ Bahan untuk kembali: `/opt/cloudx.tarball`, `/root/cloudx-units.tgz` (unit lama)
    sudo nginx -t && sudo systemctl reload nginx
    ```
 
-3. Kembalikan isi tarball. Isi `/opt/cloudx` dari paket dibuang dulu (tarball asli aman di `/opt/cloudx.tarball`):
+3. Kembalikan isi tarball. Isi `/opt/cloudx` dari paket dibuang dulu (tarball asli aman di `/opt/cloudx.tarball`). Rantai di bawah berhenti bila `/opt/cloudx.tarball` tidak ada, supaya `/opt/cloudx` tidak terhapus tanpa ada penggantinya (langkah 3 upgrade belum dikerjakan, atau langkah rollback dijalankan tidak berurutan). Bila perintah pertama gagal, berhenti di sini dan jangan lanjut ke langkah 4:
 
    ```bash
-   sudo rm -rf /opt/cloudx
-   sudo mv /opt/cloudx.tarball /opt/cloudx
+   sudo test -d /opt/cloudx.tarball \
+        && sudo rm -rf /opt/cloudx \
+        && sudo mv /opt/cloudx.tarball /opt/cloudx
    sudo ln -s /opt/cloudx/venv/bin/cloudx /usr/local/bin/cloudx   # hanya bila tautan ini ada sebelumnya
    ```
 
