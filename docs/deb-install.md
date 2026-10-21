@@ -143,7 +143,7 @@ Urutan pertama kali:
 
    Instalasi satu node: lewati langkah ini dan langkah 6. Bawaannya (`http://127.0.0.1:<port>`) sudah benar.
 
-   Banyak node: auth mendaftarkan setiap service saat start pertama dari kunci `<nama>_api_url` yang ia baca, atau `http://127.0.0.1:<port>` bila tidak ada, dan sesudah itu tidak pernah mengubah entri yang sudah ada. `/etc/cloudx/cloudx.conf` hanya berisi `auth_api_url`, jadi `catalog sync` tidak punya URL lain untuk dibaca kecuali Anda menulisnya di tempat yang dibaca auth, yaitu `/etc/cloudx/auth-api/auth-api.conf` di node yang menjalankan `auth-api`. Tulis alamat yang bisa dijangkau node lain untuk setiap service yang tidak berjalan di node auth, dan juga untuk yang berjalan di node auth bila node lain atau CLI perlu menjangkaunya (`127.0.0.1` hanya terjangkau dari node itu sendiri):
+   Banyak node: auth mendaftarkan setiap service saat start pertama dari kunci `<nama>_api_url` yang ia baca, atau `http://127.0.0.1:<port>` bila tidak ada, dan sesudah itu tidak pernah mengubah entri yang sudah ada. `/etc/cloudx/cloudx.conf` bawaan paket hanya berisi `auth_api_url` di antara kunci `*_api_url` (contoh kunci lainnya dikomentari), jadi `catalog sync` tidak punya URL lain untuk dibaca kecuali Anda menulisnya di tempat yang dibaca auth, yaitu `/etc/cloudx/auth-api/auth-api.conf` di node yang menjalankan `auth-api`. Tulis alamat yang bisa dijangkau node lain untuk setiap service yang tidak berjalan di node auth, dan juga untuk yang berjalan di node auth bila node lain atau CLI perlu menjangkaunya (`127.0.0.1` hanya terjangkau dari node itu sendiri):
 
    ```ini
    [DEFAULT]
@@ -212,7 +212,9 @@ Jaringan provider dan floating IP dibuat setelah itu (`../SETUP.md` 2.7).
    | 2 | `systemctl enable --now libvirtd openvswitch-switch` |
    | 3 | mengatur OVN: `ovn-remote=tcp:<controller>:6642`, `ovn-encap-type=geneve`, `ovn-encap-ip`, `system-id=<nama node>`; restart `ovn-controller` |
    | 4 | membuat bridge `br-ex` dan memasang interface provider ke dalamnya |
-   | 5 | menulis `/etc/cloudx/<svc>/<svc>.conf` untuk `compute-worker`, `metadata-proxy`, `telemetry-worker`, `lb-worker`, `vpn-worker`, dan `bgp-worker`, berisi `compute_host`, `node_name`, `host_ip`, `rabbitmq_url`, `database_url`, dan `auth_api_url` yang mengarah ke controller |
+   | 5 | menulis `/etc/cloudx/<svc>/<svc>.conf` untuk `compute-worker`, `metadata-proxy`, `telemetry-worker`, `lb-worker`, `vpn-worker`, dan `bgp-worker`, berisi `compute_host`, `node_name`, `host_ip`, `rabbitmq_url`, `database_url`, dan `auth_api_url` yang mengarah ke controller; tidak ada `*_api_url` lain |
+
+   Alamat service lain (placement, networking, compute, image, dan seterusnya) tidak ditulis di enam file itu. Worker di node ini mengambilnya dari catalog di auth, jadi isi catalog dengan alamat yang bisa dijangkau dari node compute (4.1 langkah 5 dan 6) sebelum memulai worker. Bila catalog belum berisi sebuah service, worker melaporkan `CatalogError` yang menyebut nama service itu.
 
    Skrip tidak mengisi `ovn-bridge-mappings` dan `ovn-cms-options` (lihat `../SETUP.md` 4.3 bila jaringan provider dipakai). Kredensial di `rabbitmq_url` dan `database_url` yang ditulisnya adalah `cloudx:cloudx`; ubah di enam file itu bila berbeda. Pesan penutup skrip menyebut `install-systemd.sh`; abaikan, paketnya sudah terpasang.
 
@@ -371,7 +373,7 @@ Mengapa tidak bisa langsung `apt install`:
 - nginx harus bisa memakai port yang dulu dipegang gunicorn, jadi unit lama harus berhenti dulu.
 - `/etc/cloudx` dan `/var/lib/cloudx` dipertahankan.
 
-Urutan antar node: node yang hanya menjalankan beberapa service dulu, node dengan auth dan PostgreSQL terakhir. Selama satu node dikerjakan, service di node itu mati (beberapa menit). Setelah naik ke paket, URL antar-node tidak berubah karena port luar sama dan conf lama masih berisi `*_api_url`.
+Urutan antar node: node yang hanya menjalankan beberapa service dulu, node dengan auth dan PostgreSQL terakhir. Selama satu node dikerjakan, service di node itu mati (beberapa menit). Setelah naik ke paket, URL antar-node tidak berubah karena port luar sama. Kunci `*_api_url` yang masih ada di conf lama kini berlaku sebagai override yang mengalahkan catalog, jadi service di node itu tetap memakai alamat lama sampai kunci itu dihapus; periksa isi catalog dengan `catalog sync --dry-run` (langkah 7) sebelum menghapusnya.
 
 ### Per node
 
@@ -417,7 +419,7 @@ Urutan antar node: node yang hanya menjalankan beberapa service dulu, node denga
 
    Di node yang dulu menjalankan `make migrate` tambahkan `cloudx-db`; di node yang memakai CLI tambahkan `cloudx-cli`. Unit BIND ikut di `cloudx-dns-worker`. Jangan pakai `./cloudx-*.deb`: itu memasang ke-47 paket, termasuk semua paket meta.
 
-   `--force-confold` mempertahankan `/etc/cloudx/<unit>/<unit>.conf` yang sudah ada. `cloudx.conf` lama dipakai apa adanya; paket hanya mengisi secret yang kosong dan mengatur ulang izinnya menjadi `root:cloudx` `640`.
+   `--force-confold` mempertahankan `/etc/cloudx/<unit>/<unit>.conf` yang sudah ada. `cloudx.conf` lama dipakai apa adanya, termasuk kunci `*_api_url` di dalamnya (override); paket hanya mengisi secret yang kosong dan mengatur ulang izinnya menjadi `root:cloudx` `640`.
 
 5. Pastikan nginx memuat snippet baru.
 
@@ -549,4 +551,4 @@ sudo chmod 640 /etc/prometheus/metrics_token
 
 ## 9. Tarball tetap berjalan
 
-`scripts/install-systemd.sh`, `scripts/build-tarball.sh` (`make install-systemd`, `make package`, `make migrate`) tidak diubah dan masih berfungsi untuk node yang belum dialihkan. Jangan memakai keduanya di node yang sama: unit di `/etc/systemd/system` dan isi `/opt/cloudx` dari tarball bentrok dengan paket. Node bertarball dan node berpaket bisa berada dalam satu cluster, karena port luar dan protokol antar service tidak berubah.
+`scripts/install-systemd.sh`, `scripts/build-tarball.sh` (`make install-systemd`, `make package`, `make migrate`) tidak diubah dan masih berfungsi untuk node yang belum dialihkan. Jangan memakai keduanya di node yang sama: unit di `/etc/systemd/system` dan isi `/opt/cloudx` dari tarball bentrok dengan paket. Node bertarball dan node berpaket bisa berada dalam satu cluster, karena port luar dan protokol antar service tidak berubah. Satu syarat: kode tarball yang memuat pencarian lewat catalog mengambil URL dari `GET /internal/catalog` di auth bila `*_api_url` tidak ada di conf node itu. Naikkan auth lebih dulu (atau biarkan kunci `*_api_url` di conf node bertarball sebagai override), dan isi catalog (bagian 5) sebelum node yang tidak punya kunci itu dijalankan.

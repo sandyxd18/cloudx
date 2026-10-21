@@ -34,6 +34,13 @@ def test_setup_compute_node_names_the_worker_after_the_node():
     script = (ROOT / "scripts" / "setup-compute-node.sh").read_text(encoding="utf-8")
     assert "compute_host = ${NODE_NAME}" in script
 
+
+def test_setup_compute_node_writes_only_node_keys_and_auth_api_url():
+    script = (ROOT / "scripts" / "setup-compute-node.sh").read_text(encoding="utf-8")
+    block = script.split('<<EOF\n', 1)[1].split("\nEOF\n", 1)[0]
+    keys = [line.split("=", 1)[0].strip() for line in block.splitlines() if "=" in line]
+    assert keys == ["compute_host", "node_name", "host_ip", "rabbitmq_url", "database_url", "auth_api_url"]
+
 def test_build_k3s_image_dry_run_bakes_k3s_and_uploads():
     result = subprocess.run(["bash", str(ROOT / "scripts" / "build-k3s-image.sh"), "--base-image", "u.img", "--dry-run"], text=True, capture_output=True, timeout=20)
     assert result.returncode == 0, result.stderr
