@@ -35,8 +35,37 @@ def _disk_path_type(path: str | Path) -> str:
     return "file"
 
 
-def _rbd_parts(rbd_path: str) -> tuple[str, str, str]:
-    """Parse 'rbd:pool/image' → (pool, image, mon_host)."""
+MON_V1_PORT = "6789"
+
+
+def _parse_mon_hosts(raw: str) -> list[tuple[str, str]]:
+    """Monitor endpoints from a ceph.conf mon_host value, one (host, port) per monitor.
+
+    Handles the cephadm form '[v2:ip:3300/0,v1:ip:6789/0] [v2:...]', plain 'ip,ip' and 'host:port'. A monitor listed
+    with both protocols is given by its v1 address, the port libvirt's <host> has always meant; a v2-only one by its v2 port.
+    """
+    endpoints = []
+    for entry in re.findall(r"\[[^\]]*\]|[^\s,\[\]]+", raw):
+        addrs = []
+        for part in entry.strip("[]").split(","):
+            part = part.strip().split("/")[0]
+            version = None
+            if part[:3] in ("v1:", "v2:"):
+                version, part = part[:2], part[3:]
+            host, sep, port = part.rpartition(":")
+            if not sep:
+                host, port = part, MON_V1_PORT
+            addrs.append((version, host, port))
+        if not addrs:
+            continue
+        v1 = [a for a in addrs if a[0] in (None, "v1")]
+        _, host, port = (v1 or addrs)[0]
+        endpoints.append((host, port))
+    return endpoints
+
+
+def _rbd_parts(rbd_path: str) -> tuple[str, str, list[tuple[str, str]]]:
+    """Parse 'rbd:pool/image' → (pool, image, [(mon_host, port), ...])."""
     import configparser, os as _os
     without_prefix = rbd_path[len("rbd:"):]
     pool, _, image = without_prefix.partition("/")
@@ -46,7 +75,25 @@ def _rbd_parts(rbd_path: str) -> tuple[str, str, str]:
     cfg = configparser.ConfigParser()
     cfg.read(ceph_conf)
     mon_host = cfg.get("global", "mon_host", fallback="127.0.0.1")
-    return pool, image, mon_host
+    return pool, image, _parse_mon_hosts(mon_host)
+
+
+def _rbd_disk_element(parent: ET.Element | None, disk_path: str | Path, target_dev: str, bus: str) -> ET.Element:
+    """<disk type='network'> for an RBD image: every monitor as a <host>, and the cephx <auth> when CEPH_SECRET_UUID names the
+    libvirt secret holding the key of CEPH_USER (default cloudx), see scripts/setup-ceph-libvirt-secret.sh."""
+    import os as _os
+    pool, image, hosts = _rbd_parts(str(disk_path))
+    disk = ET.Element("disk", type="network", device="disk") if parent is None else ET.SubElement(parent, "disk", type="network", device="disk")
+    ET.SubElement(disk, "driver", name="qemu", type="raw", cache="none")
+    source = ET.SubElement(disk, "source", protocol="rbd", name=f"{pool}/{image}")
+    for host, port in hosts:
+        ET.SubElement(source, "host", name=host, port=port)
+    secret_uuid = _os.getenv("CEPH_SECRET_UUID", "").strip()
+    if secret_uuid:
+        auth = ET.SubElement(disk, "auth", username=_os.getenv("CEPH_USER", "cloudx"))
+        ET.SubElement(auth, "secret", type="ceph", uuid=secret_uuid)
+    ET.SubElement(disk, "target", dev=target_dev, bus=bus)
+    return disk
 
 
 def _build_boot_disk_element(devices: ET.Element, disk_path: str | Path) -> None:
@@ -63,12 +110,7 @@ def _build_boot_disk_element(devices: ET.Element, disk_path: str | Path) -> None
 
     elif path_type == "rbd":
         # Ceph RBD network disk
-        pool, image, mon_host = _rbd_parts(str(disk_path))
-        disk = ET.SubElement(devices, "disk", type="network", device="disk")
-        ET.SubElement(disk, "driver", name="qemu", type="raw", cache="none")
-        source = ET.SubElement(disk, "source", protocol="rbd", name=f"{pool}/{image}")
-        ET.SubElement(source, "host", name=mon_host, port="6789")
-        ET.SubElement(disk, "target", dev="sda", bus="scsi")
+        disk = _rbd_disk_element(devices, disk_path, "sda", "scsi")
         ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit="0")
 
     else:
@@ -378,12 +420,7 @@ def disk_device_xml(path: str | Path, target_dev: str = "sdb", disk_format: str 
             ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit=unit)
 
     elif path_type == "rbd":
-        pool, image, mon_host = _rbd_parts(str(path))
-        disk = ET.Element("disk", type="network", device="disk")
-        ET.SubElement(disk, "driver", name="qemu", type="raw", cache="none")
-        source = ET.SubElement(disk, "source", protocol="rbd", name=f"{pool}/{image}")
-        ET.SubElement(source, "host", name=mon_host, port="6789")
-        ET.SubElement(disk, "target", dev=target_dev, bus=bus)
+        disk = _rbd_disk_element(None, path, target_dev, bus)
 
     else:
         # Legacy file

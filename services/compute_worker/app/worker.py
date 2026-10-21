@@ -67,7 +67,7 @@ def spawn_server(server_id: str, payload: dict) -> dict:
     try:
         instance_dir.mkdir(parents=True, exist_ok=True)
         disk_path = Path(root_volume["path"])
-        if not disk_path.exists():
+        if not str(disk_path).startswith("rbd:") and not disk_path.exists():  # an RBD image is opened by qemu over the network
             raise RuntimeError(f"root volume path does not exist: {disk_path}")
         seed_iso = cloudinit.create_config_drive(
             instance_dir,

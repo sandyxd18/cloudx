@@ -17,8 +17,13 @@ def _target_dev(volume_id: str) -> str:
     return f"sd{letters[index]}"
 
 
+def _is_rbd(path) -> bool:
+    return str(path).startswith("rbd:")
+
+
 def _is_remote(volume: dict) -> bool:
-    return bool(volume.get("host")) and volume["host"] != COMPUTE_HOST
+    """An LV on another storage node (reached over iSCSI). An RBD image has no home node: every compute reaches it through Ceph."""
+    return bool(volume.get("host")) and volume["host"] != COMPUTE_HOST and not _is_rbd(volume.get("path"))
 
 
 def connect(volume: dict, rpc) -> Path:
@@ -55,7 +60,7 @@ def attach_volume(payload: dict, rpc) -> dict:
     if not domain:
         raise RuntimeError("server has no libvirt domain name")
     path = connect(volume, rpc)
-    if not path.exists():
+    if not _is_rbd(path) and not path.exists():
         raise RuntimeError(f"volume path does not exist: {path}")
     disk_format = "qcow2" if path.suffix == ".qcow2" else "raw"
     target = volume.get("target_dev") or _target_dev(volume["volume_id"])

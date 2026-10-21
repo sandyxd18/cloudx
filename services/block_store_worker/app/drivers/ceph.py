@@ -8,6 +8,7 @@ Requires:
   - CEPH_POOL env var set (e.g. "volumes")
   - CEPH_CONF pointing to ceph.conf (default: /etc/ceph/ceph.conf)
   - CEPH_KEYRING pointing to keyring (optional, uses default if absent)
+  - CEPH_USER cephx user, e.g. "cloudx" (optional; rbd and qemu-img both use it)
 
 Volumes are accessed by VMs via libvirt XML network disk:
   <disk type='network' device='disk'>
@@ -30,10 +31,13 @@ log = logging.getLogger(__name__)
 CEPH_POOL    = os.getenv("CEPH_POOL", "volumes")
 CEPH_CONF    = os.getenv("CEPH_CONF", "/etc/ceph/ceph.conf")
 CEPH_KEYRING = os.getenv("CEPH_KEYRING", "")
+CEPH_USER    = os.getenv("CEPH_USER", "")  # cephx user without the "client." prefix; empty = the client library default (admin)
 
 
 def _rbd(*args: str, timeout: float | None = 300) -> str:
     cmd = ["rbd", "--conf", CEPH_CONF]
+    if CEPH_USER:
+        cmd += ["--id", CEPH_USER]
     if CEPH_KEYRING:
         cmd += ["--keyring", CEPH_KEYRING]
     cmd += list(args)
@@ -55,18 +59,19 @@ def create(image_name: str, size_gb: int) -> str:
 
 
 def create_from_source(image_name: str, source_path: str, size_gb: int) -> str:
-    """Import a raw image file into a new RBD image.
+    """Convert an image file (qcow2, raw, ...) into a new raw RBD image of size_gb.
 
-    Used when creating a boot volume from an image.
-    Returns the rbd path identifier.
+    Used when creating a boot volume from an image. Returns the rbd path identifier. A failed conversion is an
+    error: importing the file as-is would put qcow2 bytes in an image the VM reads as raw.
     """
     p = pool()
-    # Use qemu-img convert to import into RBD
-    result = run(["qemu-img", "convert", "-O", "raw", source_path, f"rbd:{p}/{image_name}"], check=False, timeout=None)
-    if result.returncode != 0:
-        # Fallback: rbd import
-        log.warning("qemu-img convert to rbd failed, trying rbd import: %s", result.stderr)
-        _rbd("import", source_path, f"{p}/{image_name}", timeout=None)
+    target = f"rbd:{p}/{image_name}"
+    if CEPH_USER:
+        target += f":id={CEPH_USER}"  # CEPH_ARGS (--id) is not read by qemu-img
+    target += f":conf={CEPH_CONF}"
+    if CEPH_KEYRING:
+        target += f":keyring={CEPH_KEYRING}"
+    run(["qemu-img", "convert", "-O", "raw", source_path, target], timeout=None)  # needs qemu-utils on this node
 
     # Resize if needed (source might be smaller than requested size)
     _rbd("resize", f"{p}/{image_name}", "--size", f"{size_gb * 1024}M", "--allow-shrink")
