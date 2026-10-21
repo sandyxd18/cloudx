@@ -40,6 +40,23 @@ def _override(entry: services.CatalogService) -> str | None:
     return value if value.strip() else None
 
 
+def _text(value) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _well_formed(entries) -> bool:
+    return isinstance(entries, list) and all(
+        isinstance(item, dict)
+        and _text(item.get("name"))
+        and isinstance(item.get("endpoints"), list)
+        and all(
+            isinstance(ep, dict) and _text(ep.get("interface")) and _text(ep.get("url"))
+            for ep in item["endpoints"]
+        )
+        for item in entries
+    )
+
+
 def _fetch() -> list:
     auth_url = _override(services.by_name("identity"))
     if auth_url is None:
@@ -53,7 +70,7 @@ def _fetch() -> list:
         entries = resp.json().get("catalog")
     except (requests.RequestException, ValueError, AttributeError) as exc:
         raise CatalogError(f"cannot fetch the catalog from {auth_url}: {exc}") from exc
-    if not isinstance(entries, list):
+    if not _well_formed(entries):
         raise CatalogError("auth returned a malformed catalog")
     return entries
 
@@ -88,9 +105,9 @@ def _resolve(service: str, interface: str) -> tuple[str, bool]:
     if service == "identity":
         raise CatalogError("auth_api_url is not set (identity is never resolved through the catalog)")
     for item in _catalog(service):
-        if isinstance(item, dict) and item.get("name") == service:
-            for endpoint in item.get("endpoints", []):
-                if endpoint.get("interface") == interface and endpoint.get("url"):
+        if item["name"] == service:
+            for endpoint in item["endpoints"]:
+                if endpoint["interface"] == interface:
                     return endpoint["url"], False
             raise CatalogError(f"service '{service}' has no '{interface}' endpoint in the catalog")
     raise CatalogError(f"service '{service}' is not in the catalog ({entry.url_key} is not set)")
@@ -106,16 +123,27 @@ def invalidate() -> None:
         _cache = None
 
 
+def _expire() -> None:
+    """Makes the cached catalog stale (refetched on next use) without discarding it as a fallback."""
+    global _cache
+    with _lock:
+        if _cache is not None:
+            _cache = (float("-inf"), _cache[1])
+
+
 def request(method: str, service: str, path: str, **kwargs) -> requests.Response:
     kwargs.setdefault("timeout", REQUEST_TIMEOUT)
     base, overridden = _resolve(service, "internal")
     try:
         return requests.request(method, base + path, **kwargs)
-    except requests.ConnectionError:
+    except requests.ConnectionError as original:
         if overridden:
             raise
-        invalidate()
-        fresh, _ = _resolve(service, "internal")
+        _expire()
+        try:
+            fresh, _ = _resolve(service, "internal")
+        except CatalogError:
+            raise original from None
         if fresh == base:
             raise
     return requests.request(method, fresh + path, **kwargs)

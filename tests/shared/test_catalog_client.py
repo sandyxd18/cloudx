@@ -305,3 +305,44 @@ def test_request_does_not_retry_when_the_catalog_url_is_unchanged(auth_url, fetc
     assert exc.value is first
     assert len(sent.calls) == 1
     assert len(fetches.calls) == 2
+
+
+GOOD = _entry("image", internal="http://cat:8002")
+MALFORMED_ENTRIES = {
+    "endpoints-none": {"name": "image", "endpoints": None},
+    "endpoint-is-a-str": {"name": "image", "endpoints": ["x"]},
+    "url-not-a-str": {"name": "image", "endpoints": [{"interface": "internal", "url": 5}]},
+    "url-empty": {"name": "image", "endpoints": [{"interface": "internal", "url": ""}]},
+    "missing-interface": {"name": "image", "endpoints": [{"url": "http://cat:8002"}]},
+    "entry-not-a-dict": "image",
+    "missing-name": {"endpoints": [{"interface": "internal", "url": "http://cat:8002"}]},
+}
+
+
+@pytest.mark.parametrize("bad", MALFORMED_ENTRIES.values(), ids=MALFORMED_ENTRIES.keys())
+def test_malformed_catalog_without_cache_raises_catalog_error_naming_the_service(auth_url, fetches, bad):
+    fetches.queue = [FakeResponse(200, _body(GOOD, bad))]
+    with pytest.raises(catalog.CatalogError) as exc:
+        catalog.url("image")
+    assert "image" in str(exc.value)
+
+
+@pytest.mark.parametrize("bad", MALFORMED_ENTRIES.values(), ids=MALFORMED_ENTRIES.keys())
+def test_malformed_catalog_is_never_cached_and_the_stale_good_one_is_served(auth_url, clock, fetches, bad):
+    fetches.queue = [FakeResponse(200, _body(GOOD)), FakeResponse(200, _body(bad))]
+    assert catalog.url("image") == "http://cat:8002"
+    clock[0] += 3600
+    assert catalog.url("image") == "http://cat:8002"
+    assert catalog.url("image") == "http://cat:8002"
+    assert len(fetches.calls) == 3
+
+
+def test_request_connection_error_with_auth_down_raises_the_original_and_keeps_the_cache(auth_url, fetches, sent):
+    fetches.queue = [FakeResponse(200, _body(GOOD)), requests.ConnectionError("auth down")]
+    first = requests.ConnectionError("gone")
+    sent.queue = [first]
+    with pytest.raises(requests.ConnectionError) as exc:
+        catalog.request("GET", "image", "/x")
+    assert exc.value is first
+    assert len(sent.calls) == 1
+    assert catalog.url("image") == "http://cat:8002"
