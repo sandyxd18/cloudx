@@ -1,5 +1,5 @@
 [Unit]
-Description=CloudX Image API Service
+Description=CloudX Image API Service (Image Service)
 After=network.target postgresql.service
 Wants=postgresql.service
 

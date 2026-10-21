@@ -40,6 +40,14 @@ def lines(text):
     return text.splitlines()
 
 
+def source_of(u):
+    return (SYSTEMD / u.unit_file).read_text()
+
+
+def api(u):
+    return render_api_unit(u, source_of(u))
+
+
 def _call(text, func):
     """Keyword arguments of the single call to `func` in the wrapper source, as literals."""
     calls = [n for n in ast.walk(ast.parse(text))
@@ -50,38 +58,60 @@ def _call(text, func):
 
 
 def test_api_unit_goldens(image, auth, object_store):
-    assert render_api_unit(image) == golden("cloudx-image-api.service")
-    assert render_api_unit(auth) == golden("cloudx-auth-api.service")
-    assert render_api_unit(object_store) == golden("cloudx-object-store-api.service")
+    assert api(image) == golden("cloudx-image-api.service")
+    assert api(auth) == golden("cloudx-auth-api.service")
+    assert api(object_store) == golden("cloudx-object-store-api.service")
 
 
 def test_api_unit_nginx_fields(auth):
-    text = render_api_unit(auth)
+    text = api(auth)
     for line in ("Type=simple", "User=cloudx", "Group=cloudx", "UMask=0007",
                  "WorkingDirectory=/opt/cloudx/services/auth",
                  "ExecStart=/usr/bin/cloudx-auth-api", "Restart=always", "RestartSec=5s",
-                 "After=network.target postgresql.service", "Wants=postgresql.service",
                  "WantedBy=multi-user.target"):
         assert line in lines(text), line
     assert "gunicorn" not in text
 
 
 def test_api_unit_keeps_root_user_with_cloudx_group(by_name):
-    text = render_api_unit(dataclasses.replace(by_name["block-store-api"], frontend="nginx"))
+    text = api(dataclasses.replace(by_name["block-store-api"], frontend="nginx"))
     assert "User=root" in lines(text)
     assert "Group=cloudx" in lines(text)
     assert "ExecStart=/usr/bin/cloudx-block-store-api" in lines(text)
 
 
-def test_api_unit_is_uniform_for_direct_frontend(object_store):
-    nginx = dataclasses.replace(object_store, frontend="nginx")
-    assert render_api_unit(object_store) == render_api_unit(nginx)
-    assert "UMask=0007" in lines(render_api_unit(object_store))
+def test_api_unit_keeps_description_after_and_wants_of_the_current_unit(by_name):
+    apis = [u for u in by_name.values() if u.kind == "api"]
+    assert len(apis) == 24
+    for u in apis:
+        source = source_of(u)
+        out = api(u)
+        for prefix in ("Description=", "After=", "Wants="):
+            assert [ln for ln in lines(out) if ln.startswith(prefix)] == \
+                [ln for ln in lines(source) if ln.startswith(prefix)], (u.name, prefix)
+        assert ("postgresql.service" in out) == ("postgresql.service" in source), u.name
+
+
+def test_api_unit_dependencies_that_differ_from_the_default(by_name):
+    net = lines(api(by_name["networking-api"]))
+    assert "After=network.target postgresql.service ovn-central.service" in net
+    assert "Wants=postgresql.service ovn-central.service" in net
+    assert "rabbitmq-server.service" in api(by_name["compute-api"])
+    assert "postgresql.service" not in api(by_name["dashboard"])
+    assert "cloudx-metadata-api.service" in api(by_name["metadata-proxy"])
+
+
+def test_api_unit_without_after_or_wants_emits_none(auth):
+    out = render_api_unit(auth, "[Unit]\nDescription=CloudX Auth\n\n[Service]\nUser=cloudx\n")
+    assert lines(out)[:3] == ["[Unit]", "Description=CloudX Auth", ""]
+    assert "After=" not in out and "Wants=" not in out
 
 
 def test_api_unit_rejects_other_kinds(by_name):
     with pytest.raises(ValueError):
-        render_api_unit(by_name["compute-worker"])
+        render_api_unit(by_name["compute-worker"], source_of(by_name["compute-worker"]))
+    with pytest.raises(ValueError):
+        render_api_unit(by_name["auth-api"], "[Unit]\nAfter=network.target\n")
 
 
 def test_daemon_unit_golden_and_only_execstart_changes(by_name):
@@ -163,7 +193,7 @@ def test_api_wrapper(image):
     compile(text, "cloudx-image-api", "exec")
     assert _call(text, "run_api") == {
         "name": "image-api", "app_dir": "/opt/cloudx/services/image", "port": 8002,
-        "workers": image.workers, "frontend": "nginx",
+        "workers": 2, "frontend": "nginx",
     }
     assert "from shared.launcher import run_api" in text
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=CloudX Auth API Service
+Description=CloudX Auth API Service (Identity & Auth Service)
 After=network.target postgresql.service
 Wants=postgresql.service
 

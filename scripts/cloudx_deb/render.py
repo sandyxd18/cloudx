@@ -23,16 +23,15 @@ def render_wrapper(u: Unit) -> str:
     return f"#!{PYTHON}\nfrom shared.launcher import {func}\n\n{call}\n"
 
 
-def _title(name: str) -> str:
-    return " ".join("API" if w == "api" else w.capitalize() for w in name.split("-"))
-
-
-def render_api_unit(u: Unit) -> str:
+def render_api_unit(u: Unit, source: str) -> str:
+    """API unit whose Description/After/Wants come verbatim from the current etc/systemd unit."""
     _require(u, "api")
+    unit_lines = [line for line in source.splitlines() if line.startswith(("Description=", "After=", "Wants="))]
+    if not any(line.startswith("Description=") for line in unit_lines):
+        raise ValueError(f"{u.name}: the source unit has no Description=")
+    header = "\n".join(unit_lines)
     return f"""[Unit]
-Description=CloudX {_title(u.name)} Service
-After=network.target postgresql.service
-Wants=postgresql.service
+{header}
 
 [Service]
 Type=simple

@@ -1,5 +1,5 @@
 [Unit]
-Description=CloudX Object Store API Service
+Description=CloudX Object Store API Service (Swift-like)
 After=network.target postgresql.service
 Wants=postgresql.service
 
