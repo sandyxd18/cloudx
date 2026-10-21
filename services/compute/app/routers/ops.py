@@ -164,6 +164,7 @@ def _relocate(ref: str, host: str | None, current: dict, db, evacuate: bool) -> 
     port = clients.api_get(f"{networking_api_url()}/ports/{server.port_id}")
     ports = [port] + [clients.api_get(f"{networking_api_url()}/ports/{p}") for p in (server.extra_port_ids or "").split(",") if p]
     root = clients.block_get(f"/volumes/{server.root_volume_id}")
+    block_store_url = block_store_api_url()
     target = claim_host(db, server.id, server.project_id, flavor, host=host, avoid=(old,))
     if target is None:
         target = fallback_host(db, flavor, host=host, avoid=(old,))
@@ -173,7 +174,7 @@ def _relocate(ref: str, host: str | None, current: dict, db, evacuate: bool) -> 
     server.host, server.status = target, "REBUILD" if evacuate else "MIGRATING"
     db.commit()
     build = server_worker_payload(server, port, ports, root)
-    build["_root_volume_id"], build["_block_store_url"] = server.root_volume_id, block_store_api_url()
+    build["_root_volume_id"], build["_block_store_url"] = server.root_volume_id, block_store_url
     build["_target_status"] = target_status
     if data_vols:
         build["_data_volumes"] = data_vols
@@ -183,7 +184,7 @@ def _relocate(ref: str, host: str | None, current: dict, db, evacuate: bool) -> 
         clients.cast_to_worker("build_instance", build)
     else:  # source worker tears the domain down, then casts the build to the target (keeps the order)
         clients.cast_to_worker("relocate_out", {**old_payload, "_build": build, "_target_host": target,
-                                                "_root_volume_id": server.root_volume_id, "_block_store_url": block_store_api_url()})
+                                                "_root_volume_id": server.root_volume_id, "_block_store_url": block_store_url})
     return {"server_id": server.id, "from": old, "to": target, "status": server.status}
 
 

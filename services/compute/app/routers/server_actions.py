@@ -1,6 +1,7 @@
 import requests
 from fastapi import APIRouter, HTTPException
 from shared.auth_middleware import CurrentUser, UserOrInternal
+from shared.catalog import CatalogError
 from shared.internal import internal_headers
 
 from .. import clients
@@ -205,6 +206,10 @@ def delete_server(ref: str, current: UserOrInternal, db: DB, keep_root_volume: b
     if server.locked and current.get("role") != "admin":
         raise HTTPException(status_code=409, detail="server is locked; unlock it before deleting")
     original_name = server.name
+    try:
+        block_store_url, networking_url = block_store_api_url(), networking_api_url()
+    except CatalogError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     # Remove from server group if member
     if server.server_group_id:
         sg = db.get(ServerGroup, server.server_group_id)
@@ -225,8 +230,8 @@ def delete_server(ref: str, current: UserOrInternal, db: DB, keep_root_volume: b
         "_root_volume_id": server.root_volume_id,
         "_port_id": server.port_id,
         "_extra_port_ids": server.extra_port_ids,
-        "_block_store_url": block_store_api_url(),
-        "_networking_url": networking_api_url(),
+        "_block_store_url": block_store_url,
+        "_networking_url": networking_url,
     })
     try:
         clients._rpc.publish_event("compute.instance.delete.start", {
