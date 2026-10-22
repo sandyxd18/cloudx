@@ -113,6 +113,51 @@ Host bridge preparation is explicit and dry-run by default:
 sudo scripts/bootstrap-provider-network.sh --dry-run
 ```
 
+### Floating IP does not answer ARP (router gateway on the wrong chassis)
+
+The router's external port is pinned to one OVN gateway chassis. That chassis must have `ovn-cms-options=enable-chassis-as-gw`
+and an `ovn-bridge-mappings` entry for the provider network (`physnet1:br-ex`), which on a multi-node install means the
+infra nodes and not the compute nodes. Check where a router's gateway is and which chassis can carry it:
+
+```bash
+sudo ovn-nbctl lrp-get-gateway-chassis lrp-<router>-external
+sudo ovn-sbctl --columns=name,hostname,other_config list chassis | grep -E 'hostname|ovn-cms-options|ovn-bridge-mappings'
+sudo ovn-sbctl --bare --columns=chassis find port_binding logical_port=cr-lrp-<router>-external
+```
+
+If the gateway names a compute node, or a chassis name that no longer exists in `ovn-sbctl list chassis`, move it
+(the higher priority wins; remove the wrong entry afterwards):
+
+```bash
+sudo ovn-nbctl lrp-set-gateway-chassis lrp-<router>-external <chassis-name> 20
+sudo ovn-nbctl lrp-del-gateway-chassis lrp-<router>-external <wrong-chassis-name>
+```
+
+Routers created by an older build were pinned to the first chassis in the Southbound DB; recreate them or move the gateway as above.
+
+### Chassis renamed after Open vSwitch restarted
+
+`ovs-ctl` rewrites `external_ids:system-id` from `/etc/openvswitch/system-id.conf` every time Open vSwitch starts. Older
+`cloudx-setup-compute` runs set the node name only with `ovs-vsctl`, so a restart (an unattended upgrade is enough) turned the
+chassis name into a random UUID and left gateway entries pointing at a chassis that no longer exists. Check each node:
+
+```bash
+cat /etc/openvswitch/system-id.conf
+sudo ovs-vsctl get open_vswitch . external_ids:system-id
+```
+
+If the two differ, the next Open vSwitch restart will rename the chassis. Make the intended name permanent first; when the value
+in the database already is the node name this changes nothing that is running:
+
+```bash
+echo <node-name> | sudo tee /etc/openvswitch/system-id.conf
+```
+
+If the chassis was already renamed, either keep the new name (the two values agree, nothing more to do except repointing
+gateways as above) or go back to the node name: write it to both places, restart `ovn-controller`, and delete the stale row
+on a node with OVN central (`sudo ovn-sbctl chassis-del <old-name>`). Restarting `ovn-controller` on a node with running VMs
+can interrupt their network for a moment; use a maintenance window.
+
 ### Gateway IP collides with the real LAN gateway (bridged provider network)
 
 If the provider network's `PROVIDER_INTERFACE` is a **bridged** adapter onto a physical LAN

@@ -88,3 +88,35 @@ def test_setup_compute_node_without_a_venv_yet_says_what_to_run_later_and_does_n
     assert result.returncode == 0, result.stderr
     assert calls == ""
     assert "pip install libvirt-python" in result.stdout
+
+
+def _system_id_block() -> str:
+    script = (ROOT / "scripts" / "setup-compute-node.sh").read_text(encoding="utf-8")
+    return script.split("# --- system-id ---\n", 1)[1].split("# --- end system-id ---", 1)[0]
+
+
+def _run_system_id(tmp_path, conf_text=None):
+    # ovs-ctl rewrites external_ids:system-id from system-id.conf whenever Open vSwitch starts, so a name set only with
+    # ovs-vsctl is lost on the next restart (an unattended upgrade is enough) and the chassis comes back under a random UUID.
+    bin_dir, calls, conf = tmp_path / "bin", tmp_path / "calls", tmp_path / "system-id.conf"
+    bin_dir.mkdir()
+    (bin_dir / "ovs-vsctl").write_text(f'#!/bin/sh\necho "$@" >> {calls}\n')
+    (bin_dir / "ovs-vsctl").chmod(0o755)
+    if conf_text is not None:
+        conf.write_text(conf_text)
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "NODE_NAME": "compute-x", "OVS_SYSTEM_ID_CONF": str(conf)}
+    result = subprocess.run(["bash", "-c", "set -euo pipefail\n" + _system_id_block()], env=env, text=True, capture_output=True)
+    return result, conf, (calls.read_text() if calls.exists() else "")
+
+
+def test_setup_compute_node_makes_the_node_name_survive_an_open_vswitch_restart(tmp_path):
+    result, conf, calls = _run_system_id(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert conf.read_text() == "compute-x\n"
+    assert "set open_vswitch . external_ids:system-id=compute-x" in calls
+
+
+def test_setup_compute_node_replaces_the_random_system_id_ovs_generated(tmp_path):
+    result, conf, _ = _run_system_id(tmp_path, conf_text="2380ccf4-ad7b-4c62-bbdc-0666655e073f\n")
+    assert result.returncode == 0, result.stderr
+    assert conf.read_text() == "compute-x\n"

@@ -206,7 +206,7 @@ Jaringan provider dan floating IP dibuat setelah itu (`../SETUP.md` 2.7).
    |---|---|
    | 1 | `apt-get install` paket host: QEMU/KVM, libvirt, Open vSwitch, `ovn-host`, strongSwan, BIRD, HAProxy, cloud-image-utils, dan alat build untuk `libvirt-python`; menonaktifkan `strongswan`, `strongswan-starter`, dan `bird` bawaan distro; mematikan profil AppArmor `charon` dan `swanctl` |
    | 2 | `systemctl enable --now libvirtd openvswitch-switch` |
-   | 3 | mengatur OVN: `ovn-remote=tcp:<controller>:6642`, `ovn-encap-type=geneve`, `ovn-encap-ip`, `system-id=<nama node>`; restart `ovn-controller` |
+   | 3 | mengatur OVN: `ovn-remote=tcp:<controller>:6642`, `ovn-encap-type=geneve`, `ovn-encap-ip`, `system-id=<nama node>` (juga ditulis ke `/etc/openvswitch/system-id.conf` supaya tidak berganti nama saat Open vSwitch di-restart); restart `ovn-controller` |
    | 4 | membuat bridge `br-ex` dan memasang interface provider ke dalamnya |
    | 5 | menulis `/etc/cloudx/<svc>/<svc>.conf` untuk `compute-worker`, `metadata-proxy`, `telemetry-worker`, `lb-worker`, `vpn-worker`, dan `bgp-worker`, berisi `compute_host`, `node_name`, `host_ip`, `rabbitmq_url`, `database_url`, dan `auth_api_url` yang mengarah ke controller; tidak ada `*_api_url` lain |
    | 6 | bila venv paket (`/opt/cloudx/venv`) sudah ada, memasang `libvirt-python` ke dalamnya (dikompilasi di node, butuh jaringan); dilewati bila binding sudah ada, dan bila venv belum ada skrip hanya mencetak perintah yang harus dijalankan nanti |
