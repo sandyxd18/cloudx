@@ -10,6 +10,7 @@ Start with `../README.md` (overview) and `../SETUP.md` (installation). The docum
 ## Installing and operating
 | Document | Contents |
 |---|---|
+| `quickstart.md` | Start here: all-in-one install on one Ubuntu 24.04 machine from the `.deb` packages, first VM and floating IP in about 30 minutes |
 | `../SETUP.md` | Installation from scratch (controller, storage node, compute node), admin account |
 | `systemd-deployment-guide.md` | Native systemd and the `/etc/cloudx/` configuration |
 | `deb-install.md` | Installing with `.deb` packages (`apt`, one package per service, nginx front, service catalog) and upgrading tarball nodes; written in Indonesian; the upgrade runbook is verified on all six lab nodes (auth, two infra, three compute; running VMs survived the compute upgrades); rollback is verified on one of them; a clean install is not |
