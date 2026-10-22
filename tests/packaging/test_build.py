@@ -203,6 +203,18 @@ def test_postinst_enables_and_starts_via_systemd_helpers(debs, tmp_path):
         debs["cloudx-image-api"], "prerm", tmp_path)
 
 
+def test_purging_an_nginx_api_reloads_nginx_but_other_units_leave_it_alone(debs, tmp_path):
+    # dpkg deletes the snippet conffile on purge; nginx keeps serving the old route until it is reloaded.
+    postrm = control_member(debs["cloudx-image-api"], "postrm", tmp_path)
+    after_purge = postrm.split('if [ "$1" = purge ] && [ -d /run/systemd/system ]')[1]
+    assert "nginx -t" in after_purge
+    assert "deb-systemd-invoke reload nginx.service" in after_purge
+    # a failed reload never fails the purge
+    assert "|| true" in after_purge or "|| echo" in after_purge
+    for pkg in ("cloudx-dashboard", "cloudx-metadata-api", "cloudx-conductor"):
+        assert "nginx" not in control_member(debs[pkg], "postrm", tmp_path), pkg
+
+
 def test_common_postinst(debs, tmp_path):
     postinst = control_member(debs["cloudx-common"], "postinst", tmp_path)
     assert '"$1" = "configure"' in postinst
