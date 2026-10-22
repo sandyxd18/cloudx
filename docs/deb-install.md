@@ -2,7 +2,7 @@
 
 Cara memasang CloudX di Ubuntu 24.04 (amd64) dengan `apt`, satu paket per service, tanpa `scripts/install-systemd.sh`. Rancangannya ada di `superpowers/specs/2026-10-21-openstack-style-packaging-design.md`. Dokumen ini berisi cara membangun paket, memasangnya per peran, menyebar service ke beberapa node, mengoperasikannya, dan mengupgrade node lab yang dipasang dari tarball.
 
-Penting: runbook upgrade di bagian 7 sudah diuji di empat node lab: infra01 (node auth), infra02, infra03, dan compute02; lihat "Hasil uji" di bagian 7. Prosedur "Bila gagal" dan pemasangan bersih tanpa tarball belum diuji. Jalankan di satu node dulu.
+Penting: runbook upgrade di bagian 7 sudah diuji di empat node lab: infra01 (node auth), infra02, infra03, dan compute02; lihat "Hasil uji" di bagian 7. Rollback ("Bila gagal") sudah diuji di infra03; pemasangan bersih tanpa tarball belum. Jalankan di satu node dulu.
 
 ## 1. Isi paket
 
@@ -378,7 +378,10 @@ Urutan dan perintah di bawah disusun dari isi paket dan dari `install-systemd.sh
 
 - `infra02` (`image-api` dan worker, `block-store-api`, `object-store-api`, `key-manager-api`, `telemetry-api`, `billing-api` dan worker, `event-api` dan worker): langkah 1 sampai 5 dan 7 berjalan dalam satu skrip dengan pemeriksaan awal sebelum ada yang dihentikan. Sepuluh unit aktif sama seperti sebelumnya, semua API menjawab `200` lokal dan dari node lain, dan `/var/lib/cloudx/images` utuh. CLI berlingkungan bersih mencapai image, volume, secret, alarm, event, dan object-store. Unggahan 20 MB lewat nginx ke `image-api` (jauh di atas batas 1 MB bawaan nginx) selesai dalam 1,4 detik dan checksum berkas di disk sama dengan sumbernya.
 
-Belum diuji: pemasangan bersih tanpa tarball sebelumnya, prosedur "Bila gagal", serta node compute01 dan compute03 (masih bertarball; masing-masing menjalankan VM).
+- Rollback ("Bila gagal") diuji di `infra03` sesudah node itu naik ke paket: `apt remove`, pembuangan snippet, pemulihan `/opt/cloudx` dan 43 unit lama, lalu `enable --now` untuk 10 unit. Hasilnya 10 unit aktif sama seperti sebelum upgrade, prosesnya berjalan dari `/opt/cloudx/venv/bin/gunicorn` dengan `--bind 0.0.0.0:<port>` (kode tarball, `launcher.py` dan `/usr/bin/cloudx-*` hilang), semua API menjawab `200`, `cloudx.conf` utuh, dan Ceph di node itu tetap `HEALTH_OK`.
+- Pasang ulang sesudah rollback awalnya gagal diam-diam: paket terpasang tetapi unit `disabled` dan snippet nginx tidak ada (dua perilaku dpkg, lihat "Memasang paket lagi sesudah rollback"). Node dipulihkan dengan perintah yang kini tertulis di sana (`--force-confmiss` dan `systemctl enable --now`): 10 unit aktif dan `enabled`, 8 snippet nginx kembali, semua API `200` lokal dan dari node lain. Perbaikan ini diuji sebagai pemulihan atas node yang sudah terlanjur terpasang tanpa unit aktif, bukan sebagai siklus rollback kedua dari awal.
+
+Belum diuji: pemasangan bersih tanpa tarball sebelumnya, serta node compute01 dan compute03 (masih bertarball; masing-masing menjalankan VM).
 
 Mengapa tidak bisa langsung `apt install`:
 
@@ -500,7 +503,7 @@ Urutan antar node: node yang hanya menjalankan beberapa service dulu, node denga
 
 ### Bila gagal
 
-Bahan untuk kembali: `/opt/cloudx.tarball`, `/root/cloudx-units.tgz` (unit lama), `/root/cloudx-etc.tgz` (cadangan `/etc/cloudx`), dan `/root/cloudx-active-before.txt`. Prosedur ini juga belum dicoba. Prosedur ini hanya berlaku bila langkah 3 upgrade (memindahkan `/opt/cloudx` ke `/opt/cloudx.tarball`) sudah dikerjakan di node ini; bila belum, `/opt/cloudx` masih tarball yang berjalan dan tidak ada yang perlu dibatalkan. Urutannya penting karena nginx masih memegang port 8001 sampai 8023 selama snippet paket ada.
+Bahan untuk kembali: `/opt/cloudx.tarball`, `/root/cloudx-units.tgz` (unit lama), `/root/cloudx-etc.tgz` (cadangan `/etc/cloudx`), dan `/root/cloudx-active-before.txt`. Prosedur ini sudah dicoba di `infra03` (lihat "Hasil uji"); `apt remove` meminta konfirmasi, jadi tambahkan `-y` bila dijalankan dari skrip. Prosedur ini hanya berlaku bila langkah 3 upgrade (memindahkan `/opt/cloudx` ke `/opt/cloudx.tarball`) sudah dikerjakan di node ini; bila belum, `/opt/cloudx` masih tarball yang berjalan dan tidak ada yang perlu dibatalkan. Urutannya penting karena nginx masih memegang port 8001 sampai 8023 selama snippet paket ada.
 
 1. Hentikan unit paket dan lepas paketnya. Pakai `remove`, bukan `purge`: `purge` ikut menghapus `/etc/cloudx/<unit>/<unit>.conf`, yang di node ini adalah file Anda.
 
@@ -538,6 +541,26 @@ Langkah di atas tidak menyentuh `/etc/cloudx`, dan `cloudx-etc.tgz` jangan dibuk
 ```bash
 sudo tar xzf /root/cloudx-etc.tgz -C / etc/cloudx/image-api/image-api.conf
 ```
+
+nginx tetap terpasang setelah rollback dan mendengarkan di port 80 dengan situs bawaannya, tanpa snippet CloudX. Lepas dengan `sudo apt remove nginx` bila tidak diinginkan.
+
+### Memasang paket lagi sesudah rollback
+
+`apt install` biasa tidak cukup untuk naik ke paket lagi setelah rollback. Dua perilaku dpkg yang harus diantisipasi:
+
+- Snippet nginx yang Anda buang dengan `rm` (rollback langkah 2) tidak dipulihkan saat paket dipasang lagi, karena dpkg menganggap conffile yang hilang itu dihapus dengan sengaja.
+- `deb-systemd-helper` memperlakukan unit yang dimatikan dengan `systemctl disable` (upgrade langkah 2, atas unit tarball bernama sama) sebagai pilihan admin, jadi `postinst` tidak menyalakannya. Paket terpasang tetapi unit `disabled` dan port luar tidak menjawab.
+
+Ulangi langkah 2 dan 3 upgrade, lalu pasang dengan opsi tambahan dan nyalakan unitnya sendiri:
+
+```bash
+PKGS=$(sudo cat /root/cloudx-active-before.txt | sed -e 's/\.service$//' -e '/^cloudx-named-/d')
+sudo apt install -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confmiss cloudx-common $PKGS
+sudo nginx -t && sudo systemctl restart nginx
+sudo cat /root/cloudx-active-before.txt | grep -v '^cloudx-named-' | xargs -r sudo systemctl enable --now
+```
+
+`--force-confmiss` memulihkan conffile yang hilang; `--force-confold` tetap mempertahankan file yang sudah Anda ubah. Jangan mencoba `deb-systemd-helper purge` untuk membersihkan state unit: helper itu menolak berjalan di luar skrip dpkg (`was not called from dpkg`).
 
 Bila Anda sudah terlanjur memakai `apt purge`, pulihkan `/etc/cloudx/<unit>/<unit>.conf` yang terhapus dengan cara yang sama, satu per satu, dan jangan menyentuh `etc/cloudx/cloudx.conf`.
 
