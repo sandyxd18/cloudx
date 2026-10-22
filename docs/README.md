@@ -12,7 +12,7 @@ Start with `../README.md` (overview) and `../SETUP.md` (installation). The docum
 |---|---|
 | `../SETUP.md` | Installation from scratch (controller, storage node, compute node), admin account |
 | `systemd-deployment-guide.md` | Native systemd and the `/etc/cloudx/` configuration |
-| `deb-install.md` | Installing with `.deb` packages (`apt`, one package per service, nginx front, service catalog) and upgrading tarball nodes; written in Indonesian; the upgrade runbook is verified on four lab nodes (auth, two infra, one compute); rollback is verified on one of them; a clean install is not |
+| `deb-install.md` | Installing with `.deb` packages (`apt`, one package per service, nginx front, service catalog) and upgrading tarball nodes; written in Indonesian; the upgrade runbook is verified on all six lab nodes (auth, two infra, three compute; running VMs survived the compute upgrades); rollback is verified on one of them; a clean install is not |
 | `multi-node-deployment.md` | Multi-node deployment and how to test it |
 | `single-node-lab.md` | Scope of the single-node lab |
 | `two-node-lvm-lab.md` | Lab where compute and storage nodes both run VMs and serve LVM volumes (iSCSI between nodes) |

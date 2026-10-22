@@ -2,7 +2,7 @@
 
 Cara memasang CloudX di Ubuntu 24.04 (amd64) dengan `apt`, satu paket per service, tanpa `scripts/install-systemd.sh`. Rancangannya ada di `superpowers/specs/2026-10-21-openstack-style-packaging-design.md`. Dokumen ini berisi cara membangun paket, memasangnya per peran, menyebar service ke beberapa node, mengoperasikannya, dan mengupgrade node lab yang dipasang dari tarball.
 
-Penting: runbook upgrade di bagian 7 sudah diuji di empat node lab: infra01 (node auth), infra02, infra03, dan compute02; lihat "Hasil uji" di bagian 7. Rollback ("Bila gagal") sudah diuji di infra03; pemasangan bersih tanpa tarball belum. Jalankan di satu node dulu.
+Penting: runbook upgrade di bagian 7 sudah diuji di keenam node lab: infra01 (node auth), infra02, infra03, dan compute01 sampai compute03 (compute01 dan compute03 dengan VM yang tetap berjalan); lihat "Hasil uji" di bagian 7. Rollback ("Bila gagal") sudah diuji di infra03; pemasangan bersih tanpa tarball belum. Jalankan di satu node dulu.
 
 ## 1. Isi paket
 
@@ -381,7 +381,11 @@ Urutan dan perintah di bawah disusun dari isi paket dan dari `install-systemd.sh
 - Rollback ("Bila gagal") diuji di `infra03` sesudah node itu naik ke paket: `apt remove`, pembuangan snippet, pemulihan `/opt/cloudx` dan 43 unit lama, lalu `enable --now` untuk 10 unit. Hasilnya 10 unit aktif sama seperti sebelum upgrade, prosesnya berjalan dari `/opt/cloudx/venv/bin/gunicorn` dengan `--bind 0.0.0.0:<port>` (kode tarball, `launcher.py` dan `/usr/bin/cloudx-*` hilang), semua API menjawab `200`, `cloudx.conf` utuh, dan Ceph di node itu tetap `HEALTH_OK`.
 - Pasang ulang sesudah rollback awalnya gagal diam-diam: paket terpasang tetapi unit `disabled` dan snippet nginx tidak ada (dua perilaku dpkg, lihat "Memasang paket lagi sesudah rollback"). Node dipulihkan dengan perintah yang kini tertulis di sana (`--force-confmiss` dan `systemctl enable --now`): 10 unit aktif dan `enabled`, 8 snippet nginx kembali, semua API `200` lokal dan dari node lain. Perbaikan ini diuji sebagai pemulihan atas node yang sudah terlanjur terpasang tanpa unit aktif, bukan sebagai siklus rollback kedua dari awal.
 
-Belum diuji: pemasangan bersih tanpa tarball sebelumnya, serta node compute01 dan compute03 (masih bertarball; masing-masing menjalankan VM).
+- `compute01` dan `compute03` (masing-masing dengan satu VM yang berjalan, root disk di Ceph RBD; unit yang sama dengan compute02): upgrade dikerjakan tanpa mematikan atau memindahkan VM. Skrip mencatat domain libvirt, PID qemu, dan CPU time sebelum apa pun, saat unit CloudX sedang mati, dan sesudah upgrade. Hasilnya VM tetap `running` dengan PID qemu yang sama sebelum dan sesudah upgrade (`15124` di compute01, `17357` di compute03) dan CPU time terus naik (VM idle di prompt login, jadi naiknya kecil); proses qemu berada di `machine.slice` di bawah `systemd`, bukan di unit `cloudx-*`, jadi menghentikan unit CloudX tidak menyentuhnya. `seed.iso` di `/var/lib/cloudx/compute/instances/` utuh, `ceph_user` dan `ceph_secret_uuid` di `compute-worker.conf` terjaga (conffile dipertahankan `--force-confold`), secret libvirt untuk Ceph tidak berubah, dan `libvirt-python` terpasang di venv paket. Sesudah upgrade worker mendengarkan queue `compute.<node>` dan terdaftar di Placement; `server pause` lalu `server resume` lewat API menggerakkan libvirt (`paused`, lalu `running`) dengan PID qemu yang sama dan status `ACTIVE` di API.
+
+Seluruh cluster lab (infra01, infra02, infra03, compute01, compute02, compute03) kini berjalan dari paket: tidak ada unit tarball tersisa, tidak ada unit yang gagal, `catalog sync --dry-run` melaporkan `catalog already up to date`, dan kedua VM RBD tetap `ACTIVE`.
+
+Belum diuji: pemasangan bersih tanpa tarball sebelumnya. Yang tidak dibuktikan oleh uji compute di atas: VM baru yang dijadwalkan ke compute01 atau compute03 sesudah upgrade (VM uji di compute02 dibuat sebelum kedua node itu naik; scheduler menaruh VM baru di node paling longgar), dan restart penuh node dengan VM berjalan.
 
 Mengapa tidak bisa langsung `apt install`:
 
