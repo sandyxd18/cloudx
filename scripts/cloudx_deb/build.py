@@ -116,6 +116,19 @@ fi
 """
 
 
+def _nginx_postrm() -> str:
+    """Appended to an nginx-fronted package's postrm. dpkg deletes the snippet on purge; nginx must stop serving it."""
+    return """
+if [ "$1" = purge ] && [ -d /run/systemd/system ] && command -v nginx >/dev/null 2>&1; then
+    if nginx -t >/dev/null 2>&1; then
+        deb-systemd-invoke reload nginx.service >/dev/null || echo "warning: nginx did not reload; run: systemctl reload nginx" >&2
+    else
+        echo "warning: nginx -t failed, so nginx was not reloaded; fix its config and run: systemctl reload nginx" >&2
+    fi
+fi
+"""
+
+
 def _common_postinst() -> str:
     var_lib = " ".join(f"/var/lib/cloudx/{d}" for d in ("images", "object-store", "compute", "ha-watchdog", "fs-state"))
     return _script(f"""if [ "$1" = "configure" ]; then
@@ -266,6 +279,7 @@ def _stage_unit(staging: Path, version: str, u: Unit, bundled: list[Unit]) -> No
     scripts = _systemd_scripts([u.unit_file, *(b.unit_file for b in bundled)], u.unit_file)
     if nginx:
         scripts["postinst"] = scripts["postinst"].removesuffix("exit 0\n") + _nginx_postinst().lstrip("\n") + "exit 0\n"
+        scripts["postrm"] = scripts["postrm"].removesuffix("exit 0\n") + _nginx_postrm().lstrip("\n") + "exit 0\n"
     for name, text in scripts.items():
         _write(staging / "DEBIAN" / name, text, 0o755)
 

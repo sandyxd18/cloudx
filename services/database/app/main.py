@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from shared.auth_middleware import CurrentUser, InternalAuth
+from shared.catalog_http import install_catalog_error_handler
 from shared.cors import cors_origins
 from shared.db_cloudinit import PORTS
 from shared.db_validate import check_backend_storage, check_cidr, check_engine, check_password, check_size, gen_password
@@ -90,6 +91,7 @@ class Backup(Base):
 RESTORING: set[str] = set()  # ponytail: in memory; lost on restart (an interrupted restore is already marked error)
 
 app = FastAPI(title="cloudx database-api", version="1.0.0")
+install_catalog_error_handler(app)
 app.add_middleware(CORSMiddleware, allow_origins=cors_origins(), allow_methods=["*"], allow_headers=["*"])
 if RequestIDMiddleware:
     app.add_middleware(RequestIDMiddleware)

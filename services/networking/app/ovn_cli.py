@@ -307,7 +307,7 @@ def ensure_security_group_port_group(group: SecurityGroup) -> str:
 
 def apply_security_group_acls(db: Session, group: SecurityGroup) -> None:
     pg = ensure_security_group_port_group(group)
-    ovn("--type=port-group", "--if-exists", "acl-del", pg, check=False)
+    ovn("--type=port-group", "acl-del", pg)  # no --if-exists: acl-del does not take it; pg exists, ensured above
     rules = db.scalars(select(SecurityGroupRule).where(SecurityGroupRule.security_group_id == group.id)).all()
     for rule in rules:
         direction = "to-lport" if rule.direction == "ingress" else "from-lport"

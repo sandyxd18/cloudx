@@ -2,7 +2,9 @@ import os
 import re
 import stat
 
+import pytest
 from shared import manage, migrate
+from sqlalchemy.exc import OperationalError
 
 SECRET_KEYS = ["auth_secret_key", "auth_admin_password", "key_manager_master_key", "metrics_token", "internal_token"]
 
@@ -120,3 +122,16 @@ def test_conf_init_cli(tmp_path):
     sample = make_sample(tmp_path)
     assert manage.main(["conf", "init", "--path", str(conf), "--sample", str(sample)]) == 0
     assert all(values(conf)[k] for k in SECRET_KEYS)
+
+
+def test_catalog_sync_on_a_database_that_cannot_be_reached_exits_with_a_message(monkeypatch, capsys):
+    def unreachable(dry_run):
+        raise OperationalError("SELECT 1", {}, Exception("connection to server at 127.0.0.1 port 5432 failed: Connection refused"))
+
+    monkeypatch.setattr(manage, "sync_catalog", unreachable)
+    with pytest.raises(SystemExit) as exc:
+        manage.main(["catalog", "sync"])
+    message = str(exc.value)
+    assert message.startswith("cannot sync the catalog: ")
+    assert "Connection refused" in message
+    assert "Traceback" not in capsys.readouterr().err

@@ -34,6 +34,7 @@ from shared.auth_middleware import CurrentUser, UserOrInternal
 from shared.schema import require_schema
 
 from shared.request_id_middleware import RequestIDMiddleware
+from shared.catalog_http import install_catalog_error_handler
 from shared.cors import cors_origins
 
 log = logging.getLogger("orchestration-api")
@@ -129,6 +130,7 @@ app = FastAPI(
     description="Auto-Scaling Group Engine for CloudX",
     version="6.2.0",
 )
+install_catalog_error_handler(app)
 
 if RequestIDMiddleware:
     app.add_middleware(RequestIDMiddleware)

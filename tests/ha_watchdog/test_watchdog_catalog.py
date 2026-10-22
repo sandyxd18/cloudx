@@ -1,5 +1,6 @@
-"""ha-watchdog fences when ha-api stays silent. A catalog that cannot name ha-api must be exactly as silent as an
-unreachable ha-api: same verdicts, same fences, never a crash and never a different outcome."""
+"""ha-watchdog fences when ha-api stays silent. A catalog that cannot name ha-api, with no URL saved from an earlier
+pass, must be exactly as silent as an unreachable ha-api: same verdicts, same fences, never a crash and never a
+different outcome. With a saved URL the dead catalog is bypassed (see the end of this file)."""
 import importlib
 
 import pytest
@@ -55,9 +56,10 @@ def make(monkeypatch, tmp_path):
         monkeypatch.setattr(m, "run", lambda cmd, check=True: m.calls.append((cmd[-2:], m.FLAG.exists())) or R())
 
         def silence(mode):
-            if mode == "catalog":
+            if mode == "catalog":  # a catalog that cannot name ha-api and nothing saved from an earlier pass (cold start)
                 monkeypatch.delenv("HA_API_URL")
                 monkeypatch.setattr(catalog, "url", _down)
+                (m.STATE_DIR / "ha_api_url").unlink(missing_ok=True)
             else:
                 def boom(*a, **k):
                     raise requests.Timeout("t")
@@ -153,3 +155,47 @@ def test_step_does_not_raise_on_a_catalog_failure(make):
     st = w.State(0)
     w.step(st, 1)  # resolution failure is handled inside fetch, not left to the main loop's catch-all
     assert st.last_ok == 0 and not st.killed
+
+
+# --- last known good ha-api URL -------------------------------------------------------------------------------------
+# After a pass that resolved ha-api, a dead catalog must not look like a silent ha-api: the saved URL is tried, so
+# fencing depends on whether ha-api really answers. Only a start with nothing saved counts as silent (tests above).
+
+def _saved(w):
+    return w.STATE_DIR / "ha_api_url"
+
+
+def test_the_resolved_ha_api_url_is_saved_for_the_next_start(make):
+    w = make()
+    w.step(w.State(0), 0)
+    assert _saved(w).read_text().strip() == "http://ha:8020"
+
+
+def test_a_dead_catalog_after_a_good_pass_still_reaches_ha_api_through_the_saved_url(make, monkeypatch):
+    w = make()
+    st = w.State(0)
+    w.step(st, 0)
+    monkeypatch.delenv("HA_API_URL")
+    monkeypatch.setattr(catalog, "url", _down)
+    seen = []
+    monkeypatch.setattr(w.requests, "request", lambda method, url, **kw: seen.append(url) or Resp(200, {"domains": ["dom1"]}))
+    w.step(st, 50)
+    assert seen and seen[0].startswith("http://ha:8020/")
+    assert st.last_ok == 50 and not st.killed and w.calls == []
+
+
+def test_a_dead_catalog_does_not_stop_a_really_silent_ha_api_from_being_fenced(make, monkeypatch):
+    w = make()
+    st = w.State(0)
+    w.step(st, 0)
+    monkeypatch.delenv("HA_API_URL")
+    monkeypatch.setattr(catalog, "url", _down)
+
+    def timeout(*a, **k):
+        raise requests.Timeout("t")
+
+    monkeypatch.setattr(w.requests, "request", timeout)
+    w.peers[:] = []
+    for now in (44, 46):
+        w.step(st, now)
+    assert st.killed and w.calls == [(["destroy", "dom1"], True)]

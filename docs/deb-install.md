@@ -209,14 +209,21 @@ Jaringan provider dan floating IP dibuat setelah itu (`../SETUP.md` 2.7).
    | 3 | mengatur OVN: `ovn-remote=tcp:<controller>:6642`, `ovn-encap-type=geneve`, `ovn-encap-ip`, `system-id=<nama node>`; restart `ovn-controller` |
    | 4 | membuat bridge `br-ex` dan memasang interface provider ke dalamnya |
    | 5 | menulis `/etc/cloudx/<svc>/<svc>.conf` untuk `compute-worker`, `metadata-proxy`, `telemetry-worker`, `lb-worker`, `vpn-worker`, dan `bgp-worker`, berisi `compute_host`, `node_name`, `host_ip`, `rabbitmq_url`, `database_url`, dan `auth_api_url` yang mengarah ke controller; tidak ada `*_api_url` lain |
+   | 6 | bila venv paket (`/opt/cloudx/venv`) sudah ada, memasang `libvirt-python` ke dalamnya (dikompilasi di node, butuh jaringan); dilewati bila binding sudah ada, dan bila venv belum ada skrip hanya mencetak perintah yang harus dijalankan nanti |
 
    Alamat service lain (placement, networking, compute, image, dan seterusnya) tidak ditulis di enam file itu. Worker di node ini mengambilnya dari catalog di auth, jadi isi catalog dengan alamat yang bisa dijangkau dari node compute (4.1 langkah 5 dan 6) sebelum memulai worker. Entri yang belum di-sync berisi bawaan `http://127.0.0.1:<port>`, yang tidak terjangkau dari node compute: worker mendapat `ConnectionError` tanpa nama service dan host compute tidak muncul di placement. Jalankan `catalog sync` lebih dulu. `CatalogError` yang menyebut nama service hanya muncul bila service itu tidak ada sama sekali di catalog.
 
-   Skrip tidak mengisi `ovn-bridge-mappings` dan `ovn-cms-options` (lihat `../SETUP.md` 4.3 bila jaringan provider dipakai). Kredensial di `rabbitmq_url` dan `database_url` yang ditulisnya adalah `cloudx:cloudx`; ubah di enam file itu bila berbeda. Pesan penutup skrip menyebut `install-systemd.sh`; abaikan, paketnya sudah terpasang.
+   Skrip tidak mengisi `ovn-bridge-mappings` dan `ovn-cms-options` (lihat `../SETUP.md` 4.3 bila jaringan provider dipakai). Kredensial di `rabbitmq_url` dan `database_url` yang ditulisnya adalah `cloudx:cloudx`; ubah di enam file itu bila berbeda. Pesan penutup skrip menyesuaikan diri: bila venv paket ada, ia menyarankan `systemctl restart 'cloudx-*'` dan bukan `install-systemd.sh`.
 
    Enam file itu conffile paket dan skrip menimpanya setiap dijalankan, termasuk suntingan manual sebelumnya. Karena isinya berbeda dari conf bawaan paket, `dpkg` menanyakan apa yang dilakukan pada upgrade yang membawa conf baru. Pasang dengan `--force-confold` (bagian 6.4) supaya file Anda dipertahankan.
 
-3. Pasang binding libvirt ke venv paket. Tanpanya `compute-worker` tetap start tetapi tidak bisa membuat VM (SETUP.md 4.1). Alat build-nya sudah dipasang oleh langkah 1 di atas.
+3. Pastikan binding libvirt ada di venv paket. Tanpanya `compute-worker` tetap start tetapi tidak bisa membuat VM (SETUP.md 4.1). `cloudx-setup-compute` memasangnya sendiri (langkah 6 di tabel atas) selama paket sudah terpasang saat skrip dijalankan, seperti urutan di atas. Periksa:
+
+   ```bash
+   /opt/cloudx/venv/bin/python -c "import libvirt"
+   ```
+
+   Bila gagal (misalnya skrip dijalankan sebelum paket dipasang), pasang sendiri; alat build-nya sudah dipasang oleh langkah 1:
 
    ```bash
    sudo /opt/cloudx/venv/bin/pip install libvirt-python
@@ -231,7 +238,9 @@ Jaringan provider dan floating IP dibuat setelah itu (`../SETUP.md` 2.7).
         cloudx-lb-worker cloudx-vpn-worker cloudx-bgp-worker cloudx-ha-watchdog
    ```
 
-   Pengaturan `ha-watchdog` ada di `ha.md`. Node yang menjalankannya harus punya `ha_api_url` di conf miliknya sendiri, `/etc/cloudx/ha-watchdog/ha-watchdog.conf` (`[DEFAULT]`), bukan hanya di catalog. Bila ada beberapa instance `ha-api`, tulis dipisah koma: `ha_api_url = http://a:8020,http://b:8020`. Alasannya dua. Override mengalahkan catalog, jadi keputusan fencing watchdog tidak bergantung pada pencarian catalog: watchdog yang start dingin saat auth tidak terjangkau akan membaca pencarian yang gagal itu sebagai "ha-api diam". Selain itu catalog hanya menyimpan URL pertama dari daftar berkoma, jadi failover ke instance kedua hanya jalan lewat override ini.
+   Pengaturan `ha-watchdog` ada di `ha.md`. Node yang menjalankannya harus punya `ha_api_url` di conf miliknya sendiri, `/etc/cloudx/ha-watchdog/ha-watchdog.conf` (`[DEFAULT]`), bukan hanya di catalog. Bila ada beberapa instance `ha-api`, tulis dipisah koma: `ha_api_url = http://a:8020,http://b:8020`. Alasannya dua. Override mengalahkan catalog, jadi keputusan fencing watchdog tidak bergantung pada pencarian catalog. Selain itu catalog hanya menyimpan URL pertama dari daftar berkoma, jadi failover ke instance kedua hanya jalan lewat override ini.
+
+   Tanpa override, watchdog menyimpan URL ha-api terakhir yang berhasil di-resolve ke `/var/lib/cloudx/ha-watchdog/ha_api_url` (bertahan lewat restart dan reboot) dan memakainya bila catalog tidak terjangkau, sehingga auth yang mati tidak dianggap ha-api diam; fencing tetap hanya terjadi bila ha-api memang tidak menjawab. Satu kasus tetap dihitung "ha-api diam": watchdog yang start dingin saat auth tidak terjangkau dan belum pernah menyimpan URL (misalnya node baru). Pada kasus itu hanya override di atas yang melindungi.
 
 5. Node dengan disk Ceph RBD: setelah `/etc/ceph/ceph.conf` dan keyring user (bawaan `client.cloudx`) ada di node ini, jalankan:
 
@@ -333,7 +342,7 @@ sudo nginx -t
 
 ### 6.3 Menghapus paket API
 
-`apt remove cloudx-image-api` (contoh) menghentikan unit, tetapi conffile tetap ada, termasuk snippet nginx. Port luarnya lalu menjawab `502` dari nginx karena socket-nya hilang, sampai paket dipasang lagi atau snippet dihapus. Paket tidak me-reload nginx saat dilepas. `apt purge` menghapus snippet dan conf unit itu (termasuk suntingan Anda); setelahnya tetap jalankan:
+`apt remove cloudx-image-api` (contoh) menghentikan unit, tetapi conffile tetap ada, termasuk snippet nginx. Port luarnya lalu menjawab `502` dari nginx karena socket-nya hilang, sampai paket dipasang lagi atau snippet dihapus. `apt remove` tidak me-reload nginx. `apt purge` menghapus snippet dan conf unit itu (termasuk suntingan Anda) dan `postrm` me-reload nginx sendiri bila `nginx -t` lolos, jadi route itu hilang dari nginx. Bila `nginx -t` gagal, `postrm` hanya mencetak peringatan; perbaiki config lalu jalankan:
 
 ```bash
 sudo systemctl reload nginx

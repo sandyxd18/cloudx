@@ -38,6 +38,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
 from shared.schema import require_schema
 from shared.request_id_middleware import RequestIDMiddleware
+from shared.catalog_http import install_catalog_error_handler
 from shared.cors import cors_origins
 from shared import catalog, dns_names
 
@@ -375,6 +376,7 @@ class HealthMonitorIn(BaseModel):
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(title="cloudx load-balancer-api", version="1.0.0")
+install_catalog_error_handler(app)
 
 app.add_middleware(
     CORSMiddleware,

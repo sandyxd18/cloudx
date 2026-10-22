@@ -37,6 +37,7 @@ LIBVIRT_URI = os.getenv("LIBVIRT_URI", "qemu:///system")
 STATE_DIR = Path(os.getenv("HA_WATCHDOG_STATE_DIR", "/var/lib/cloudx/ha-watchdog"))
 FLAG = STATE_DIR / "fenced"   # compute-worker reads this path: while it exists, no auto-restart
 CACHE = STATE_DIR / "protected.json"
+HA_URL_FILE = STATE_DIR / "ha_api_url"   # last ha-api URL that resolved; used when the catalog cannot be reached
 INTERVAL = 5
 FRESH = 20  # a peer counts our contact with ha-api as alive for this long
 
@@ -47,13 +48,47 @@ class State:
         self.killed = False
 
 
+def _saved_ha_url() -> str:
+    try:
+        return HA_URL_FILE.read_text().strip()
+    except OSError:
+        return ""
+
+
+def _remember_ha_url(url: str) -> None:
+    if _saved_ha_url() == url:
+        return
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = HA_URL_FILE.with_suffix(".tmp")
+        tmp.write_text(url + "\n")
+        tmp.replace(HA_URL_FILE)
+    except OSError as exc:  # best-effort: without it a cold start with a dead catalog simply counts as silent
+        log.warning("could not save the ha-api URL: %s", exc)
+
+
+def ha_api_url() -> str:
+    """The ha-api URL list. When the catalog cannot name it, the last one that resolved (kept across restarts) stands in,
+    so a dead auth is not mistaken for a silent ha-api; with nothing saved the CatalogError propagates."""
+    try:
+        url = catalog.url("ha")
+    except catalog.CatalogError as exc:
+        saved = _saved_ha_url()
+        if not saved:
+            raise
+        log.warning("ha-api URL unresolved (%s), using the last one that resolved: %s", exc, saved)
+        return saved
+    _remember_ha_url(url.strip())
+    return url
+
+
 def fetch(method: str, path: str):
     """(reachable, response). Any HTTP answer, even a 5xx or a refused connection, means the network path works."""
     reachable, fallback = False, None
     try:
-        bases = [u.strip().rstrip("/") for u in catalog.url("ha").split(",") if u.strip()]  # several ha-api instances
+        bases = [u.strip().rstrip("/") for u in ha_api_url().split(",") if u.strip()]  # several ha-api instances
     except catalog.CatalogError as exc:
-        log.warning("ha-api URL unresolved, counted as silent: %s", exc)  # same as every instance timing out
+        log.warning("ha-api URL unresolved and none saved, counted as silent: %s", exc)  # same as every instance timing out
         return False, None
     for base in bases:  # first instance that answers properly wins; a 5xx only counts as reachable
         try:
