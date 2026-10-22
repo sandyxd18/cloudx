@@ -51,7 +51,7 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-echo "===> [1/5] Installing KVM, libvirt, Open vSwitch, strongSwan, BIRD, and OVN Host..."
+echo "===> [1/6] Installing KVM, libvirt, Open vSwitch, strongSwan, BIRD, and OVN Host..."
 apt-get update -qq
 apt-get install -y -qq \
     qemu-kvm libvirt-daemon-system libvirt-clients \
@@ -70,18 +70,18 @@ for ap in usr.lib.ipsec.charon usr.sbin.swanctl; do
         apparmor_parser -R "/etc/apparmor.d/${ap}" 2>/dev/null || true
     fi
 done
-echo "===> [2/5] Ensuring libvirtd service is active..."
+echo "===> [2/6] Ensuring libvirtd service is active..."
 systemctl enable --now libvirtd || true
 systemctl enable --now openvswitch-switch || true
 
-echo "===> [3/5] Configuring OVN Controller target & Geneve encap..."
+echo "===> [3/6] Configuring OVN Controller target & Geneve encap..."
 ovs-vsctl set open_vswitch . external_ids:ovn-remote="tcp:${CONTROLLER_IP}:6642"
 ovs-vsctl set open_vswitch . external_ids:ovn-encap-type=geneve
 ovs-vsctl set open_vswitch . external_ids:ovn-encap-ip="${NODE_IP}"
 ovs-vsctl set open_vswitch . external_ids:system-id="${NODE_NAME}"
 systemctl restart ovn-controller || systemctl restart openvswitch-switch
 
-echo "===> [4/5] Setting up OVS Provider Bridge (br-ex)..."
+echo "===> [4/6] Setting up OVS Provider Bridge (br-ex)..."
 if ! ovs-vsctl br-exists br-ex; then
     ovs-vsctl add-br br-ex
 fi
@@ -99,7 +99,7 @@ else
     echo "⚠️ Warning: Provider interface '${PROVIDER_IF}' not found on this host. Skipping port binding."
 fi
 
-echo "===> [5/5] Generating Multi-Node Environment & Config Files..."
+echo "===> [5/6] Generating Multi-Node Environment & Config Files..."
 mkdir -p /var/lib/cloudx/compute
 
 # /etc/cloudx/cloudx.conf (copied from the controller) holds the secrets; this node's services reach the controller for
@@ -118,9 +118,30 @@ database_url = postgresql+psycopg2://cloudx:cloudx@${CONTROLLER_IP}:5432/cloudx
 auth_api_url = http://${CONTROLLER_IP}:8005
 EOF
 done
+
+echo "===> [6/6] Installing the libvirt Python binding into the CloudX venv (if it exists)..."
+# The worker drives libvirt through this binding; without it the worker starts but cannot create VMs. It is compiled
+# against libvirt-dev (installed in step 1), so it is not part of the prebuilt venv.
+# --- libvirt binding ---
+VENV_PY="${CLOUDX_VENV_PYTHON:-/opt/cloudx/venv/bin/python}"
+if [[ -x "${VENV_PY}" ]]; then
+    if "${VENV_PY}" -c "import libvirt" 2>/dev/null; then
+        echo "libvirt-python is already installed in the CloudX venv"
+    else
+        "${VENV_PY}" -m pip install libvirt-python
+    fi
+else
+    echo "No CloudX venv at ${VENV_PY} yet. Once the CloudX services are installed, run: /opt/cloudx/venv/bin/pip install libvirt-python"
+fi
+# --- end libvirt binding ---
+
 echo ""
 echo "✓ Compute Node Setup Complete! (COMPUTE_HOST=${NODE_NAME})"
 echo "Next Steps:"
-echo "1. Install the CloudX services: sudo ./scripts/install-systemd.sh (see SETUP.md, section 4.4)"
+if [[ -x "${VENV_PY}" ]]; then
+    echo "1. The CloudX packages are installed. Restart the services: sudo systemctl restart 'cloudx-*'"
+else
+    echo "1. Install the CloudX services: sudo ./scripts/install-systemd.sh (see SETUP.md, section 4.4), then run: /opt/cloudx/venv/bin/pip install libvirt-python"
+fi
 echo "2. Start the worker: sudo systemctl enable --now cloudx-compute-worker cloudx-metadata-proxy"
 echo "3. To serve LVM volumes from this node too: sudo ./scripts/prepare-lvm-node.sh --help"

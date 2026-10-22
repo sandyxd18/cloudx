@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 
@@ -53,3 +54,37 @@ def test_build_k3s_image_rejects_bad_input():
     assert subprocess.run(base + ["--dry-run"], text=True, capture_output=True, timeout=20).returncode == 2
     bad = subprocess.run(base + ["--base-image", "u.img", "--k3s-version", "v1;rm -rf /", "--dry-run"], text=True, capture_output=True, timeout=20)
     assert bad.returncode == 2 and "invalid --k3s-version" in bad.stderr
+
+
+def _libvirt_binding_block() -> str:
+    script = (ROOT / "scripts" / "setup-compute-node.sh").read_text(encoding="utf-8")
+    return script.split("# --- libvirt binding ---\n", 1)[1].split("# --- end libvirt binding ---", 1)[0]
+
+
+def _run_libvirt_binding(tmp_path, *, venv: bool, importable: bool = False):
+    python, calls = tmp_path / "python", tmp_path / "calls"
+    if venv:
+        python.write_text(f'#!/bin/sh\nif [ "$1" = "-c" ]; then exit {0 if importable else 1}; fi\necho "$@" >> {calls}\n')
+        python.chmod(0o755)
+    env = {"PATH": os.environ["PATH"], "CLOUDX_VENV_PYTHON": str(python)}
+    result = subprocess.run(["bash", "-c", "set -euo pipefail\n" + _libvirt_binding_block()], env=env, text=True, capture_output=True)
+    return result, (calls.read_text() if calls.exists() else "")
+
+
+def test_setup_compute_node_installs_the_libvirt_binding_when_the_venv_lacks_it(tmp_path):
+    result, calls = _run_libvirt_binding(tmp_path, venv=True, importable=False)
+    assert result.returncode == 0, result.stderr
+    assert calls == "-m pip install libvirt-python\n"
+
+
+def test_setup_compute_node_leaves_a_venv_that_already_has_the_binding_alone(tmp_path):
+    result, calls = _run_libvirt_binding(tmp_path, venv=True, importable=True)
+    assert result.returncode == 0, result.stderr
+    assert calls == ""
+
+
+def test_setup_compute_node_without_a_venv_yet_says_what_to_run_later_and_does_not_fail(tmp_path):
+    result, calls = _run_libvirt_binding(tmp_path, venv=False)
+    assert result.returncode == 0, result.stderr
+    assert calls == ""
+    assert "pip install libvirt-python" in result.stdout
