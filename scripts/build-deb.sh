@@ -12,6 +12,20 @@ for tool in dpkg-deb fakeroot; do
     command -v "${tool}" >/dev/null 2>&1 || { echo "Error: ${tool} not found (apt install dpkg-dev fakeroot)" >&2; exit 1; }
 done
 
+# cloudx-dashboard ships services/dashboard/app/static; without it the dashboard answers 503 "Dashboard not built yet".
+FRONTEND_DIR="${SCRIPT_DIR}/services/dashboard/frontend"
+STATIC_DIR="${SCRIPT_DIR}/services/dashboard/app/static"
+if command -v npm >/dev/null 2>&1; then
+    echo "===> Building dashboard React assets with npm..."
+    (cd "${FRONTEND_DIR}" && { [[ -d node_modules ]] || npm ci; } && npm run build)
+    mkdir -p "${STATIC_DIR}"
+    rm -rf "${STATIC_DIR:?}"/*
+    cp -r "${FRONTEND_DIR}/dist/"* "${STATIC_DIR}/"
+elif [[ ! -f "${STATIC_DIR}/index.html" ]]; then
+    echo "Error: ${STATIC_DIR}/index.html not found and npm is unavailable; the dashboard package would ship without its UI." >&2
+    exit 1
+fi
+
 echo "===> Building CloudX ${VERSION} packages into ${OUT_DIR}..."
 rm -rf "${OUT_DIR}"
 PYTHONPATH="${SCRIPT_DIR}/scripts" python3 -c '
