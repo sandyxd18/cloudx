@@ -96,7 +96,11 @@ compute server show vm1
 curl "http://localhost:8775/openstack/latest/meta_data.json?instance_id=<server-id>"
 ```
 
-VM access through `http://169.254.169.254` is experimental in this single-node milestone. Use config-drive or the host debug URL when validating metadata content.
+### VM cannot reach `http://169.254.169.254`
+
+Known limitation. The metadata path is a host-level setup, not an agent per compute node: `metadata-proxy` listens on port 8776 of the host, and `scripts/setup-metadata-route.sh` adds an `iptables` redirect for `169.254.169.254:80` on that host plus host routes back to the VM subnets through the OVN router's external address (`metadata-proxy.md`). It therefore works for VMs on a single host that does both, and a VM on any other compute node times out (`wget: download timed out`).
+
+This does not stop VMs from booting. SSH keys and user-data are delivered through the config drive (NoCloud), and CirrOS reads them from there; the metadata endpoint is only needed by images that cannot read a config drive. Use the config drive or the host debug URL above when validating metadata content.
 
 ## Floating IP
 
@@ -157,6 +161,32 @@ If the chassis was already renamed, either keep the new name (the two values agr
 gateways as above) or go back to the node name: write it to both places, restart `ovn-controller`, and delete the stale row
 on a node with OVN central (`sudo ovn-sbctl chassis-del <old-name>`). Restarting `ovn-controller` on a node with running VMs
 can interrupt their network for a moment; use a maintenance window.
+
+### Provider network overlaps the Docker bridge
+
+Docker's default bridge `docker0` takes `172.17.0.1/16`, even while it is down with no containers. If the provider network uses
+`172.17.0.0/16` (or contains it), on every host with Docker:
+
+- the host treats `172.17.0.1` as its own address, so pinging the upstream gateway from that host reaches the host itself;
+- the connected route `172.17.0.0/16 dev docker0` (shown as `linkdown`) is found before a route through `br-ex`, so `ssh <floating-ip>` from the host fails with `No route to host` while `ping -I br-ex` works.
+
+Pick a provider CIDR outside `172.17.0.0/16`. If you must keep it, move Docker's bridge in `/etc/docker/daemon.json`
+(`{"bip": "10.200.0.1/24"}`, or `{"bridge": "none"}` as the container service already requires) and restart Docker. As a
+workaround on one host, ping with `ping -I br-ex <ip>` and add a more specific route: `sudo ip route add <ip>/32 dev br-ex`.
+
+### VM has no outbound access (floating IP or router SNAT)
+
+First find where the packet stops. `ovn-trace` shows the logical path; capture on the **physical uplink** of the gateway chassis, not
+on `br-ex`: the internal `br-ex` port only sees traffic addressed to the host itself.
+
+```bash
+# on the VM: ping a public address; on the gateway chassis (see "Floating IP does not answer ARP" to find it):
+sudo tcpdump -nn -e -i <PROVIDER_IF> 'icmp or arp'
+```
+
+- Requests leave with the floating IP (or the router's external address) as source and the upstream gateway's MAC as destination, but no reply comes back: CloudX and OVN are fine and the problem is upstream. The provider range must be routed or NATed by the gateway, and the uplink must accept frames from the router's own MAC address. On a virtualization host (Proxmox, VMware, libvirt) the virtual NIC's MAC or anti-spoofing filter can drop frames whose source MAC is not the NIC's own; disable that filter on the provider NIC. The Proxmox cause is the usual suspect but has not been confirmed on the lab, where only the missing replies were observed.
+- No ARP for the gateway at all: check `ovn-nbctl lr-route-list <router>` (default route via the provider gateway) and that the gateway chassis has the `physnet1:br-ex` mapping.
+- Requests never reach the uplink: use `ovn-trace` on the VM's logical switch to see where the packet is dropped (security group egress ACLs, a missing router port).
 
 ### Gateway IP collides with the real LAN gateway (bridged provider network)
 
