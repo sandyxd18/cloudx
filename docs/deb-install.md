@@ -2,7 +2,7 @@
 
 Cara memasang CloudX di Ubuntu 24.04 (amd64) dengan `apt`, satu paket per service, tanpa `scripts/install-systemd.sh`. Rancangannya ada di `superpowers/specs/2026-10-21-openstack-style-packaging-design.md`. Dokumen ini berisi cara membangun paket, memasangnya per peran, menyebar service ke beberapa node, mengoperasikannya, dan mengupgrade node lab yang dipasang dari tarball.
 
-Penting: runbook upgrade di bagian 7 baru diuji di satu node lab (lihat "Hasil uji" di bagian 7). Jalur node compute, node auth, dan rollback belum diuji. Jalankan di satu node dulu.
+Penting: runbook upgrade di bagian 7 sudah diuji di tiga node lab: infra03, compute02, dan infra01 (node auth); lihat "Hasil uji" di bagian 7. Prosedur "Bila gagal" dan pemasangan bersih tanpa tarball belum diuji. Jalankan di satu node dulu.
 
 ## 1. Isi paket
 
@@ -55,13 +55,7 @@ Syarat:
 
 - `dpkg-deb`, `fakeroot`, dan `python3` 3.12 dengan modul `venv`.
 - Jaringan: `pip` mengisi `/opt/cloudx/venv` (di dalam `cloudx-common`) dan venv CLI saat build.
-- Aset statis dashboard harus sudah ada di `services/dashboard/app/static/`. `make deb` tidak membangunnya (`make package` yang membangunnya). Bila belum ada:
-
-  ```bash
-  (cd services/dashboard/frontend && npm ci && npm run build)
-  mkdir -p services/dashboard/app/static
-  cp -r services/dashboard/frontend/dist/* services/dashboard/app/static/
-  ```
+- Node.js dengan `npm` untuk aset UI dashboard. `make deb` membangunnya sendiri (`npm ci` bila `node_modules` belum ada, lalu `npm run build`) ke `services/dashboard/app/static/`. Tanpa `npm`, build hanya jalan bila `services/dashboard/app/static/index.html` sudah ada; kalau tidak, build berhenti dengan galat. Paket dashboard tanpa aset ini tetap bisa dipasang tetapi menjawab `503 Dashboard not built yet`.
 
 `make deb` menghapus isi `dist/deb/` lebih dulu. Memeriksa hasilnya:
 
@@ -87,7 +81,7 @@ echo 'deb [trusted=yes] file:/srv/cloudx-repo ./' | sudo tee /etc/apt/sources.li
 sudo apt update
 ```
 
-`trusted=yes` melewati pemeriksaan tanda tangan; pakai hanya di jaringan lab. Tanpa repositori, `apt` juga bisa memasang berkas langsung dan menyelesaikan dependensi di antara berkas yang disebut bersamaan:
+`trusted=yes` melewati pemeriksaan tanda tangan; pakai hanya di jaringan lab. `apt update` mencetak beberapa baris `Ign:` dan `Err:` untuk repositori ini (`Release`, `InRelease`, dan `Translation-en`: `File not found - .../en.gz`). Itu wajar untuk repositori datar buatan `dpkg-scanpackages`: berkas-berkas itu opsional dan `Packages` tetap terbaca (`Get: ... Packages [... B]`). Untuk membungkamnya, tambahkan `Acquire::Languages "none";` di `/etc/apt/apt.conf.d/99cloudx`. Tanpa repositori, `apt` juga bisa memasang berkas langsung dan menyelesaikan dependensi di antara berkas yang disebut bersamaan:
 
 ```bash
 sudo apt install ./cloudx-common_*.deb ./cloudx-image-api_*.deb
@@ -155,7 +149,7 @@ Urutan pertama kali:
 
    Kuncinya adalah kolom `url_key` di `services/shared/services.py`: `compute_api_url`, `image_api_url`, `networking_api_url`, `block_store_api_url`, `placement_api_url`, `object_store_api_url`, `load_balancer_api_url`, `metadata_api_url`, `telemetry_api_url`, `billing_api_url`, `event_api_url`, `orchestration_api_url`, `key_manager_api_url`, `k8s_engine_api_url`, `dns_api_url`, `file_store_api_url`, `container_api_url`, `database_api_url`, `ha_api_url`, `messaging_api_url`, `reservation_api_url` (dan `auth_api_url` dari `cloudx.conf`). Varian publiknya `<nama>_api_public_url`. Bila nilainya beberapa URL dipisah koma (`ha_api_url`), yang didaftarkan hanya URL pertama.
 
-6. Isi service catalog di auth.
+6. Isi service catalog di auth. Perintahnya butuh `cloudx-auth-api` dan `cloudx-db` di node yang sama (`cloudx-db` memberi `cloudx-manage` letak direktori service); tanpa `cloudx-db` ia berhenti dengan `cannot find the services directory`.
 
    ```bash
    sudo cloudx-manage catalog sync --dry-run   # hanya mencetak perubahan
@@ -375,7 +369,14 @@ Urutan dan perintah di bawah disusun dari isi paket dan dari `install-systemd.sh
 - Dua galat ditemukan dan sudah diperbaiki di dokumen dan kode: langkah 4, 7, dan rollback membaca `/root/cloudx-active-before.txt` tanpa `sudo` (`/root` berizin `700`, jadi langkah 4 berhenti sebelum `apt install`), dan gunicorn mencatat `Control server error: Permission denied: '/opt/cloudx/.gunicorn'` di setiap API karena home user `cloudx` (`/opt/cloudx`) dimiliki root; launcher sekarang memakai `--no-control-socket`.
 - Sesaat setelah pemasangan, worker mencatat `Max retries exceeded` ke API-nya sendiri sampai API itu start (urutan start berurutan); hilang sendiri dalam hitungan detik.
 
-Belum diuji: node compute (`cloudx-setup-compute`, `libvirt-python`, langkah 6), node auth (`db sync`, `catalog sync`, yang butuh paket `cloudx-auth-api` di node itu), prosedur "Bila gagal", pemasangan bersih tanpa tarball sebelumnya, dan `--no-control-socket` pada paket yang sudah dibangun ulang (diuji lewat tes unit dengan gunicorn sungguhan, belum di node).
+**Hasil uji lanjutan (2026-10-22).**
+
+- `infra03` dipasang ulang dengan `cloudx-common` hasil perbaikan: tidak ada lagi galat control socket sesudah restart.
+- `compute02` (tanpa VM; `bgp-worker`, `compute-worker`, `lb-worker`, `metadata-api`, `metadata-proxy`, `telemetry-worker`, `vpn-worker`): langkah 1 sampai 6 dan `libvirt-python` berhasil. Node terdaftar di Placement dan di daftar hypervisor. VM cirros yang dibuat lewat API mendarat di compute02, boot sampai prompt login dan mendapat DHCP dari OVN; VM dan volume rootnya lalu dihapus.
+- `infra01` (node auth, juga PostgreSQL, RabbitMQ, dan OVN central; `auth-api`, `block-store-worker`, `compute-api`, `conductor`, `dashboard`, `load-balancer-api`, `metadata-api`, `networking-api`, `placement-api`, `reaper`, ditambah `cloudx-db` dan `cloudx-cli`): seluruh runbook, termasuk `db sync` (tanpa perubahan) dan `catalog sync`, berjalan dalam satu skrip dengan `pg_dumpall` sebagai cadangan. Sepuluh unit aktif sama seperti sebelumnya dan kedua VM yang ada tetap `ACTIVE`. CLI dengan lingkungan bersih (tanpa satu pun `CLOUDX_<SVC>_URL`) menemukan service di tiga node infra hanya lewat katalog. WebSocket dashboard (`/ws/events`) menjawab `101 Switching Protocols` di bawah gunicorn.
+- Tiga galat lagi ditemukan di uji ini dan diperbaiki: paket dashboard dibangun tanpa aset UI dan menjawab `503` (kini `make deb` membangun aset atau berhenti dengan galat); `cloudx` dari `cloudx-cli` gagal dengan `No module named 'tabulate'` karena `cli/requirements.txt` tidak memuatnya; dan `cloudx-manage catalog sync` butuh `cloudx-db` di node yang sama (kini tertulis di 4.1 langkah 6).
+
+Belum diuji: pemasangan bersih tanpa tarball sebelumnya, prosedur "Bila gagal", dan node infra02 (image, block-store-api, object-store, key-manager, telemetry, billing, event) yang masih bertarball.
 
 Mengapa tidak bisa langsung `apt install`:
 
