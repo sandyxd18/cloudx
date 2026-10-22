@@ -15,6 +15,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from . import migrate
 from .config import load_service_config
 
@@ -117,7 +119,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.path}: generated {', '.join(generated)}" if generated else f"{args.path}: nothing to generate")
         return 0
     if (args.group, args.action) == ("catalog", "sync"):
-        changes = sync_catalog(args.dry_run)
+        try:
+            changes = sync_catalog(args.dry_run)
+        except SQLAlchemyError as exc:
+            sys.exit(f"cannot sync the catalog: {(str(exc.orig or exc).strip().splitlines() or [''])[0]}")
         print("\n".join(changes) if changes else "catalog already up to date")
         return 0
     return 2
