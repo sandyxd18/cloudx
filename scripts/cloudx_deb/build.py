@@ -24,8 +24,12 @@ META_RECOMMENDS = {
     "compute": ["libvirt-daemon-system", "qemu-kvm", "openvswitch-switch", "ovn-host", "qemu-utils"],
     "storage": [],
 }
-HOST_SCRIPTS = {"usr/sbin/cloudx-setup-compute": "setup-compute-node.sh",
-                "usr/sbin/cloudx-setup-ceph-secret": "setup-ceph-libvirt-secret.sh"}
+# Host preparation the packages cannot do on their own (they need addresses or disks), shipped with the role's meta package.
+HOST_SCRIPTS = {
+    "compute": {"usr/sbin/cloudx-setup-compute": "setup-compute-node.sh",
+                "usr/sbin/cloudx-setup-ceph-secret": "setup-ceph-libvirt-secret.sh"},
+    "storage": {"usr/sbin/cloudx-setup-storage": "prepare-lvm-node.sh"},
+}
 _DEFAULT_SECRET = re.compile(r"^auth_secret_key *= *cloudx-secret-key-change-in-production.*(\n|$)", re.MULTILINE)
 
 
@@ -246,11 +250,10 @@ def _stage_meta(staging: Path, version: str, role: str, packaged: list[Unit]) ->
     recommends += ["cloudx-cli", *META_RECOMMENDS[role]]
     _write(staging / "DEBIAN/control", control_file(
         f"cloudx-{role}", version, depends, f"CloudX {role} node: every {role} service", recommends))
-    if role == "compute":
-        for dest, source in HOST_SCRIPTS.items():
-            (staging / dest).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / "scripts" / source, staging / dest)  # bytes: the scripts hold non-ASCII text
-            (staging / dest).chmod(0o755)
+    for dest, source in HOST_SCRIPTS.get(role, {}).items():
+        (staging / dest).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "scripts" / source, staging / dest)  # bytes: the scripts hold non-ASCII text
+        (staging / dest).chmod(0o755)
 
 
 def _stage_unit(staging: Path, version: str, u: Unit, bundled: list[Unit]) -> None:
