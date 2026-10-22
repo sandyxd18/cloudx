@@ -2,7 +2,7 @@
 
 Cara memasang CloudX di Ubuntu 24.04 (amd64) dengan `apt`, satu paket per service, tanpa `scripts/install-systemd.sh`. Rancangannya ada di `superpowers/specs/2026-10-21-openstack-style-packaging-design.md`. Dokumen ini berisi cara membangun paket, memasangnya per peran, menyebar service ke beberapa node, mengoperasikannya, dan mengupgrade node lab yang dipasang dari tarball.
 
-Penting: runbook upgrade di bagian 7 sudah diuji di tiga node lab: infra03, compute02, dan infra01 (node auth); lihat "Hasil uji" di bagian 7. Prosedur "Bila gagal" dan pemasangan bersih tanpa tarball belum diuji. Jalankan di satu node dulu.
+Penting: runbook upgrade di bagian 7 sudah diuji di empat node lab: infra01 (node auth), infra02, infra03, dan compute02; lihat "Hasil uji" di bagian 7. Prosedur "Bila gagal" dan pemasangan bersih tanpa tarball belum diuji. Jalankan di satu node dulu.
 
 ## 1. Isi paket
 
@@ -376,7 +376,9 @@ Urutan dan perintah di bawah disusun dari isi paket dan dari `install-systemd.sh
 - `infra01` (node auth, juga PostgreSQL, RabbitMQ, dan OVN central; `auth-api`, `block-store-worker`, `compute-api`, `conductor`, `dashboard`, `load-balancer-api`, `metadata-api`, `networking-api`, `placement-api`, `reaper`, ditambah `cloudx-db` dan `cloudx-cli`): seluruh runbook, termasuk `db sync` (tanpa perubahan) dan `catalog sync`, berjalan dalam satu skrip dengan `pg_dumpall` sebagai cadangan. Sepuluh unit aktif sama seperti sebelumnya dan kedua VM yang ada tetap `ACTIVE`. CLI dengan lingkungan bersih (tanpa satu pun `CLOUDX_<SVC>_URL`) menemukan service di tiga node infra hanya lewat katalog. WebSocket dashboard (`/ws/events`) menjawab `101 Switching Protocols` di bawah gunicorn.
 - Tiga galat lagi ditemukan di uji ini dan diperbaiki: paket dashboard dibangun tanpa aset UI dan menjawab `503` (kini `make deb` membangun aset atau berhenti dengan galat); `cloudx` dari `cloudx-cli` gagal dengan `No module named 'tabulate'` karena `cli/requirements.txt` tidak memuatnya; dan `cloudx-manage catalog sync` butuh `cloudx-db` di node yang sama (kini tertulis di 4.1 langkah 6).
 
-Belum diuji: pemasangan bersih tanpa tarball sebelumnya, prosedur "Bila gagal", dan node infra02 (image, block-store-api, object-store, key-manager, telemetry, billing, event) yang masih bertarball.
+- `infra02` (`image-api` dan worker, `block-store-api`, `object-store-api`, `key-manager-api`, `telemetry-api`, `billing-api` dan worker, `event-api` dan worker): langkah 1 sampai 5 dan 7 berjalan dalam satu skrip dengan pemeriksaan awal sebelum ada yang dihentikan. Sepuluh unit aktif sama seperti sebelumnya, semua API menjawab `200` lokal dan dari node lain, dan `/var/lib/cloudx/images` utuh. CLI berlingkungan bersih mencapai image, volume, secret, alarm, event, dan object-store. Unggahan 20 MB lewat nginx ke `image-api` (jauh di atas batas 1 MB bawaan nginx) selesai dalam 1,4 detik dan checksum berkas di disk sama dengan sumbernya.
+
+Belum diuji: pemasangan bersih tanpa tarball sebelumnya, prosedur "Bila gagal", serta node compute01 dan compute03 (masih bertarball; masing-masing menjalankan VM).
 
 Mengapa tidak bisa langsung `apt install`:
 
