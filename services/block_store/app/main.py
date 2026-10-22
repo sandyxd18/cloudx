@@ -7,6 +7,7 @@ import threading
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from shared.request_id_middleware import RequestIDMiddleware
+from shared.catalog_http import install_catalog_error_handler
 from shared.cors import cors_origins
 from shared.schema import require_schema
 from sqlalchemy import text
@@ -55,6 +56,7 @@ Status transitions:
   snapshot       → status='creating'  → worker → 'available'
 """
 app = FastAPI(title="cloudx block-store-api", version="3.0.0")
+install_catalog_error_handler(app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins(),
