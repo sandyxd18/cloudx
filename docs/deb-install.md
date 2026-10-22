@@ -238,7 +238,9 @@ Jaringan provider dan floating IP dibuat setelah itu (`../SETUP.md` 2.7).
         cloudx-lb-worker cloudx-vpn-worker cloudx-bgp-worker cloudx-ha-watchdog
    ```
 
-   Pengaturan `ha-watchdog` ada di `ha.md`. Node yang menjalankannya harus punya `ha_api_url` di conf miliknya sendiri, `/etc/cloudx/ha-watchdog/ha-watchdog.conf` (`[DEFAULT]`), bukan hanya di catalog. Bila ada beberapa instance `ha-api`, tulis dipisah koma: `ha_api_url = http://a:8020,http://b:8020`. Alasannya dua. Override mengalahkan catalog, jadi keputusan fencing watchdog tidak bergantung pada pencarian catalog: watchdog yang start dingin saat auth tidak terjangkau akan membaca pencarian yang gagal itu sebagai "ha-api diam". Selain itu catalog hanya menyimpan URL pertama dari daftar berkoma, jadi failover ke instance kedua hanya jalan lewat override ini.
+   Pengaturan `ha-watchdog` ada di `ha.md`. Node yang menjalankannya harus punya `ha_api_url` di conf miliknya sendiri, `/etc/cloudx/ha-watchdog/ha-watchdog.conf` (`[DEFAULT]`), bukan hanya di catalog. Bila ada beberapa instance `ha-api`, tulis dipisah koma: `ha_api_url = http://a:8020,http://b:8020`. Alasannya dua. Override mengalahkan catalog, jadi keputusan fencing watchdog tidak bergantung pada pencarian catalog. Selain itu catalog hanya menyimpan URL pertama dari daftar berkoma, jadi failover ke instance kedua hanya jalan lewat override ini.
+
+   Tanpa override, watchdog menyimpan URL ha-api terakhir yang berhasil di-resolve ke `/var/lib/cloudx/ha-watchdog/ha_api_url` (bertahan lewat restart dan reboot) dan memakainya bila catalog tidak terjangkau, sehingga auth yang mati tidak dianggap ha-api diam; fencing tetap hanya terjadi bila ha-api memang tidak menjawab. Satu kasus tetap dihitung "ha-api diam": watchdog yang start dingin saat auth tidak terjangkau dan belum pernah menyimpan URL (misalnya node baru). Pada kasus itu hanya override di atas yang melindungi.
 
 5. Node dengan disk Ceph RBD: setelah `/etc/ceph/ceph.conf` dan keyring user (bawaan `client.cloudx`) ada di node ini, jalankan:
 
