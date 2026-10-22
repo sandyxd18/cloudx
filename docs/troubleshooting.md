@@ -246,3 +246,28 @@ If a previous server delete left a volume stuck as `in-use`, repair only the blo
 ```bash
 block-store volume force-detach vol1
 ```
+
+## Installation
+
+### OVN chassis does not register (`already has encap ip ... cannot duplicate`)
+
+`/var/log/ovn/ovn-controller.log` repeats `'<uuid>' already has encap ip '<ip>' and type 'geneve', cannot duplicate on '<node>'`
+and `ovn-sbctl show` has no chassis for the node. The `ovn-controller` that `ovn-central` brings had already registered the node
+under a random UUID; OVN refuses a second chassis with the same encap IP until the first is gone. `cloudx-setup-compute` deletes
+the old row itself. If it could not reach the Southbound DB, do it by hand with the UUID from the log message:
+
+```bash
+sudo ovn-sbctl --db=tcp:<controller-ip>:6642 chassis-del <uuid>
+```
+
+`ovn-controller` retries every 15 seconds and registers by itself afterwards.
+
+### `HTTP 400: No volume types are configured`
+
+`cloudx server create` fails with "An admin must create at least one volume type before creating volumes". Every server creates a
+root volume in block-store, so a volume type and a storage backend are required before the first VM. Set the backend up with
+`cloudx-setup-storage` (quickstart step 6) and create the type:
+
+```bash
+cloudx volume-type create gp2 --backend lvm --disk-type sata_ssd --max-iops 3000 --max-throughput 125
+```
