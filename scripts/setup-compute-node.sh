@@ -78,7 +78,13 @@ echo "===> [3/6] Configuring OVN Controller target & Geneve encap..."
 ovs-vsctl set open_vswitch . external_ids:ovn-remote="tcp:${CONTROLLER_IP}:6642"
 ovs-vsctl set open_vswitch . external_ids:ovn-encap-type=geneve
 ovs-vsctl set open_vswitch . external_ids:ovn-encap-ip="${NODE_IP}"
+# --- system-id ---
+# ovs-ctl rewrites external_ids:system-id from system-id.conf whenever Open vSwitch starts. A name set only with
+# ovs-vsctl is lost on the next restart (an unattended upgrade is enough) and the chassis comes back under a random UUID.
+SYSTEM_ID_CONF="${OVS_SYSTEM_ID_CONF:-/etc/openvswitch/system-id.conf}"
+echo "${NODE_NAME}" > "${SYSTEM_ID_CONF}"
 ovs-vsctl set open_vswitch . external_ids:system-id="${NODE_NAME}"
+# --- end system-id ---
 systemctl restart ovn-controller || systemctl restart openvswitch-switch
 
 echo "===> [4/6] Setting up OVS Provider Bridge (br-ex)..."

@@ -1,5 +1,7 @@
 import ipaddress
+import json
 import os
+import socket
 
 from fastapi import HTTPException
 from shared.proc import run
@@ -96,13 +98,35 @@ def sbctl(*args: str) -> str:
     cmd = ["ovn-sbctl", f"--db={os.environ.get('OVN_SB_DB', 'tcp:127.0.0.1:6642')}", "--timeout=8", *args]
     return run(cmd, check=False, timeout=OVN_TIMEOUT).stdout.strip()
 
+def _chassis_table() -> list[dict]:
+    """Southbound Chassis rows as {name, hostname, config}; empty when ovn-sbctl cannot answer."""
+    try:
+        data = json.loads(sbctl("--format=json", "--columns=name,hostname,other_config", "find", "Chassis"))["data"]
+    except (ValueError, KeyError):
+        return []
+    return [{"name": name, "hostname": hostname, "config": dict(config[1]) if config and config[0] == "map" else {}}
+            for name, hostname, config in data]
+
+def _can_be_gateway(chassis: dict) -> bool:
+    """enable-chassis-as-gw and a bridge mapping for the provider network: the chassis has an uplink to carry NAT traffic."""
+    config = chassis["config"]
+    mapped = [m.split(":", 1)[0] for m in config.get("ovn-bridge-mappings", "").split(",") if m]
+    return "enable-chassis-as-gw" in config.get("ovn-cms-options", "").split(",") and PROVIDER_PHYSNET in mapped
+
 def get_local_chassis_id() -> str | None:
-    """Chassis to pin the gateway to: this node's own (OVS system-id) if it runs ovn-controller, else the first one in SB."""
-    proc = run(["ovn-sbctl", f"--db={os.environ.get('OVN_SB_DB', 'tcp:127.0.0.1:6642')}", "--timeout=8", "--bare",
-                "--columns=name", "find", "Chassis"], check=False, timeout=OVN_TIMEOUT)
-    names = [n.strip('"') for n in proc.stdout.split()] if proc.returncode == 0 else []
-    local = ovs("get", "open_vswitch", ".", "external_ids:system-id", check=False).strip('"') if _OVS_VSCTL else ""
-    return local if local in names else (names[0] if names else None)
+    """Chassis to pin the router gateway to: this host's own if it can be a gateway, else the first gateway-capable one.
+
+    The local chassis is matched by host name in the Southbound DB. Asking Open vSwitch for the system-id does not work
+    here: this service runs as the unprivileged `cloudx` user, and the id changes when Open vSwitch restarts.
+    Without any gateway-capable chassis (single-node labs that never set enable-chassis-as-gw) the local chassis, or
+    the first one, is used as before.
+    """
+    chassis = _chassis_table()
+    short = socket.gethostname().split(".")[0]
+    mine = [c for c in chassis if c["hostname"].split(".")[0] == short]
+    gateways = sorted((c for c in chassis if _can_be_gateway(c)), key=lambda c: c["hostname"])
+    preference = [*(c for c in mine if _can_be_gateway(c)), *gateways, *mine, *chassis[:1]]
+    return preference[0]["name"] if preference else None
 def localnet_port_name(network_name: str) -> str:
     return f"{network_name}-localnet"
 
