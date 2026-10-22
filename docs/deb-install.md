@@ -587,6 +587,8 @@ Bila Anda sudah terlanjur memakai `apt purge`, pulihkan `/etc/cloudx/<unit>/<uni
 | TLS dan path routing | belum ada. nginx hanya mendengarkan HTTP di port luar masing-masing; tidak ada routing berbasis path (`/image`) |
 | `nginx -t` gagal saat pasang | pemasangan paket API tidak gagal; pesan `warning: nginx -t failed` dicetak. Periksa dengan `sudo nginx -t`, perbaiki, lalu `sudo systemctl reload nginx`. Port yang masih dipegang proses lain (misalnya gunicorn lama) membuat reload gagal mengikat port; hentikan proses itu dan jalankan `sudo systemctl restart nginx` |
 | Arsitektur dan distro | hanya Ubuntu 24.04 amd64 dengan Python 3.12 |
+| Metadata VM | `169.254.169.254` dilayani lewat aturan `iptables` di host tempat `metadata-proxy` berjalan (`scripts/setup-metadata-route.sh`), bukan agen per node compute. VM di node compute lain tidak menjangkaunya; kunci SSH dan user-data tetap sampai lewat config drive (`troubleshooting.md`) |
+| CIDR jaringan provider | jangan memakai `172.17.0.0/16` bila Docker terpasang: `docker0` memakai `172.17.0.1/16` dan merusak routing dari host (`troubleshooting.md`) |
 
 ### Persiapan host yang tidak dikerjakan paket
 

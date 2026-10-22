@@ -152,16 +152,21 @@ sudo ovs-vsctl show | grep -E "br-ex|br-int"
 
 ## 6. Create the public (provider) network
 
-Use the address range of the network behind `PROVIDER_IF`. The example below is the range used on the lab; change all four values.
+Use the address range of the network behind `PROVIDER_IF`: its CIDR, the gateway that routes it to the outside, and a free range for floating IPs. The values below are an example; replace all four.
+
+Do not use `172.17.0.0/16`. Docker's default bridge (`docker0`) takes `172.17.0.1/16` on any host where Docker is installed, which breaks routing to that range from the host (see `troubleshooting.md`, "Provider network overlaps the Docker bridge").
 
 ```bash
+export PUBLIC_CIDR=192.168.100.0/24 PUBLIC_GW=192.168.100.1
+export POOL_START=192.168.100.100 POOL_END=192.168.100.200
+
 cloudx network create public-net --external
 cloudx subnet create public-subnet \
   --network public-net \
-  --cidr 172.17.0.0/16 \
-  --gateway 172.17.0.1 \
-  --allocation-start 172.17.0.100 \
-  --allocation-end 172.17.0.200
+  --cidr "$PUBLIC_CIDR" \
+  --gateway "$PUBLIC_GW" \
+  --allocation-start "$POOL_START" \
+  --allocation-end "$POOL_END"
 ```
 
 ## 7. Boot your first VM
@@ -205,11 +210,25 @@ ping -c 3 <floating-ip>
 ssh -i demo-key.pem cirros@<floating-ip>       # CirrOS user "cirros"
 ```
 
-The floating IP is reachable from machines on the network behind `PROVIDER_IF`. From the host itself, add an address of that network to `br-ex` first, for example `sudo ip addr add 172.17.0.2/16 dev br-ex && sudo ip link set br-ex up`.
+The floating IP is reachable from machines on the network behind `PROVIDER_IF`. From the host itself, give `br-ex` a free address of that network first and send the traffic out of it explicitly, because another interface may already hold a route for the range:
+
+```bash
+sudo ip addr add 192.168.100.2/24 dev br-ex && sudo ip link set br-ex up    # an unused address of your PUBLIC_CIDR
+ping -I br-ex -c 3 <floating-ip>
+sudo ip route add <floating-ip>/32 dev br-ex src 192.168.100.2              # only if ssh says "No route to host"
+```
+
+Remove the address and the route again when you are done (`ip addr del`, `ip route del`).
 
 ## 9. The web dashboard
 
 Open `http://<MGMT_IP>:8080/` and log in as `admin` with the password from step 4.
+
+## Known limitations
+
+- **Metadata service.** A VM cannot reach `http://169.254.169.254` unless the host it runs on has the metadata redirect (`scripts/setup-metadata-route.sh`, see `metadata-proxy.md`), and that is a single-host setup. SSH keys and user-data are delivered through the config drive instead, which is why the CirrOS VM above boots and accepts your key without the metadata service. Images that only read the network metadata endpoint get no data on compute nodes.
+- **Internet access from VMs.** A VM with a floating IP leaves the router with that address, and your network must route or NAT the provider range upstream. If pings to the outside get no reply, see `troubleshooting.md`, "VM has no outbound access".
+- **Block storage** is not part of this guide (it needs an LVM or Ceph backend); see `storage-backend.md`.
 
 ## Clean up
 
@@ -226,5 +245,5 @@ cloudx network delete demo-net
 
 - `deb-install.md`: multiple nodes, upgrades, rollback, service placement
 - `user-guide-cli.md`: the full CLI
-- `troubleshooting.md`: common failures
+- `troubleshooting.md`: common failures, including floating IPs, metadata and provider-network pitfalls
 - `ha.md`, `dns.md`, `k8s-engine.md`: optional services that need extra host preparation
