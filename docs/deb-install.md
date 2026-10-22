@@ -206,14 +206,14 @@ Jaringan provider dan floating IP dibuat setelah itu (`../SETUP.md` 2.7).
    |---|---|
    | 1 | `apt-get install` paket host: QEMU/KVM, libvirt, Open vSwitch, `ovn-host`, strongSwan, BIRD, HAProxy, cloud-image-utils, dan alat build untuk `libvirt-python`; menonaktifkan `strongswan`, `strongswan-starter`, dan `bird` bawaan distro; mematikan profil AppArmor `charon` dan `swanctl` |
    | 2 | `systemctl enable --now libvirtd openvswitch-switch` |
-   | 3 | mengatur OVN: `ovn-remote=tcp:<controller>:6642`, `ovn-encap-type=geneve`, `ovn-encap-ip`, `system-id=<nama node>` (juga ditulis ke `/etc/openvswitch/system-id.conf` supaya tidak berganti nama saat Open vSwitch di-restart); restart `ovn-controller` |
+   | 3 | mengatur OVN: `ovn-remote=tcp:<controller>:6642`, `ovn-encap-type=geneve`, `ovn-encap-ip`, `system-id=<nama node>` (juga ditulis ke `/etc/openvswitch/system-id.conf` supaya tidak berganti nama saat Open vSwitch di-restart); restart `ovn-controller`; lalu menghapus chassis lama dari Southbound DB (`ovn-sbctl chassis-del`) bila node sudah terdaftar dengan nama lain, misalnya UUID acak dari `ovn-controller` yang dibawa `ovn-central` (tanpa itu OVN menolak chassis baru dengan IP encap yang sama) |
    | 4 | membuat bridge `br-ex` dan memasang interface provider ke dalamnya |
    | 5 | menulis `/etc/cloudx/<svc>/<svc>.conf` untuk `compute-worker`, `metadata-proxy`, `telemetry-worker`, `lb-worker`, `vpn-worker`, dan `bgp-worker`, berisi `compute_host`, `node_name`, `host_ip`, `rabbitmq_url`, `database_url`, dan `auth_api_url` yang mengarah ke controller; tidak ada `*_api_url` lain |
    | 6 | bila venv paket (`/opt/cloudx/venv`) sudah ada, memasang `libvirt-python` ke dalamnya (dikompilasi di node, butuh jaringan); dilewati bila binding sudah ada, dan bila venv belum ada skrip hanya mencetak perintah yang harus dijalankan nanti |
 
    Alamat service lain (placement, networking, compute, image, dan seterusnya) tidak ditulis di enam file itu. Worker di node ini mengambilnya dari catalog di auth, jadi isi catalog dengan alamat yang bisa dijangkau dari node compute (4.1 langkah 5 dan 6) sebelum memulai worker. Entri yang belum di-sync berisi bawaan `http://127.0.0.1:<port>`, yang tidak terjangkau dari node compute: worker mendapat `ConnectionError` tanpa nama service dan host compute tidak muncul di placement. Jalankan `catalog sync` lebih dulu. `CatalogError` yang menyebut nama service hanya muncul bila service itu tidak ada sama sekali di catalog.
 
-   Skrip tidak mengisi `ovn-bridge-mappings` dan `ovn-cms-options` (lihat `../SETUP.md` 4.3 bila jaringan provider dipakai). Kredensial di `rabbitmq_url` dan `database_url` yang ditulisnya adalah `cloudx:cloudx`; ubah di enam file itu bila berbeda. Pesan penutup skrip menyesuaikan diri: bila venv paket ada, ia menyarankan `systemctl restart 'cloudx-*'` dan bukan `install-systemd.sh`.
+   Bila interface provider ada, skrip memasangnya ke `br-ex` dan menulis `ovn-bridge-mappings=physnet1:br-ex` (nama physnet dari `PROVIDER_PHYSNET`, bawaan `physnet1`; pemetaan lain yang sudah ada dipertahankan). `networking-api` tidak bisa menuliskannya sendiri karena berjalan sebagai user `cloudx`, yang tidak boleh menulis ke socket Open vSwitch. Skrip tidak mengisi `ovn-cms-options=enable-chassis-as-gw`: tandai node gateway (biasanya node infra) dengan `sudo ovs-vsctl set open_vswitch . external_ids:ovn-cms-options=enable-chassis-as-gw`. Tanpa node bertanda itu, gateway router dipasang di chassis tempat `networking-api` berjalan. Kredensial di `rabbitmq_url` dan `database_url` yang ditulisnya adalah `cloudx:cloudx`; ubah di enam file itu bila berbeda. Pesan penutup skrip menyesuaikan diri: bila venv paket ada, ia menyarankan `systemctl restart 'cloudx-*'` dan bukan `install-systemd.sh`.
 
    Enam file itu conffile paket dan skrip menimpanya setiap dijalankan, termasuk suntingan manual sebelumnya. Karena isinya berbeda dari conf bawaan paket, `dpkg` menanyakan apa yang dilakukan pada upgrade yang membawa conf baru. Pasang dengan `--force-confold` (bagian 6.4) supaya file Anda dipertahankan.
 
@@ -259,7 +259,9 @@ Jaringan provider dan floating IP dibuat setelah itu (`../SETUP.md` 2.7).
 sudo apt install cloudx-storage
 ```
 
-`block-store-worker` butuh pengaturan per node di `/etc/cloudx/block-store-worker/block-store-worker.conf`: `block_store_host`, `iscsi_export`, `iscsi_portal_ip`, `storage_lvm_driver`, `lvm_pv_name`, `lvm_vg_name`, ditambah `rabbitmq_url` dan `database_url` ke controller. Kunci per node itu ditulis oleh `scripts/prepare-lvm-node.sh --host <nama> --portal-ip <ip> [--device /dev/sdb]`, dijalankan dari checkout repo (skrip ini tidak ada di paket; langkah lengkapnya di `two-node-lvm-lab.md`). Skrip menimpa file conf itu dan tidak menulis `rabbitmq_url` maupun `database_url`, jadi tambahkan keduanya sesudahnya.
+`block-store-worker` butuh pengaturan per node di `/etc/cloudx/block-store-worker/block-store-worker.conf`: `block_store_host`, `iscsi_export`, `iscsi_portal_ip`, `storage_lvm_driver`, `lvm_pv_name`, `lvm_vg_name`, ditambah `rabbitmq_url` dan `database_url` ke controller. Kunci per node itu ditulis oleh `sudo cloudx-setup-storage --host <nama> --portal-ip <ip> [--device /dev/sdb]`, skrip yang dibawa paket `cloudx-storage` (di checkout repo namanya `scripts/prepare-lvm-node.sh`; langkah lengkapnya di `two-node-lvm-lab.md`). Skrip menimpa file conf itu dan tidak menulis `rabbitmq_url` maupun `database_url`, jadi tambahkan keduanya sesudahnya.
+
+Untuk satu mesin yang juga menjalankan `cloudx-block-store-api` (instalasi all-in-one), tambahkan `--local-api`: skrip memasukkan nama host ke `block_store_lvm_hosts` di `/etc/cloudx/block-store-api/block-store-api.conf` (menggantikan baris contoh yang dikomentari, atau menambah ke daftar yang ada tanpa duplikat). Pada instalasi banyak node, isi `block_store_lvm_hosts` di controller dengan semua node storage. Sesudahnya restart `cloudx-block-store-worker` dan `cloudx-block-store-api`, lalu buat tipe volume (`cloudx volume-type create gp2 --backend lvm ...`): setiap server membuat root volume di block-store, jadi tanpa tipe volume `server create` ditolak dengan "No volume types are configured".
 
 ### 4.4 CLI saja
 
@@ -618,7 +620,7 @@ sudo chmod 640 /etc/prometheus/metrics_token
 
 **File store dan container.** Node `file-store-worker` butuh `nfs-ganesha` dan `nfs-ganesha-vfs`, dengan `sudo systemctl disable --now nfs-ganesha` (instance distro berebut port 2049). Node `container-worker` butuh `docker.io` dengan `/etc/docker/daemon.json` berisi `{"iptables": false, "bridge": "none", "ip-forward": false}` supaya Docker tidak menyentuh iptables dan OVN.
 
-**Volume group LVM.** `install-systemd.sh` memanggil `scripts/setup-storage.sh` untuk `vg-cloudx` lokal. Di node storage, pakai `scripts/prepare-lvm-node.sh` (4.3).
+**Volume group LVM.** `install-systemd.sh` memanggil `scripts/setup-storage.sh` untuk `vg-cloudx` lokal. Di node storage, pakai `cloudx-setup-storage` (4.3).
 
 ## 9. Tarball tetap berjalan
 

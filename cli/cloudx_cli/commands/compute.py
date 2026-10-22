@@ -291,7 +291,7 @@ def flavor(ctx):
 @click.pass_context
 def flavor_list(ctx):
     data = _api("get", f"{DEFAULT_URLS['compute']}/flavors", ctx.obj["profile"])
-    _output(data.get("items", data), ctx.obj["fmt"], ["id", "name", "vcpus", "ram", "disk"])
+    _output(data.get("items", data), ctx.obj["fmt"], ["id", "name", "vcpus", "ram_mb", "disk_gb"])
 
 
 @flavor.command("show")

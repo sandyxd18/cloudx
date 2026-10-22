@@ -6,6 +6,8 @@ set -euo pipefail
 # ==============================================================================
 # Usage:
 #   sudo CONTROLLER_IP=192.168.10.10 NODE_IP=192.168.10.11 PROVIDER_IF=enp0s8 ./scripts/setup-compute-node.sh
+#
+# PROVIDER_PHYSNET (default physnet1) is the OVN name of the provider network that br-ex carries.
 # ==============================================================================
 
 # Parse CLI arguments if provided
@@ -82,10 +84,20 @@ ovs-vsctl set open_vswitch . external_ids:ovn-encap-ip="${NODE_IP}"
 # ovs-ctl rewrites external_ids:system-id from system-id.conf whenever Open vSwitch starts. A name set only with
 # ovs-vsctl is lost on the next restart (an unattended upgrade is enough) and the chassis comes back under a random UUID.
 SYSTEM_ID_CONF="${OVS_SYSTEM_ID_CONF:-/etc/openvswitch/system-id.conf}"
+OLD_SYSTEM_ID="$(ovs-vsctl --if-exists get open_vswitch . external_ids:system-id | tr -d '"')"
 echo "${NODE_NAME}" > "${SYSTEM_ID_CONF}"
 ovs-vsctl set open_vswitch . external_ids:system-id="${NODE_NAME}"
 # --- end system-id ---
 systemctl restart ovn-controller || systemctl restart openvswitch-switch
+# --- stale chassis ---
+# ovn-central brings an ovn-controller that already registered this node under a random UUID. OVN refuses a second chassis
+# with the same encap IP ("already has encap ip ... cannot duplicate") until the old row is gone, so the renamed node would
+# never register.
+if [[ -n "${OLD_SYSTEM_ID:-}" && "${OLD_SYSTEM_ID}" != "${NODE_NAME}" ]]; then
+    ovn-sbctl --db="tcp:${CONTROLLER_IP}:6642" --timeout=10 --if-exists chassis-del "${OLD_SYSTEM_ID}" \
+        || echo "Warning: could not delete the old chassis '${OLD_SYSTEM_ID}' from the Southbound DB; if this node does not register, run: ovn-sbctl chassis-del ${OLD_SYSTEM_ID}"
+fi
+# --- end stale chassis ---
 
 echo "===> [4/6] Setting up OVS Provider Bridge (br-ex)..."
 if ! ovs-vsctl br-exists br-ex; then
@@ -101,6 +113,16 @@ if ip link show "${PROVIDER_IF}" >/dev/null 2>&1; then
     ip link set br-ex promisc on
     ip link set "${PROVIDER_IF}" up
     ip link set "${PROVIDER_IF}" promisc on
+    # --- bridge mapping ---
+    # networking-api tries to write this when an external network is created, but it runs as the unprivileged cloudx user
+    # and cannot write to the Open vSwitch socket, so without it the provider network has no physical path.
+    mapping="${PROVIDER_PHYSNET:-physnet1}:br-ex"
+    current_mappings="$(ovs-vsctl --if-exists get open_vswitch . external_ids:ovn-bridge-mappings | tr -d '"')"
+    case ",${current_mappings}," in
+        *",${mapping},"*) ;;
+        *) ovs-vsctl set open_vswitch . external_ids:ovn-bridge-mappings="${current_mappings:+${current_mappings},}${mapping}" ;;
+    esac
+    # --- end bridge mapping ---
 else
     echo "⚠️ Warning: Provider interface '${PROVIDER_IF}' not found on this host. Skipping port binding."
 fi

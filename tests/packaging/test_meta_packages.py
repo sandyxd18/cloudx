@@ -100,7 +100,7 @@ def test_storage_depends_and_recommends(debs):
 def test_meta_packages_have_no_maintainer_scripts(debs, tmp_path):
     for pkg in ("cloudx-controller", "cloudx-storage"):
         files = [p for p, (mode, _, _) in entries(debs[pkg]).items() if not mode.startswith("d")]
-        assert files == [], pkg
+        assert files == ([] if pkg == "cloudx-controller" else ["/usr/sbin/cloudx-setup-storage"]), pkg
         dest = tmp_path / pkg
         subprocess.run(["dpkg-deb", "--control", str(debs[pkg]), str(dest)], check=True)
         assert sorted(p.name for p in dest.iterdir()) == ["control"]
@@ -122,15 +122,16 @@ def test_relocate_targets_another_venv():
         b"#!/opt/cloudx/cli/venv/bin/python\n"
 
 
-@pytest.mark.parametrize("script,source", [
-    ("cloudx-setup-compute", "setup-compute-node.sh"),
-    ("cloudx-setup-ceph-secret", "setup-ceph-libvirt-secret.sh"),
+@pytest.mark.parametrize("package,script,source", [
+    ("cloudx-compute", "cloudx-setup-compute", "setup-compute-node.sh"),
+    ("cloudx-compute", "cloudx-setup-ceph-secret", "setup-ceph-libvirt-secret.sh"),
+    ("cloudx-storage", "cloudx-setup-storage", "prepare-lvm-node.sh"),
 ])
-def test_host_scripts_ship_in_compute_and_are_never_run_by_a_maintainer_script(debs, tmp_path, script, source):
-    mode, owner, target = entries(debs["cloudx-compute"])[f"/usr/sbin/{script}"]
+def test_host_scripts_ship_with_their_role_and_are_never_run_by_a_maintainer_script(debs, tmp_path, package, script, source):
+    mode, owner, target = entries(debs[package])[f"/usr/sbin/{script}"]
     assert (mode, owner, target) == ("-rwxr-xr-x", "root/root", None)
     dest = tmp_path / "x"
-    subprocess.run(["dpkg-deb", "-x", str(debs["cloudx-compute"]), str(dest)], check=True)
+    subprocess.run(["dpkg-deb", "-x", str(debs[package]), str(dest)], check=True)
     assert (dest / "usr/sbin" / script).read_bytes() == (ROOT / "scripts" / source).read_bytes()
     for pkg, deb in debs.items():
         ctrl = tmp_path / f"ctrl-{pkg}"
@@ -144,3 +145,8 @@ def test_host_scripts_ship_in_compute_and_are_never_run_by_a_maintainer_script(d
 def test_compute_ships_only_the_two_host_scripts(debs):
     files = sorted(p for p, (mode, _, _) in entries(debs["cloudx-compute"]).items() if not mode.startswith("d"))
     assert files == ["/usr/sbin/cloudx-setup-ceph-secret", "/usr/sbin/cloudx-setup-compute"]
+
+
+def test_storage_ships_only_the_storage_host_script(debs):
+    files = sorted(p for p, (mode, _, _) in entries(debs["cloudx-storage"]).items() if not mode.startswith("d"))
+    assert files == ["/usr/sbin/cloudx-setup-storage"]
