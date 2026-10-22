@@ -125,7 +125,10 @@ def delete_security_group(ref: str, current: CurrentUser, db: DB):
         raise HTTPException(status_code=409, detail=f"security-group is still attached to ports: {', '.join(in_use)}")
     for rule in db.scalars(select(SecurityGroupRule).where(SecurityGroupRule.security_group_id == group.id)).all():
         db.delete(rule)
-    ovn_cli.ovn("--if-exists", "pg-del", port_group_name(group.id), check=False)
+    pg = port_group_name(group.id)
+    # pg-del has no --if-exists, so look first; a real failure must surface instead of leaving an orphan port group
+    if ovn_cli.ovn("--format=list", "--columns=name", "find", "port_group", f"name={pg}", check=False):
+        ovn_cli.ovn("pg-del", pg)
     db.delete(group)
     db.commit()
     return {"status": "deleted", "id": group.id, "name": group.name}

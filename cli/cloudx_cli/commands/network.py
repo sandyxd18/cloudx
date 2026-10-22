@@ -341,9 +341,9 @@ def sg_rule():
 @click.pass_context
 def sg_rule_add(ctx, sg_ref, direction, protocol, port, port_range_min, port_range_max, remote_ip):
     payload = {"direction": direction, "protocol": protocol, "remote_ip_prefix": remote_ip}
-    if port:             payload["port_range_min"] = payload["port_range_max"] = port
-    if port_range_min:   payload["port_range_min"] = port_range_min
-    if port_range_max:   payload["port_range_max"] = port_range_max
+    if port:             payload["port_min"] = payload["port_max"] = port
+    if port_range_min:   payload["port_min"] = port_range_min
+    if port_range_max:   payload["port_max"] = port_range_max
     data = _api("post", f"{DEFAULT_URLS['network']}/security-groups/{sg_ref}/rules",
                 ctx.obj["profile"], json=payload)
     _output(data, ctx.obj["fmt"])
@@ -355,7 +355,7 @@ def sg_rule_add(ctx, sg_ref, direction, protocol, port, port_range_min, port_ran
 def sg_rule_list(ctx, sg_ref):
     data = _api("get", f"{DEFAULT_URLS['network']}/security-groups/{sg_ref}/rules", ctx.obj["profile"])
     _output(data.get("items", data), ctx.obj["fmt"],
-            ["id", "direction", "protocol", "port_range_min", "port_range_max", "remote_ip_prefix"])
+            ["id", "direction", "protocol", "port_min", "port_max", "remote_ip_prefix"])
 
 
 @sg_rule.command("delete")

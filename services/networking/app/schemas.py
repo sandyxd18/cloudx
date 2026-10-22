@@ -2,7 +2,7 @@ import ipaddress
 import re
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
 class NetworkIn(BaseModel):
@@ -121,8 +121,10 @@ class SecurityGroupRuleIn(BaseModel):
     direction: str
     ethertype: str = "IPv4"
     protocol: str = "any"
-    port_min: int | None = None
-    port_max: int | None = None
+    # port_range_min/max are the Neutron-style names the CLI sends; without the alias they were dropped as unknown
+    # fields and the rule opened every port of the protocol
+    port_min: int | None = Field(default=None, validation_alias=AliasChoices("port_min", "port_range_min"))
+    port_max: int | None = Field(default=None, validation_alias=AliasChoices("port_max", "port_range_max"))
     remote_ip_prefix: str | None = None
     remote_group_id: str | None = None
     action: str = "allow"
