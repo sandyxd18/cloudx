@@ -64,6 +64,27 @@ dpkg-deb --info dist/deb/cloudx-image-api_*_amd64.deb
 dpkg-deb --contents dist/deb/cloudx-image-api_*_amd64.deb
 ```
 
+### Dependensi yang dikunci
+
+`requirements.txt` hanya memberi rentang (`fastapi>=0.115.0`) dan membiarkan paket turunannya bebas. Tanpa pengunci, `make deb` pada commit yang sama di hari yang berbeda bisa membawa versi lain: `starlette` pernah bergeser dari 1.9.0 ke 1.10.0 dalam sehari, padahal versi baru itu belum pernah dijalankan di lab. Karena itu `pip` dipanggil dengan `-c`:
+
+| Venv | Rentang | Pengunci |
+|---|---|---|
+| `/opt/cloudx/venv` (`cloudx-common`) | `requirements.txt` | `packaging/constraints.txt` |
+| `/opt/cloudx/cli/venv` (`cloudx-cli`) | `cli/requirements.txt` | `packaging/cli-constraints.txt` |
+
+Isi kedua file adalah hasil `pip freeze` venv yang sudah diuji, tanpa `cloudx-shared` dan `cloudx-cli` yang dipasang dari sumber. Menambah paket ke `requirements.txt` tanpa menambah pinnya membuat `tests/packaging/test_constraints.py` gagal; begitu juga pin yang keluar dari rentangnya.
+
+Menaikkan versi adalah keputusan yang disengaja, bukan efek samping build:
+
+```bash
+python3 -m venv /tmp/v && /tmp/v/bin/pip install -r requirements.txt      # tanpa -c: versi terbaru dalam rentang
+python -m pytest                                                            # seluruh suite, lalu uji di lab
+/tmp/v/bin/pip freeze | grep -v ' @ ' | sort -f                             # ganti isi packaging/constraints.txt (pertahankan komentar di atasnya)
+```
+
+Untuk venv CLI lakukan hal yang sama dengan `cli/requirements.txt` dan `packaging/cli-constraints.txt`. Constraints ini untuk Python 3.12 di Linux amd64, sama dengan syarat build di atas.
+
 ## 3. Repositori apt lokal untuk lab
 
 Arsip apt resmi dan penandatanganan tidak termasuk. Untuk lab cukup repositori datar:

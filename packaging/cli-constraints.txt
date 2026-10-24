@@ -1,0 +1,18 @@
+# Exact versions of /opt/cloudx/cli/venv, passed to pip with -c by scripts/build-deb.sh (see docs/deb-install.md, section 2).
+# cli/requirements.txt pins its direct dependencies; this file also pins the transitive ones.
+# Frozen on 2026-10-25 from the venv on the bare-metal lab (Python 3.12, Linux amd64). cloudx-cli is installed from
+# source and is not listed.
+certifi==2026.10.23
+charset-normalizer==3.5.2
+click==8.1.8
+idna==3.20
+markdown-it-py==4.2.0
+mdurl==0.1.2
+Pygments==2.21.0
+requests==2.32.3
+rich==13.9.4
+shellingham==1.5.4
+tabulate==0.9.0
+typer==0.15.1
+typing_extensions==4.16.0
+urllib3==2.8.0
