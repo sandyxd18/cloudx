@@ -108,6 +108,14 @@ Urutan pertama kali:
 
 2. Siapkan prasyarat yang tidak dikonfigurasi paket. Ikuti `../SETUP.md`: 2.2 (PostgreSQL: listen ke jaringan manajemen, user `cloudx`, database `cloudx`, `cloudx_orchestration`, `cloudx_events`, `cloudx_billing`, `cloudx_k8s_engine`, `cloudx_key_manager`), 2.3 (user RabbitMQ `cloudx`), dan 2.4 (listener OVN Central 6641 dan 6642). Di Ubuntu 24.04 PostgreSQL adalah versi 16, jadi `14` di jalur `/etc/postgresql/14/main` pada SETUP.md dibaca `16`. Bagian 2.5 di SETUP.md (tarball, venv, unit, migrasi) tidak dipakai; 2.6 dan 2.7 tetap berlaku.
 
+   Beri user PostgreSQL dan RabbitMQ password acak, bukan `cloudx` seperti di contoh SETUP.md, dan simpan keduanya untuk langkah 3:
+
+   ```bash
+   DB_PW=$(openssl rand -hex 16); MQ_PW=$(openssl rand -hex 16)
+   sudo -u postgres psql -c "CREATE USER cloudx WITH PASSWORD '$DB_PW' SUPERUSER"   # lalu CREATE DATABASE seperti di SETUP.md 2.2
+   sudo rabbitmqctl add_user cloudx "$MQ_PW"                                         # lalu set_user_tags dan set_permissions (SETUP.md 2.3)
+   ```
+
 3. Sunting `/etc/cloudx/cloudx.conf`.
 
    Lima secret (`auth_secret_key`, `auth_admin_password`, `key_manager_master_key`, `metrics_token`, `internal_token`) dibangkitkan paket saat pemasangan pertama. Jangan diganti: mengganti `auth_secret_key` membatalkan semua token. Pemasangan ulang dan upgrade hanya mengisi secret yang kosong dan tidak pernah mengubah yang sudah ada. File ini berizin `640 root:cloudx`.
@@ -116,8 +124,8 @@ Urutan pertama kali:
 
    | Kunci | Isi |
    |---|---|
-   | `database_url` | PostgreSQL, bawaan `postgresql+psycopg2://cloudx:cloudx@127.0.0.1:5432/cloudx` (sesuai SETUP.md 2.2) |
-   | `rabbitmq_url` | RabbitMQ, bawaan `amqp://cloudx:cloudx@127.0.0.1:5672/` (sesuai SETUP.md 2.3) |
+   | `database_url` | PostgreSQL: `postgresql+psycopg2://cloudx:<DB_PW>@127.0.0.1:5432/cloudx` dengan password dari langkah 2 (bawaan paket memakai password `cloudx`) |
+   | `rabbitmq_url` | RabbitMQ: `amqp://cloudx:<MQ_PW>@127.0.0.1:5672/` dengan password dari langkah 2 (bawaan paket memakai password `cloudx`) |
    | `memcached_url` | bawaan `127.0.0.1:11211` |
    | `auth_api_url` | alamat auth yang bisa dijangkau node lain, misalnya `http://192.168.10.10:8005`, bukan `127.0.0.1` |
 
@@ -208,12 +216,12 @@ Jaringan provider dan floating IP dibuat setelah itu (`../SETUP.md` 2.7).
    | 2 | `systemctl enable --now libvirtd openvswitch-switch` |
    | 3 | mengatur OVN: `ovn-remote=tcp:<controller>:6642`, `ovn-encap-type=geneve`, `ovn-encap-ip`, `system-id=<nama node>` (juga ditulis ke `/etc/openvswitch/system-id.conf` supaya tidak berganti nama saat Open vSwitch di-restart); restart `ovn-controller`; lalu menghapus chassis lama dari Southbound DB (`ovn-sbctl chassis-del`) bila node sudah terdaftar dengan nama lain, misalnya UUID acak dari `ovn-controller` yang dibawa `ovn-central` (tanpa itu OVN menolak chassis baru dengan IP encap yang sama) |
    | 4 | membuat bridge `br-ex` dan memasang interface provider ke dalamnya |
-   | 5 | menulis `/etc/cloudx/<svc>/<svc>.conf` untuk `compute-worker`, `metadata-proxy`, `telemetry-worker`, `lb-worker`, `vpn-worker`, dan `bgp-worker`, berisi `compute_host`, `node_name`, `host_ip`, `rabbitmq_url`, `database_url`, dan `auth_api_url` yang mengarah ke controller; tidak ada `*_api_url` lain |
+   | 5 | menulis `/etc/cloudx/<svc>/<svc>.conf` untuk `compute-worker`, `metadata-proxy`, `telemetry-worker`, `lb-worker`, `vpn-worker`, dan `bgp-worker`, berisi `compute_host`, `node_name`, `host_ip`, `rabbitmq_url`, `database_url`, dan `auth_api_url` yang mengarah ke controller; tidak ada `*_api_url` lain. Password di dua URL itu diambil dari `/etc/cloudx/cloudx.conf` yang disalin dari controller (hostnya `127.0.0.1` diganti IP controller); izin file `640 root:cloudx` |
    | 6 | bila venv paket (`/opt/cloudx/venv`) sudah ada, memasang `libvirt-python` ke dalamnya (dikompilasi di node, butuh jaringan); dilewati bila binding sudah ada, dan bila venv belum ada skrip hanya mencetak perintah yang harus dijalankan nanti |
 
    Alamat service lain (placement, networking, compute, image, dan seterusnya) tidak ditulis di enam file itu. Worker di node ini mengambilnya dari catalog di auth, jadi isi catalog dengan alamat yang bisa dijangkau dari node compute (4.1 langkah 5 dan 6) sebelum memulai worker. Entri yang belum di-sync berisi bawaan `http://127.0.0.1:<port>`, yang tidak terjangkau dari node compute: worker mendapat `ConnectionError` tanpa nama service dan host compute tidak muncul di placement. Jalankan `catalog sync` lebih dulu. `CatalogError` yang menyebut nama service hanya muncul bila service itu tidak ada sama sekali di catalog.
 
-   Bila interface provider ada, skrip memasangnya ke `br-ex` dan menulis `ovn-bridge-mappings=physnet1:br-ex` (nama physnet dari `PROVIDER_PHYSNET`, bawaan `physnet1`; pemetaan lain yang sudah ada dipertahankan). `networking-api` tidak bisa menuliskannya sendiri karena berjalan sebagai user `cloudx`, yang tidak boleh menulis ke socket Open vSwitch. Skrip tidak mengisi `ovn-cms-options=enable-chassis-as-gw`: tandai node gateway (biasanya node infra) dengan `sudo ovs-vsctl set open_vswitch . external_ids:ovn-cms-options=enable-chassis-as-gw`. Tanpa node bertanda itu, gateway router dipasang di chassis tempat `networking-api` berjalan. Kredensial di `rabbitmq_url` dan `database_url` yang ditulisnya adalah `cloudx:cloudx`; ubah di enam file itu bila berbeda. Pesan penutup skrip menyesuaikan diri: bila venv paket ada, ia menyarankan `systemctl restart 'cloudx-*'` dan bukan `install-systemd.sh`.
+   Bila interface provider ada, skrip memasangnya ke `br-ex` dan menulis `ovn-bridge-mappings=physnet1:br-ex` (nama physnet dari `PROVIDER_PHYSNET`, bawaan `physnet1`; pemetaan lain yang sudah ada dipertahankan). `networking-api` tidak bisa menuliskannya sendiri karena berjalan sebagai user `cloudx`, yang tidak boleh menulis ke socket Open vSwitch. Skrip tidak mengisi `ovn-cms-options=enable-chassis-as-gw`: tandai node gateway (biasanya node infra) dengan `sudo ovs-vsctl set open_vswitch . external_ids:ovn-cms-options=enable-chassis-as-gw`. Tanpa node bertanda itu, gateway router dipasang di chassis tempat `networking-api` berjalan. Bila `cloudx.conf` di node tidak memuat `rabbitmq_url` atau `database_url`, skrip memberi peringatan dan memakai `cloudx:cloudx`. Pesan penutup skrip menyesuaikan diri: bila venv paket ada, ia menyarankan `systemctl restart 'cloudx-*'` dan bukan `install-systemd.sh`.
 
    Enam file itu conffile paket dan skrip menimpanya setiap dijalankan, termasuk suntingan manual sebelumnya. Karena isinya berbeda dari conf bawaan paket, `dpkg` menanyakan apa yang dilakukan pada upgrade yang membawa conf baru. Pasang dengan `--force-confold` (bagian 6.4) supaya file Anda dipertahankan.
 
@@ -259,7 +267,7 @@ Jaringan provider dan floating IP dibuat setelah itu (`../SETUP.md` 2.7).
 sudo apt install cloudx-storage
 ```
 
-`block-store-worker` butuh pengaturan per node di `/etc/cloudx/block-store-worker/block-store-worker.conf`: `block_store_host`, `iscsi_export`, `iscsi_portal_ip`, `storage_lvm_driver`, `lvm_pv_name`, `lvm_vg_name`, ditambah `rabbitmq_url` dan `database_url` ke controller. Kunci per node itu ditulis oleh `sudo cloudx-setup-storage --host <nama> --portal-ip <ip> [--device /dev/sdb]`, skrip yang dibawa paket `cloudx-storage` (di checkout repo namanya `scripts/prepare-lvm-node.sh`; langkah lengkapnya di `two-node-lvm-lab.md`). Skrip menimpa file conf itu dan tidak menulis `rabbitmq_url` maupun `database_url`, jadi tambahkan keduanya sesudahnya.
+`block-store-worker` butuh pengaturan per node di `/etc/cloudx/block-store-worker/block-store-worker.conf`: `block_store_host`, `iscsi_export`, `iscsi_portal_ip`, `storage_lvm_driver`, `lvm_pv_name`, `lvm_vg_name`, ditambah `rabbitmq_url` dan `database_url` ke controller. Kunci per node itu ditulis oleh `sudo cloudx-setup-storage --host <nama> --portal-ip <ip> [--device /dev/sdb] [--controller-ip <ip>]`, skrip yang dibawa paket `cloudx-storage` (di checkout repo namanya `scripts/prepare-lvm-node.sh`; langkah lengkapnya di `two-node-lvm-lab.md`). Skrip menimpa file conf itu (izin `640 root:cloudx`). Dengan `--controller-ip` ia juga menulis `rabbitmq_url` dan `database_url`, dengan password dari `/etc/cloudx/cloudx.conf` hasil salinan controller dan IP controller sebagai host; tanpa opsi itu (misalnya pada node all-in-one dengan `--local-api`) kedua kunci itu tidak ditulis dan nilai dari `cloudx.conf` yang berlaku.
 
 Untuk satu mesin yang juga menjalankan `cloudx-block-store-api` (instalasi all-in-one), tambahkan `--local-api`: skrip memasukkan nama host ke `block_store_lvm_hosts` di `/etc/cloudx/block-store-api/block-store-api.conf` (menggantikan baris contoh yang dikomentari, atau menambah ke daftar yang ada tanpa duplikat). Pada instalasi banyak node, isi `block_store_lvm_hosts` di controller dengan semua node storage. Sesudahnya restart `cloudx-block-store-worker` dan `cloudx-block-store-api`, lalu buat tipe volume (`cloudx volume-type create gp2 --backend lvm ...`): setiap server membuat root volume di block-store, jadi tanpa tipe volume `server create` ditolak dengan "No volume types are configured".
 
@@ -368,6 +376,49 @@ sudo apt upgrade -o Dpkg::Options::=--force-confold
 Upgrade versi: paket me-restart unitnya sendiri. Bila versi baru membawa migrasi, service menolak start sampai `sudo cloudx-manage db sync` dijalankan di controller; setelah itu `sudo systemctl restart 'cloudx-*'`.
 
 Pemasangan API baru me-reload nginx otomatis; bila `nginx -t` gagal, paket tetap terpasang dan pesan galat dicetak. Perbaiki config lalu `sudo systemctl reload nginx`.
+
+### 6.5 Memutar password database dan RabbitMQ
+
+Password ada di tiga tempat: role `cloudx` di PostgreSQL dan user `cloudx` di RabbitMQ (controller), `/etc/cloudx/cloudx.conf` di setiap node, dan konf per-unit yang punya `database_url` atau `rabbitmq_url` sendiri: konf yang ditulis `cloudx-setup-compute` dan `cloudx-setup-storage`, serta `conductor`, `event-api`, `billing-api`, `orchestration-api`, `key-manager-api`, dan `k8s-engine-api`, yang dikirim paket dengan password `cloudx` dan nama database masing-masing. Konf per-unit menimpa `cloudx.conf`, jadi unit-unit itu juga harus diubah.
+
+Urutannya: ganti semua konf lebih dulu (password lama masih berlaku, jadi tidak ada yang rusak), lalu ganti di server, lalu restart. Koneksi yang sudah terbuka tidak diputus oleh penggantian password; gangguan control plane hanya selama restart (sekitar satu menit), dan VM yang berjalan tidak terpengaruh.
+
+1. Cadangkan konf di setiap node. Berkas ini berisi secret; hapus setelah semuanya berjalan.
+
+   ```bash
+   sudo sh -c 'umask 077; tar czf /root/cloudx-etc-before-rotate.tgz -C /etc cloudx'
+   ```
+
+2. Bangkitkan dua password sekali saja (di controller), lalu jalankan ini di **setiap node**, dengan `DB_PW` dan `MQ_PW` yang sama. Perintahnya mengubah hanya baris `database_url` dan `rabbitmq_url` untuk user `cloudx`, dan mempertahankan izin file.
+
+   ```bash
+   DB_PW=$(openssl rand -hex 16); MQ_PW=$(openssl rand -hex 16)
+   sudo grep -rIl '://cloudx:' /etc/cloudx | sudo xargs sed -i -E \
+     -e "s#^(database_url *= *[^ :]+://cloudx:)[^@ ]*@#\1${DB_PW}@#" \
+     -e "s#^(rabbitmq_url *= *[^ :]+://cloudx:)[^@ ]*@#\1${MQ_PW}@#"
+   ```
+
+3. Di controller, ganti password di server. Password PostgreSQL lewat stdin supaya tidak muncul di daftar proses; `rabbitmqctl change_password` hanya menerima argumen, jadi password itu terlihat sebentar oleh user lokal host itu.
+
+   ```bash
+   echo "ALTER USER cloudx PASSWORD '${DB_PW}'" | sudo -u postgres psql
+   sudo rabbitmqctl change_password cloudx "${MQ_PW}"
+   ```
+
+4. Di setiap node, restart hanya unit yang aktif. `systemctl restart 'cloudx-*'` juga akan menyalakan unit opsional yang sengaja dinonaktifkan.
+
+   ```bash
+   sudo systemctl restart $(systemctl list-units 'cloudx-*' --state=active --no-legend | awk '{print $1}')
+   ```
+
+5. Periksa: tidak ada `cloudx:cloudx@` yang tersisa, tidak ada galat autentikasi, dan `cloudx hypervisor list` serta pembuatan VM berjalan.
+
+   ```bash
+   sudo grep -rIl 'cloudx:cloudx@' /etc/cloudx                      # kosong
+   sudo journalctl -u 'cloudx-*' --since -3min | grep -i -E 'password authentication failed|ACCESS_REFUSED'   # kosong
+   ```
+
+Bila gagal sebelum langkah 3, pulihkan konf dari cadangan (`sudo tar xzf /root/cloudx-etc-before-rotate.tgz -C /etc`). Sesudah langkah 3 password lama sudah tidak berlaku, jadi pulihkan konf dari cadangan **dan** kembalikan password lama di server.
 
 ## 7. Upgrade node lab dari tarball
 

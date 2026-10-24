@@ -275,3 +275,124 @@ def test_setup_storage_rejects_a_host_name_that_would_end_up_in_sed_and_the_conf
         ["bash", str(ROOT / "scripts" / "prepare-lvm-node.sh"), "--host", "a|b", "--portal-ip", "10.0.0.1", "--dry-run"],
         text=True, capture_output=True, timeout=20)
     assert result.returncode == 2 and "invalid host name" in result.stderr
+
+
+# ── conf files: 640 root:cloudx, credentials from the controller's cloudx.conf ───────────────────────────────────────
+
+import grp
+import stat
+
+COMPUTE_SERVICES = ("compute-worker", "metadata-proxy", "telemetry-worker", "lb-worker", "vpn-worker", "bgp-worker")
+CONTROLLER_CONF = (
+    "[DEFAULT]\n"
+    "auth_secret_key = not-a-url\n"
+    "rabbitmq_url = amqp://cloudx:Rabb1tPw@127.0.0.1:5672/\n"
+    "database_url = postgresql+psycopg2://cloudx:PgSecretPw@localhost:5432/cloudx\n"
+)
+
+
+def _own_group() -> str:
+    return grp.getgrgid(os.getgid()).gr_name
+
+
+def _block_of(script_name: str, name: str) -> str:
+    script = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
+    return script.split(f"# --- {name} ---\n", 1)[1].split(f"# --- end {name} ---", 1)[0]
+
+
+def _run_node_conf(script_name, tmp_path, *, cloudx_conf=CONTROLLER_CONF, group=None, extra_env=None, preexisting=None):
+    """Run the 'node conf' block of a setup script against a temporary /etc/cloudx."""
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    if cloudx_conf is not None:
+        (etc / "cloudx.conf").write_text(cloudx_conf)
+    for rel in preexisting or []:
+        (etc / rel).parent.mkdir(parents=True, exist_ok=True)
+        (etc / rel).write_text("old\n")
+        (etc / rel).chmod(0o644)
+    env = {"PATH": os.environ["PATH"], "CLOUDX_CONF_DIR": str(etc), "CLOUDX_GROUP": group or _own_group(),
+           "NODE_NAME": "compute-x", "NODE_IP": "10.0.0.6", "CONTROLLER_IP": "10.0.0.5", **(extra_env or {})}
+    result = subprocess.run(["bash", "-c", "set -euo pipefail\n" + _block_of(script_name, "node conf")], env=env,
+                            text=True, capture_output=True)
+    return result, etc
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def _group(path: Path) -> str:
+    return grp.getgrgid(path.stat().st_gid).gr_name
+
+
+def test_setup_compute_node_conf_files_are_group_readable_only(tmp_path):
+    # the URLs in them carry the database and RabbitMQ passwords
+    result, etc = _run_node_conf("setup-compute-node.sh", tmp_path)
+    assert result.returncode == 0, result.stderr
+    for svc in COMPUTE_SERVICES:
+        conf = etc / svc / f"{svc}.conf"
+        assert (_mode(conf), _group(conf)) == (0o640, _own_group()), svc
+
+
+def test_setup_compute_node_tightens_a_conf_file_an_earlier_run_left_world_readable(tmp_path):
+    result, etc = _run_node_conf("setup-compute-node.sh", tmp_path, preexisting=["compute-worker/compute-worker.conf"])
+    assert result.returncode == 0, result.stderr
+    assert _mode(etc / "compute-worker" / "compute-worker.conf") == 0o640
+
+
+def test_setup_compute_node_without_the_cloudx_group_keeps_the_files_private_to_root(tmp_path):
+    result, etc = _run_node_conf("setup-compute-node.sh", tmp_path, group="no-such-group-xyz")
+    assert result.returncode == 0, result.stderr
+    assert _mode(etc / "compute-worker" / "compute-worker.conf") == 0o600
+
+
+def test_setup_compute_node_uses_the_credentials_in_the_controllers_cloudx_conf(tmp_path):
+    result, etc = _run_node_conf("setup-compute-node.sh", tmp_path)
+    assert result.returncode == 0, result.stderr
+    for svc in COMPUTE_SERVICES:
+        text = (etc / svc / f"{svc}.conf").read_text()
+        assert "rabbitmq_url = amqp://cloudx:Rabb1tPw@10.0.0.5:5672/\n" in text, svc
+        assert "database_url = postgresql+psycopg2://cloudx:PgSecretPw@10.0.0.5:5432/cloudx\n" in text, svc
+        assert "127.0.0.1" not in text and "localhost" not in text, svc
+    assert "Rabb1tPw" not in result.stdout + result.stderr and "PgSecretPw" not in result.stdout + result.stderr
+
+
+def test_setup_compute_node_warns_and_falls_back_when_cloudx_conf_has_no_urls(tmp_path):
+    result, etc = _run_node_conf("setup-compute-node.sh", tmp_path, cloudx_conf="[DEFAULT]\nauth_secret_key = x\n")
+    assert result.returncode == 0, result.stderr
+    text = (etc / "compute-worker" / "compute-worker.conf").read_text()
+    assert "rabbitmq_url = amqp://cloudx:cloudx@10.0.0.5:5672/\n" in text
+    assert "database_url = postgresql+psycopg2://cloudx:cloudx@10.0.0.5:5432/cloudx\n" in text
+    assert "rabbitmq_url" in result.stderr and "default credentials" in result.stderr
+
+
+LVM_ENV = {"HOST_NAME": "node-a", "PORTAL_IP": "10.0.0.6", "DEVICE": "/dev/sda3", "VG": "ubuntu-vg", "DRY": "0"}
+
+
+def test_prepare_lvm_node_conf_is_group_readable_only_and_has_no_urls_without_a_controller(tmp_path):
+    result, etc = _run_node_conf("prepare-lvm-node.sh", tmp_path, extra_env={**LVM_ENV, "CONTROLLER_IP": ""},
+                                 preexisting=["block-store-worker/block-store-worker.conf"])
+    assert result.returncode == 0, result.stderr
+    conf = etc / "block-store-worker" / "block-store-worker.conf"
+    assert (_mode(conf), _group(conf)) == (0o640, _own_group())
+    text = conf.read_text()
+    assert "block_store_host = node-a\n" in text and "lvm_vg_name = ubuntu-vg\n" in text
+    assert "rabbitmq_url" not in text and "database_url" not in text
+
+
+def test_prepare_lvm_node_writes_the_controllers_urls_when_given_a_controller_ip(tmp_path):
+    result, etc = _run_node_conf("prepare-lvm-node.sh", tmp_path, extra_env=LVM_ENV)
+    assert result.returncode == 0, result.stderr
+    text = (etc / "block-store-worker" / "block-store-worker.conf").read_text()
+    assert "rabbitmq_url = amqp://cloudx:Rabb1tPw@10.0.0.5:5672/\n" in text
+    assert "database_url = postgresql+psycopg2://cloudx:PgSecretPw@10.0.0.5:5432/cloudx\n" in text
+    assert "Rabb1tPw" not in result.stdout + result.stderr
+
+
+def test_prepare_lvm_node_accepts_a_controller_ip_option():
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "prepare-lvm-node.sh"), "--host", "node-a", "--portal-ip", "10.0.0.1",
+         "--controller-ip", "10.0.0.5", "--dry-run"],
+        text=True, capture_output=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
