@@ -8,7 +8,7 @@ set -euo pipefail
 # cloudx-block-store-worker (name of the node, iSCSI export). Compute nodes that attach volumes from other nodes
 # only need open-iscsi, which this script installs as well.
 #
-#   sudo cloudx-setup-storage --host cloudx-storage-01 --portal-ip 192.168.10.12 [--device /dev/sdb]
+#   sudo cloudx-setup-storage --host cloudx-storage-01 --portal-ip 192.168.10.12 [--device /dev/sdb] [--controller-ip IP]
 #
 # (installed by the cloudx-storage package; from a checkout it is scripts/prepare-lvm-node.sh)
 #
@@ -18,11 +18,13 @@ set -euo pipefail
 #   --device DEV       disk to use as the physical volume (default /dev/sdb)
 #   --vg NAME          volume group name (default vg-cloudx)
 #   --wipe             erase an existing filesystem/signature on the device (refused without it)
+#   --controller-ip IP also write rabbitmq_url and database_url, with the passwords from this node's /etc/cloudx/cloudx.conf
+#                      (copied from the controller) and IP as the host; omit on an all-in-one node (--local-api)
 #   --local-api        this node also runs cloudx-block-store-api (all-in-one): list --host in its block_store_lvm_hosts
 #   --dry-run          print what would be done
 # ==============================================================================
 
-HOST_NAME="" PORTAL_IP="" DEVICE="/dev/sdb" VG="vg-cloudx" WIPE=0 DRY=0 LOCAL_API=0
+HOST_NAME="" PORTAL_IP="" DEVICE="/dev/sdb" VG="vg-cloudx" WIPE=0 DRY=0 LOCAL_API=0 CONTROLLER_IP=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -31,6 +33,7 @@ while [[ $# -gt 0 ]]; do
         --device) DEVICE="$2"; shift 2 ;;
         --vg) VG="$2"; shift 2 ;;
         --wipe) WIPE=1; shift ;;
+        --controller-ip) CONTROLLER_IP="$2"; shift 2 ;;
         --local-api) LOCAL_API=1; shift ;;
         --dry-run) DRY=1; shift ;;
         -h|--help) sed -n '4,21p' "$0"; exit 0 ;;
@@ -74,12 +77,40 @@ act systemctl enable --now iscsid
 act systemctl enable --now rtslib-fb-targetctl 2>/dev/null || act systemctl enable --now target
 
 echo "===> Per-node settings for cloudx-block-store-worker"
-conf=/etc/cloudx/block-store-worker/block-store-worker.conf
-act mkdir -p "$(dirname "$conf")"
+# The conf holds passwords when --controller-ip is given, so it is 640 root:cloudx (600 root:root while the group does
+# not exist yet).
+# --- node conf ---
+CONF_DIR="${CLOUDX_CONF_DIR:-/etc/cloudx}"
+CONF_GROUP="${CLOUDX_GROUP:-cloudx}"
+conf="${CONF_DIR}/block-store-worker/block-store-worker.conf"
+
+controller_url() {  # <cloudx.conf key> <fallback url>
+    local url
+    url="$(sed -nE "s/^$1[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p" "${CONF_DIR}/cloudx.conf" 2>/dev/null | head -1)" || true
+    if [[ -z "${url}" ]]; then
+        echo "⚠️ ${CONF_DIR}/cloudx.conf has no $1: using the default credentials cloudx:cloudx" >&2
+        url="$2"
+    fi
+    sed -e "s/@127\.0\.0\.1:/@${CONTROLLER_IP}:/" -e "s/@localhost:/@${CONTROLLER_IP}:/" <<<"${url}"
+}
+
+write_conf() {  # <path>, content on stdin
+    install -m 640 /dev/null "$1"
+    if getent group "${CONF_GROUP}" >/dev/null; then
+        chgrp "${CONF_GROUP}" "$1"
+    else
+        chmod 600 "$1"
+    fi
+    cat > "$1"
+}
+
 if (( DRY )); then
+    echo "+ mkdir -p $(dirname "$conf")"
     echo "+ write ${conf}"
 else
-    cat > "$conf" <<EOF
+    mkdir -p "$(dirname "$conf")"
+    {
+        cat <<EOF
 [DEFAULT]
 block_store_host = ${HOST_NAME}
 iscsi_export = true
@@ -89,7 +120,13 @@ storage_nfs_driver = false
 lvm_pv_name = ${DEVICE}
 lvm_vg_name = ${VG}
 EOF
+        if [[ -n "${CONTROLLER_IP}" ]]; then
+            echo "rabbitmq_url = $(controller_url rabbitmq_url "amqp://cloudx:cloudx@${CONTROLLER_IP}:5672/")"
+            echo "database_url = $(controller_url database_url "postgresql+psycopg2://cloudx:cloudx@${CONTROLLER_IP}:5432/cloudx")"
+        fi
+    } | write_conf "$conf"
 fi
+# --- end node conf ---
 # --- local api ---
 if (( LOCAL_API )); then
     api_conf="${CLOUDX_CONF_DIR:-/etc/cloudx}/block-store-api/block-store-api.conf"

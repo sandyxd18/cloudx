@@ -134,18 +134,47 @@ mkdir -p /var/lib/cloudx/compute
 # the database, RabbitMQ and auth. Every other service URL comes from the catalog that auth serves.
 # The compute worker names itself after this node (placement provider, server.host, its own RPC queue). Two compute
 # nodes must never share a name, so it is set per node here.
+# The URLs hold the database and RabbitMQ passwords, so the files are 640 root:cloudx (600 root:root while the group does
+# not exist yet). The passwords come from the controller's cloudx.conf copied to this node; its host is 127.0.0.1 there.
+# --- node conf ---
+CONF_DIR="${CLOUDX_CONF_DIR:-/etc/cloudx}"
+CONF_GROUP="${CLOUDX_GROUP:-cloudx}"
+
+controller_url() {  # <cloudx.conf key> <fallback url>
+    local url
+    url="$(sed -nE "s/^$1[[:space:]]*=[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p" "${CONF_DIR}/cloudx.conf" 2>/dev/null | head -1)" || true
+    if [[ -z "${url}" ]]; then
+        echo "⚠️ ${CONF_DIR}/cloudx.conf has no $1: using the default credentials cloudx:cloudx" >&2
+        url="$2"
+    fi
+    sed -e "s/@127\.0\.0\.1:/@${CONTROLLER_IP}:/" -e "s/@localhost:/@${CONTROLLER_IP}:/" <<<"${url}"
+}
+
+write_conf() {  # <path>, content on stdin
+    install -m 640 /dev/null "$1"
+    if getent group "${CONF_GROUP}" >/dev/null; then
+        chgrp "${CONF_GROUP}" "$1"
+    else
+        chmod 600 "$1"
+    fi
+    cat > "$1"
+}
+
+RABBITMQ_URL="$(controller_url rabbitmq_url "amqp://cloudx:cloudx@${CONTROLLER_IP}:5672/")"
+DATABASE_URL="$(controller_url database_url "postgresql+psycopg2://cloudx:cloudx@${CONTROLLER_IP}:5432/cloudx")"
 for svc in compute-worker metadata-proxy telemetry-worker lb-worker vpn-worker bgp-worker; do
-    mkdir -p "/etc/cloudx/${svc}"
-    cat > "/etc/cloudx/${svc}/${svc}.conf" <<EOF
+    mkdir -p "${CONF_DIR}/${svc}"
+    write_conf "${CONF_DIR}/${svc}/${svc}.conf" <<EOF
 [DEFAULT]
 compute_host = ${NODE_NAME}
 node_name = ${NODE_NAME}
 host_ip = ${NODE_IP}
-rabbitmq_url = amqp://cloudx:cloudx@${CONTROLLER_IP}:5672/
-database_url = postgresql+psycopg2://cloudx:cloudx@${CONTROLLER_IP}:5432/cloudx
+rabbitmq_url = ${RABBITMQ_URL}
+database_url = ${DATABASE_URL}
 auth_api_url = http://${CONTROLLER_IP}:8005
 EOF
 done
+# --- end node conf ---
 
 echo "===> [6/6] Installing the libvirt Python binding into the CloudX venv (if it exists)..."
 # The worker drives libvirt through this binding; without it the worker starts but cannot create VMs. It is compiled
