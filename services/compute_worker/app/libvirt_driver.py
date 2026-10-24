@@ -3,6 +3,7 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from . import network_manager
 from .config import LIBVIRT_URI, VM_NAME_PREFIX
 from .utils import short_id
 
@@ -336,10 +337,18 @@ def lookup(name: str):
         raise
 
 
+def _ensure_unmanaged_taps(domain) -> None:
+    """Recreate the tap devices a host reboot removed; libvirt refuses to start a managed='no' interface without one."""
+    for target in ET.fromstring(domain.XMLDesc(0)).findall("./devices/interface/target"):
+        if target.get("managed") == "no" and target.get("dev"):
+            network_manager.ensure_tap(target.get("dev"))
+
+
 def start(name: str) -> None:
     conn, domain = lookup(name)
     try:
         if not domain.isActive():
+            _ensure_unmanaged_taps(domain)
             domain.create()
     finally:
         conn.close()
@@ -547,6 +556,7 @@ def resume_from_disk(name: str) -> None:
     conn, domain = lookup(name)
     try:
         if not domain.isActive():
+            _ensure_unmanaged_taps(domain)
             domain.create()  # restores from managed save if it exists
     finally:
         conn.close()
