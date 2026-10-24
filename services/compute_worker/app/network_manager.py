@@ -12,6 +12,22 @@ def port_tap_name(server_id: str, port_id: str) -> str:
 
 def create_tap(name: str) -> None:
     delete_tap(name)
+    _add_tap(name)
+
+
+def ensure_tap(name: str) -> None:
+    """Recreate a tap that a host reboot removed, keeping its OVS port.
+
+    The OVS port (with the iface-id OVN binds to) lives in the OVS database and survives a reboot; only the kernel
+    device is gone, and libvirt will not start a managed='no' interface without it. create_tap would also delete the
+    port, so it cannot be used here.
+    """
+    if run(["ip", "link", "show", "dev", name], check=False).returncode == 0:
+        return
+    _add_tap(name)
+
+
+def _add_tap(name: str) -> None:
     created = run(["ip", "tuntap", "add", "dev", name, "mode", "tap"], check=False)
     if created.returncode != 0:
         message = created.stderr.strip() or created.stdout.strip()
