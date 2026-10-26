@@ -1,130 +1,130 @@
-# Paket .deb dan runtime CloudX ala OpenStack
+# OpenStack-style .deb packages and runtime for CloudX
 
-## Tujuan
-Operator memasang dan menjalankan CloudX seperti OpenStack: satu paket `.deb` per service, satu perintah per service (`cloudx-image-api`, `cloudx-compute-worker`), satu pintu depan (nginx) di tiap node, dan service saling menemukan lewat service catalog. Hasil yang diharapkan: node infra bisa diisi service apa saja lewat `apt install`, tanpa `install-systemd.sh`, tanpa menyunting URL di setiap node.
+## Goal
+An operator installs and runs CloudX like OpenStack: one `.deb` package per service, one command per service (`cloudx-image-api`, `cloudx-compute-worker`), one front door (nginx) on each node, and services that find each other through the service catalog. Expected result: an infra node can be given any services through `apt install`, without `install-systemd.sh`, without editing URLs on every node.
 
-Yang dipelajari dari OpenStack (source di `/home/sandy/projects/openstack_source_code`, versi master Oktober 2026, ditambah devstack dari opendev):
-- API tidak punya server sendiri. Nova (`nova.wsgi.osapi_compute:application`), Glance (`glance.wsgi.api:application`), Keystone dan Placement hanya mengekspos modul WSGI. Perintah `nova-api` dihapus di Nova 33.0.0, dan `glance-api` mandiri menolak jalan. Server WSGI dipilih operator. Dokumen Nova menyebut uWSGI dan gunicorn.
-- Susunan referensi (devstack): Apache `ProxyPass` per API, satu proses uwsgi per API di unix socket `/var/run/uwsgi/<nama>.socket`, unit systemd per API. Glance dan Swift dikecualikan karena butuh chunked upload.
-- Daemon (`nova-compute`, `nova-conductor`, agent Neutron) adalah console script di `pyproject.toml` yang memanggil `oslo.service`.
-- Satu file INI per service (`/etc/nova/nova.conf`), `<svc>-manage db sync` dijalankan operator, service saling menemukan lewat catalog Keystone, paket per service (`apt install nova-api nova-conductor ...`).
-- Tidak terbaca: packaging Debian/Ubuntu-nya (repo salsa 404). Bagian paket di sini berdasar panduan instalasi resmi, bukan isi `debian/`.
+What was learned from OpenStack (source in `/home/sandy/projects/openstack_source_code`, the October 2026 master version, plus devstack from opendev):
+- APIs have no server of their own. Nova (`nova.wsgi.osapi_compute:application`), Glance (`glance.wsgi.api:application`), Keystone and Placement only expose a WSGI module. The `nova-api` command was removed in Nova 33.0.0, and a standalone `glance-api` refuses to run. The WSGI server is the operator's choice. The Nova docs mention uWSGI and gunicorn.
+- The reference layout (devstack): Apache `ProxyPass` per API, one uwsgi process per API on a unix socket `/var/run/uwsgi/<name>.socket`, a systemd unit per API. Glance and Swift are excepted because they need chunked upload.
+- Daemons (`nova-compute`, `nova-conductor`, the Neutron agents) are console scripts in `pyproject.toml` that call `oslo.service`.
+- One INI file per service (`/etc/nova/nova.conf`), `<svc>-manage db sync` run by the operator, services find each other through the Keystone catalog, one package per service (`apt install nova-api nova-conductor ...`).
+- Not readable: its Debian/Ubuntu packaging (the salsa repo gives 404). The package part here is based on the official installation guides, not on the content of `debian/`.
 
-## Keadaan CloudX sekarang (diperiksa di repo dan lab, 2026-10-21)
-- 43 unit di `etc/systemd/`. API: gunicorn dengan `UvicornWorker` pada `0.0.0.0:<port>`; daemon: `python -m app.main`; dua unit BIND (`cloudx-named-*`).
-- Semua API adalah paket `app` di `services/<dir>/` (tidak bisa diimpor bersamaan dalam satu venv). Unit memakai `WorkingDirectory`.
-- Config: `/etc/cloudx/cloudx.conf` ditambah `/etc/cloudx/<svc>/<svc>.conf` (`shared/config.py`), dimuat ke env. `cloudx-db-migrate` ada (`shared/migrate.py`).
-- Auth sudah berbentuk Keystone: `/v3/services`, `/v3/endpoints`, dan `catalog` di respons `/auth/tokens`.
-- **Catalog tidak terpakai dan salah.** `auth/app/bootstrap.py` mengisinya sekali dari env saat pertama jalan dan tidak pernah memperbaruinya. Di lab: 13 service, semua `http://127.0.0.1:...`, padahal image dan block-store kini di infra02. Service key-manager, k8s-engine, dns, file-store, container, database, messaging, reservation, dan ha tidak terdaftar.
-- 38 modul membaca `*_API_URL` langsung dari env. CLI membaca `CLOUDX_<SVC>_URL` atau default `127.0.0.1:<port>`, tidak membaca catalog.
-- Empat service memakai IP klien (`object_store/app/main.py:_classify_source`, `dashboard/app/main.py`, `metadata/app/metadata_service.py`, `metadata_proxy/app/main.py`). Lihat bagian Keamanan.
-- Kode di lab sudah di `/opt/cloudx/{venv,services,cli}`, seperti yang akan dipakai paket.
+## CloudX today (checked in the repo and the lab, 2026-10-21)
+- 43 units in `etc/systemd/`. APIs: gunicorn with `UvicornWorker` on `0.0.0.0:<port>`; daemons: `python -m app.main`; two BIND units (`cloudx-named-*`).
+- Every API is a package `app` in `services/<dir>/` (they cannot be imported together in one venv). Units use `WorkingDirectory`.
+- Config: `/etc/cloudx/cloudx.conf` plus `/etc/cloudx/<svc>/<svc>.conf` (`shared/config.py`), loaded into the environment. `cloudx-db-migrate` exists (`shared/migrate.py`).
+- Auth is already Keystone-shaped: `/v3/services`, `/v3/endpoints`, and `catalog` in the `/auth/tokens` response.
+- **The catalog is unused and wrong.** `auth/app/bootstrap.py` fills it once from the environment at first start and never updates it. In the lab: 13 services, all `http://127.0.0.1:...`, although image and block-store are now on infra02. The services key-manager, k8s-engine, dns, file-store, container, database, messaging, reservation and ha are not registered.
+- 38 modules read `*_API_URL` straight from the environment. The CLI reads `CLOUDX_<SVC>_URL` or the default `127.0.0.1:<port>`, and does not read the catalog.
+- Four services use the client IP (`object_store/app/main.py:_classify_source`, `dashboard/app/main.py`, `metadata/app/metadata_service.py`, `metadata_proxy/app/main.py`). See the Security section.
+- The code in the lab is already in `/opt/cloudx/{venv,services,cli}`, as the packages will use it.
 
-## Keputusan
+## Decisions
 
-### 1. Manifest tunggal: `packaging/manifest.toml`
-Satu daftar unit menjadi sumber paket, unit, snippet nginx, dan tes konsistensi. Format TOML (`tomllib` ada di Python 3.12). Per unit:
+### 1. A single manifest: `packaging/manifest.toml`
+One list of units is the source for packages, units, nginx snippets and the consistency tests. TOML format (`tomllib` is in Python 3.12). Per unit:
 
-| Kolom | Isi |
+| Field | Content |
 |---|---|
-| `name` | `image-api`; nama paket `cloudx-image-api`, unit `cloudx-image-api.service`, perintah `/usr/bin/cloudx-image-api` |
-| `kind` | `api`, `daemon`, atau `unit` (BIND, disalin apa adanya) |
-| `dir` | direktori di `services/` (`image`) |
-| `port`, `workers` | hanya `api`; `workers` default = nilai `-w` unit sekarang |
-| `frontend` | `nginx` atau `direct` (lihat 4) |
-| `streaming` | `true` bila upload/unduh besar (hanya `image-api`) |
-| `catalog_name`, `catalog_type`, `url_key` | pendaftaran catalog (`image`, `image`, `image_api_url`) |
-| `roles` | `controller`, `compute`, `storage` (membentuk paket meta) |
-| `depends` | paket apt tambahan (misalnya `bind9` untuk dns-worker) |
+| `name` | `image-api`; package name `cloudx-image-api`, unit `cloudx-image-api.service`, command `/usr/bin/cloudx-image-api` |
+| `kind` | `api`, `daemon`, or `unit` (BIND, copied as it is) |
+| `dir` | the directory in `services/` (`image`) |
+| `port`, `workers` | `api` only; `workers` defaults to the current `-w` value of the unit |
+| `frontend` | `nginx` or `direct` (see 4) |
+| `streaming` | `true` for big uploads/downloads (only `image-api`) |
+| `catalog_name`, `catalog_type`, `url_key` | catalog registration (`image`, `image`, `image_api_url`) |
+| `roles` | `controller`, `compute`, `storage` (forms the meta packages) |
+| `depends` | extra apt packages (for example `bind9` for dns-worker) |
 
-Unit `daemon` dan `unit` tetap memakai file di `etc/systemd/` (After=, user, capability tidak dikarang ulang); generator hanya mengganti `ExecStart` dengan wrapper. Unit `api` dihasilkan dari templat. Tarball dan `install-systemd.sh` tetap berjalan sampai diganti; `etc/systemd/` tidak diubah.
+`daemon` and `unit` units keep using the files in `etc/systemd/` (After=, user, capabilities are not reinvented); the generator only replaces `ExecStart` with the wrapper. `api` units are generated from a template. The tarball and `install-systemd.sh` keep working until replaced; `etc/systemd/` is not changed.
 
-### 2. Tata letak dan paket (target: Ubuntu 24.04, amd64)
-Lokasi tetap `/opt/cloudx` (venv, `services/`, `cli/`), sama dengan node lab sekarang sehingga jalur upgrade pendek.
+### 2. Layout and packages (target: Ubuntu 24.04, amd64)
+The location stays `/opt/cloudx` (venv, `services/`, `cli/`), the same as the current lab nodes, so the upgrade path is short.
 
-| Paket | Isi |
+| Package | Content |
 |---|---|
-| `cloudx-common` | `/opt/cloudx/venv` (dependensi + `shared`), user `cloudx`, `/etc/cloudx/cloudx.conf` (dibuat bila belum ada, secret dibangkitkan seperti `install-systemd.sh`), `/var/lib/cloudx`, tmpfiles untuk `/run/cloudx`, `/usr/bin/cloudx-manage`, `/usr/share/cloudx/manifest.toml` |
-| `cloudx-db` | migrasi Alembic dan `cloudx-manage db sync`; tidak berjalan otomatis |
-| `cloudx-<unit>` (satu per unit) | kode `services/<dir>/`, unit systemd, wrapper `/usr/bin/cloudx-<unit>`, `/etc/cloudx/<unit>/<unit>.conf` (conffile), untuk `api` bergaya nginx juga `/etc/nginx/conf.d/cloudx-<unit>.conf` |
-| `cloudx-controller`, `cloudx-compute`, `cloudx-storage` | meta, `Depends` pada paket dengan `roles` terkait; `Recommends` PostgreSQL, RabbitMQ, memcached, OVN (tidak dikonfigurasi paket) |
-| `cloudx-cli` | `cloudx` CLI dengan venv kecil sendiri |
+| `cloudx-common` | `/opt/cloudx/venv` (dependencies + `shared`), user `cloudx`, `/etc/cloudx/cloudx.conf` (created if missing, secrets generated like `install-systemd.sh`), `/var/lib/cloudx`, tmpfiles for `/run/cloudx`, `/usr/bin/cloudx-manage`, `/usr/share/cloudx/manifest.toml` |
+| `cloudx-db` | Alembic migrations and `cloudx-manage db sync`; does not run automatically |
+| `cloudx-<unit>` (one per unit) | the code of `services/<dir>/`, the systemd unit, the wrapper `/usr/bin/cloudx-<unit>`, `/etc/cloudx/<unit>/<unit>.conf` (conffile), and for nginx-style `api` units also `/etc/nginx/conf.d/cloudx-<unit>.conf` |
+| `cloudx-controller`, `cloudx-compute`, `cloudx-storage` | meta, `Depends` on the packages with the matching `roles`; `Recommends` PostgreSQL, RabbitMQ, memcached, OVN (not configured by the packages) |
+| `cloudx-cli` | the `cloudx` CLI with its own small venv |
 
-Semua paket per unit `Depends: cloudx-common (= versi)`. Versi dari `VERSION`, revisi `-1`. venv dibangun saat build pada path akhir `/opt/cloudx/venv`, shebang ditulis ulang, `Depends: python3 (>= 3.12), python3 (<< 3.13)`. Skrip host yang sekarang (`setup-compute-node.sh`, `setup-ceph-libvirt-secret.sh`) dipasang sebagai `/usr/sbin/cloudx-setup-compute` dan `/usr/sbin/cloudx-setup-ceph-secret` di `cloudx-compute`, tidak dijalankan otomatis karena butuh IP dan keyring.
+All per-unit packages `Depends: cloudx-common (= version)`. The version comes from `VERSION`, revision `-1`. The venv is built at build time at the final path `/opt/cloudx/venv`, shebangs are rewritten, `Depends: python3 (>= 3.12), python3 (<< 3.13)`. The current host scripts (`setup-compute-node.sh`, `setup-ceph-libvirt-secret.sh`) are installed as `/usr/sbin/cloudx-setup-compute` and `/usr/sbin/cloudx-setup-ceph-secret` in `cloudx-compute`, and are not run automatically because they need IPs and a keyring.
 
-Perilaku pemasangan mengikuti OpenStack di Ubuntu: unit di-enable dan distart saat dipasang (hormati `policy-rc.d`); operator mengisi config, menjalankan `cloudx-manage db sync`, lalu me-restart. Upgrade yang membawa migrasi baru membuat service menolak start sampai `db sync`, sama seperti sekarang.
+Installation behaviour follows OpenStack on Ubuntu: units are enabled and started at install (respecting `policy-rc.d`); the operator fills in the config, runs `cloudx-manage db sync`, then restarts. An upgrade that brings new migrations makes the service refuse to start until `db sync`, as today.
 
-### 3. Runtime API: `shared/launcher.py`
-Wrapper `/usr/bin/cloudx-<unit>` hanya memanggil `shared.launcher.run_api(name, app_dir, port, workers, frontend)`, yang memuat config (`load_service_config`), lalu `execv` gunicorn dengan `-k uvicorn.workers.UvicornWorker`.
-- `workers`: urutan prioritas `<unit>.conf` > `cloudx.conf` > manifest. Kunci `workers` di conf menggantikan `-w` yang sekarang tertanam di unit.
-- Bind: `frontend=nginx` memakai `unix:/run/cloudx/<unit>.sock`; `frontend=direct` memakai `0.0.0.0:<port>` seperti sekarang.
-- Unit: `User=` dari manifest, `Group=cloudx`, `UMask=0007` (untuk file yang dibuat service; socket dibuat gunicorn berizin 0777 dan worker nginx bergantung pada itu), `Restart=always`, `RestartSec=5s`.
-- **`--forwarded-allow-ips` tidak boleh `*`.** Uvicorn dengan `*` memakai entri pertama `X-Forwarded-For` sebagai klien, dan entri itu dikirim klien (bisa dipalsukan). Untuk `frontend=nginx` nilainya kosong sehingga header diabaikan.
-- Gunicorn tetap dipakai: OpenStack menyebutnya server yang valid, dan tidak ada alasan teknis menggantinya. Ganti ke `uvicorn --workers` hanya mengubah launcher.
-- Daemon: wrapper memanggil `run_daemon(name, app_dir)` yang `chdir` ke `app_dir` lalu menjalankan `app.main` (`runpy`), jadi unit hanya berisi `ExecStart=/usr/bin/cloudx-<unit>`.
+### 3. API runtime: `shared/launcher.py`
+The wrapper `/usr/bin/cloudx-<unit>` only calls `shared.launcher.run_api(name, app_dir, port, workers, frontend)`, which loads the config (`load_service_config`), then `execv`s gunicorn with `-k uvicorn.workers.UvicornWorker`.
+- `workers`: priority order `<unit>.conf` > `cloudx.conf` > manifest. The `workers` key in the conf replaces the `-w` that is currently baked into the unit.
+- Bind: `frontend=nginx` uses `unix:/run/cloudx/<unit>.sock`; `frontend=direct` uses `0.0.0.0:<port>` as today.
+- Unit: `User=` from the manifest, `Group=cloudx`, `UMask=0007` (for files the service creates; the socket is created by gunicorn with mode 0777 and the nginx workers depend on that), `Restart=always`, `RestartSec=5s`.
+- **`--forwarded-allow-ips` must not be `*`.** Uvicorn with `*` takes the first `X-Forwarded-For` entry as the client, and that entry is sent by the client (it can be forged). For `frontend=nginx` the value is empty so the header is ignored.
+- Gunicorn stays: OpenStack names it a valid server, and there is no technical reason to replace it. Switching to `uvicorn --workers` would only change the launcher.
+- Daemons: the wrapper calls `run_daemon(name, app_dir)`, which `chdir`s to `app_dir` and then runs `app.main` (`runpy`), so the unit only contains `ExecStart=/usr/bin/cloudx-<unit>`.
 
-Nama paket `app` tidak diubah. Mengganti nama ke `cloudx_<svc>` menyentuh semua import dan tes (tes mengimpor `services.<dir>.app...`) dan manfaatnya hanya kerapian; ditunda.
+The package name `app` is not changed. Renaming to `cloudx_<svc>` touches every import and test (the tests import `services.<dir>.app...`) and the only benefit is tidiness; postponed.
 
-### 4. Pintu depan: nginx
-Satu snippet per API di `/etc/nginx/conf.d/cloudx-<unit>.conf`, conffile yang dapat disunting:
-- `upstream` ke unix socket, `server { listen <port>; location / { proxy_pass ...; } }`, `proxy_http_version 1.1`, `proxy_set_header Host`, dan `X-Forwarded-For $remote_addr` (menimpa, bukan menambahkan).
-- `streaming = true`: `client_max_body_size 0`, `proxy_request_buffering off`, `proxy_read_timeout 3600` (setara pengecualian chunked untuk Glance dan Swift di devstack).
-- Postinst menjalankan `nginx -t`, lalu me-reload nginx; bila `nginx -t` gagal, paket tetap terpasang dan pesan error dicetak.
-- Port luar sama dengan sekarang, jadi `*_api_url`, CLI, dan dashboard tidak berubah. Path-based routing (`/image`) tidak termasuk: butuh `root_path` di tiap aplikasi dan berisiko merusak tautan di respons.
+### 4. Front door: nginx
+One snippet per API in `/etc/nginx/conf.d/cloudx-<unit>.conf`, an editable conffile:
+- an `upstream` to the unix socket, `server { listen <port>; location / { proxy_pass ...; } }`, `proxy_http_version 1.1`, `proxy_set_header Host`, and `X-Forwarded-For $remote_addr` (overwrites, does not append).
+- `streaming = true`: `client_max_body_size 0`, `proxy_request_buffering off`, `proxy_read_timeout 3600` (the equivalent of the chunked exception for Glance and Swift in devstack).
+- The postinst runs `nginx -t`, then reloads nginx; if `nginx -t` fails, the package stays installed and the error message is printed.
+- The external ports are the same as now, so `*_api_url`, the CLI and the dashboard do not change. Path-based routing (`/image`) is not included: it needs `root_path` in every application and risks breaking links in responses.
 
-`frontend = "nginx"` untuk 20 API: auth 8005, billing 8011, block-store 8004, compute 8003, container 8018, database 8019, dns 8016, event 8012, file-store 8017, ha 8020, image 8002, k8s-engine 8015, key-manager 8014, load-balancer 8008, messaging 8022, networking 8001, orchestration 8013, placement 8006, reservation 8023, telemetry 8010.
+`frontend = "nginx"` for 20 APIs: auth 8005, billing 8011, block-store 8004, compute 8003, container 8018, database 8019, dns 8016, event 8012, file-store 8017, ha 8020, image 8002, k8s-engine 8015, key-manager 8014, load-balancer 8008, messaging 8022, networking 8001, orchestration 8013, placement 8006, reservation 8023, telemetry 8010.
 
-`frontend = "direct"` (tetap TCP, tanpa nginx) untuk 4 service: object-store 8007, metadata-api 8775, metadata-proxy 8776, dashboard 8080. Alasan: keempatnya memakai IP klien (lihat Keamanan); dashboard juga memakai WebSocket.
+`frontend = "direct"` (still TCP, no nginx) for 4 services: object-store 8007, metadata-api 8775, metadata-proxy 8776, dashboard 8080. Reason: all four use the client IP (see Security); the dashboard also uses WebSocket.
 
-### 5. Daemon
-Console script per unit (lihat 3). Daemon CloudX satu proses dan tidak butuh launcher bergaya `oslo.service`. Konfigurasi `oslo.config` tidak ditiru: menulis ulang pemuatan config demi opsi yang terdaftar di kode berbiaya besar dan manfaatnya kecil.
+### 5. Daemons
+A console script per unit (see 3). CloudX daemons are a single process and do not need an `oslo.service`-style launcher. `oslo.config` configuration is not imitated: rewriting config loading for options registered in code is costly and the benefit is small.
 
 ### 6. Service catalog
-**Sumber kebenaran.** `shared/services.py` memuat tabel (`catalog_name`, `catalog_type`, `url_key`, port bawaan). `auth/app/config.py` memakainya menggantikan `_CLOUDX_SERVICES` yang kini terpotong. Tes memastikan tabel dan manifest sama.
+**Source of truth.** `shared/services.py` holds the table (`catalog_name`, `catalog_type`, `url_key`, default port). `auth/app/config.py` uses it in place of the truncated `_CLOUDX_SERVICES`. A test makes sure the table and the manifest agree.
 
-**Mengisi catalog.** `cloudx-manage catalog sync [--dry-run]` membaca `url_key` dari conf, lalu menambah service dan memperbarui endpoint (`public` dan `internal`) yang URL-nya berbeda; mencetak tiap perubahan. Kunci opsional `<url_key>_public` (misalnya `image_api_public_url`) mengisi endpoint `public` bila berbeda dari `internal`. Bootstrap awal di auth memakai fungsi yang sama untuk membuat entri baru. Entri yang sudah ada hanya diubah oleh `sync`, tidak oleh start biasa, supaya perubahan admin tidak tertimpa diam-diam.
+**Filling the catalog.** `cloudx-manage catalog sync [--dry-run]` reads the `url_key` values from the conf, then adds services and updates endpoints (`public` and `internal`) whose URL differs; it prints every change. An optional key `<url_key>_public` (for example `image_api_public_url`) fills the `public` endpoint when it differs from `internal`. The initial bootstrap in auth uses the same function to create new entries. Existing entries are changed only by `sync`, not by a normal start, so an admin's changes are not silently overwritten.
 
-**Membaca catalog.** `shared/catalog.py`: `url(service, interface="internal")` menyelesaikan dengan urutan: (1) kunci `<url_key>` di conf atau env bila ada (override, setara `endpoint_override` di keystoneauth); (2) catalog dari auth lewat `GET /internal/catalog` (header `X-Internal-Token`, mengikuti konvensi `/internal/*`), di-cache `catalog_cache_ttl` (default 60 s), dan sekali di-refresh bila koneksi ke URL hasil catalog gagal; (3) `CatalogError` yang menyebut nama service. `auth_api_url` tetap wajib di conf (titik awal, seperti `auth_url` di OpenStack).
+**Reading the catalog.** `shared/catalog.py`: `url(service, interface="internal")` resolves in this order: (1) the key `<url_key>` in the conf or environment if present (an override, the equivalent of `endpoint_override` in keystoneauth); (2) the catalog from auth through `GET /internal/catalog` (header `X-Internal-Token`, following the `/internal/*` convention), cached for `catalog_cache_ttl` (default 60 s), and refreshed once if the connection to the URL it gave fails; (3) a `CatalogError` that names the service. `auth_api_url` stays required in the conf (the starting point, like `auth_url` in OpenStack).
 
-**Klien.** CLI memakai `catalog` dari respons login (interface `public`), dengan `CLOUDX_<SVC>_URL` sebagai override dan `127.0.0.1:<port>` hanya bila catalog tidak memuat service itu.
+**Clients.** The CLI uses the `catalog` from the login response (the `public` interface), with `CLOUDX_<SVC>_URL` as an override and `127.0.0.1:<port>` only when the catalog does not contain that service.
 
-**Adopsi.** Urutan override-dulu berarti tidak ada yang berubah sampai URL dikeluarkan dari conf: aman dan dapat dibatalkan per langkah. Setelah 38 modul pindah ke `shared.catalog`, conf bawaan hanya berisi `auth_api_url`, dan satu tes gagal bila ada modul di luar `shared/catalog.py` (dan bootstrap auth) yang membaca `*_API_URL` langsung.
+**Adoption.** The override-first order means nothing changes until a URL is taken out of the conf: safe and reversible per step. After the 38 modules move to `shared.catalog`, the default conf contains only `auth_api_url`, and a test fails if a module outside `shared/catalog.py` (and the auth bootstrap) reads `*_API_URL` directly.
 
 ### 7. `cloudx-manage`
-Satu perintah untuk operator, mengikuti `<svc>-manage` OpenStack: `cloudx-manage db sync` (membungkus `shared.migrate`), `cloudx-manage catalog sync`. `cloudx-db-migrate` tetap ada sebagai alias.
+One command for the operator, following OpenStack's `<svc>-manage`: `cloudx-manage db sync` (wraps `shared.migrate`), `cloudx-manage catalog sync`. `cloudx-db-migrate` stays as an alias.
 
 ### 8. Build
-`scripts/build-deb.sh` (target `make deb`) membaca manifest, menyusun staging per paket, memanggil `fakeroot dpkg-deb --build`, hasil di `dist/deb/`. Membuat arsip apt dan penandatanganan tidak termasuk; untuk lab cukup `dpkg-scanpackages` ke repo lokal (dijelaskan di dokumen). `scripts/build-tarball.sh` tidak diubah.
+`scripts/build-deb.sh` (target `make deb`) reads the manifest, builds a staging tree per package, calls `fakeroot dpkg-deb --build`, and writes the result to `dist/deb/`. Building an apt archive and signing are not included; for a lab `dpkg-scanpackages` into a local repo is enough (explained in the document). `scripts/build-tarball.sh` is not changed.
 
-## Keamanan: IP klien di belakang proxy
-Di belakang nginx lewat unix socket, `request.client` kosong. `object_store/app/main.py:_classify_source` lalu menganggap `src_ip = 127.0.0.1` dan memercayai `X-Forwarded-For`; bila header itu tidak ada, semua klien dianggap INTERNAL dan bucket privat terbuka. Memperbaikinya benar-benar butuh model "trusted proxy" (hop paling kanan yang bukan proxy tepercaya adalah klien), dan rantai dashboard ke object-store menambah satu hop yang harus dilewati. Itu perubahan perilaku yang terpisah dari paket ini, jadi:
-- object-store, dashboard, metadata-api, dan metadata-proxy tetap `direct` di rilis pertama.
-- Tindak lanjut (spec sendiri): model trusted-proxy untuk keempatnya, lalu pindah ke nginx.
-- Untuk 20 API yang di-nginx: sudah diperiksa, tidak ada yang membaca IP klien (`grep request.client` hanya menemukan empat service di atas).
+## Security: client IP behind a proxy
+Behind nginx over a unix socket, `request.client` is empty. `object_store/app/main.py:_classify_source` then assumes `src_ip = 127.0.0.1` and trusts `X-Forwarded-For`; if that header is missing, every client is considered INTERNAL and private buckets open. Fixing it properly needs a "trusted proxy" model (the rightmost hop that is not a trusted proxy is the client), and the dashboard-to-object-store chain adds one more hop that has to be passed. That is a behaviour change separate from this packaging, so:
+- object-store, dashboard, metadata-api and metadata-proxy stay `direct` in the first release.
+- Follow-up (its own spec): a trusted-proxy model for the four, then move them to nginx.
+- For the 20 APIs behind nginx: checked, none reads the client IP (`grep request.client` only finds the four services above).
 
-## Tidak termasuk
-TLS di nginx (kini hanya perubahan config, spec terpisah); routing berbasis path; arsip apt dan penandatanganan; mengganti nama paket `app`; config gaya `oslo.config`; HA PostgreSQL/RabbitMQ; distro atau arsitektur selain Ubuntu 24.04 amd64; venv per service; kontainer; kepatuhan penuh kebijakan arsip Debian (venv bawaan dan `/opt`, tidak untuk arsip resmi Debian).
+## Not included
+TLS in nginx (now only a config change, a separate spec); path-based routing; an apt archive and signing; renaming the `app` package; `oslo.config`-style config; PostgreSQL/RabbitMQ HA; distributions or architectures other than Ubuntu 24.04 amd64; a venv per service; containers; full compliance with the Debian archive policy (bundled venv and `/opt`, not meant for the official Debian archive).
 
-## Pengujian
-- **Unit:** manifest valid (nama unik, port unik, `url_key` ada di tabel catalog); generator unit dan snippet nginx (golden file: `streaming`, `frontend=direct` tanpa snippet); argv launcher (urutan prioritas `workers`, bind unix vs TCP, `--forwarded-allow-ips` tidak pernah `*`); resolusi catalog (override, cache, refresh sekali, `CatalogError`); `catalog sync` (menambah, memperbarui, `--dry-run`, tidak menyentuh entri yang sama); `shared/services.py` sama dengan manifest.
-- **Paket:** `dpkg-deb --info/--contents` pada hasil build: file ada, `Depends` benar, conffile bertanda, tidak ada unit di `/etc/systemd/system`.
-- **Lab (node atau VM Ubuntu 24.04 bersih):** pasang `cloudx-common`, `cloudx-db`, dan dua paket API; `db sync`; kedua API menjawab di port luar lewat nginx; unit hidup setelah reboot; catalog berisi URL benar setelah `catalog sync`; `cloudx image list` dari node lain lewat catalog tanpa env.
-- Suite penuh dan lint tetap hijau setiap fase.
+## Testing
+- **Unit:** the manifest is valid (unique names, unique ports, `url_key` present in the catalog table); the unit and nginx snippet generators (golden files: `streaming`, `frontend=direct` without a snippet); the launcher argv (the `workers` priority order, unix vs TCP bind, `--forwarded-allow-ips` never `*`); catalog resolution (override, cache, refresh once, `CatalogError`); `catalog sync` (adds, updates, `--dry-run`, does not touch an identical entry); `shared/services.py` equals the manifest.
+- **Package:** `dpkg-deb --info/--contents` on the build result: files present, `Depends` correct, conffiles marked, no unit in `/etc/systemd/system`.
+- **Lab (a clean Ubuntu 24.04 node or VM):** install `cloudx-common`, `cloudx-db` and two API packages; `db sync`; both APIs answer on the external port through nginx; the units are alive after a reboot; the catalog contains the right URLs after `catalog sync`; `cloudx image list` from another node through the catalog without environment variables.
+- The full suite and lint stay green in every phase.
 
-## Fase (masing-masing dapat dirilis sendiri)
-1. **Fondasi:** manifest, `launcher`, `cloudx-manage`, `build-deb.sh`, paket `cloudx-common`/`cloudx-db`/per unit, semua `frontend=direct` (perilaku runtime sama dengan sekarang).
-2. **Catalog:** `shared/services.py`, `catalog sync`, `/internal/catalog`, CLI membaca catalog. Berguna sendiri karena catalog lab sekarang salah.
-3. **nginx dan socket** untuk 20 API (membalik `frontend` di manifest).
-4. **Paket meta, `cloudx-cli`, dokumen `docs/deb-install.md`, runbook upgrade node lab.**
-5. **Adopsi catalog** di 38 modul dan tes lint; URL keluar dari conf bawaan.
-6. *(spec terpisah)* trusted-proxy untuk object-store, dashboard, dan metadata.
+## Phases (each can be released on its own)
+1. **Foundation:** manifest, `launcher`, `cloudx-manage`, `build-deb.sh`, the packages `cloudx-common`/`cloudx-db`/per unit, all `frontend=direct` (the same runtime behaviour as today).
+2. **Catalog:** `shared/services.py`, `catalog sync`, `/internal/catalog`, the CLI reads the catalog. Useful on its own because the lab catalog is wrong today.
+3. **nginx and sockets** for 20 APIs (flipping `frontend` in the manifest).
+4. **Meta packages, `cloudx-cli`, the document `docs/deb-install.md`, the lab node upgrade runbook.**
+5. **Catalog adoption** in 38 modules and the lint test; URLs leave the default conf.
+6. *(separate spec)* trusted-proxy for object-store, dashboard and metadata.
 
-Fase 2 tidak bergantung pada 1. Fase 3 dan 4 bergantung pada 1. Fase 5 bergantung pada 2.
+Phase 2 does not depend on 1. Phases 3 and 4 depend on 1. Phase 5 depends on 2.
 
-## Risiko dan penanganan
-- **Salah mengelompokkan IP klien:** diatasi dengan `direct` untuk empat service dan tes launcher (tanpa `*`).
-- **venv tidak dapat dipindah:** dibangun di path akhir, shebang ditulis ulang; tes lab menjalankan `import shared` dari paket terpasang. Venv terikat Python 3.12 (`Depends`).
-- **Unit lama menimpa unit paket:** node hasil tarball punya `/etc/systemd/system/cloudx-*.service` yang mengalahkan `/lib/systemd/system`. Runbook upgrade mewajibkan menghapus unit lama dan `systemctl disable --now` sebelum memasang paket; conffile `/etc/cloudx/*` dipertahankan (`--force-confold`).
-- **nginx dan gunicorn berebut port saat migrasi:** runbook menghentikan unit lama dulu; nginx baru dimuat ulang setelah itu.
-- **Service start sebelum dikonfigurasi:** `Restart=always`, seperti sekarang; paket mencetak langkah berikutnya (isi config, `db sync`, restart).
-- **Socket bisa disambungi siapa pun di host:** gunicorn membuat socket berizin 0777, jadi jangkauannya sama dengan listener TCP yang digantikan; semua rute tetap butuh token atau token internal. Opsi `--umask` di masa depan butuh mekanisme lain, bukan menambahkan `www-data` ke grup `cloudx` (worker nginx jadi bisa membaca `/etc/cloudx` yang berisi secret).
+## Risks and handling
+- **Mis-grouping client IPs:** handled with `direct` for four services and the launcher test (never `*`).
+- **A venv cannot be moved:** it is built at the final path, shebangs are rewritten; the lab test runs `import shared` from the installed package. The venv is tied to Python 3.12 (`Depends`).
+- **Old units override the package units:** nodes installed from the tarball have `/etc/systemd/system/cloudx-*.service`, which beat `/lib/systemd/system`. The upgrade runbook requires deleting the old units and `systemctl disable --now` before installing the packages; the `/etc/cloudx/*` conffiles are kept (`--force-confold`).
+- **nginx and gunicorn fighting for ports during migration:** the runbook stops the old units first; the new nginx is reloaded after that.
+- **A service starting before it is configured:** `Restart=always`, as today; the package prints the next steps (fill in the config, `db sync`, restart).
+- **The socket can be connected to by anyone on the host:** gunicorn creates the socket with mode 0777, so its reach equals the TCP listener it replaces; every route still needs a token or the internal token. A future `--umask` option would need another mechanism, not adding `www-data` to the `cloudx` group (the nginx workers could then read `/etc/cloudx`, which holds secrets).

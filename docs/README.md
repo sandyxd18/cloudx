@@ -1,6 +1,6 @@
 # CloudX Documentation
 
-Start with `../README.md` (overview) and [quickstart.md](quickstart.md) (a first VM in about 30 minutes). The documents in this folder are grouped below. The documentation is in English; the only exception is part of the design notes listed at the bottom.
+Start with `../README.md` (overview) and [quickstart.md](quickstart.md) (a first VM in about 30 minutes). The documents in this folder are grouped below. All documentation is in English.
 
 CloudX runs natively under systemd on Ubuntu 24.04. There is no Docker Compose deployment any more; the few older pages that mention it say so.
 
@@ -47,4 +47,4 @@ instances), `messaging.md` (queues)
 
 ## Design notes
 `superpowers/specs/` and `superpowers/plans/` hold the design documents and implementation plans written while the
-features were built. They are working notes, not user documentation, and some of them are still in Indonesian.
+features were built. They are working notes, not user documentation.
