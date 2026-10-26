@@ -1,19 +1,19 @@
-# Catatan Spike strongSwan Multi-Netns (Task 0)
+# strongSwan multi-netns spike notes (Task 0)
 
-Spike membuktikan bahwa dua instance strongSwan terpisah dapat berjalan bersamaan di dua netns berbeda pada satu host (`compute-node`) tanpa konflik PID, socket, atau port, serta berhasil membentuk tunnel IPsec IKEv2 PSK dan meneruskan trafik dummy subnet terenkripsi ESP.
+The spike proved that two separate strongSwan instances can run at the same time in two different netns on one host (`compute-node`) without PID, socket or port conflicts, and form an IKEv2 PSK IPsec tunnel that carries dummy subnet traffic encrypted with ESP.
 
 ---
 
-## 1. Temuan Biner Charon & AppArmor
+## 1. Findings: the charon binary and AppArmor
 
-Pada Ubuntu 24.04 (`compute-node`):
-- Package `charon-systemd` menyediakan biner: `/usr/sbin/charon-systemd`. Biner ini dirancang khusus untuk swanctl/vici, **tidak menggunakan hardcoded pidfile** (`/var/run/charon.pid`), sehingga dapat langsung dijalankan paralel di tiap netns tanpa isolasi mount namespace.
-- Package `strongswan-charon` menyediakan biner: `/usr/lib/ipsec/charon`. Biner ini memiliki hardcoded `/var/run/charon.pid`. Jika dijalankan di dua netns tanpa isolasi mount namespace, instance kedua akan gagal (`charon already running ('/var/run/charon.pid' exists)`). Untuk menjalankannya di multi-netns diperlukan isolasi mount namespace:
+On Ubuntu 24.04 (`compute-node`):
+- The package `charon-systemd` provides the binary `/usr/sbin/charon-systemd`. It is designed for swanctl/vici and **does not use a hard-coded pidfile** (`/var/run/charon.pid`), so it can run in parallel in each netns without mount namespace isolation.
+- The package `strongswan-charon` provides the binary `/usr/lib/ipsec/charon`. It has a hard-coded `/var/run/charon.pid`. Run in two netns without mount namespace isolation, the second instance fails (`charon already running ('/var/run/charon.pid' exists)`). Running it in several netns needs mount namespace isolation:
   ```bash
   ip netns exec <ns> unshare -m sh -c "mount -t tmpfs none /var/run && env STRONGSWAN_CONF=... /usr/lib/ipsec/charon"
   ```
-- **Rekomendasi implementasi `vpn_worker`:** Gunakan `/usr/sbin/charon-systemd` karena lebih ringan, dirancang untuk swanctl/vici, dan tidak membutuhkan unshare mount.
-- **Catatan AppArmor:** Profil AppArmor bawaan untuk `swanctl` dan `charon` membatasi pembacaan file/socket hanya di bawah `/etc/swanctl` dan `/run/charon.vici`. Untuk pengujian custom socket di `/tmp/spike/*/vici` dan config dinamis:
+- **Recommendation for `vpn_worker`:** use `/usr/sbin/charon-systemd`, because it is lighter, designed for swanctl/vici, and needs no unshare mount.
+- **AppArmor note:** the distro's AppArmor profiles for `swanctl` and `charon` limit reading files/sockets to `/etc/swanctl` and `/run/charon.vici`. To test a custom socket in `/tmp/spike/*/vici` and a dynamic config:
   ```bash
   sudo ln -sf /etc/apparmor.d/usr.lib.ipsec.charon /etc/apparmor.d/disable/
   sudo ln -sf /etc/apparmor.d/usr.sbin.swanctl /etc/apparmor.d/disable/
@@ -23,7 +23,7 @@ Pada Ubuntu 24.04 (`compute-node`):
 
 ---
 
-## 2. Struktur Konfigurasi yang Berhasil
+## 2. Configuration structure that worked
 
 ### strongswan.conf (`/tmp/spike/A/strongswan.conf` & `B`)
 ```
@@ -43,7 +43,7 @@ charon {
 }
 include /etc/strongswan.d/*.conf
 ```
-*Catatan:* `load_modular = yes` dan `include /etc/strongswan.d/charon/*.conf` wajib disertakan agar plugin crypto dan netlink ter-load sempurna.
+*Note:* `load_modular = yes` and `include /etc/strongswan.d/charon/*.conf` are required so that the crypto and netlink plugins load completely.
 
 ### swanctl.conf (`/tmp/spike/A/swanctl.conf`)
 ```
@@ -83,33 +83,33 @@ secrets {
 
 ---
 
-## 3. Perintah Persis yang Berhasil
+## 3. The exact commands that worked
 
-1. **Jalankan daemon charon per netns:**
+1. **Run a charon daemon per netns:**
    ```bash
    sudo ip netns exec spA env STRONGSWAN_CONF=/tmp/spike/A/strongswan.conf /usr/sbin/charon-systemd &
    sudo ip netns exec spB env STRONGSWAN_CONF=/tmp/spike/B/strongswan.conf /usr/sbin/charon-systemd &
    ```
 
-2. **Load konfigurasi swanctl:**
-   *Catatan sintaks:* Perintah swanctl (`--load-all`, `--list-sas`, `--initiate`) harus mendahului flag opsi (`--file`, `--uri`), atau menggunakan env `SWANCTL_DIR`.
+2. **Load the swanctl configuration:**
+   *Syntax note:* the swanctl commands (`--load-all`, `--list-sas`, `--initiate`) must come before the option flags (`--file`, `--uri`), or use the env `SWANCTL_DIR`.
    ```bash
    sudo ip netns exec spA swanctl --load-all --file /tmp/spike/A/swanctl.conf --uri unix:///tmp/spike/A/vici
    sudo ip netns exec spB swanctl --load-all --file /tmp/spike/B/swanctl.conf --uri unix:///tmp/spike/B/vici
    ```
 
-3. **Inisiasi tunnel IPsec:**
+3. **Initiate the IPsec tunnel:**
    ```bash
    sudo ip netns exec spA swanctl --initiate --child spike-child --uri unix:///tmp/spike/A/vici
    ```
 
-4. **Verifikasi status SA:**
+4. **Verify the SA state:**
    ```bash
    sudo ip netns exec spA swanctl --list-sas --uri unix:///tmp/spike/A/vici
    sudo ip netns exec spB swanctl --list-sas --uri unix:///tmp/spike/B/vici
    ```
 
-5. **Uji trafik tunnel & verifikasi enkripsi ESP:**
+5. **Test the tunnel traffic and verify ESP encryption:**
    ```bash
    sudo ip netns exec spA tcpdump -c 5 -ni vethA esp &
    sudo ip netns exec spA ping -c 3 -I 10.201.0.1 10.202.0.1
@@ -117,9 +117,9 @@ secrets {
 
 ---
 
-## 4. Hasil Bukti Eksekusi (Live Lab Output)
+## 4. Execution evidence (live lab output)
 
-### A. Output `swanctl --list-sas` (spA)
+### A. Output of `swanctl --list-sas` (spA)
 ```
 spike-vpn: #1, ESTABLISHED, IKEv2, 1186757f63ee8266_i* 29ef0d170874e0c0_r
   local  '192.0.2.1' @ 192.0.2.1[4500]
@@ -134,7 +134,7 @@ spike-vpn: #1, ESTABLISHED, IKEv2, 1186757f63ee8266_i* 29ef0d170874e0c0_r
     remote 10.202.0.0/24
 ```
 
-### B. Output `swanctl --list-sas` (spB)
+### B. Output of `swanctl --list-sas` (spB)
 ```
 spike-vpn: #1, ESTABLISHED, IKEv2, 1186757f63ee8266_i 29ef0d170874e0c0_r*
   local  '192.0.2.2' @ 192.0.2.2[4500]
@@ -149,7 +149,7 @@ spike-vpn: #1, ESTABLISHED, IKEv2, 1186757f63ee8266_i 29ef0d170874e0c0_r*
     remote 10.201.0.0/24
 ```
 
-### C. Output Ping (spA ke spB via dummy subnet)
+### C. Ping output (spA to spB over the dummy subnets)
 ```
 PING 10.202.0.1 (10.202.0.1) from 10.201.0.1 : 56(84) bytes of data.
 64 bytes from 10.202.0.1: icmp_seq=1 ttl=64 time=0.104 ms
@@ -161,7 +161,7 @@ PING 10.202.0.1 (10.202.0.1) from 10.201.0.1 : 56(84) bytes of data.
 rtt min/avg/max/mdev = 0.104/0.107/0.110/0.002 ms
 ```
 
-### D. Output `tcpdump -c 5 -ni vethA esp`
+### D. Output of `tcpdump -c 5 -ni vethA esp`
 ```
 listening on vethA, link-type EN10MB (Ethernet), snapshot length 262144 bytes
 12:16:01.103328 IP 192.0.2.1 > 192.0.2.2: ESP(spi=0xcb53f92c,seq=0x1), length 136
@@ -173,4 +173,4 @@ listening on vethA, link-type EN10MB (Ethernet), snapshot length 262144 bytes
 6 packets received by filter
 0 packets dropped by kernel
 ```
-Trafik ICMP antar subnet 10.201.0.1 dan 10.202.0.1 sepenuhnya dienkripsi ke dalam paket ESP (protokol 50) dengan SPI `0xcb53f92c` dan `0xc463ba74`.
+The ICMP traffic between the subnets 10.201.0.1 and 10.202.0.1 is fully encrypted into ESP packets (protocol 50) with SPIs `0xcb53f92c` and `0xc463ba74`.
