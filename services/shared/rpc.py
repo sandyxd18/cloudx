@@ -41,6 +41,19 @@ EXCHANGE     = "cloudx"                # default topic exchange
 EVENT_EXCHANGE = "cloudx.events"       # fanout exchange for live events
 
 
+def redact_url(url: str) -> str:
+    """The URL with the password replaced by ***, safe to log. A URL without a password is returned unchanged."""
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    authority, slash, tail = rest.partition("/")
+    userinfo, at, host = authority.rpartition("@")  # a password may hold a raw "@"; the host follows the last one
+    user, colon, _password = userinfo.partition(":")
+    if not (at and colon):
+        return url
+    return f"{scheme}://{user}:***@{host}{slash}{tail}"
+
+
 def host_queue(service: str, host: str | None) -> str:
     """Routing key / queue name that addresses *service* on one specific host.
 
@@ -86,7 +99,7 @@ class RPCClient:
         self._channel = self._connection.channel()
         self._channel.exchange_declare(self._exchange, "topic", durable=True)
         self._channel.exchange_declare(EVENT_EXCHANGE, "fanout", durable=True)
-        log.info("RPC client connected to %s", self._url)
+        log.info("RPC client connected to %s", redact_url(self._url))
 
     def _reconnect(self) -> None:
         try:
