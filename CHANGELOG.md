@@ -30,10 +30,21 @@ schema between releases, so read the upgrade steps before moving a running cloud
   before a domain starts after a host reboot.
 - ha-watchdog falls back to the last ha-api URL that resolved when the catalog is down.
 - `cloudx flavor list` shows memory and disk.
+- A server group no longer accepts a member on a node that already holds one when every node is taken (409
+  `No valid host`, not a silent placement on a used node).
+- `cloudx scaling-group scale-out/scale-in` and stack calls no longer answer 401 (orchestration accepts `X-Auth-Token`).
+- The telemetry worker sends metrics again: it read the wrong key of the server list and looked up libvirt domains by
+  the wrong name, so no CPU, memory, disk or network data reached telemetry-api.
+
+### Changed
+- Pre-release packages get a tilde in their Debian version (`1.0.0~rc1-1`), so `apt` sorts a release candidate before
+  the release.
+- All documentation is English; the tarball install guide moved to `docs/tarball-install.md`; new architecture page,
+  CLI guide checked by a test, and tutorials (three-node cloud, auto-scaling, Ceph, Kubernetes, dashboard tour).
 
 ## 0.8.6 - 2026-10-20
 Database backup and scheduled backups, Instance HA hardening (watchdog and a second ha-api with a leader lock), an error
-reaper, iSCSI cleanup and a an IP allocation race fix.
+reaper, iSCSI cleanup and an IP allocation race fix.
 
 ## 0.8.5 - 2026-10-20
 Four new services, each "not 1:1" with its OpenStack counterpart: File Store (Manila-like), Container (Zun-like),

@@ -51,6 +51,9 @@ jobs:
           mkdir -p dist/release
           cp dist/deb/*.deb dist/cloudx-[0-9]*.tar.gz dist/release/
           cd dist/release
+          # a pre-release package is cloudx-x_1.0.0~rc1-1_amd64.deb; GitHub rewrites "~" in asset names, which would make
+          # SHA256SUMS name files that do not exist. apt reads the version from the package, not from the file name.
+          for f in *~*; do [ -e "$f" ] && mv "$f" "${f//\~/.}"; done || true
           sha256sum -- *.deb *.tar.gz > ../SHA256SUMS
           mv ../SHA256SUMS SHA256SUMS
           sha256sum --check SHA256SUMS
