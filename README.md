@@ -93,3 +93,9 @@ Additional documentation:
 * **[Native systemd Deployment Guide](./docs/systemd-deployment-guide.md)**
 * **[Multi-Node Guide (Control Plane + Compute)](./docs/multi-node-deployment.md)**
 * **[Complete CLI User Guide](./docs/user-guide-cli.md)**
+
+---
+
+## License
+
+CloudX is released under the [MIT license](./LICENSE). See [CONTRIBUTING.md](./CONTRIBUTING.md) to help, [SECURITY.md](./SECURITY.md) to report a vulnerability and [CHANGELOG.md](./CHANGELOG.md) for what changed.
