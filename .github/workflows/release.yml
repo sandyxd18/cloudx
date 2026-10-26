@@ -1,6 +1,7 @@
 name: release
 
-# Pushing a tag like v0.7.0 runs the tests, builds the release tarball and publishes a GitHub release.
+# Pushing a tag like v0.7.0 runs the tests, builds the release tarball and the .deb packages, and publishes a GitHub
+# release with all of them plus SHA256SUMS. There is no apt repository: the release assets are the distribution channel.
 # The release body is docs/releases/<tag>.md (falls back to generated notes when that file does not exist).
 on:
   push:
@@ -39,6 +40,21 @@ jobs:
       - name: Build release tarball
         run: ./scripts/build-tarball.sh
 
+      - name: Build .deb packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot
+          ./scripts/build-deb.sh
+
+      - name: Checksums
+        run: |
+          mkdir -p dist/release
+          cp dist/deb/*.deb dist/cloudx-[0-9]*.tar.gz dist/release/
+          cd dist/release
+          sha256sum -- *.deb *.tar.gz > ../SHA256SUMS
+          mv ../SHA256SUMS SHA256SUMS
+          sha256sum --check SHA256SUMS
+
       - name: Release notes
         id: notes
         run: |
@@ -51,5 +67,6 @@ jobs:
           generate_release_notes: ${{ steps.notes.outputs.file == '' }}
           fail_on_unmatched_files: true
           files: |
-            dist/cloudx-[0-9]*.tar.gz
-            dist/cloudx-[0-9]*.tar.gz.sha256
+            dist/release/*.deb
+            dist/release/cloudx-[0-9]*.tar.gz
+            dist/release/SHA256SUMS

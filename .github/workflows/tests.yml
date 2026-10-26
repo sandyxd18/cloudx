@@ -19,3 +19,23 @@ jobs:
         run: ruff check services cli tests --select F401,F811,F821,F841 --exclude "node_modules,migrations/versions"
       # Unit tests only: tests/live needs a running CloudX lab and is skipped without --live.
       - run: pytest -q
+
+  # Builds every package and checks it with dpkg-deb and lintian (errors only), so a packaging mistake shows up on the pull
+  # request and not on release day.
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: services/dashboard/frontend/package-lock.json
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y fakeroot lintian
+      - run: ./scripts/build-deb.sh
+      - name: Inspect every package
+        run: ./scripts/check-debs.sh dist/deb

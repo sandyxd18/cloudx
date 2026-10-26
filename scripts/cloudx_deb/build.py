@@ -10,7 +10,8 @@ from .render import render_api_unit, render_daemon_unit, render_nginx, render_wr
 
 ROOT = Path(__file__).resolve().parents[2]
 REVISION = "1"
-MAINTAINER = "CloudX <root@localhost>"
+MAINTAINER = "Sandy Hidayatullah <137029388+sandyxd18@users.noreply.github.com>"
+HOMEPAGE = "https://github.com/sandyxd18/cloudx"
 VENV = "/opt/cloudx/venv"
 CLI_VENV = "/opt/cloudx/cli/venv"
 SERVICES = "opt/cloudx/services"
@@ -37,7 +38,18 @@ def control_file(pkg: str, version: str, depends: list[str], description: str,
                  recommends: list[str] | None = None) -> str:
     rec = f"Recommends: {', '.join(recommends)}\n" if recommends else ""
     return (f"Package: {pkg}\nVersion: {version}\nArchitecture: amd64\nMaintainer: {MAINTAINER}\n"
-            f"Section: admin\nPriority: optional\nDepends: {', '.join(depends)}\n{rec}Description: {description}\n")
+            f"Section: admin\nPriority: optional\nHomepage: {HOMEPAGE}\nDepends: {', '.join(depends)}\n{rec}"
+            f"Description: {description}\n")
+
+
+def copyright_file() -> str:
+    """debian/copyright (DEP-5) for every package, built from the repo's MIT LICENSE ("Expat" in Debian terms)."""
+    _, holder, body = (ROOT / "LICENSE").read_text().split("\n\n", 2)
+    indented = "\n".join(f" {line}".rstrip() if line else " ." for line in body.strip().splitlines())
+    return ("Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n"
+            f"Upstream-Name: CloudX\nSource: {HOMEPAGE}\n\n"
+            f"Files: *\nCopyright: {holder.removeprefix('Copyright (c) ')}\nLicense: Expat\n\n"
+            f"License: Expat\n{indented}\n")
 
 
 def strip_default_secret(text: str) -> str:
@@ -307,6 +319,7 @@ def _installed_size(staging: Path) -> int:
 def _dpkg_deb(staging: Path, out_dir: Path) -> Path:
     control = staging / "DEBIAN/control"
     fields = dict(line.split(": ", 1) for line in control.read_text().splitlines())
+    _write(staging / f"usr/share/doc/{fields['Package']}/copyright", copyright_file())
     control.write_text(control.read_text() + f"Installed-Size: {_installed_size(staging)}\n")
     _normalize_modes(staging)
     deb = out_dir / f"{fields['Package']}_{fields['Version']}_{fields['Architecture']}.deb"
