@@ -9,7 +9,8 @@ CloudX runs natively under systemd on Ubuntu 24.04. There is no Docker Compose d
 |---|---|
 | `quickstart.md` | Start here: all-in-one install on one Ubuntu 24.04 machine from the `.deb` packages, first VM and floating IP in about 30 minutes |
 | `deb-install.md` | Reference for the `.deb` packages: building them, installing by role, spreading services across nodes, catalog, rotating passwords, upgrading tarball nodes, rollback |
-| `../SETUP.md` | Installation from the release tarball (controller, storage node, compute node), admin account |
+| `../SETUP.md` | Setup guide: choosing a layout, preparing PostgreSQL, RabbitMQ and OVN, the admin account, the first network |
+| `tarball-install.md` | Legacy: installation from the release tarball (controller, storage node, compute node) |
 | `systemd-deployment-guide.md` | Native systemd and the `/etc/cloudx/` configuration |
 | `multi-node-deployment.md` | Multi-node deployment and how to test it |
 | `single-node-lab.md` | Scope of the single-node lab |

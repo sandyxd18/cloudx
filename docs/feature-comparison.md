@@ -4,8 +4,8 @@
 > against a standard cloud specification, with an estimated similarity percentage.
 >
 > **Updated:** August 2026 — covers Phases 1–4 (base-service API parity) and
-> Phase 5 (production readiness: multi-node, HA, backup, monitoring, internal TLS,
-> AWS Cloudscape Dashboard).
+> Phase 5 (production readiness and the AWS Cloudscape Dashboard; the status marks in the Phase 5 table say
+> what is packaged and what is only a reference configuration).
 
 ---
 
@@ -30,16 +30,18 @@
 
 ### Phase 5 Additions — Production Readiness (cross-service)
 
+Status: ✅ shipped and used in the native (.deb) deployment, ◐ reference configuration in the repository only (not packaged, you run it yourself), ✗ not available.
+
 | Area | Feature | Status |
 |---|---|:---:|
 | Infrastructure | Adaptive multi-node deployment (Control Plane / Compute / Storage) | ✅ |
-| Infrastructure | High Availability: RabbitMQ cluster + PostgreSQL streaming replication | ✅ |
-| Infrastructure | HAProxy multi-backend round-robin + Keepalived VIP | ✅ |
-| Backup | Automated DB backup to MinIO (cron 23:00 Asia/Jakarta, tiered retention) | ✅ |
+| Infrastructure | High Availability: RabbitMQ cluster + PostgreSQL streaming replication (container entrypoints only; use your distro's tooling) | ◐ |
+| Infrastructure | HAProxy multi-backend round-robin + Keepalived VIP (`services/haproxy`, `services/keepalived`, not packaged) | ◐ |
+| Backup | DB backup to MinIO with tiered retention (`services/backup/*.sh`; schedule it with cron, no unit ships) | ◐ |
 | Backup | Full volume backup to object storage + restore (`POST /volumes/{id}/backup`) | ✅ |
-| Observability | Prometheus (15-day retention) + pre-provisioned Grafana dashboards | ✅ |
+| Observability | Prometheus scrape config and alert rules + Grafana dashboards (`services/prometheus`, `services/grafana`; you install and run them) | ◐ |
 | Observability | `/metrics` endpoint on all API services + alert rules | ✅ |
-| Security | Internal TLS PKI (`services/certs/generate-certs.sh`, service-to-service only) | ✅ |
+| Security | Internal TLS between services (the script generates a CA and certificates, but no service reads them) | ✗ |
 | Database | Alembic migration scaffold (baseline stamp, additive-first) | ✅ |
 | CloudX Dashboard | UI redesigned in the style of the AWS Console with the Cloudscape Design System | ✅ |
 

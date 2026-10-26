@@ -12,7 +12,7 @@ storage-node (…12)  cloudx-storage-01   compute-worker + block-store-worker (v
 ## What the lab needs
 
 The lab nodes already have the resources (4 vCPU / 8 GB each, nested virtualisation, a 30 GB `/dev/sdb` per data node,
-so 60 GB of LVM in total). What is different from the 3-node layout in `SETUP.md`:
+so 60 GB of LVM in total). What is different from the 3-node layout in `tarball-install.md`:
 
 | Node | Change |
 |---|---|
@@ -64,7 +64,7 @@ node's `/dev/sdb` are lost when the disk is re-purposed: delete or back up the v
         ./scripts/setup-compute-node.sh
    ```
    The script writes only `auth_api_url`; the other service URLs come from the catalog, which auth seeds with `127.0.0.1`. Before starting the worker, put the controller's reachable URLs in `/etc/cloudx/auth-api/auth-api.conf` on the controller and run `catalog sync` (see `multi-node-deployment.md`, Step 2, item 3), or add `<name>_api_url` overrides to this node's worker confs.
-   Then install the CloudX services as in `SETUP.md` section 4.4 and
+   Then install the CloudX services as in `tarball-install.md` section 4.4 and
    `sudo systemctl enable --now cloudx-compute-worker cloudx-metadata-proxy`. Check `COMPUTE_HOST` on both nodes
    (`systemctl show cloudx-compute-worker -p Environment`): they must differ.
 4. **Controller.** In `/etc/cloudx/block-store-api/block-store-api.conf` set

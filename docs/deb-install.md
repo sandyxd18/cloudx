@@ -133,14 +133,14 @@ First-time order:
 
    The list after `cloudx-controller` is that meta package's `Recommends` without `cloudx-dns-worker`. DNS is optional and needs host preparation first, so it is installed separately in step 8.
 
-2. Prepare the prerequisites the packages do not configure. Follow `../SETUP.md`: 2.2 (PostgreSQL: listen on the management network, user `cloudx`, databases `cloudx`, `cloudx_orchestration`, `cloudx_events`, `cloudx_billing`, `cloudx_k8s_engine`, `cloudx_key_manager`), 2.3 (RabbitMQ user `cloudx`), and 2.4 (OVN Central listeners 6641 and 6642). On Ubuntu 24.04 PostgreSQL is version 16, so read `14` in the `/etc/postgresql/14/main` paths of SETUP.md as `16`. Section 2.5 of SETUP.md (tarball, venv, units, migrations) is not used; 2.6 and 2.7 still apply.
+2. Prepare the prerequisites the packages do not configure. Follow `../SETUP.md` section 3: 3.1 (PostgreSQL: listen on the management network, user `cloudx`, databases `cloudx`, `cloudx_orchestration`, `cloudx_events`, `cloudx_billing`, `cloudx_k8s_engine`, `cloudx_key_manager`), 3.2 (RabbitMQ user `cloudx`), and 3.3 (OVN Central listeners 6641 and 6642). Sections 5 (admin account) and 6 (first network) of SETUP.md apply after the install.
 
-   Give the PostgreSQL and RabbitMQ users random passwords, not `cloudx` as in the SETUP.md examples, and keep both for step 3:
+   Give the PostgreSQL and RabbitMQ users random passwords, as in SETUP.md 3.1 and 3.2, and keep both for step 3:
 
    ```bash
    DB_PW=$(openssl rand -hex 16); MQ_PW=$(openssl rand -hex 16)
-   sudo -u postgres psql -c "CREATE USER cloudx WITH PASSWORD '$DB_PW' SUPERUSER"   # then CREATE DATABASE as in SETUP.md 2.2
-   sudo rabbitmqctl add_user cloudx "$MQ_PW"                                         # then set_user_tags and set_permissions (SETUP.md 2.3)
+   sudo -u postgres psql -c "CREATE USER cloudx WITH PASSWORD '$DB_PW' SUPERUSER"   # then CREATE DATABASE as in SETUP.md 3.1
+   sudo rabbitmqctl add_user cloudx "$MQ_PW"                                         # then set_user_tags and set_permissions (SETUP.md 3.2)
    ```
 
 3. Edit `/etc/cloudx/cloudx.conf`.
@@ -204,7 +204,7 @@ First-time order:
 
 8. (Optional) DNS. Prepare the host as in section 8 ("DNS"), then install `cloudx-dns-worker`.
 
-The provider network and floating IPs are created after that (`../SETUP.md` 2.7).
+The provider network and floating IPs are created after that (`../SETUP.md` section 6).
 
 ### 4.2 Compute node
 
@@ -252,7 +252,7 @@ The provider network and floating IPs are created after that (`../SETUP.md` 2.7)
 
    The six files are package conffiles and the script overwrites them every time it runs, including earlier manual edits. Because their content differs from the package's default conf, `dpkg` asks what to do on an upgrade that ships a new conf. Install with `--force-confold` (section 6.4) to keep your files.
 
-3. Make sure the libvirt binding is in the package venv. Without it `compute-worker` still starts but cannot create VMs (SETUP.md 4.1). `cloudx-setup-compute` installs it itself (step 6 in the table above) as long as the package is already installed when the script runs, as in the order above. Check:
+3. Make sure the libvirt binding is in the package venv. Without it `compute-worker` still starts but cannot create VMs (`tarball-install.md` 4.1). `cloudx-setup-compute` installs it itself (step 6 in the table above) as long as the package is already installed when the script runs, as in the order above. Check:
 
    ```bash
    /opt/cloudx/venv/bin/python -c "import libvirt"
@@ -501,7 +501,7 @@ Order between nodes: nodes that only run a few services first, the node with aut
 
    `/root` has mode `700`, so the files there can only be read with `sudo`. That is why steps 4 and 7 and the rollback use `sudo cat`.
 
-   `*.service.d` directories (drop-ins, for example `provider-network.conf` from SETUP.md 2.7) still apply after the old unit is deleted and can override the package unit. Move their content into the unit's conf (`Environment=PROVIDER_CIDR=...` becomes `provider_cidr = ...`) and delete the drop-in.
+   `*.service.d` directories (drop-ins, for example `provider-network.conf` from `tarball-install.md` 2.7) still apply after the old unit is deleted and can override the package unit. Move their content into the unit's conf (`Environment=PROVIDER_CIDR=...` becomes `provider_cidr = ...`) and delete the drop-in.
 
 2. Stop and disable all old units, then delete them.
 
