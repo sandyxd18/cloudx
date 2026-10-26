@@ -2,10 +2,16 @@ name: release
 
 # Pushing a tag like v0.7.0 runs the tests, builds the release tarball and the .deb packages, and publishes a GitHub
 # release with all of them plus SHA256SUMS. There is no apt repository: the release assets are the distribution channel.
-# The release body is docs/releases/<tag>.md (falls back to generated notes when that file does not exist).
+# The release body is docs/releases/<tag>.md; a pre-release such as v1.0.0-rc1 uses the notes of the release it leads
+# to (docs/releases/v1.0.0.md) and is marked as a pre-release on GitHub. Without either file the notes are generated.
+#
+# Running the workflow by hand (Actions > release > Run workflow, or `gh workflow run release.yml`) is a dry run:
+# the same tests, tarball, packages, package checks and checksums, but nothing is published; the files are attached
+# to the run as the artifact "release-dry-run".
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,6 +23,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Tag must match VERSION
+        if: github.ref_type == 'tag'
         run: test "v$(tr -d '[:space:]' < VERSION)" = "${GITHUB_REF_NAME}"
 
       - uses: actions/setup-python@v5
@@ -61,11 +68,28 @@ jobs:
       - name: Release notes
         id: notes
         run: |
-          if [ -f "docs/releases/${GITHUB_REF_NAME}.md" ]; then echo "file=docs/releases/${GITHUB_REF_NAME}.md" >> "$GITHUB_OUTPUT"; fi
+          for f in "docs/releases/${GITHUB_REF_NAME}.md" "docs/releases/${GITHUB_REF_NAME%%-*}.md"; do
+            if [ -f "$f" ]; then echo "file=$f" >> "$GITHUB_OUTPUT"; break; fi
+          done
 
-      - uses: softprops/action-gh-release@v2
+      - name: Keep the files of a dry run
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run
+          path: |
+            dist/release/*.deb
+            dist/release/cloudx-[0-9]*.tar.gz
+            dist/release/SHA256SUMS
+            ${{ steps.notes.outputs.file }}
+          retention-days: 7
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
         with:
           name: CloudX ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
           body_path: ${{ steps.notes.outputs.file }}
           generate_release_notes: ${{ steps.notes.outputs.file == '' }}
           fail_on_unmatched_files: true
