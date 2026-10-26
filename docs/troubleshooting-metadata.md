@@ -3,7 +3,7 @@
 Check the services:
 
 ```bash
-docker compose ps metadata-api metadata-proxy
+systemctl status cloudx-metadata-api cloudx-metadata-proxy
 curl http://localhost:8775/health
 curl http://localhost:8776/health
 ```

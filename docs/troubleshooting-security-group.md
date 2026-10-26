@@ -11,8 +11,8 @@ networking port ovn-show <port-id>
 Check directly in the OVN NB DB:
 
 ```bash
-docker compose exec networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 list port_group
-docker compose exec networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 --type=port-group acl-list <port-group>
+sudo ovn-nbctl --db=tcp:<controller-ip>:6641 list port_group
+sudo ovn-nbctl --db=tcp:<controller-ip>:6641 --type=port-group acl-list <port-group>
 ```
 
 If SSH or ping is blocked, make sure the ingress rule exists and the port is still a member of the port group. If `port_security_enabled=false`, the security group is not applied to that port.

@@ -11,7 +11,7 @@ IMAGE_STORAGE_BACKEND=file
 IMAGE_STORE_PATH=/var/lib/cloudx/images
 ```
 
-This is the default. Image files are written to the Docker volume mounted at `/var/lib/cloudx/images`. PostgreSQL stores metadata including:
+This is the default. Image files are written to the directory set by `image_store_path` (`/var/lib/cloudx/images`) on the node that runs `image-api` and `image-worker`. PostgreSQL stores metadata including:
 
 - `storage_backend=file`
 - `object_name`
@@ -30,13 +30,7 @@ MINIO_BUCKET=cloudx-images
 MINIO_SECURE=false
 ```
 
-Start with:
-
-```bash
-docker compose --profile minio up -d --build
-```
-
-`minio-init` creates the bucket if it does not exist. The API still computes SHA256 checksum and size before storing metadata in PostgreSQL.
+CloudX does not install MinIO. Run it yourself (the MinIO binary or package, as a service on the storage node or elsewhere), create the `cloudx-images` bucket, and put the settings above in `/etc/cloudx/image-api/image-api.conf` as lowercase keys (`image_storage_backend = minio`, `minio_endpoint = http://<minio-host>:9000`, and so on). Then restart `cloudx-image-api` and `cloudx-image-worker`. The API still computes SHA256 checksum and size before storing metadata in PostgreSQL.
 
 ## API Compatibility
 

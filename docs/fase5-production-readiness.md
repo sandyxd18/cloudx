@@ -1,126 +1,42 @@
-# 🚀 Phase 5 — Production Readiness & Multi-Node Deployment
+# Phase 5: Production Readiness & Multi-Node Deployment
 
-Operations guide for the CloudX Phase 5 features: adaptive multi-node deployment,
-High Availability, automatic backups, monitoring, and internal TLS.
+Operations notes for the CloudX Phase 5 features: multi-node deployment, high availability, backups, monitoring and internal TLS.
 
-> **Legacy note.** The Docker Compose deployment described in sections 1-6 has been removed from the repository
-> (CloudX now runs natively under systemd; see `systemd-deployment-guide.md` and `multi-node-deployment.md`). The
-> `docker compose` commands and compose file names below are kept only as a description of the original design.
+> **What changed.** Phase 5 was first built as a Docker Compose deployment. Compose has been removed from the repository: CloudX now runs natively under systemd, installed from `.deb` packages ([deb-install.md](deb-install.md)) or the tarball ([systemd-deployment-guide.md](systemd-deployment-guide.md)). This page keeps the Phase 5 design and says, feature by feature, what exists in the native deployment and what does not.
 
-Every feature is **adaptive**: it can run single-node (all-in-one) for
-dev/lab, or be split across several nodes for pseudo-production.
+## 1. Status in the native deployment
 
----
+| Feature | Status | Where |
+|---|---|---|
+| Multi-node (controller, compute, storage) | Supported | [deb-install.md](deb-install.md) sections 4 and 5, [multi-node-deployment.md](multi-node-deployment.md) |
+| API load balancing across controllers | Not packaged | `services/haproxy/` (config template) and `services/keepalived/` are reference material; no unit or package uses them |
+| RabbitMQ cluster, PostgreSQL replication | Not packaged | use the distro's own tooling; `services/rabbitmq/` and `services/postgres/` hold the old container entrypoints and a `failover.sh` |
+| PostgreSQL daily backup | Script only | `services/backup/` (`backup.sh`, `retention.sh`, `restore.sh`); see section 3 |
+| Volume backup to object storage | Supported | block-store API, see section 3 |
+| Metrics endpoint on every API | Supported | `/metrics`, bearer token `metrics_token` |
+| Prometheus and Grafana | Reference configs only | `services/prometheus/`, `services/grafana/provisioning/` |
+| Internal TLS between services | Not supported | `services/certs/generate-certs.sh` still generates a CA and certificates, but no service reads them |
+| Database migrations | Supported | section 5 |
 
-## 1. Node Topology
+## 2. Node topology and principles
 
-| Role | Compose file | Components |
-|------|-------------|----------|
-| **All-in-One** (single node) | `docker-compose.yml` | All services on one host |
-| **Control Plane** | `docker-compose.control-plane.yml` | PostgreSQL, RabbitMQ, OVN NB/SB+northd, all APIs, dashboard, HAProxy, Keepalived |
-| **Compute Node** | `docker-compose.compute-node.yml` | compute-worker (libvirt) + local ovn-controller |
-| **Storage Node** | `docker-compose.storage-node.yml` | block-store-worker (LVM/Ceph) + MinIO |
+| Role | Components |
+|---|---|
+| **All-in-one** | every service on one host (see [quickstart.md](quickstart.md)) |
+| **Control plane** | PostgreSQL, RabbitMQ, OVN central (NB/SB + northd), all APIs, dashboard |
+| **Compute node** | `compute-worker` (libvirt), the other compute workers, local `ovn-controller` |
+| **Storage node** | `block-store-worker` (LVM or Ceph) |
 
-Key variables in `.env`:
+Storage principle: with Ceph RBD, compute nodes have no local VM disks. Root disks and volumes are served from the storage cluster over the network, and the compute node only keeps the libvirt XML and the config-drive ISO.
 
-```bash
-TIMEZONE=Asia/Jakarta            # timezone of all containers (logs, cron, backup)
-CONTROLLER_IP=10.0.0.11          # control plane management IP (used by compute/storage nodes)
-NETWORK_INTERFACE=enp0s3         # management NIC → OVN Geneve tunnel
-PROVIDER_INTERFACE=enp0s8        # provider NIC → br-ex (gateway node)
-```
+Network principle (OVN): the NB and SB databases and `ovn-northd` are centralised on the control plane. `ovn-controller` runs on every compute and gateway node and connects to the central SB DB at `tcp:<controller-ip>:6642`.
 
-### Storage principle
-Compute nodes have **no** local VM disks. VM root disks & volumes are served from the
-**Storage Node** (Ceph RBD) over the management network. The compute node only
-keeps the libvirt XML + config-drive ISO, ephemerally.
+## 3. Backups
 
-### Network principle (OVN, like CloudX)
-- `ovn-nb-db`, `ovn-sb-db`, `ovn-northd` are **centralised** on the control plane.
-- `ovn-controller` runs on **every** compute/gateway node, connected to the central
-  SB DB via `tcp:${CONTROLLER_IP}:6642`.
+**Database.** `services/backup/backup.sh` dumps PostgreSQL with `pg_dump` (custom format) and uploads the dump to the MinIO bucket `cloudx-backups`, in daily, weekly (Sunday) and monthly (day 1) tiers. `retention.sh` prunes old dumps (defaults: 7 daily, 4 weekly, 12 monthly). `restore.sh` restores the latest daily dump, or a dump you name. The scripts read their settings from the environment (`DATABASE_URL` or the `PG*` variables, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `BACKUP_BUCKET`, `BACKUP_RETENTION_*`, `TZ`). There is no unit or timer for them: schedule `backup.sh` from cron or a systemd timer yourself (23:00 Asia/Jakarta was the old default).
 
----
+**Volumes.** The block-store API backs up a volume to object storage:
 
-## 2. Multi-Node Deployment
-
-### 2.1 Control plane (controller node)
-```bash
-cp .env.example .env
-# set CONTROLLER_IP, NETWORK_INTERFACE, secrets
-docker compose -f docker-compose.control-plane.yml up -d
-```
-
-### 2.2 Storage node
-```bash
-# .env: CONTROLLER_IP=<controller ip>, LVM_PV_NAME / CEPH_POOL
-docker compose -f docker-compose.storage-node.yml up -d
-```
-
-### 2.3 Compute node
-```bash
-# .env: CONTROLLER_IP=<controller ip>, NETWORK_INTERFACE
-docker compose -f docker-compose.compute-node.yml up -d
-```
-
-### 2.4 Single-node (adaptive)
-```bash
-docker compose up -d          # all roles on one host — nothing changes
-```
-
----
-
-## 3. High Availability
-
-### 3.1 HAProxy multi-backend
-HAProxy load-balances the APIs across several instances. Set the backend list in `.env`:
-
-```bash
-AUTH_BACKENDS=10.0.0.11,10.0.0.12,10.0.0.13
-COMPUTE_BACKENDS=10.0.0.11,10.0.0.12,10.0.0.13
-# and so on for NETWORKING/IMAGE/BLOCK_STORE/PLACEMENT/DASHBOARD
-```
-A single controller can simply keep `127.0.0.1` (the default). Round-robin and the
-`/health` health check are enabled automatically. Stats: `http://<node>:8404/stats`,
-Prometheus metrics: `http://<node>:8404/metrics`.
-
-### 3.2 RabbitMQ cluster (3 nodes)
-```bash
-docker compose -f docker-compose.control-plane.yml -f docker-compose.ha.yml up -d
-```
-- The same Erlang cookie on all nodes (`RABBITMQ_ERLANG_COOKIE`).
-- Non-seed nodes automatically `join_cluster` to `RABBITMQ_SEED_NODE`.
-- The `ha-all` policy mirrors all classic queues to every node.
-
-### 3.3 PostgreSQL streaming replication
-- `POSTGRES_ROLE=primary` → creates the replication role + `pg_hba` entries for the standby.
-- `POSTGRES_ROLE=standby` → `pg_basebackup` from `POSTGRES_PRIMARY_HOST`, then
-  runs as a read-only hot standby.
-- Manual failover (lab): `docker compose exec postgres-standby failover.sh`.
-- `DATABASE_READ_URL` is optional and routes read-only queries to the standby.
-
----
-
-## 4. Automatic Backups
-
-```bash
-docker compose -f docker-compose.control-plane.yml -f docker-compose.backup.yml up -d backup
-```
-
-- Default schedule: **23:00 every day, Asia/Jakarta** (`BACKUP_CRON=0 23 * * *`,
-  `TIMEZONE`). Run by supercronic (honours `$TZ`).
-- `pg_dump` (custom format) is uploaded to the MinIO bucket `cloudx-backups`.
-- Automatic tiering: monthly (day 1), weekly (Sunday), daily.
-- Retention: `BACKUP_RETENTION_DAILY=7`, `WEEKLY=4`, `MONTHLY=12`.
-- Run an initial backup immediately: `BACKUP_RUN_ON_START=true`.
-
-Restore:
-```bash
-docker compose exec backup restore.sh                       # latest daily backup
-docker compose exec backup restore.sh postgres/daily/xxx.dump
-```
-
-### Volume backup (Block Storage → MinIO)
 ```
 POST   /volumes/{id}/backup      → full volume backup to object storage
 GET    /backups                  → list backups
@@ -128,53 +44,22 @@ GET    /backups/{id}             → details
 POST   /backups/{id}/restore     → restore into a new volume
 DELETE /backups/{id}             → delete the backup + object
 ```
-The worker exports the volume (LVM via `qemu-img`, Ceph via `rbd export`) and then
-uploads it with `mc` to the `cloudx-backups/volumes/` bucket.
 
----
+The worker exports the volume (LVM via `qemu-img`, Ceph via `rbd export`) and uploads it with `mc` to `cloudx-backups/volumes/`. This needs a MinIO (see [storage-backend.md](storage-backend.md)). Database instances use the same mechanism with a schedule: [database.md](database.md).
 
-## 5. Monitoring (Prometheus + Grafana)
+## 4. Monitoring
 
-```bash
-docker compose -f docker-compose.control-plane.yml -f docker-compose.monitoring.yml up -d
-```
+Every API exposes `/metrics` (from `shared/metrics.py`) with `cloudx_api_requests_total` and `cloudx_api_request_latency_seconds`. The endpoint answers 401 unless the request carries `Authorization: Bearer <metrics_token>`; [deb-install.md](deb-install.md) section 8 shows how to give Prometheus the token.
 
-- **Prometheus**: `http://<node>:9090`, **15-day** retention.
-- **Grafana**: `http://<node>:3000` (admin / `GRAFANA_ADMIN_PASSWORD`).
-  The datasource + dashboards (Overview, Infrastructure) are pre-provisioned.
-- Exporters: node-exporter (9100), postgres-exporter (9187),
-  RabbitMQ prometheus plugin (15692), HAProxy (8404).
-- Every API exposes `/metrics` (via `shared/metrics.py`):
-  `cloudx_api_requests_total`, `cloudx_api_request_latency_seconds`.
+`services/prometheus/prometheus.yml` and `services/prometheus/alerts.yml` are a starting point for your own Prometheus: the alert rules cover API, node and database down, P95 latency above 500 ms, a 5xx rate above 5%, and replication lag above 1 GB. `services/grafana/provisioning/` holds a datasource and two dashboards (Overview, Infrastructure). Installing and running Prometheus, Grafana and the exporters is up to you.
 
-Alert rules (`services/prometheus/alerts.yml`): API/node/DB down, P95 latency
-> 500ms, 5xx error rate > 5%, replication lag > 1GB.
+## 5. Database migrations (Alembic)
 
----
-
-## 6. Internal TLS
-
-TLS covers only **internal service-to-service** communication (external is out of scope).
+Alembic is the only path that creates or changes tables. Each service has its own migration history (`services/<service>/migrations/versions/`) and its own version table (`alembic_version_<service>`), so services may share one database or use separate ones. Services refuse to start if the schema has not been migrated. Details in `services/migrations/README.md`.
 
 ```bash
-# generate a CA + a certificate per service (SAN includes the multi-node management IPs)
-SERVICE_HOSTS="10.0.0.11 10.0.0.12" ./services/certs/generate-certs.sh
-# output in services/certs/out/ (git-ignored)
-```
-Distribute `ca.crt` to all nodes, mount `TLS_CERT_DIR` into the containers,
-set `TLS_ENABLED=true` and change the `*_API_URL` values to `https://`.
-
----
-
-## 7. Database Migrations (Alembic)
-
-Alembic is the only path that creates or changes tables. Each service has its own migration history
-(`services/<service>/migrations/versions/`) and its own version table (`alembic_version_<service>`), so
-services may share one database or use separate ones. Services refuse to start if the schema has not been
-migrated. Details in `services/migrations/README.md`.
-
-```bash
-sudo make migrate                     # control plane: create/upgrade the schema of all services (idempotent)
+sudo cloudx-manage db sync            # packages: create/upgrade the schema of all services (idempotent)
+sudo make migrate                     # tarball install: same thing
 cloudx-db-migrate compute auth        # only specific services
 cloudx-db-migrate --current           # current revision per service
 
@@ -182,23 +67,4 @@ cloudx-db-migrate --current           # current revision per service
 cloudx-db-migrate --revision compute -m "description" --autogenerate
 ```
 
-Zero-downtime rule: add a nullable/default column first → deploy the code →
-backfill → only then add constraints / drop the old column (separate migration).
-
----
-
-## 8. Summary of New Phase 5 Files
-
-```
-docker-compose.control-plane.yml   docker-compose.compute-node.yml
-docker-compose.storage-node.yml    docker-compose.ha.yml
-docker-compose.monitoring.yml      docker-compose.backup.yml
-services/postgres/                 (replication entrypoint, failover)
-services/rabbitmq/                 (cluster entrypoint, HA policy)
-services/backup/                   (cron 23:00 + pg_dump→MinIO + retention)
-services/prometheus/               (scrape config + alerts)
-services/grafana/provisioning/     (datasource + dashboards)
-services/certs/generate-certs.sh   (internal PKI)
-services/migrations/               (Alembic scaffold + baseline)
-services/shared/metrics.py         (/metrics per service)
-```
+Zero-downtime rule: add a nullable/default column first, deploy the code, backfill, and only then add constraints or drop the old column (in a separate migration).

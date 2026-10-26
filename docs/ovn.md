@@ -1,24 +1,24 @@
 # OVN Notes
 
-The lab runs real OVN databases and `ovn-northd`.
+CloudX runs real OVN databases and `ovn-northd`, installed from the Ubuntu `ovn-central` package on the controller and `ovn-host` on compute nodes.
 
-## Containers
+## Processes
 
-- `ovn-nb-db`: Northbound OVSDB on TCP port `6641`.
-- `ovn-sb-db`: Southbound OVSDB on TCP port `6642`.
-- `ovn-northd`: translates northbound logical configuration to southbound flows.
-- `ovs-ovn-controller`: starts OVS, creates `br-int`, and runs `ovn-controller`.
+- `ovn-central` (controller): the Northbound OVSDB on TCP port `6641`, the Southbound OVSDB on TCP port `6642`, and `ovn-northd`, which translates the northbound logical configuration to southbound flows.
+- `ovn-controller` (every compute and gateway node, from `ovn-host`): connects to the Southbound DB, creates and manages the flows on `br-int`.
 
-The controller container is privileged because OVS needs kernel/network privileges.
+Open vSwitch (`openvswitch-switch`) runs on every node that hosts VMs or gateways.
 
 ## Useful Commands
 
 ```bash
-docker compose exec networking-api ovn-nbctl --db=tcp:ovn-nb-db:6641 show
-docker compose exec ovn-sb-db ovn-sbctl --db=tcp:ovn-sb-db:6642 show
-docker compose logs -f ovn-northd
-docker compose logs -f ovs-ovn-controller
+sudo ovn-nbctl --db=tcp:<controller-ip>:6641 show
+sudo ovn-sbctl --db=tcp:<controller-ip>:6642 show
+sudo journalctl -u ovn-northd -f             # controller
+sudo journalctl -u ovn-controller -f         # compute and gateway nodes
 ```
+
+On the controller itself the `--db` option can be dropped; `ovn-nbctl show` talks to the local socket.
 
 From the installed CLI:
 
@@ -30,10 +30,10 @@ networking ovn show
 
 If OVN does not start on your host:
 
-- Confirm Docker can run privileged containers.
-- Check that ports `6641` and `6642` are not already used.
-- Rebuild the OVN image with `docker compose build ovn-nb-db`.
-- Inspect `docker compose logs ovn-nb-db ovn-sb-db ovn-northd ovs-ovn-controller`.
+- Check that ports `6641` and `6642` are listening on the controller (`ss -ltn | grep -E '6641|6642'`) and are not used by another process. The listeners are configured in [SETUP.md](../SETUP.md) section 2.4.
+- Check the services: `systemctl status ovn-central ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb` on the controller, `systemctl status ovn-host openvswitch-switch` on compute nodes.
+- On a compute node, `sudo ovs-vsctl get open_vswitch . external_ids` must show `ovn-remote` pointing at the controller and a unique `system-id`; `cloudx-setup-compute` sets both.
+- Inspect `sudo journalctl -u ovn-central -u ovn-northd -u ovn-controller`.
 
 The API metadata still lives in PostgreSQL, but networking create/delete operations intentionally fail if `ovn-nbctl` cannot reach the Northbound DB. This keeps the lab honest about whether OVN is actually wired.
 
