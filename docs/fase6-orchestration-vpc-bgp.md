@@ -27,8 +27,8 @@ Lets a CloudX cluster manage many compute nodes (hypervisors), monitor node heal
 
 ### CLI Usage
 ```bash
-cloudx placement summary
-cloudx placement node-list
+cloudx placement provider-list
+cloudx placement usage
 ```
 
 ---
