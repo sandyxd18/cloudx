@@ -27,6 +27,11 @@ Changes that touch VM, network, storage or packaging behaviour should also be tr
 `scripts/test-real-vm.sh`, `scripts/test-floating-ip.sh` and `scripts/test-security-group.sh` cover the common paths. Say in
 the pull request what you ran and where.
 
+## Trying CloudX on a clean machine
+
+If you follow the README on a fresh machine, please tell us how it went, even if everything worked: open an issue with
+the "Fresh install report" template. What the docs do not say is the most useful thing you can find.
+
 ## Conventions
 
 - One change per pull request, branched from `main`. Name the branch `fix/...`, `feat/...`, `docs/...` or `chore/...`.
