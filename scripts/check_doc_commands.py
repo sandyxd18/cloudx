@@ -23,7 +23,8 @@ SKIP = {"roadmap-openstack-parity.md", "feature-comparison.md", "tarball-install
 
 
 def default_files() -> list[Path]:
-    return [ROOT / "README.md", ROOT / "SETUP.md", *sorted(p for p in (ROOT / "docs").glob("*.md") if p.name not in SKIP)]
+    docs = [p for p in sorted((ROOT / "docs").glob("*.md")) if p.name not in SKIP]
+    return [ROOT / "README.md", ROOT / "SETUP.md", *docs, *sorted((ROOT / "docs/tutorials").glob("*.md"))]
 
 
 def commands_in(path: Path):
