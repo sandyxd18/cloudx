@@ -198,7 +198,7 @@ echo "Next Steps:"
 if [[ -x "${VENV_PY}" ]]; then
     echo "1. The CloudX packages are installed. Restart the services: sudo systemctl restart 'cloudx-*'"
 else
-    echo "1. Install the CloudX services: sudo ./scripts/install-systemd.sh (see SETUP.md, section 4.4), then run: /opt/cloudx/venv/bin/pip install libvirt-python"
+    echo "1. Install the CloudX services: sudo ./scripts/install-systemd.sh (see docs/tarball-install.md, section 4.4), then run: /opt/cloudx/venv/bin/pip install libvirt-python"
 fi
 echo "2. Start the worker: sudo systemctl enable --now cloudx-compute-worker cloudx-metadata-proxy"
 echo "3. To serve LVM volumes from this node too: sudo ./scripts/prepare-lvm-node.sh --help"

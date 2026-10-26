@@ -1,22 +1,22 @@
-# Container (setara Zun)
+# Container (Zun-like)
 
-Container tunggal di node compute, masing-masing dengan IP sendiri di jaringan tenant. Cluster ada di `k8s-engine`.
+Single containers on compute nodes, each with its own IP on a tenant network. Clusters are in `k8s-engine`.
 
-## Arsitektur
+## Architecture
 
-- `container-api` (controller, port 8018): tabel `ct_containers` dan `ct_hosts`.
-- `container-worker` (tiap node compute, root): polling `GET /internal/ct-agent/<host>` tiap 5 detik, merekonsiliasi dengan Docker, lalu melapor ke `POST /internal/ct-agent/<host>/report` (status, error, 200 baris log terakhir).
-- Host dipilih saat create: node hidup (heartbeat < 30 detik) dengan container paling sedikit. Tidak ada yang hidup: 503.
-- Jaringan: container berjalan dengan `--network none`. API membuat port OVN lewat networking-api (security group berlaku), worker memasang OVS internal port di `br-int` ke netns container. Setelah restart, plumbing diulang karena PID berubah. Tidak ada NAT.
-- Docker dipaksa `iptables:false`, `bridge:none` (`/etc/docker/daemon.json`) supaya NAT router tidak tersentuh.
+- `container-api` (controller, port 8018): tables `ct_containers` and `ct_hosts`.
+- `container-worker` (every compute node, root): polls `GET /internal/ct-agent/<host>` every 5 seconds, reconciles with Docker, then reports to `POST /internal/ct-agent/<host>/report` (status, error, the last 200 log lines).
+- The host is chosen at create: a live node (heartbeat < 30 seconds) with the fewest containers. None alive: 503.
+- Networking: containers run with `--network none`. The API creates an OVN port through networking-api (security groups apply), and the worker plugs an OVS internal port on `br-int` into the container's netns. After a restart the plumbing is redone because the PID changes. No NAT.
+- Docker is forced to `iptables:false`, `bridge:none` (`/etc/docker/daemon.json`) so the router NAT is not touched.
 
-## Keamanan
+## Security
 
-Tanpa `--privileged`, host mount, host network. Selalu `--cap-drop ALL` (hanya CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, NET_BIND_SERVICE ditambahkan kembali), `no-new-privileges`, `--pids-limit 256`, batas CPU (0.1-4) dan memori (64-4096 MB) wajib. Image divalidasi regex, perintah dikirim sebagai list argumen (tanpa shell).
+No `--privileged`, host mounts or host network. Always `--cap-drop ALL` (only CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, NET_BIND_SERVICE are added back), `no-new-privileges`, `--pids-limit 256`, and CPU (0.1-4) and memory (64-4096 MB) limits are required. The image is validated with a regex, and the command is passed as an argument list (no shell).
 
-## Konfigurasi
+## Configuration
 
-Controller: `container_api_url`. Tiap node worker, di `/etc/cloudx/container-worker/container-worker.conf` (dengan `[DEFAULT]`): `container_api_url`, `container_host` (sama dengan `node_name`). `install-systemd.sh` memasang Docker hanya di node yang punya `container_host`.
+Controller: `container_api_url`. Every worker node, in `/etc/cloudx/container-worker/container-worker.conf` (with `[DEFAULT]`): `container_api_url`, `container_host` (the same as `node_name`). `install-systemd.sh` installs Docker only on nodes that have `container_host`.
 
 ## CLI
 
@@ -25,6 +25,6 @@ cloudx container create web --image nginx:1.27 --network <net> --cpu 0.5 --memor
 cloudx container list | show | start | stop | restart | logs | delete
 ```
 
-## Batasan
+## Limits
 
-Exec, volume block-store, port publish dan floating IP, build image, registry privat, restart policy, resize, konsol interaktif belum ada. Pull image butuh internet dari node. Container baru tidak punya jaringan beberapa detik sampai worker memasangnya, jadi proses yang langsung memakai jaringan saat start bisa gagal.
+Exec, block-store volumes, published ports and floating IPs, image builds, private registries, restart policy, resize and an interactive console do not exist yet. Pulling an image needs internet from the node. A new container has no network for a few seconds until the worker plugs it in, so a process that uses the network right at start can fail.

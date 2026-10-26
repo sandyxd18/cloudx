@@ -1,17 +1,17 @@
-# Messaging (setara Zaqar)
+# Messaging (Zaqar-like)
 
-Antrean pesan per project untuk aplikasi tenant. Produsen mengirim, konsumen mengklaim lalu menghapus pesan yang sudah diproses. Pesan yang klaimnya habis sebelum dihapus muncul lagi (at-least-once).
+Per-project message queues for tenant applications. Producers post, consumers claim and then delete the messages they have processed. A message whose claim expires before it is deleted shows up again (at-least-once).
 
-## Arsitektur
+## Architecture
 
-- `messaging-api` (controller, port 8022, `User=cloudx`), tabel `msg_queues` dan `msg_messages` di PostgreSQL. Tanpa worker, thread latar, atau kredensial baru.
-- Klaim memakai `SELECT ... FOR UPDATE SKIP LOCKED`, jadi beberapa worker gunicorn tidak mendapat pesan yang sama.
-- Urutan FIFO per antrean (id naik). Tidak ada jaminan ketat antar klaim paralel.
-- Pesan kedaluwarsa tidak pernah dikembalikan (disaring saat dibaca) dan dihapus saat ada `POST` berikutnya ke antrean itu.
+- `messaging-api` (controller, port 8022, `User=cloudx`), tables `msg_queues` and `msg_messages` in PostgreSQL. No worker, background thread or new credentials.
+- Claims use `SELECT ... FOR UPDATE SKIP LOCKED`, so several gunicorn workers never get the same message.
+- FIFO order per queue (ascending id). No strict guarantee between parallel claims.
+- Expired messages are never returned (filtered when read) and are deleted on the next `POST` to that queue.
 
-## Batas
+## Size limits
 
-Body JSON maks 64 KiB; `ttl` pesan 60 detik sampai 14 hari (default 1 jam); `ttl` klaim 30 detik sampai 12 jam (default 5 menit); maks 10 pesan per `POST`, 20 per klaim, 10.000 pesan per antrean (lebih dari itu 429).
+JSON body at most 64 KiB; message `ttl` 60 seconds to 14 days (default 1 hour); claim `ttl` 30 seconds to 12 hours (default 5 minutes); at most 10 messages per `POST`, 20 per claim, 10,000 messages per queue (beyond that, 429).
 
 ## API
 
@@ -19,13 +19,13 @@ Body JSON maks 64 KiB; `ttl` pesan 60 detik sampai 14 hari (default 1 jam); `ttl
 PUT    /queues/{name}                       GET /queues        GET /queues/{name}/stats
 DELETE /queues/{name}
 POST   /queues/{name}/messages              {"messages":[{"body":..., "ttl":3600}]}
-GET    /queues/{name}/messages?limit=       (melihat tanpa mengklaim)
+GET    /queues/{name}/messages?limit=       (peek without claiming)
 POST   /queues/{name}/claims?ttl=&limit=    -> {"claim_id", "items"}
 DELETE /queues/{name}/messages/{id}?claim_id=
-DELETE /queues/{name}/claims/{claim_id}     (melepas klaim)
+DELETE /queues/{name}/claims/{claim_id}     (release a claim)
 ```
 
-Menghapus pesan yang sedang diklaim wajib menyertakan `claim_id` yang cocok (409 bila tidak). Antrean diacu dengan nama dan hanya terlihat di project pemiliknya; role `reader` hanya bisa membaca.
+Deleting a message that is currently claimed must include the matching `claim_id` (409 otherwise). A queue is referred to by name and is only visible in its owner project; the `reader` role can only read.
 
 ## CLI
 
@@ -37,10 +37,10 @@ cloudx queue ack jobs <message_id> --claim <claim_id>
 cloudx queue list | stats | peek | delete
 ```
 
-## Konfigurasi
+## Configuration
 
-`messaging_api_url` di `cloudx.conf`. Dashboard: halaman Queues (Compute).
+`messaging_api_url` in `cloudx.conf`. Dashboard: the Queues page (Compute).
 
-## Batasan
+## Limits
 
-Tidak ada topik, subscription, webhook, notifikasi push, pesan tertunda, dead-letter, enkripsi pesan, atau kuota selain 10.000 per antrean. Pesan disimpan di PostgreSQL controller, jadi ini bukan broker throughput tinggi. Dashboard hanya membuat, melihat jumlah, dan menghapus antrean; kirim dan klaim lewat API atau CLI.
+No topics, subscriptions, webhooks, push notifications, delayed messages, dead-lettering, message encryption, or quotas other than 10,000 per queue. Messages are stored in the controller's PostgreSQL, so this is not a high-throughput broker. The dashboard only creates queues, shows counts and deletes them; posting and claiming go through the API or CLI.

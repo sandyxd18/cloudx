@@ -1,32 +1,32 @@
-# Database as a Service (setara Trove)
+# Database as a Service (Trove-like)
 
-PostgreSQL dan MariaDB sebagai VM atau container, dibuat dengan satu panggilan. Setara fitur Trove dasar, bukan 1:1.
+PostgreSQL and MariaDB as a VM or a container, created with one call. It covers the basic Trove features, not 1:1.
 
-## Arsitektur
+## Architecture
 
-- `database-api` (controller, port 8019): tabel `db_instances`. Tidak ada worker baru; layanan ini memanggil compute, block-store, file-store, container dan networking lewat API mereka dengan token pemanggil.
-- Create dan delete berjalan di thread latar. Status: `building`, `active`, `stopped`, `deleting`, `error`. Baris `building`/`deleting` yang tertinggal saat API restart ditandai `error` (hapus ulang untuk membersihkan).
-- Tiap instance mendapat security group sendiri: ingress port engine dari `allowed_cidr` (default CIDR subnet pertama jaringan), egress allow-all. `0.0.0.0/0`, IPv6 dan prefix lebih lebar dari /8 ditolak.
-- Sandi admin diacak bila tidak diberikan (`A-Za-z0-9_-`, 12-64 karakter), dikembalikan sekali saat create, tidak disimpan.
+- `database-api` (controller, port 8019): table `db_instances`. No new worker; the service calls compute, block-store, file-store, container and networking through their APIs with the caller's token.
+- Create and delete run in a background thread. Statuses: `building`, `active`, `stopped`, `deleting`, `error`. A `building`/`deleting` row left behind when the API restarts is marked `error` (delete it again to clean up).
+- Every instance gets its own security group: ingress on the engine port from `allowed_cidr` (default: the CIDR of the network's first subnet), egress allow-all. `0.0.0.0/0`, IPv6 and prefixes wider than /8 are rejected.
+- The admin password is randomised when not given (`A-Za-z0-9_-`, 12-64 characters), returned once at create, and not stored.
 
-## Matriks
+## Matrix
 
 | backend | local | block | file |
 |---|---|---|---|
-| vm + postgresql | ya | ya | ditolak (422) |
-| vm + mariadb | ya | ya | ya, tidak disarankan |
-| container | ya (volume Docker `ct-<id>-data`) | ditolak | ditolak |
+| vm + postgresql | yes | yes | rejected (422) |
+| vm + mariadb | yes | yes | yes, not recommended |
+| container | yes (Docker volume `ct-<id>-data`) | rejected | rejected |
 
-Postgres di atas NFS gagal saat `pg_createcluster` (root squash) di lab, jadi kombinasinya ditolak.
+Postgres on NFS failed at `pg_createcluster` (root squash) in the lab, so that combination is rejected.
 
-## Kesiapan
+## Readiness
 
-- VM: cloud-init memanggil `POST {database_public_url}/internal/db-ready/<id>` dengan header `X-Ready-Token` sekali pakai (hanya sha256 yang disimpan). Batas 900 detik.
-- Container: log dipantau sampai baris siap muncul setelah baris init selesai. Batas 300 detik.
+- VM: cloud-init calls `POST {database_public_url}/internal/db-ready/<id>` with a single-use `X-Ready-Token` header (only its sha256 is stored). Limit 900 seconds.
+- Container: the log is watched until the ready line appears after the init-finished line. Limit 300 seconds.
 
-## Konfigurasi
+## Configuration
 
-`cloudx.conf`: `database_api_url`, `database_public_url`. Yang kedua harus bisa dijangkau dari jaringan tenant (di lab: `http://172.20.0.118:8019`). Pastikan file diakhiri newline sebelum menambah baris.
+`cloudx.conf`: `database_api_url`, `database_public_url`. The second must be reachable from the tenant network (in the lab: `http://172.20.0.118:8019`). Make sure the file ends with a newline before adding lines.
 
 ## CLI
 
@@ -35,39 +35,39 @@ cloudx database create pg --engine postgresql --backend vm --network <net> --ima
 cloudx database list | show | start | stop | delete
 ```
 
-## Backup dan restore
+## Backup and restore
 
-Hanya instance VM + block. Backup adalah salinan crash-consistent volume data: block-store-worker membuat snapshot LV, mengekspornya ke bucket backup (MinIO), lalu menghapus snapshot. PostgreSQL dan MariaDB memulihkan diri dari salinan seperti ini lewat WAL atau redo log, seperti setelah listrik padam. Perubahan ini berlaku untuk semua backup volume block-store, bukan hanya database.
+VM + block instances only. A backup is a crash-consistent copy of the data volume: block-store-worker takes an LV snapshot, exports it to the backup bucket (MinIO), then deletes the snapshot. PostgreSQL and MariaDB recover from such a copy through the WAL or redo log, as after a power loss. This applies to all block-store volume backups, not only databases.
 
 ```
 cloudx database backup create <instance> [--name N]
 cloudx database backup list
-cloudx database backup restore <backup> <nama-baru> --network <net> --image <img> --flavor <f>
+cloudx database backup restore <backup> <new-name> --network <net> --image <img> --flavor <f>
 cloudx database backup delete <backup>
 ```
 
-- Restore selalu membuat instance baru (volume dari backup, VM baru, security group baru). Sandi admin baru diacak dan ditampilkan sekali; sandi lama tidak dipakai lagi (`ALTER USER` saat boot).
-- Pakai image Ubuntu yang sama dengan instance asal: versi mayor engine harus sama.
-- Backup tetap ada setelah instance dihapus dan harus dihapus sendiri. Backup yang sedang dipakai restore tidak bisa dihapus (409; penjaganya hanya di memori, hilang saat database-api restart).
-- Container, storage lokal, dan file ditolak (422).
+- A restore always creates a new instance (volume from the backup, new VM, new security group). A new admin password is randomised and shown once; the old password is no longer used (`ALTER USER` at boot).
+- Use the same Ubuntu image as the source instance: the engine's major version must match.
+- A backup stays after the instance is deleted and must be deleted separately. A backup that a restore is using cannot be deleted (409; the guard is in memory only and is lost when database-api restarts).
+- Container, local storage and file are rejected (422).
 
-Pembanding: Trove menyimpan backup di Swift dan restore membuat instance baru (docs.openstack.org/trove, "Backup and restore a database"). Perbedaannya: backup di sini adalah salinan volume, bukan dump logis lewat guest agent.
+For comparison: Trove stores backups in Swift and a restore creates a new instance (docs.openstack.org/trove, "Backup and restore a database"). The difference: a backup here is a volume copy, not a logical dump taken through a guest agent.
 
-### Jadwal dan retensi
+### Schedule and retention
 
 ```
 cloudx database backup schedule <instance> --every 6 --keep 7
 cloudx database backup schedule <instance> --off
 ```
 
-`cloudx-reaper` yang menjalankannya (satu siklus tiap `reaper_interval`, jadi presisi sekitar 10 menit): instance `active` yang backup terjadwal terakhirnya lebih tua dari `--every` jam (atau belum ada) dibuatkan backup baru. Lalu backup terjadwal yang `available` di luar `--keep` terbaru dihapus. Backup manual dan backup `error` tidak pernah dihapus otomatis. Jadwal hanya untuk VM + block; `--every` minimal 1. Reaper mati berarti tidak ada backup terjadwal maupun retensi.
+`cloudx-reaper` runs it (one cycle every `reaper_interval`, so precision is about 10 minutes): an `active` instance whose last scheduled backup is older than `--every` hours (or has none) gets a new backup. Then `available` scheduled backups beyond the newest `--keep` are deleted. Manual backups and `error` backups are never deleted automatically. Schedules are for VM + block only; `--every` is at least 1. If the reaper is down there are no scheduled backups and no retention.
 
-## Pembersihan otomatis
+## Automatic cleanup
 
-Unit `cloudx-reaper` (controller, root) menghapus instance `error` yang gagal saat build (belum pernah `ready_at`) dan lebih tua dari `reaper_max_age_hours` (24) di `/etc/cloudx/reaper/reaper.conf`. Yang pernah aktif lalu error tidak disentuh. Berlaku juga untuk Container dan File Store. `reaper_dry_run = true` hanya mencatat log. Backup `error` tidak dibersihkan.
+The `cloudx-reaper` unit (controller, root) deletes `error` instances that failed during build (never had a `ready_at`) and are older than `reaper_max_age_hours` (24) in `/etc/cloudx/reaper/reaper.conf`. Instances that were once active and then failed are left alone. It also covers Container and File Store. `reaper_dry_run = true` only writes to the log. `error` backups are not cleaned up.
 
-## Terbukti di lab
+## Proven in the lab
 
-container + postgres/mariadb (koneksi, sandi salah ditolak, data bertahan stop/start, delete bersih); vm + postgres + block (koneksi, data); vm + mariadb + file (port terbuka, auth ditolak, SSH tertutup oleh SG). Hapus tidak meninggalkan volume, share, security group.
+container + postgres/mariadb (connection, wrong password rejected, data survives stop/start, clean delete); vm + postgres + block (connection, data); vm + mariadb + file (port open, auth rejected, SSH closed by the security group). Deleting leaves no volume, share or security group behind.
 
-Backup dan restore, VM + block: PostgreSQL 16 dan MariaDB 10.11, backup diambil saat sebuah klien terus menulis; restore ke instance baru membawa 1000 baris awal beserta baris yang masuk selama backup, sandi lama ditolak dan sandi baru berfungsi, sumber tetap berjalan, snapshot LV tidak tersisa. Lab tidak punya MinIO, jadi `mc` diganti sementara dengan stub HTTP; jalur MinIO asli tidak diuji di sini.
+Backup and restore, VM + block: PostgreSQL 16 and MariaDB 10.11, with the backup taken while a client kept writing; the restore into a new instance carried the initial 1000 rows plus the rows that arrived during the backup, the old password was rejected and the new one worked, the source kept running, and no LV snapshot was left. The lab has no MinIO, so `mc` was temporarily replaced by an HTTP stub; the real MinIO path was not tested here.

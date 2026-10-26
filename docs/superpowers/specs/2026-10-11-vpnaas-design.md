@@ -1,145 +1,146 @@
-# VPNaaS IPsec site-to-site nyata: desain
+# Real IPsec site-to-site VPNaaS: design
 
-Tanggal: 2026-10-11. Fase 3, item 3 (setelah replikasi volume dan VPC peering).
+Date: 2026-10-11. Phase 3, item 3 (after volume replication and VPC peering).
 
-## Tujuan
+## Goal
 
-Hari ini VPNaaS hanya menyimpan record (IKE policy, IPsec policy, site connection) dan menghasilkan teks
-`ipsec.conf`. Tidak ada tunnel yang berjalan. Target: koneksi VPN benar-benar naik dan trafik antara subnet
-router lokal dan `peer_cidrs` lewat tunnel IPsec terenkripsi.
+Today VPNaaS only stores records (IKE policy, IPsec policy, site connection) and produces `ipsec.conf` text.
+No tunnel runs. Target: a VPN connection really comes up, and traffic between the local router's subnets and
+`peer_cidrs` goes through an encrypted IPsec tunnel.
 
-Kriteria sukses (live, di lab):
-- Dua router CloudX (A = `router1`, B = `zz-vpn-r`, keduanya dengan external gateway ke `public-net`) saling
-  terhubung lewat `public-net`. Masing-masing punya koneksi cermin.
-- VM di belakang A ping VM di belakang B. `tcpdump` di `public-net` menunjukkan ESP, bukan ICMP.
-- Hapus koneksi: ping gagal lagi, dan netns, port OVS, objek OVN, serta daemon bersih.
-- Status koneksi di API mengikuti kenyataan: `PENDING_CREATE`, `ACTIVE`, `DOWN`.
+Success criteria (live, in the lab):
+- Two CloudX routers (A = `router1`, B = `zz-vpn-r`, both with an external gateway to `public-net`) connect to
+  each other over `public-net`. Each has a mirror connection.
+- A VM behind A pings a VM behind B. `tcpdump` on `public-net` shows ESP, not ICMP.
+- Delete the connection: the ping fails again, and the netns, OVS ports, OVN objects and the daemon are cleaned up.
+- The connection status in the API follows reality: `PENDING_CREATE`, `ACTIVE`, `DOWN`.
 
-Asumsi: lab tidak punya situs remote nyata, jadi sisi remote adalah router CloudX kedua. `vps-an` tidak dipakai.
+Assumption: the lab has no real remote site, so the remote side is a second CloudX router. `vps-an` is not used.
 
-## Di luar lingkup (masuk keterbatasan di release notes)
+## Out of scope (goes into the limitations in the release notes)
 
-- Hanya PSK. Tanpa sertifikat X.509.
-- Satu host per gateway, tanpa failover.
-- PSK tersimpan plaintext di DB (sama seperti sekarang).
-- Tanpa VPN remote-access. Tanpa BGP over IPsec.
-- Tanpa dead-peer-detection yang dapat diatur. Dipakai default strongSwan (`dpd_delay`).
+- PSK only. No X.509 certificates.
+- One host per gateway, no failover.
+- The PSK is stored in plaintext in the DB (as it is today).
+- No remote-access VPN. No BGP over IPsec.
+- No configurable dead-peer detection. The strongSwan default (`dpd_delay`) is used.
 
-## Keputusan
+## Decision
 
-Endpoint IPsec berjalan di **namespace per router** (dipilih pengguna). Semua sisi namespace diikat ke OVN
-dengan pola `lb-worker` (port internal di `br-int` dengan `external_ids:iface-id`), sehingga OVN mengurus L2/L3
-dan host tidak mendapat NAT atau aturan tambahan.
+The IPsec endpoint runs in a **namespace per router** (chosen by the user). Every side of the namespace is bound
+to OVN with the `lb-worker` pattern (an internal port on `br-int` with `external_ids:iface-id`), so OVN handles
+L2/L3 and the host gets no NAT or extra rules.
 
-Ditolak: veth ke `br-ex` dengan MASQ di host (melewati OVN, ARP/aturan host bisa bentrok), dan strongSwan di
-root namespace dengan xfrm policy (satu daemon bersama, menyentuh stack host).
+Rejected: a veth to `br-ex` with MASQ on the host (bypasses OVN, host ARP/rules may collide), and strongSwan in
+the root namespace with xfrm policy (one shared daemon, touches the host stack).
 
-## Topologi
+## Topology
 
 ```
-VM subnet lokal -- router (OVN) --LRP-- LS vpn-<gw> --LSP-- [qvpn-<gw>: iface "in"]
+local subnet VM -- router (OVN) --LRP-- LS vpn-<gw> --LSP-- [qvpn-<gw>: iface "in"]
                                                               charon (strongSwan)
-public-net ----------------------LS public --LSP-- [qvpn-<gw>: iface "out", IP nyata dari public-net]
+public-net ----------------------LS public --LSP-- [qvpn-<gw>: iface "out", real IP from public-net]
 ```
 
-- Sisi dalam: logical switch transit `vpn-<gw>` tersambung ke router lewat LRP. IP transit dari /30 di
-  `100.101.0.0/16` (`.1` router, `.2` namespace).
-- Sisi luar: LSP di jaringan external router. IP-nya alamat IKE lokal (`outer_ip`), bukan IP gateway router,
-  agar tidak bentrok dengan ARP milik OVN.
-- Router menerima rute statis `peer_cidrs` via IP transit namespace. Namespace menerima rute subnet lokal via
-  `.1`, dan default via gateway `public-net`.
-- `ip_forward=1` di namespace.
+- Inner side: the transit logical switch `vpn-<gw>` is connected to the router through an LRP. The transit IPs
+  come from a /30 in `100.101.0.0/16` (`.1` router, `.2` namespace).
+- Outer side: an LSP on the router's external network. Its IP is the local IKE address (`outer_ip`), not the
+  router's gateway IP, so it does not collide with OVN's own ARP.
+- The router gets a static route for `peer_cidrs` via the namespace's transit IP. The namespace gets a route to
+  the local subnets via `.1`, and a default via the `public-net` gateway.
+- `ip_forward=1` in the namespace.
 
-## Komponen
+## Components
 
-### 1. Model dan migrasi (`networking_0006`)
+### 1. Model and migration (`networking_0006`)
 
-Tabel baru `networking_vpn_gateways`, satu baris per router:
+New table `networking_vpn_gateways`, one row per router:
 
-| kolom | arti |
+| column | meaning |
 |---|---|
-| `id`, `router_id` (unik), `project_id` | identitas |
-| `host` | node tempat namespace berjalan |
-| `transit_cidr` | /30 dari `100.101.0.0/16` |
-| `outer_network_id`, `outer_ip` | jaringan dan IP luar (dari subnet external) |
-| `inner_mac`, `outer_mac` | MAC stabil (`stable_mac`) |
+| `id`, `router_id` (unique), `project_id` | identity |
+| `host` | the node where the namespace runs |
+| `transit_cidr` | a /30 from `100.101.0.0/16` |
+| `outer_network_id`, `outer_ip` | outer network and IP (from the external subnet) |
+| `inner_mac`, `outer_mac` | stable MACs (`stable_mac`) |
 | `status` | `PENDING_CREATE`, `ACTIVE`, `ERROR` |
 
-`networking_vpn_site_connections` mendapat kolom `gateway_id`, `status` dengan nilai
-`PENDING_CREATE|ACTIVE|DOWN|ERROR`, dan `status_reason`. Gateway dibuat saat koneksi pertama pada sebuah router
-dan dihapus saat koneksi terakhir hilang.
+`networking_vpn_site_connections` gets the columns `gateway_id`, `status` with the values
+`PENDING_CREATE|ACTIVE|DOWN|ERROR`, and `status_reason`. A gateway is created with the first connection on a
+router and deleted when the last connection is gone.
 
-### 2. API networking (`routers/vpn.py`)
+### 2. Networking API (`routers/vpn.py`)
 
 Create connection:
-1. Router milik caller. Router harus punya external gateway, jika tidak 400.
-2. Tolak 409 bila `peer_cidrs` tumpang tindih dengan subnet router, atau antar dirinya.
-3. Pilih atau buat gateway (host = host gateway chassis router; transit /30 baru, 409 bila pool habis).
-4. Buat objek OVN idempotent: LS `vpn-<gw>`, LRP router, LSP dalam, LSP luar, rute statis `peer_cidrs`.
-   Gagal di tengah: rollback DB dan hapus objek OVN yang sudah dibuat (best-effort).
-5. Status `PENDING_CREATE`. Worker mengubahnya menjadi `ACTIVE` atau `DOWN`.
+1. The router belongs to the caller. The router must have an external gateway, otherwise 400.
+2. Reject with 409 if `peer_cidrs` overlap a router subnet, or each other.
+3. Pick or create the gateway (host = the router's gateway chassis host; a new transit /30, 409 if the pool is exhausted).
+4. Create the OVN objects idempotently: LS `vpn-<gw>`, router LRP, inner LSP, outer LSP, static route `peer_cidrs`.
+   Failure midway: roll back the DB and delete the OVN objects already created (best-effort).
+5. Status `PENDING_CREATE`. The worker changes it to `ACTIVE` or `DOWN`.
 
-Delete connection: hapus rute `peer_cidrs`; bila itu koneksi terakhir pada gateway, hapus LSP, LS, LRP, lalu
-gateway. Worker membersihkan namespace pada tick berikutnya.
+Delete connection: delete the `peer_cidrs` route; if it was the last connection on the gateway, delete the LSPs,
+the LS, the LRP, and then the gateway. The worker cleans up the namespace on its next tick.
 
-`admin_state_up=false` menghapus koneksi dari konfigurasi worker (tunnel turun), objek OVN tetap.
+`admin_state_up=false` removes the connection from the worker's configuration (the tunnel goes down); the OVN
+objects stay.
 
-Endpoint internal (`require_internal`, token `X-Internal-Token`):
-- `GET /internal/vpn-agent/{host}`: gateway milik host beserta koneksi, kebijakan, dan PSK.
+Internal endpoints (`require_internal`, token `X-Internal-Token`):
+- `GET /internal/vpn-agent/{host}`: the host's gateways with their connections, policies and PSKs.
 - `POST /internal/vpn-agent/{host}/status`: `{connection_id: ACTIVE|DOWN, reason}`.
 
-`POST /vpn/site-connections/{id}/config` tetap ada (teks hasil render yang sama dengan worker, PSK disamarkan).
+`POST /vpn/site-connections/{id}/config` stays (the same rendered text as the worker uses, with the PSK masked).
 
-### 3. Render konfigurasi (`shared/swanctl_cfg.py`)
+### 3. Configuration rendering (`shared/swanctl_cfg.py`)
 
-Fungsi murni `render(gateway, connections) -> str` menghasilkan `swanctl.conf` (IKEv2, PSK, proposal dari
-IKE/IPsec policy, `local_addrs = outer_ip`, `remote_addrs = peer_address`, `local_ts` = subnet router,
-`remote_ts = peer_cidrs`, `start_action = start`). Nilai sudah dibatasi alfabet aman oleh skema `VPNSiteConnectionIn`.
-Fungsi ini juga dipakai endpoint `/config`.
+A pure function `render(gateway, connections) -> str` produces `swanctl.conf` (IKEv2, PSK, proposals from the
+IKE/IPsec policies, `local_addrs = outer_ip`, `remote_addrs = peer_address`, `local_ts` = the router's subnets,
+`remote_ts = peer_cidrs`, `start_action = start`). Values are already restricted to a safe alphabet by the
+`VPNSiteConnectionIn` schema. The `/config` endpoint uses this function too.
 
 ### 4. `vpn-worker` (`services/vpn_worker`)
 
-Berjalan di compute dan storage. Config dari `/etc/cloudx/vpn-worker/vpn-worker.conf` (`node_name`, bukan env di
-systemd). Polling `/internal/vpn-agent/<host>` tiap 5 detik. Untuk tiap gateway:
-- netns `qvpn-<gw8>`, dua port internal di `br-int` (`iface-id` = nama LSP dalam dan luar), MAC dan IP dari API.
-- `charon` per namespace dengan `strongswan.conf`, direktori dan soket vici sendiri di
-  `/var/lib/cloudx/vpn/<gw>/`, dijalankan lewat `ip netns exec`.
-- `swanctl.conf` ditulis mode 0600 lalu `swanctl --load-all`. Hash konfigurasi menghindari reload tak perlu.
-- Tiap tick: `swanctl --list-sas` menentukan `ACTIVE` bila ada child SA terpasang, selain itu `DOWN`. Perubahan
-  status dilaporkan ke API.
-- Namespace, port OVS, direktori, dan proses `charon` yang tidak lagi diinginkan dibersihkan.
-- PSK tidak pernah masuk log.
+Runs on compute and storage nodes. Config from `/etc/cloudx/vpn-worker/vpn-worker.conf` (`node_name`, not an
+environment variable in systemd). Polls `/internal/vpn-agent/<host>` every 5 seconds. For each gateway:
+- netns `qvpn-<gw8>`, two internal ports on `br-int` (`iface-id` = the names of the inner and outer LSPs), MAC and IP from the API.
+- one `charon` per namespace with its own `strongswan.conf`, directory and vici socket in
+  `/var/lib/cloudx/vpn/<gw>/`, started through `ip netns exec`.
+- `swanctl.conf` is written with mode 0600, then `swanctl --load-all`. A configuration hash avoids needless reloads.
+- Every tick: `swanctl --list-sas` decides `ACTIVE` if a child SA is installed, otherwise `DOWN`. Status changes
+  are reported to the API.
+- Namespaces, OVS ports, directories and `charon` processes that are no longer wanted are cleaned up.
+- The PSK never reaches the log.
 
-Unit systemd `cloudx-vpn-worker` di compute dan storage. Paket `strongswan-swanctl` dan `charon-systemd`
-(tanpa memulai daemon bawaan) ditambahkan ke skrip instalasi compute dan storage.
+The systemd unit `cloudx-vpn-worker` on compute and storage nodes. The packages `strongswan-swanctl` and
+`charon-systemd` (without starting the distro's daemon) are added to the compute and storage install scripts.
 
-### 5. CLI dan docs
+### 5. CLI and docs
 
-CLI `vpn` sudah ada. Tambahkan kolom `status`, `outer_ip` di `show`, serta `status_reason`. Docs diperbarui:
-hapus klaim control-plane only, jelaskan topologi, keterbatasan, dan cara diagnosis (`swanctl --list-sas` di
-`ip netns exec qvpn-*`).
+The `vpn` CLI already exists. Add the columns `status`, `outer_ip` in `show`, and `status_reason`. Docs updated:
+remove the control-plane-only claim, explain the topology, the limitations, and how to diagnose
+(`swanctl --list-sas` inside `ip netns exec qvpn-*`).
 
-## Penanganan error
+## Error handling
 
-- OVN gagal saat create: rollback penuh, 502 sesuai pola `ovn_cli`.
-- Worker tidak bisa memulai `charon` atau memuat konfigurasi: koneksi `ERROR` dengan `status_reason`, tick
-  berikutnya mencoba lagi.
-- Peer tidak terjangkau: koneksi `DOWN`, strongSwan terus mencoba (`start_action = start`).
-- Host gateway mati: koneksi tetap `ACTIVE` di DB sampai worker melapor. Tidak ada failover (keterbatasan).
+- OVN fails during create: full rollback, 502 following the `ovn_cli` pattern.
+- The worker cannot start `charon` or load the configuration: the connection becomes `ERROR` with a
+  `status_reason`, and the next tick tries again.
+- The peer is unreachable: the connection is `DOWN`, strongSwan keeps trying (`start_action = start`).
+- The gateway host is down: the connection stays `ACTIVE` in the DB until the worker reports. There is no failover (a limitation).
 
-## Pengujian
+## Testing
 
-- Unit render: `swanctl.conf` (proposal, TS, PSK) lewat assert.
-- Unit API dengan `ovn_cli.ovn` di-mock: objek OVN yang dibuat (LS, LRP, dua LSP, rute), 400 tanpa external
-  gateway, 409 CIDR tumpang tindih, rollback membersihkan objek, gateway terakhir dihapus bersama koneksi
-  terakhir, transit /30 unik per gateway.
-- Unit worker dengan `run` di-mock: urutan perintah netns/port/charon, tidak reload bila hash sama, pembersihan
-  yatim, pelaporan status hanya saat berubah.
-- Mutasi: bukti tes gagal bila guard tumpang tindih dan pembersihan rollback dicabut.
-- Live: skenario kriteria sukses di atas, ditambah cek bersih (`ip netns`, `ovs-vsctl show`, `ovn-nbctl`).
+- Render unit tests: `swanctl.conf` (proposals, TS, PSK) through asserts.
+- API unit tests with `ovn_cli.ovn` mocked: the OVN objects created (LS, LRP, two LSPs, route), 400 without an
+  external gateway, 409 for overlapping CIDRs, rollback cleans the objects, the last gateway is deleted with the
+  last connection, the transit /30 is unique per gateway.
+- Worker unit tests with `run` mocked: the order of the netns/port/charon commands, no reload when the hash is
+  the same, cleanup of orphans, status reported only when it changes.
+- Mutation: proof that the tests fail if the overlap guard and the rollback cleanup are removed.
+- Live: the success-criteria scenario above, plus a cleanliness check (`ip netns`, `ovs-vsctl show`, `ovn-nbctl`).
 
-## Risiko
+## Risk
 
-Dua `charon` terpisah di dua netns pada host yang sama dengan `strongswan.conf` masing-masing belum diuji di
-lab. Langkah pertama rencana adalah spike singkat untuk memastikannya sebelum worker ditulis. Bila gagal,
-fallback: satu `charon` per host, satu koneksi swanctl per namespace, dengan `ip xfrm` di namespace.
+Two separate `charon` instances in two netns on the same host, each with its own `strongswan.conf`, have not been
+tried in the lab. The first step of the plan is a short spike to confirm it before the worker is written. If it
+fails, the fallback: one `charon` per host, one swanctl connection per namespace, with `ip xfrm` in the namespace.

@@ -254,5 +254,5 @@ def send(dev_path: str, volume_id: str, size: int, host: str, port: int, token: 
     except Exception as exc:
         raise ReplicationError(f"Replication transfer failed to {host}:{port}: {exc}") from exc
 
-# ponytail: full copy every sync; incremental via thin_delta bila perlu
+# ponytail: full copy every sync; incremental via thin_delta if needed
 # Note: stream is unencrypted over TCP; HMAC authenticates only.

@@ -1,30 +1,30 @@
 # K8s Engine (K3s)
 
-`k8s-engine` membuat cluster K3s sungguhan di VM CloudX. Paritas dengan OpenStack Magnum hanya pada fitur dan perilaku, bukan 1:1.
+`k8s-engine` creates real K3s clusters on CloudX VMs. Parity with OpenStack Magnum is in features and behaviour only, not 1:1.
 
-## Alur
+## Flow
 
-1. `cloudx cluster create` membuat baris cluster berstatus `CREATING` beserta `join_token` dan `admin_token` acak. API hanya mencatat niat.
-2. `cloudx-k8s-engine-worker` (controller, polling 5 detik) membuat VM master lewat compute API dengan `user_data` cloud-config.
-3. VM master menjalankan `k3s server`, menunggu `/readyz`, lalu memanggil callback `POST /internal/k8s-engine/clusters/{id}/ready` ke controller.
-4. Setelah master siap, worker membuat VM worker sebanyak `worker_count`. Tiap worker menjalankan `k3s agent` dan memanggil callback yang sama.
-5. Semua node siap: status `ACTIVE`. Lewat `READY_TIMEOUT` (900 detik): status `ERROR` dengan `status_reason`.
+1. `cloudx cluster create` creates a cluster row with status `CREATING`, along with a random `join_token` and `admin_token`. The API only records the intent.
+2. `cloudx-k8s-engine-worker` (controller, polls every 5 seconds) creates the master VM through the compute API with cloud-config `user_data`.
+3. The master VM runs `k3s server`, waits for `/readyz`, then calls the callback `POST /internal/k8s-engine/clusters/{id}/ready` on the controller.
+4. Once the master is ready, the worker creates `worker_count` worker VMs. Each worker runs `k3s agent` and calls the same callback.
+5. All nodes ready: status `ACTIVE`. Past `READY_TIMEOUT` (900 seconds): status `ERROR` with a `status_reason`.
 
-Callback dipakai karena controller dan compute tidak punya route ke jaringan tenant. VM harus bisa menjangkau `callback_url`.
+A callback is used because the controller and compute have no route to the tenant network. The VM must be able to reach `callback_url`.
 
-## Image K3s
+## K3s image
 
-K3s di-bake sekali ke image Glance, sehingga VM tidak butuh internet.
+K3s is baked once into a Glance image, so VMs do not need internet.
 
 ```bash
-# di compute node, sebagai root
+# on a compute node, as root
 sudo scripts/build-k3s-image.sh --base-image /var/lib/cloudx/images/ubuntu-24.04.img
-sudo scripts/build-k3s-image.sh --base-image ubuntu.img --dry-run   # hanya mencetak langkah
+sudo scripts/build-k3s-image.sh --base-image ubuntu.img --dry-run   # only prints the steps
 ```
 
-Skrip menyalin binary `k3s` dan tarball airgap ke salinan image, lalu mengunggahnya sebagai `k3s-ubuntu`. Image dasar tidak diubah. Versi K3s default `v1.30.2+k3s1`.
+The script copies the `k3s` binary and the airgap tarball into a copy of the image, then uploads it as `k3s-ubuntu`. The base image is not changed. The default K3s version is `v1.30.2+k3s1`.
 
-## Konfigurasi worker
+## Worker configuration
 
 `/etc/cloudx/k8s-engine-worker/k8s-engine-worker.conf`:
 
@@ -32,43 +32,43 @@ Skrip menyalin binary `k3s` dan tarball airgap ke salinan image, lalu mengunggah
 [DEFAULT]
 k8s_engine_api_url = http://127.0.0.1:8015
 compute_api_url = http://127.0.0.1:8003
-callback_url = http://<ip-controller-yang-terjangkau-vm>:8015
+callback_url = http://<controller-ip-reachable-from-the-vms>:8015
 vm_image = k3s-ubuntu
 master_flavor = m1.medium
 worker_flavor = m1.small
 ready_timeout = 900
 ```
 
-`internal_token` diambil dari `/etc/cloudx/cloudx.conf`.
+`internal_token` is taken from `/etc/cloudx/cloudx.conf`.
 
-## Penggunaan
+## Usage
 
 ```bash
 cloudx k8s-template create tpl-k3s --image k3s-ubuntu
 cloudx cluster create demo --template <tpl-id> --network <net-id> --workers 1
-cloudx cluster list            # kolom status, master_ip, status_reason
+cloudx cluster list            # columns status, master_ip, status_reason
 cloudx cluster scale <id> --workers 2
 cloudx cluster kubeconfig <id> > kubeconfig
-cloudx cluster delete <id>     # status DELETING; worker menghapus semua VM lalu barisnya
+cloudx cluster delete <id>     # status DELETING; the worker deletes all VMs and then the row
 ```
 
-`scale` hanya diterima saat `ACTIVE` (selain itu 409). `kubeconfig` hanya saat `ACTIVE` atau `SCALING` dan bila `master_ip` sudah ada.
+`scale` is only accepted when `ACTIVE` (409 otherwise). `kubeconfig` only when `ACTIVE` or `SCALING` and once `master_ip` is set.
 
-## Diagnosis
+## Troubleshooting
 
-- Cluster `CREATING` lama: periksa `cloudx cluster show <id>` (`status_reason`), `journalctl -u cloudx-k8s-engine-worker`, dan apakah VM menjangkau `callback_url`.
-- Di VM: `/var/log/cloudx-k3s-boot.log` dan `/var/log/k3s.log`.
-- `ERROR`: VM yang tercatat dibersihkan saat cluster dihapus; hapus cluster lalu buat ulang.
+- A cluster stuck in `CREATING`: check `cloudx cluster show <id>` (`status_reason`), `journalctl -u cloudx-k8s-engine-worker`, and whether the VMs can reach `callback_url`.
+- On the VM: `/var/log/cloudx-k3s-boot.log` and `/var/log/k3s.log`.
+- `ERROR`: the recorded VMs are cleaned up when the cluster is deleted; delete the cluster and create it again.
 
-## Keterbatasan
+## Limitations
 
-- Tanpa HA control plane, tanpa upgrade versi, tanpa autoscaler.
-- Image K3s dibuat manual; versi K3s terkunci ke image.
-- Token disimpan plaintext di DB; kubeconfig memakai bearer token dengan `insecure-skip-tls-verify`.
-- `master_flavor`, `worker_flavor` dan `vm_image` diambil dari konfigurasi worker, bukan dari template cluster.
-- VM cluster dibuat lewat panggilan internal sehingga masuk ke project `admin`, bukan project pemilik cluster (kuota dan billing ikut project admin).
-- Tidak ada timeout untuk `SCALING` (tidak ada waktu mulai scale yang disimpan).
-- Callback `ready` mencocokkan node lewat role dan IP; node pertama yang belum siap dipakai bila IP belum dikenal.
-- CSI/CCM yang ada belum disambungkan ke cluster nyata.
-- Ukuran lab: 1 master + 1-2 worker kecil (compute 8 GB).
-- Bergantung pada VM yang dapat menjangkau API k8s-engine di controller.
+- No control plane HA, no version upgrades, no autoscaler.
+- The K3s image is built by hand; the K3s version is fixed by the image.
+- Tokens are stored in plaintext in the DB; the kubeconfig uses a bearer token with `insecure-skip-tls-verify`.
+- `master_flavor`, `worker_flavor` and `vm_image` come from the worker configuration, not from the cluster template.
+- Cluster VMs are created through an internal call, so they land in the `admin` project, not the cluster owner's project (quota and billing follow the admin project).
+- There is no timeout for `SCALING` (no scale start time is stored).
+- The `ready` callback matches nodes by role and IP; the first node that is not ready is used when the IP is not yet known.
+- The existing CSI/CCM are not yet connected to a real cluster.
+- Lab size: 1 master + 1-2 small workers (compute with 8 GB).
+- Depends on VMs being able to reach the k8s-engine API on the controller.

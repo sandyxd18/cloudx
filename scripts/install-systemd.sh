@@ -198,5 +198,5 @@ fi
 
 echo "✓ Systemd services installed successfully!"
 echo "To start all CloudX services, run:"
-echo "  (see SETUP.md section 2.5 for the full list; 'enable' does not accept globs)"
+echo "  (see docs/tarball-install.md section 2.5 for the full list; 'enable' does not accept globs)"
 exit ${MIGRATE_RC}

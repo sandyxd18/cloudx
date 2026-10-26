@@ -13,7 +13,7 @@ grep -E '(vmx|svm)' /proc/cpuinfo
 
 ```bash
 virsh -c qemu:///system list --all
-docker compose logs compute-worker
+sudo journalctl -u cloudx-compute-worker -n 100 --no-pager
 compute host check
 ```
 
@@ -43,21 +43,21 @@ networking ovn show
 
 Each VM tap should have `external_ids:iface-id`, `attached-mac`, `vm-id`, and `iface-status=active`.
 
-If create fails with `Cannot find device "tap-mini-..."`, rebuild/recreate the worker after updating Compose:
+If create fails with `Cannot find device "tap-mini-..."`, restart the worker after updating the packages:
 
 ```bash
-docker compose up -d --build compute-worker compute-api
+sudo systemctl restart cloudx-compute-worker cloudx-compute-api
 compute host check
 ```
 
-`compute host check` should report `tun_available: true`; the worker must run with `/dev/net/tun` mounted and `network_mode: host`.
+`compute host check` should report `tun_available: true`; `/dev/net/tun` must exist on the compute node and the worker must run on the host (the `cloudx-compute-worker` unit does).
 
-If create fails with `"dev" not a valid ifname`, the worker image is still using the old 17-character tap name format. Rebuild/recreate `compute-worker`; valid Linux interface names are limited to 15 characters, and current tap names use the form `tap-mini-xxxxxx`.
+If create fails with `"dev" not a valid ifname`, the worker is still running code with the old 17-character tap name format. Restart `cloudx-compute-worker` after updating; valid Linux interface names are limited to 15 characters, and current tap names use the form `tap-mini-xxxxxx`.
 
-If create fails with `The tap-mini-... interface already exists`, rebuild/recreate `compute-worker` after updating the code. The domain XML must set `managed="no"` on the pre-created tap device so libvirt reuses it instead of trying to create it again:
+If create fails with `The tap-mini-... interface already exists`, restart `cloudx-compute-worker` after updating the code. The domain XML must set `managed="no"` on the pre-created tap device so libvirt reuses it instead of trying to create it again:
 
 ```bash
-docker compose up -d --build compute-worker compute-api
+sudo systemctl restart cloudx-compute-worker cloudx-compute-api
 compute server delete vm1
 ```
 
@@ -67,18 +67,18 @@ Inspect:
 
 ```bash
 compute server show vm1
-docker compose logs compute-api compute-worker
+sudo journalctl -u cloudx-compute-api -u cloudx-compute-worker -n 200 --no-pager
 virsh -c qemu:///system list --all
 ```
 
-If the error says `Cannot access storage file ... seed.iso: No such file or directory`, recreate the services after switching to bind mounts and make sure the host directories exist:
+If the error says `Cannot access storage file ... seed.iso: No such file or directory`, make sure the host directories exist and restart the services:
 
 ```bash
 sudo scripts/prepare-host-libvirt.sh --create-br-int
-docker compose up -d --build compute-worker compute-api block-store-api
+sudo systemctl restart cloudx-compute-worker cloudx-compute-api cloudx-block-store-api
 ```
 
-The paths under `/var/lib/cloudx/compute/instances`, `/var/lib/cloudx/compute/cache`, and `/var/lib/cloudx/volumes` must exist on the host, not only inside Docker volumes.
+The paths under `/var/lib/cloudx/compute/instances`, `/var/lib/cloudx/compute/cache`, and `/var/lib/cloudx/volumes` must exist on the node that runs the worker.
 
 Then clean leftovers:
 
@@ -200,18 +200,18 @@ is almost always `.1` — which is already the real router's address. Symptoms:
 - Instances boot but hang retrying `169.254.169.254` metadata forever (`failed N/20`).
 - `ping <floating-ip>` from the host times out even though NAT/ACL flows show hits.
 
-Fix: set explicit provider network variables in `.env` (read by `networking-api`, wired
-through `docker-compose*.yml`) to an address range that does **not** overlap anything else
-on the physical LAN:
+Fix: set explicit provider network keys in `/etc/cloudx/networking-api/networking-api.conf` (read by
+`networking-api`) to an address range that does **not** overlap anything else on the physical LAN:
 
-```env
-PROVIDER_CIDR=192.168.18.0/24
-PROVIDER_GATEWAY=192.168.18.90        # any free host on the LAN, NOT the real gateway
-PROVIDER_ALLOCATION_START=192.168.18.200
-PROVIDER_ALLOCATION_END=192.168.18.220
+```ini
+[DEFAULT]
+provider_cidr = 192.168.18.0/24
+provider_gateway = 192.168.18.90        # any free host on the LAN, NOT the real gateway
+provider_allocation_start = 192.168.18.200
+provider_allocation_end = 192.168.18.220
 ```
 
-Then `docker compose up -d --build networking-api` and recreate `public-net`/`public-subnet`/
+Then `sudo systemctl restart cloudx-networking-api` and recreate `public-net`/`public-subnet`/
 `router1` from scratch — the gateway IP is baked into the network row at creation time and is
 not corrected retroactively. After `router set-gateway`, if `get_local_chassis_id()` logged a
 warning (e.g. ovn-controller had just restarted), the external port stays unbound — confirm
@@ -232,10 +232,10 @@ sudo ip route add 192.168.12.0/24 via 192.168.18.90 dev br-ex
 
 ## Volume Attach
 
-If attach fails with `Bus 'pci.0' does not support hotplugging`, rebuild `compute-worker` and recreate the VM. New domains include a `virtio-scsi` controller and block-store volumes attach as SCSI disks for hotplug support:
+If attach fails with `Bus 'pci.0' does not support hotplugging`, update and restart `compute-worker`, then recreate the VM. New domains include a `virtio-scsi` controller and block-store volumes attach as SCSI disks for hotplug support:
 
 ```bash
-docker compose up -d --build compute-worker compute-api block-store-api
+sudo systemctl restart cloudx-compute-worker cloudx-compute-api cloudx-block-store-api
 compute server delete vm1
 compute server create vm1 --image cirros --flavor tiny --network private-net --key-name mykey
 block-store volume attach vol1 --server vm1
@@ -245,4 +245,29 @@ If a previous server delete left a volume stuck as `in-use`, repair only the blo
 
 ```bash
 block-store volume force-detach vol1
+```
+
+## Installation
+
+### OVN chassis does not register (`already has encap ip ... cannot duplicate`)
+
+`/var/log/ovn/ovn-controller.log` repeats `'<uuid>' already has encap ip '<ip>' and type 'geneve', cannot duplicate on '<node>'`
+and `ovn-sbctl show` has no chassis for the node. The `ovn-controller` that `ovn-central` brings had already registered the node
+under a random UUID; OVN refuses a second chassis with the same encap IP until the first is gone. `cloudx-setup-compute` deletes
+the old row itself. If it could not reach the Southbound DB, do it by hand with the UUID from the log message:
+
+```bash
+sudo ovn-sbctl --db=tcp:<controller-ip>:6642 chassis-del <uuid>
+```
+
+`ovn-controller` retries every 15 seconds and registers by itself afterwards.
+
+### `HTTP 400: No volume types are configured`
+
+`cloudx server create` fails with "An admin must create at least one volume type before creating volumes". Every server creates a
+root volume in block-store, so a volume type and a storage backend are required before the first VM. Set the backend up with
+`cloudx-setup-storage` (quickstart step 6) and create the type:
+
+```bash
+cloudx volume-type create gp2 --backend lvm --disk-type sata_ssd --max-iops 3000 --max-throughput 125
 ```

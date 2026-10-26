@@ -2,15 +2,16 @@
 
 This guide installs the whole CloudX stack (control plane and compute) on a single Ubuntu 24.04 machine from the `.deb` packages, then boots a VM and reaches it over a floating IP. Plan for about 30 minutes.
 
-> **Status.** The commands below follow the steps that are verified on the six-node lab (`deb-install.md`) and the CLI flows used by `scripts/test-*.sh`. The complete path on one machine that never had CloudX on it has not been run end to end yet. Steps marked **(unverified)** are the ones to watch; if one fails, please open an issue with the output.
+> **Status.** Followed end to end on 2026-10-22 on a clean Ubuntu 24.04 VM (4 vCPU, 8 GB RAM, two NICs, a spare 30 GB disk, nested KVM) with the `0.8.6+m2` packages: control plane, compute, LVM storage, a CirrOS VM, floating IP ping and SSH, the dashboard, and clean-up. The sequence below depends on three fixes that were made because of that run (stale OVN chassis, `ovn-bridge-mappings`, and the packaged `cloudx-setup-storage`); it is re-run on a clean VM with the final packages before v1.0.0. If a step fails, please open an issue with the output.
 
 ## What you need
 
 | | |
 |---|---|
 | OS | Ubuntu 24.04 amd64 (fresh install is best) |
-| Resources | 4 vCPU, 8 GB RAM, 40 GB disk or more |
-| Virtualization | `/dev/kvm` must exist. On a VM, enable nested virtualization |
+| Resources | 4 vCPU, 8 GB RAM (the control plane alone uses about 4 GB), 40 GB system disk or more. The first start of all services takes a minute or two |
+| Disks | **A second, empty disk of 30 GB or more** for volumes (`STORAGE_DISK` below). Every VM gets a root volume, so a VM cannot be created without a storage backend |
+| Virtualization | `/dev/kvm` must exist; the compute worker refuses to start without it. On a VM, enable nested virtualization and use the host CPU type (changing the CPU type needs a full stop and start of the VM, a reboot from inside is not enough) |
 | Network | **Two network interfaces.** One with the machine's normal address and internet access (called `MGMT_IP` below). One extra interface for the provider (public) network; CloudX attaches it to the `br-ex` bridge, so do not use the interface you are logged in through |
 | Access | A sudo user |
 
@@ -20,7 +21,9 @@ Find your values first and keep them for later steps:
 ip -br addr                                   # pick the management address and the spare interface
 export MGMT_IP=192.168.10.10                  # your management address
 export PROVIDER_IF=enp0s8                     # the spare interface (no IP address needed)
+export STORAGE_DISK=/dev/sdb                  # the empty disk for volumes (lsblk shows it without partitions)
 test -e /dev/kvm && echo "kvm ok"
+lsblk "$STORAGE_DISK"
 ```
 
 ## 1. Get the packages
@@ -88,7 +91,7 @@ NODE_ONLY='compute|storage|bgp-worker|compute-worker|ha-watchdog|lb-worker|metad
 sudo apt install --no-install-recommends $(ls ./cloudx-*.deb | grep -Ev "cloudx-(${NODE_ONLY})_")
 ```
 
-This is the controller role (`cloudx-controller`, its services, `cloudx-db` and `cloudx-cli`) with nginx in front of the APIs. Block storage (volumes) is not part of this quickstart because it needs an LVM or Ceph backend; see `storage-backend.md`.
+This is the controller role (`cloudx-controller`, its services, `cloudx-db` and `cloudx-cli`) with nginx in front of the APIs. The storage role is set up in step 6.
 
 The first install writes `/etc/cloudx/cloudx.conf` with generated secrets. Do not replace it. The services cannot start yet because the database has no tables; they retry every 5 seconds, which is expected.
 
@@ -134,23 +137,44 @@ On a single machine, point the controller address at the machine itself:
 sudo cloudx-setup-compute \
   --controller-ip 127.0.0.1 \
   --node-ip "$MGMT_IP" \
-  --node-name cloudx-aio \
   --provider-interface "$PROVIDER_IF"
 sudo systemctl restart cloudx-compute-worker cloudx-metadata-proxy cloudx-telemetry-worker \
      cloudx-lb-worker cloudx-vpn-worker cloudx-bgp-worker
 ```
 
-> **(unverified)** `--controller-ip 127.0.0.1` on the same machine. The lab uses real controller addresses on separate machines. If OVN does not connect (`sudo ovs-vsctl get open_vswitch . external_ids:ovn-remote` and `sudo ovn-sbctl show` show no chassis), repeat with `--controller-ip "$MGMT_IP"`, and in `/etc/postgresql/16/main/postgresql.conf` set `listen_addresses = '*'` with a matching `pg_hba.conf` line for your subnet.
+Leave `--node-name` out on a single machine. The compute worker starts as soon as its package is installed and registers as `cloudx-compute-01`; the script uses the same name. A different name would leave a dead hypervisor behind, because the CLI cannot delete hypervisors.
+
+`--controller-ip 127.0.0.1` works because everything runs on this machine. The script also removes the OVN chassis that `ovn-central`'s own `ovn-controller` registered under a random name (OVN refuses a second chassis with the same encap IP), and writes the `physnet1:br-ex` mapping the provider network needs. If OVN does not connect afterwards (`sudo ovn-sbctl show` shows no chassis), see `troubleshooting.md`, "OVN chassis does not register".
 
 Check that the node registered and that libvirt is usable from CloudX's Python environment:
 
 ```bash
-cloudx hypervisor list                         # cloudx-aio should be listed
+cloudx hypervisor list                         # cloudx-compute-01 should be listed
 /opt/cloudx/venv/bin/python -c "import libvirt; print('libvirt ok')"
 sudo ovs-vsctl show | grep -E "br-ex|br-int"
 ```
 
-## 6. Create the public (provider) network
+## 6. Set up block storage
+
+Every VM gets a root volume from the block-store service, so volumes need a backend before the first VM. This guide uses LVM on the empty disk `STORAGE_DISK`; volumes are exported over iSCSI, also on a single machine (the setup installs `targetcli` and `open-iscsi`). The script refuses a disk that carries a filesystem or other signature unless you add `--wipe`, which erases it.
+
+```bash
+cd ~/cloudx-debs
+STORAGE_ONLY='common|storage|block-store-worker'
+sudo apt install --no-install-recommends $(ls ./cloudx-*.deb | grep -E "cloudx-(${STORAGE_ONLY})_")
+sudo cloudx-setup-storage --host cloudx-compute-01 --portal-ip "$MGMT_IP" --device "$STORAGE_DISK" --local-api
+sudo systemctl restart cloudx-block-store-worker cloudx-block-store-api
+```
+
+`--local-api` lists this machine in `block_store_lvm_hosts` of the `block-store-api` that runs here. The worker creates the volume group `vg-cloudx` on its first start. Check it, then create the volume type the API asks for:
+
+```bash
+sudo vgs vg-cloudx
+cloudx volume-type create gp2 --backend lvm --disk-type sata_ssd --max-iops 3000 --max-throughput 125
+cloudx volume-type list
+```
+
+## 7. Create the public (provider) network
 
 Use the address range of the network behind `PROVIDER_IF`: its CIDR, the gateway that routes it to the outside, and a free range for floating IPs. The values below are an example; replace all four.
 
@@ -169,7 +193,7 @@ cloudx subnet create public-subnet \
   --allocation-end "$POOL_END"
 ```
 
-## 7. Boot your first VM
+## 8. Boot your first VM
 
 Download a small test image (CirrOS) and create a private network with a router to the public network:
 
@@ -201,7 +225,7 @@ cloudx server show demo-vm                     # repeat until status is ACTIVE
 
 If the status becomes `ERROR`, `cloudx server show demo-vm` has the reason and `journalctl -u cloudx-compute-worker -n 50` has the details.
 
-## 8. Reach the VM
+## 9. Reach the VM
 
 ```bash
 cloudx floating-ip create public-net           # note the address it prints
@@ -220,7 +244,7 @@ sudo ip route add <floating-ip>/32 dev br-ex src 192.168.100.2              # on
 
 Remove the address and the route again when you are done (`ip addr del`, `ip route del`).
 
-## 9. The web dashboard
+## 10. The web dashboard
 
 Open `http://<MGMT_IP>:8080/` and log in as `admin` with the password from step 4.
 
@@ -228,7 +252,7 @@ Open `http://<MGMT_IP>:8080/` and log in as `admin` with the password from step 
 
 - **Metadata service.** A VM cannot reach `http://169.254.169.254` unless the host it runs on has the metadata redirect (`scripts/setup-metadata-route.sh`, see `metadata-proxy.md`), and that is a single-host setup. SSH keys and user-data are delivered through the config drive instead, which is why the CirrOS VM above boots and accepts your key without the metadata service. Images that only read the network metadata endpoint get no data on compute nodes.
 - **Internet access from VMs.** A VM with a floating IP leaves the router with that address, and your network must route or NAT the provider range upstream. If pings to the outside get no reply, see `troubleshooting.md`, "VM has no outbound access".
-- **Block storage** is not part of this guide (it needs an LVM or Ceph backend); see `storage-backend.md`.
+- **Block storage** here is one LVM disk on the same machine. For several storage nodes see `deb-install.md` (4.3); for Ceph see 4.2, step 5.
 
 ## Clean up
 

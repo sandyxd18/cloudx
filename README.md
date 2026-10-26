@@ -1,101 +1,74 @@
-# CloudX — Private Cloud Platform
+# CloudX
 
-**CloudX** is a modular, adaptive private cloud platform built on native Linux (systemd) with a modern enterprise cloud architecture. It uses **libvirt + QEMU/KVM** for virtualization, **OVN/Open vSwitch** for software-defined networking, and **RabbitMQ** for asynchronous messaging between components. It ships with the **CloudX CLI** and an interactive **Web Dashboard** built on the AWS Cloudscape Design System.
+CloudX is a private cloud platform for Ubuntu 24.04. It runs VMs on **libvirt + QEMU/KVM**, networks them with **OVN/Open vSwitch**, and ties the services together with **RabbitMQ** and **PostgreSQL**. Every service is a systemd unit installed from a `.deb` package. It comes with a command line client (`cloudx`) and a web dashboard built on the AWS Cloudscape Design System.
 
----
+The APIs follow the shape of OpenStack's (an identity service, compute, networking, block storage, images, orchestration and so on) without being compatible with them. The [feature comparison](docs/feature-comparison.md) says where CloudX matches OpenStack, where it differs and what it leaves out.
 
-## 🏛️ Architecture & Core Services
+> **Status.** CloudX is heading to version 1.0.0. It is built and run by one maintainer, and it has been tested on a six-node lab and on single machines, not on production workloads. Read [Known limitations](docs/quickstart.md#known-limitations) before relying on it, and see [SECURITY.md](SECURITY.md) for how to report a problem.
 
-CloudX is a set of distributed microservices that can run in All-in-One or Multi-Node mode (Control Plane & Compute):
+## What you need
 
-* **Auth (`auth-api`)**: Identity, project, user, role and credential management (Identity Service).
-* **Compute (`compute-api`, `compute-worker`, `conductor`)**: VM lifecycle, flavors, keypairs, server groups and affinity policies (Compute Service).
-* **Networking (`networking-api`)**: L2/L3 networks, subnets, router gateways, floating IPs, security groups, VPC peering, BGP and IPSec VPN (Networking Service).
-* **Storage (`block-store-api`, `block-store-worker`)**: Persistent block storage, volume types (LVM / Ceph RBD), snapshots and full volume backups (Block Storage Service).
-* **Image (`image-api`, `image-worker`)**: Repository of VM operating system images (qcow2/raw) with a local-file or MinIO S3 backend (Image Service).
-* **Metadata & Placement (`metadata-api`, `placement-api`)**: Cloud-init metadata service (`169.254.169.254`) and capacity allocation tracking for compute nodes.
-* **Orchestration & Containers (`orchestration-api`, `k8s_engine`)**: Metric-driven auto-scaling groups and a managed Kubernetes engine (K3s).
-* **Security & Observability (`key_manager`, `telemetry-api`, `billing-api`, `event-api`)**: Integrated secret vault, utilization metrics, billing/invoicing and audit event logging.
-* **Dashboard (`dashboard`)**: Modern React + Cloudscape web UI, connected through a unified reverse proxy.
+- Ubuntu 24.04 amd64 on every node. No other distribution is supported.
+- `/dev/kvm` on the compute nodes (on a VM, nested virtualization).
+- For a first try: one machine with 4 vCPU, 8 GB RAM, two network interfaces and a spare 30 GB disk.
 
----
+## Install
 
-## 💻 CloudX CLI Preview
-
-CloudX can be managed efficiently from the command line (`cloudx`).
-
-Use `-h` or `--help` on the root command or on any subgroup to see the full list of options and parameters:
+Download the `.deb` files and `SHA256SUMS` from the [releases page](https://github.com/sandyxd18/cloudx/releases), check them, and install:
 
 ```bash
-$ cloudx --help
-Usage: cloudx [OPTIONS] COMMAND [ARGS]...
-
-  CloudX unified CLI — manage your private cloud from the terminal.
-
-Options:
-  --profile TEXT       Credential profile to use (default: default)
-  -f, --format [table|json|yaml]  Output format (default: table)
-  -h, --help           Show this message and exit.
-
-Commands:
-  auth            Authentication and identity management (users, projects)
-  server          Virtual machine compute lifecycle management
-  flavor          Compute flavor management (vCPU, RAM, disk)
-  keypair         SSH key pair management
-  server-group    Server affinity/anti-affinity policy groups
-  scaling-group   Auto-scaling group orchestration
-  stack           Orchestration stack and resource management
-  network         Software-defined networks
-  subnet          IP subnet and IPAM management
-  router          L3 router and external gateway routing
-  floating-ip     Public floating IP addresses
-  security-group  Firewall security groups and packet filter rules
-  vpc-peering     VPC peering inter-router connections
-  vpn             IPSec site-to-site VPN gateways & policies
-  bgp-peer        BGP dynamic routing peer management
-  image           Virtual machine operating system images
-  volume          Block storage persistent volumes
-  volume-type     Volume storage backend types & performance profiles
-  backup          Full volume backups to object storage
-  snapshot        Volume snapshots
-  object-store    S3-compatible bucket and object storage
-  secret          Key manager secret vault
-  cluster         Managed Kubernetes cluster provisioning
-  k8s-template    Kubernetes cluster version & node templates
-  hypervisor      Inspect compute host nodes and physical capacity
-  telemetry       Resource utilization samples and metrics
-  billing         Usage metering, rating sheets, and invoices
-  event           Centralized audit event logs
-  service         Systemd services and daemon lifecycle
+sha256sum -c SHA256SUMS --ignore-missing
 ```
 
-To get help for a specific subcommand:
+Which packages go on which node, and what to prepare first, is in the guides (`apt install ./file.deb` resolves the dependencies between the files you name together, so no apt repository is needed):
+
+| Guide | For |
+|---|---|
+| [docs/quickstart.md](docs/quickstart.md) | Everything on one machine: a VM with a floating IP in about 30 minutes |
+| [SETUP.md](SETUP.md) | Choosing a layout, preparing PostgreSQL, RabbitMQ and OVN, the admin account, the first network |
+| [docs/deb-install.md](docs/deb-install.md) | Installing by role (controller, compute, storage), spreading services over nodes, upgrades and rollback |
+| [docs/tutorials/](docs/tutorials/multi-node.md) | A three-node cloud, auto-scaling, Ceph, Kubernetes, a dashboard tour |
+
+## What is in it
+
+| Area | Services |
+|---|---|
+| Identity | `auth-api`: users, projects, domains, roles, access keys, service catalog |
+| Compute | `compute-api`, `conductor`, `compute-worker`: VMs, flavors, key pairs, server groups, scheduling through `placement-api` |
+| Networking | `networking-api`: networks, subnets, routers, floating IPs, security groups, VPC peering, VPN, BGP; `metadata-api`, `metadata-proxy`; `load-balancer-api`, `lb-worker` (L4 and L7); `dns-api`, `dns-worker` |
+| Storage | `block-store-api`, `block-store-worker` (LVM or Ceph RBD volumes, snapshots, backups); `image-api`; `object-store-api` (S3-style); `file-store-api` (NFS shares); `key-manager-api` |
+| Orchestration | `orchestration-api` (stacks and auto-scaling), `k8s-engine-api` (K3s clusters), `container-api` (single containers) |
+| Platform services | `database-api` (PostgreSQL and MariaDB instances), `messaging-api` (queues), `reservation-api` (capacity leases), `ha-api` and `ha-watchdog` (instance recovery), `reaper` |
+| Operations | `telemetry-api`, `billing-api`, `event-api` with workers; `/metrics` on every API |
+| Interfaces | `cloudx` CLI, web dashboard on port 8080 |
+
+[docs/architecture.md](docs/architecture.md) describes how they fit together, and [docs/deb-install.md](docs/deb-install.md) section 1 lists every package and port.
+
+## The CLI
+
 ```bash
-# Compute VM commands
-cloudx server -h
-
-# Networking commands
-cloudx network --help
-
-# Kubernetes cluster commands
-cloudx cluster -h
+cloudx auth login --username admin --auth-url http://<controller>:8005
+cloudx server create web-1 --image cirros --flavor tiny --network demo-net --key-name demo-key
+cloudx floating-ip create public-net
+cloudx --help                                   # all command groups
+cloudx server --help                            # options of one group
 ```
 
----
+`cloudx --help` lists the command groups:
 
-## 🚀 Setup & Full Guides
+```
+alarm  auth  backup  bgp-peer  cluster  container  database  dns  event  file-store  flavor  floating-ip  ha
+host  hypervisor  image  k8s-template  keypair  load-balancer  network  object-store  placement  port  queue
+reservation  role-assignment  router  scaling-group  secret  secret-container  security-group  server
+server-group  service  snapshot  stack  subnet  telemetry  volume  volume-type  vpc-peering  vpn
+```
 
-Detailed instructions on installing prerequisites, configuring the host-only/provider network, and running CloudX on servers with **systemd** are in:
+Output is a table by default; `-o json` prints JSON. The full guide is [docs/user-guide-cli.md](docs/user-guide-cli.md).
 
-👉 **[SETUP.md — Server Deployment & Configuration Guide](./SETUP.md)**
+## Documentation
 
-Additional documentation:
-* **[Native systemd Deployment Guide](./docs/systemd-deployment-guide.md)**
-* **[Multi-Node Guide (Control Plane + Compute)](./docs/multi-node-deployment.md)**
-* **[Complete CLI User Guide](./docs/user-guide-cli.md)**
+[docs/README.md](docs/README.md) is the index. Release notes, with upgrade steps for each version, are in [docs/releases/](docs/releases/) and the short version is [CHANGELOG.md](CHANGELOG.md).
 
----
+## Contributing and license
 
-## License
-
-CloudX is released under the [MIT license](./LICENSE). See [CONTRIBUTING.md](./CONTRIBUTING.md) to help, [SECURITY.md](./SECURITY.md) to report a vulnerability and [CHANGELOG.md](./CHANGELOG.md) for what changed.
+See [CONTRIBUTING.md](CONTRIBUTING.md) to help. CloudX is released under the [MIT license](LICENSE).

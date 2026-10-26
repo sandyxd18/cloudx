@@ -1,39 +1,39 @@
 # VPNaaS IPsec site-to-site
 
-VPN site-to-site sungguhan: satu strongSwan `charon` per router, berjalan di netns `qvpn-<short>` pada host gateway chassis router, dikelola oleh `cloudx-vpn-worker`.
+Real site-to-site VPN: one strongSwan `charon` per router, running in the netns `qvpn-<short>` on the router's gateway chassis host, managed by `cloudx-vpn-worker`.
 
-## Topologi
+## Topology
 
 ```
-subnet lokal -- router (OVN) --LRP-- LS vpn-<gw> --LSP-- [qvpn-<short>: "in" .2/30]
+local subnet -- router (OVN) --LRP-- LS vpn-<gw> --LSP-- [qvpn-<short>: "in" .2/30]
                                                            charon (strongSwan)
 public-net -------------------- LS public --LSP-- [qvpn-<short>: "out" = outer_ip]
 ```
 
-- Transit `/30` dari `100.101.0.0/16`: router `.1`, netns `.2`. Router mendapat route statis `peer_cidrs` via `.2`.
-- `outer_ip` diambil dari pool jaringan eksternal (bukan IP gateway router). Router wajib punya external gateway (jika tidak, 400).
-- `peer_cidrs` yang tumpang tindih dengan subnet router mengembalikan 409.
+- Transit `/30` from `100.101.0.0/16`: router `.1`, netns `.2`. The router gets a static route for `peer_cidrs` via `.2`.
+- `outer_ip` comes from the external network pool (not the router's gateway IP). The router must have an external gateway (otherwise 400).
+- `peer_cidrs` that overlap a router subnet return 409.
 
-## Perilaku
+## Behaviour
 
-- Membuat site connection pertama pada router membuat gateway + objek OVN; menghapus yang terakhir membersihkan semuanya (OVN, netns, port OVS, direktori, charon).
-- `vpn-worker` polling `GET /internal/vpn-agent/<node_name>` tiap 5 detik, menulis `swanctl.conf` (mode 0600), `swanctl --load-all` hanya bila isi berubah, lalu melaporkan status (`ACTIVE` bila child SA INSTALLED, `DOWN`, `ERROR` + `status_reason`).
-- `admin_state_up=false` mengeluarkan koneksi dari konfigurasi.
+- Creating the first site connection on a router creates the gateway and the OVN objects; deleting the last one cleans everything up (OVN, netns, OVS port, directory, charon).
+- `vpn-worker` polls `GET /internal/vpn-agent/<node_name>` every 5 seconds, writes `swanctl.conf` (mode 0600), runs `swanctl --load-all` only when the content changes, then reports the status (`ACTIVE` when the child SA is INSTALLED, `DOWN`, `ERROR` + `status_reason`).
+- `admin_state_up=false` takes the connection out of the configuration.
 
-## Urutan membuat dua sisi
+## Creating both sides
 
-`peer_address` dan `peer_id` sebuah sisi adalah `outer_ip` gateway sisi lain. Buat koneksi di sisi A, baca `outer_ip` gateway-nya, buat koneksi di sisi B dengan peer itu, lalu buat ulang koneksi A dengan `outer_ip` gateway B.
+A side's `peer_address` and `peer_id` are the other side's gateway `outer_ip`. Create the connection on side A, read its gateway's `outer_ip`, create the connection on side B with that as the peer, then recreate connection A with side B's gateway `outer_ip`.
 
-## Keterbatasan
+## Limitations
 
-- Hanya PSK (tanpa X.509).
-- Satu host per gateway, tanpa failover.
-- PSK disimpan plaintext di DB dan dikembalikan oleh `/vpn/site-connections/{id}/config`.
-- Tanpa remote-access VPN dan tanpa BGP di atas IPsec.
-- DPD tidak dapat dikonfigurasi: bila peer dihapus, sisi yang tersisa bisa tetap `ACTIVE` sampai SA kedaluwarsa.
-- Urutan pembuatan dua sisi manual (lihat di atas).
+- PSK only (no X.509).
+- One host per gateway, no failover.
+- The PSK is stored in plaintext in the DB and returned by `/vpn/site-connections/{id}/config`.
+- No remote-access VPN and no BGP over IPsec.
+- DPD cannot be configured: when the peer is deleted, the remaining side can stay `ACTIVE` until the SA expires.
+- Creating both sides is a manual sequence (see above).
 
-## Diagnosis
+## Troubleshooting
 
 ```bash
 sudo ip netns exec qvpn-<short> swanctl --list-sas --uri unix:///var/lib/cloudx/vpn/<gw_id>/vici

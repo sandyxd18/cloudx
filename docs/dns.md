@@ -1,62 +1,62 @@
-# DNS (setara Designate, berbasis BIND9)
+# DNS (Designate-like, on BIND9)
 
-Layanan DNS CloudX: zona dan record milik pengguna, plus nama otomatis untuk resource platform. Setara Designate dalam fitur, bukan 1:1 (lihat batasan).
+The CloudX DNS service: user-owned zones and records, plus automatic names for platform resources. It covers Designate's features, not 1:1 (see the limits).
 
-## Komponen (controller saja)
+## Components (controller only)
 
-| Unit | Fungsi |
+| Unit | Purpose |
 |---|---|
-| `cloudx-dns-api` | API (port 8016), menyimpan zona/record di PostgreSQL |
-| `cloudx-dns-worker` | membuat file zona dan `named.conf`, reload BIND, menyapu nama otomatis tiap 60 detik |
-| `cloudx-named-auth` | BIND otoritatif, tanpa rekursi, `172.20.0.120` |
-| `cloudx-named-resolver` | BIND rekursif untuk tenant: zona internal + forwarder, `172.20.0.118` |
+| `cloudx-dns-api` | API (port 8016), stores zones and records in PostgreSQL |
+| `cloudx-dns-worker` | writes zone files and `named.conf`, reloads BIND, sweeps automatic names every 60 seconds |
+| `cloudx-named-auth` | authoritative BIND, no recursion, `172.20.0.120` |
+| `cloudx-named-resolver` | recursive BIND for tenants: internal zones + forwarder, `172.20.0.118` |
 
-File BIND ada di `/var/lib/cloudx/dns/{auth,resolver}`. BIND tidak boleh bind ke `0.0.0.0` karena `systemd-resolved` memakai port 53 di localhost.
+The BIND files are in `/var/lib/cloudx/dns/{auth,resolver}`. BIND must not bind `0.0.0.0` because `systemd-resolved` uses port 53 on localhost.
 
-## Konfigurasi (`/etc/cloudx/cloudx.conf`)
+## Configuration (`/etc/cloudx/cloudx.conf`)
 
-`dns_platform_domain`, `dns_public_address`, `dns_resolver_address`, `dns_upstream`, `dns_resolver_clients`. Contoh ada di `etc/cloudx/cloudx.conf.sample`.
+`dns_platform_domain`, `dns_public_address`, `dns_resolver_address`, `dns_upstream`, `dns_resolver_clients`. An example is in `etc/cloudx/cloudx.conf.sample`.
 
-`dns_resolver_clients` harus memuat jaringan node compute/gateway: lalu lintas VM di-SNAT ke alamat node (terbukti di lab, sumbernya `172.20.0.117`, bukan IP VM).
+`dns_resolver_clients` must include the compute/gateway nodes' network: VM traffic is SNATed to the node address (seen in the lab, where the source was `172.20.0.117`, not the VM's IP).
 
-## Zona dan record
+## Zones and records
 
 ```
 cloudx dns zone create example.com
-cloudx dns zone show example.com          # menampilkan NS yang diisi di registrar
+cloudx dns zone show example.com          # shows the NS to enter at the registrar
 cloudx dns record create example.com www A 192.0.2.10
 cloudx dns record list example.com
 cloudx dns zone create corp.internal --internal
 cloudx dns secondary add example.com 203.0.113.5
 ```
 
-- Tipe: A, AAAA, CNAME, MX, TXT, SRV, NS, PTR. SOA dan NS di apex dikelola sistem.
-- Aturan CNAME ditegakkan (tidak boleh berbagi nama dengan record lain, tidak boleh di apex).
-- Nama di bawah `cloud.lab` dicadangkan untuk platform.
-- Status zona `PENDING` sampai worker memuatnya, lalu `ACTIVE`.
-- Kuota per project: `max_zones` (10) dan `max_recordsets` (200); record otomatis tidak dihitung.
+- Types: A, AAAA, CNAME, MX, TXT, SRV, NS, PTR. The SOA and the NS at the apex are managed by the system.
+- CNAME rules are enforced (it cannot share a name with another record, and cannot be at the apex).
+- Names under `cloud.lab` are reserved for the platform.
+- A zone is `PENDING` until the worker loads it, then `ACTIVE`.
+- Per-project quotas: `max_zones` (10) and `max_recordsets` (200); automatic records are not counted.
 
-## Nama otomatis
+## Automatic names
 
-| Resource | Nama | Dilayani |
+| Resource | Name | Served by |
 |---|---|---|
 | Floating IP | `<ip-dash>.compute.cloud.lab` | auth + resolver |
-| Load balancer + floating IP | `<nama>-<6 id>.elb.cloud.lab` | auth + resolver |
-| Bucket | `<bucket>-<8 id project>.s3.cloud.lab` | auth + resolver |
-| Server dan VIP LB | `<nama>.<project>.internal.cloud.lab` | resolver saja |
+| Load balancer + floating IP | `<name>-<6 id>.elb.cloud.lab` | auth + resolver |
+| Bucket | `<bucket>-<8 project id>.s3.cloud.lab` | auth + resolver |
+| Server and LB VIP | `<name>.<project>.internal.cloud.lab` | resolver only |
 
-Record dibuat layanan pemilik saat create/delete dan direkonsiliasi oleh sapuan. Kegagalan DNS tidak menggagalkan pembuatan resource. Record otomatis hanya-baca (409).
+The records are created by the owning service at create/delete and reconciled by the sweep. A DNS failure does not fail the creation of a resource. Automatic records are read-only (409).
 
-Subnet baru tanpa `dns_nameservers` memakai resolver platform.
+A new subnet without `dns_nameservers` uses the platform resolver.
 
 ## Secondary
 
-Zona publik bisa didaftarkan secondary berdasarkan IP: server itu boleh AXFR dan menerima NOTIFY. CloudX hanya primary. Alamat loopback, unspecified, dan multicast ditolak.
+A public zone can have a secondary registered by IP: that server may AXFR and receives NOTIFY. CloudX is primary only. Loopback, unspecified and multicast addresses are rejected.
 
-## Batasan
+## Limits
 
-Tanpa TSIG, DNSSEC, zona bertipe secondary, impor zona, PTR floating IP, pool/blacklist. Resolver `dnssec-validation no`. Detail lengkap di `docs/releases/v0.8.0.md`.
+No TSIG, DNSSEC, secondary-type zones, zone import, floating IP PTR, or pools/blacklists. The resolver has `dnssec-validation no`. Full details in `docs/releases/v0.8.0.md`.
 
-## Uji
+## Testing
 
-`scripts/test-dns.sh` belum ada; verifikasi lab dilakukan manual (dig ke `.120` dan `.118`, AXFR dari secondary terdaftar, VM nyata untuk nama internal).
+`scripts/test-dns.sh` does not exist yet; lab verification was done by hand (dig against `.120` and `.118`, AXFR from a registered secondary, a real VM for the internal names).

@@ -1,81 +1,81 @@
-# Instance HA (setara Masakari)
+# Instance HA (Masakari-like)
 
-Memulihkan VM yang dilindungi secara otomatis saat node compute mati. Setara fitur dasar Masakari (host monitor dan host recovery), bukan 1:1.
+Automatically recovers protected VMs when a compute node dies. It covers the basic Masakari features (host monitor and host recovery), not 1:1.
 
-## Arsitektur
+## Architecture
 
-- `ha-api` (controller, port 8020, satu proses dengan satu thread monitor). Tabel `ha_hosts`, `ha_protected`, `ha_recoveries`. Tidak ada worker baru.
-- `cloudx-compute-worker` mengirim heartbeat tiap 10 detik ke `POST /internal/heartbeat/{host}` bersama `initiator_iqn` node itu. Gagal kirim hanya dicatat.
-- block-store punya endpoint internal baru `POST /internal/fence`: meminta block-store-worker pemilik tiap volume menjalankan `unexport_volume` (mencabut ACL iSCSI). Hasil dikembalikan per volume.
-- compute: `PUT /os-services/{host}` dan `POST /servers/{id}/evacuate` kini menerima token internal selain admin.
+- `ha-api` (controller, port 8020, one process with one monitor thread). Tables `ha_hosts`, `ha_protected`, `ha_recoveries`. No new worker.
+- `cloudx-compute-worker` sends a heartbeat every 10 seconds to `POST /internal/heartbeat/{host}`, together with that node's `initiator_iqn`. A failed send is only logged.
+- block-store has a new internal endpoint `POST /internal/fence`: it asks the block-store-worker that owns each volume to run `unexport_volume` (revoking the iSCSI ACL). The result comes back per volume.
+- compute: `PUT /os-services/{host}` and `POST /servers/{id}/evacuate` now accept the internal token as well as admin.
 
-## Alur
+## Flow
 
-1. Monitor memeriksa tiap 10 detik. Host `up` dengan heartbeat lebih tua dari 60 detik menjadi `suspect`.
-2. Setelah 30 detik masih diam, host dianggap mati. Heartbeat yang kembali sebelum itu membatalkan semuanya (tanpa fencing, tanpa evacuate).
-3. Hanya VM di `ha_protected` yang diproses. Tanpa VM terlindungi, host cukup ditandai `forced_down`.
-4. Pra-cek: VM yang volume root atau datanya ada di host yang mati, atau lokasinya tidak diketahui, dicatat `skipped` dan tidak dievakuasi.
-5. Urutan wajib: `forced_down=true`, cabut ACL iSCSI semua volume VM yang lolos, baru `evacuate`. Bila fencing gagal tidak ada evacuate; host tetap `suspect` dan dicoba lagi, maksimal 3 kali, lalu berhenti sampai operator turun tangan.
-6. Tiap VM diverifikasi `ACTIVE` dalam 300 detik. Hasil ada di `GET /recoveries` (`done`, `failed`, `skipped`).
-7. Host menjadi `fenced`. Heartbeat yang kembali tidak mengubah apa pun.
+1. The monitor checks every 10 seconds. A host that is `up` with a heartbeat older than 60 seconds becomes `suspect`.
+2. If it is still silent after 30 more seconds, the host is considered dead. A heartbeat that comes back before then cancels everything (no fencing, no evacuate).
+3. Only VMs in `ha_protected` are handled. With no protected VMs, the host is just marked `forced_down`.
+4. Pre-check: a VM whose root or data volume is on the dead host, or whose location is unknown, is recorded as `skipped` and not evacuated.
+5. Required order: `forced_down=true`, revoke the iSCSI ACL of every volume of the VMs that passed, and only then `evacuate`. If fencing fails there is no evacuate; the host stays `suspect` and is retried, at most 3 times, then it stops until an operator steps in.
+6. Each VM is verified `ACTIVE` within 300 seconds. The result is in `GET /recoveries` (`done`, `failed`, `skipped`).
+7. The host becomes `fenced`. A heartbeat that returns changes nothing.
 
-## Pemulihan node (manual)
+## Recovering a node (manual)
 
-1. Pastikan node sehat; VM lama di node itu mungkin masih berjalan dan harus dibersihkan (`virsh destroy` dan `undefine`, logout iSCSI).
-2. `PUT /os-services/{host}` dengan `{"forced_down": false}`.
+1. Make sure the node is healthy; old VMs on that node may still be running and must be cleaned up (`virsh destroy` and `undefine`, iSCSI logout).
+2. `PUT /os-services/{host}` with `{"forced_down": false}`.
 3. `cloudx ha reset HOST`.
 
 ## Watchdog (self-fencing)
 
-Tanpa BMC di lab, node yang terisolasi mematikan sendiri VM terlindungi miliknya. Unit `cloudx-ha-watchdog` (root, di setiap node compute, terpisah dari compute-worker) menyimpan daftar VM terlindungi dari ha-api. Bila ha-api tidak terjangkau 45 detik, ia menanyai peer (`GET /reach`):
+With no BMC in the lab, an isolated node shuts down its own protected VMs. The `cloudx-ha-watchdog` unit (root, on every compute node, separate from compute-worker) keeps the list of protected VMs from ha-api. When ha-api is unreachable for 45 seconds, it asks its peers (`GET /reach`):
 
-- ada peer yang masih menjangkau ha-api, atau tidak ada peer yang menjawab: node ini terisolasi, VM terlindungi di-`virsh destroy`;
-- semua peer juga tidak menjangkau ha-api: ha-api atau controller yang mati, tidak ada tindakan;
-- tanpa peer terkonfigurasi atau daftar kosong: tidak ada tindakan.
+- a peer can still reach ha-api, or no peer answers: this node is isolated, and the protected VMs are `virsh destroy`ed;
+- no peer can reach ha-api either: ha-api or the controller is down, no action;
+- no peers configured, or an empty list: no action.
 
-Sebelum `destroy`, watchdog menulis `/var/lib/cloudx/ha-watchdog/fenced`; selama file itu ada, compute-worker tidak menghidupkan lagi VM yang mati. File dihapus watchdog setelah operator mengembalikan host ke `up` (`forced_down=false`, lalu `cloudx ha reset HOST`). Respons HTTP apa pun dari ha-api (termasuk 5xx) dianggap terjangkau. `ha_watchdog_dry_run = true` hanya mencatat log.
+Before `destroy`, the watchdog writes `/var/lib/cloudx/ha-watchdog/fenced`; while that file exists, compute-worker does not restart VMs that were shut down. The watchdog deletes the file after the operator returns the host to `up` (`forced_down=false`, then `cloudx ha reset HOST`). Any HTTP response from ha-api (including 5xx) counts as reachable. `ha_watchdog_dry_run = true` only writes to the log.
 
-Konfigurasi `/etc/cloudx/ha-watchdog/ha-watchdog.conf` (`[DEFAULT]`): `ha_watchdog_host` (nama node), `ha_watchdog_peers` (URL peer, dipisah koma), `ha_watchdog_timeout`, `ha_watchdog_dry_run`, `ha_watchdog_port` (8021). Node yang menjalankan watchdog juga harus punya `ha_api_url` di conf yang sama, dipisah koma bila ada beberapa instance ha-api (`ha_api_url = http://a:8020,http://b:8020`). Override ini mengalahkan service catalog, jadi keputusan fencing tidak bergantung pada pencarian catalog. Tanpa override, watchdog menyimpan URL ha-api terakhir yang berhasil di-resolve ke `/var/lib/cloudx/ha-watchdog/ha_api_url` dan memakainya bila catalog tidak terjangkau; hanya watchdog yang start dingin saat auth tidak terjangkau dan belum pernah menyimpan URL yang menghitung pencarian gagal itu sebagai "ha-api diam". Catalog juga hanya menyimpan URL pertama dari daftar berkoma, jadi failover antar instance butuh override ini. Migrasi `cloudx-db-migrate ha` (`ha_0002`). ha-api menaruh "no watchdog seen" di catatan recovery bila host tidak mengirim sinyal watchdog dalam 120 detik terakhir.
+Configuration in `/etc/cloudx/ha-watchdog/ha-watchdog.conf` (`[DEFAULT]`): `ha_watchdog_host` (node name), `ha_watchdog_peers` (peer URLs, comma-separated), `ha_watchdog_timeout`, `ha_watchdog_dry_run`, `ha_watchdog_port` (8021). A node that runs the watchdog must also have `ha_api_url` in the same conf, comma-separated when there are several ha-api instances (`ha_api_url = http://a:8020,http://b:8020`). This override beats the service catalog, so the fencing decision does not depend on a catalog lookup. Without the override, the watchdog saves the last ha-api URL that resolved to `/var/lib/cloudx/ha-watchdog/ha_api_url` and uses it when the catalog is unreachable; only a watchdog that starts cold while auth is unreachable and has never saved a URL counts that failed lookup as "ha-api silent". The catalog also keeps only the first URL of a comma-separated list, so failover between instances needs this override. Migration `cloudx-db-migrate ha` (`ha_0002`). ha-api puts "no watchdog seen" in the recovery note when the host sent no watchdog signal in the last 120 seconds.
 
-Pembanding: Masakari mendeteksi lewat Pacemaker/Corosync dan memakai STONITH (IPMI) sebagai fencing eksternal (docs.openstack.org/masakari-monitors, hostmonitor). Watchdog ini bukan pengganti 1:1: ia bergantung pada node yang sehat cukup untuk mematikan VM-nya sendiri.
+For comparison: Masakari detects failures through Pacemaker/Corosync and uses STONITH (IPMI) as external fencing (docs.openstack.org/masakari-monitors, hostmonitor). This watchdog is not a 1:1 replacement: it depends on the node being healthy enough to shut down its own VMs.
 
-## Memakai
+## Using it
 
 - CLI: `cloudx ha hosts | protect SERVER | unprotect SERVER | protected | recoveries | reset HOST`.
 - Dashboard: High availability.
-- Sebuah VM hanya bisa dilindungi bila semua volumenya ada di host lain dan lokasinya diketahui (422 bila tidak).
+- A VM can only be protected when all its volumes are on other hosts and its location is known (422 otherwise).
 
-## Konfigurasi
+## Configuration
 
-- Controller: `ha_api_url` di `cloudx.conf`. Unit `cloudx-ha-api`, migrasi `cloudx-db-migrate ha`.
-- Setiap node compute: `ha_api_url = http://<controller>:8020` di `cloudx.conf`.
+- Controller: `ha_api_url` in `cloudx.conf`. Unit `cloudx-ha-api`, migration `cloudx-db-migrate ha`.
+- Every compute node: `ha_api_url = http://<controller>:8020` in `cloudx.conf`.
 
-## Hasil uji lab
+## Lab results
 
-Dua VM CirrOS (satu root di storage-node, satu di compute-node), keduanya dilindungi.
+Two CirrOS VMs (one with its root on the storage node, one on the compute node), both protected.
 
-- Positif: `cloudx-compute-worker` dan libvirtd di compute-node dihentikan. Sekitar 100 detik kemudian host `fenced`, VM `ha1` pindah ke storage-node dan `ACTIVE`, recovery `done`. Sesi iSCSI di target nol dan target dibongkar. qemu lama tetap hidup di node mati dengan sesi iSCSI yang sudah terputus; ia tidak bisa menulis lagi.
-- Negatif: storage-node dimatikan. VM yang root-nya ada di storage-node dicatat `skipped` (`volume on failed host`) dan tidak dievakuasi. VM lain dievakuasi.
-- Blip: worker dihentikan 20 detik lalu dinyalakan. Tidak ada tindakan; host kembali `up`.
-- Temuan saat uji: `PUT /os-services` dan `evacuate` semula hanya menerima JWT admin sehingga ha-api ditolak (401). Diperbaiki dengan `AdminOrInternal`.
+- Positive: `cloudx-compute-worker` and libvirtd on the compute node were stopped. About 100 seconds later the host was `fenced`, VM `ha1` moved to the storage node and was `ACTIVE`, and the recovery was `done`. The iSCSI sessions on the target were zero and the target was torn down. The old qemu stayed alive on the dead node with its iSCSI session already cut; it can no longer write.
+- Negative: the storage node was shut down. The VM whose root was on the storage node was recorded as `skipped` (`volume on failed host`) and not evacuated. The other VM was evacuated.
+- Blip: the worker was stopped for 20 seconds and then started. No action; the host went back to `up`.
+- Found during testing: `PUT /os-services` and `evacuate` originally accepted only an admin JWT, so ha-api was rejected (401). Fixed with `AdminOrInternal`.
 
-## Dua instance ha-api
+## Two ha-api instances
 
-Instance kedua boleh dijalankan di node lain (unit `cloudx-ha-api` yang sama). Semua endpoint aktif di keduanya; hanya loop monitor yang dijalankan satu instance, pemegang `pg_try_advisory_lock` pada PostgreSQL bersama. Lock lepas otomatis saat proses atau koneksinya mati, lalu instance lain mengambilnya dalam sekitar 10 detik. Pemimpin baru memberi semua host `last_seen` baru (masa 60 detik sebelum dinilai).
+A second instance may run on another node (the same `cloudx-ha-api` unit). All endpoints are active on both; only one instance runs the monitor loop, the holder of a `pg_try_advisory_lock` on the shared PostgreSQL. The lock is released automatically when the process or its connection dies, and the other instance takes it within about 10 seconds. A new leader gives every host a fresh `last_seen` (a 60-second grace period before it is judged).
 
-Pasang di node kedua:
-1. `/etc/cloudx/ha-api/ha-api.conf` (`[DEFAULT]`) dengan `database_url` ke PostgreSQL controller, dan `compute_api_url`, `block_store_api_url`, `auth_api_url` ke controller.
-2. Di controller: baris `pg_hba.conf` untuk IP node itu saja (`/32`, `scram-sha-256`) dan buka 5432 hanya dari node itu.
-3. Di semua node compute: `ha_api_url = http://controller:8020,http://node2:8020`. compute-worker mengirim heartbeat ke instance pertama yang menjawab; watchdog menganggap ha-api terjangkau bila salah satu menjawab.
+Install on the second node:
+1. `/etc/cloudx/ha-api/ha-api.conf` (`[DEFAULT]`) with `database_url` pointing at the controller's PostgreSQL, and `compute_api_url`, `block_store_api_url`, `auth_api_url` pointing at the controller.
+2. On the controller: a `pg_hba.conf` line for that node's IP only (`/32`, `scram-sha-256`), and open 5432 only from that node.
+3. On all compute nodes: `ha_api_url = http://controller:8020,http://node2:8020`. compute-worker sends its heartbeat to the first instance that answers; the watchdog treats ha-api as reachable if either one answers.
 
-Batas: PostgreSQL, compute-api, block-store-api dan auth tetap di controller. Bila controller mati, instance kedua hidup tetapi tidak bisa mengevakuasi. Dashboard hanya tahu satu URL ha-api.
+Limits: PostgreSQL, compute-api, block-store-api and auth stay on the controller. If the controller dies, the second instance is alive but cannot evacuate. The dashboard only knows one ha-api URL.
 
-Hasil uji lab (dua instance: controller dan compute-node): tepat satu leader; ha-api controller dihentikan lalu compute-node mengambil lock dalam 2 detik; dengan leader lama mati, compute-worker dan libvirtd di compute-node dihentikan dan instance kedua mengevakuasi VM terlindungi ke storage-node (recovery `done`); ha-api lama dinyalakan lagi, menjadi follower, dan tidak ada evakuasi ganda. Dengan controller ha-api mati, heartbeat dan proteksi tetap bisa lewat instance kedua.
+Lab results (two instances: the controller and a compute node): exactly one leader; the controller's ha-api was stopped and the compute node took the lock within 2 seconds; with the old leader down, compute-worker and libvirtd on the compute node were stopped and the second instance evacuated the protected VM to the storage node (recovery `done`); the old ha-api was started again, became a follower, and there was no double evacuation. With the controller's ha-api down, heartbeats and protection still worked through the second instance.
 
-## Pembersihan setelah evacuate
+## Cleanup after evacuate
 
-Saat node lama pulih, compute-worker menghapus domain yang menurut API sudah pindah host, lalu logout sesi iSCSI dari disk domain itu. Sesi yatim tanpa domain tidak dibersihkan.
+When the old node recovers, compute-worker deletes domains that the API says have moved host, then logs out the iSCSI sessions of those domains' disks. Orphan sessions with no domain are not cleaned up.
 
-## Batas
+## Limits
 
-Lihat catatan rilis (`docs/releases/v0.8.5.md`).
+See the release notes (`docs/releases/v0.8.5.md`).
