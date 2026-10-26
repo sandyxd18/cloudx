@@ -34,6 +34,12 @@ HOST_SCRIPTS = {
 _DEFAULT_SECRET = re.compile(r"^auth_secret_key *= *cloudx-secret-key-change-in-production.*(\n|$)", re.MULTILINE)
 
 
+def debian_version(version: str) -> str:
+    """Debian version of a VERSION value: a pre-release such as 1.0.0-rc1 becomes 1.0.0~rc1, because dpkg sorts
+    "1.0.0-rc1" after "1.0.0" (a hyphen is greater than the end of the string) and rc1 -> 1.0.0 would be a downgrade."""
+    return f"{version.replace('-', '~', 1)}-{REVISION}"
+
+
 def control_file(pkg: str, version: str, depends: list[str], description: str,
                  recommends: list[str] | None = None) -> str:
     rec = f"Recommends: {', '.join(recommends)}\n" if recommends else ""
@@ -335,7 +341,7 @@ def build_all(out_dir: Path, version: str, *, with_venv: bool = True, only: list
     `only` names packages without the cloudx- prefix ("common", "db", "image-api", "compute", "cli", ...).
     """
     out_dir, work_dir = Path(out_dir), Path(work_dir or ROOT / "build" / "deb")
-    deb_version = f"{version}-{REVISION}"
+    deb_version = debian_version(version)
     units = load_manifest()
     packaged = [u for u in units if u.kind != "unit"]
     names = ["common", "db", *(u.name for u in packaged), *META_RECOMMENDS, "cli"]

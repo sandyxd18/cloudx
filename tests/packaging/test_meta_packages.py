@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from cloudx_deb.build import MAINTAINER, build_all, relocate
+from cloudx_deb.build import MAINTAINER, build_all, debian_version, relocate
 from cloudx_deb.manifest import load_manifest
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = (ROOT / "VERSION").read_text().strip()
-DEB_VERSION = f"{VERSION}-1"
+DEB_VERSION = debian_version(VERSION)
 
 pytestmark = pytest.mark.skipif(
     not (shutil.which("dpkg-deb") and shutil.which("fakeroot")), reason="needs dpkg-deb and fakeroot")

@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from cloudx_deb.build import MAINTAINER, build_all, control_file, relocate, strip_default_secret
+from cloudx_deb.build import MAINTAINER, build_all, control_file, debian_version, relocate, strip_default_secret
 from cloudx_deb.manifest import load_manifest
 from cloudx_deb.render import render_api_unit, render_nginx, render_wrapper
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = (ROOT / "VERSION").read_text().strip()
-DEB_VERSION = f"{VERSION}-1"
+DEB_VERSION = debian_version(VERSION)
 
 pytestmark = pytest.mark.skipif(
     not (shutil.which("dpkg-deb") and shutil.which("fakeroot")), reason="needs dpkg-deb and fakeroot")
@@ -44,6 +44,17 @@ def debs(tmp_path_factory) -> dict[str, Path]:
     base = tmp_path_factory.mktemp("deb")
     built = build_all(base / "out", VERSION, with_venv=False, work_dir=base / "work")
     return {p.name.split("_")[0]: p for p in built}
+
+
+def test_prerelease_versions_sort_before_the_release_in_dpkg():
+    # "1.0.0-rc1-1" would sort AFTER "1.0.0-1" (a hyphen counts as a revision separator and is greater than the end of
+    # the string), so rc1 -> 1.0.0 would look like a downgrade. A tilde sorts before everything.
+    assert debian_version("1.0.0-rc1") == "1.0.0~rc1-1"
+    assert debian_version("1.0.0") == "1.0.0-1"
+    assert debian_version("0.8.6+m2") == "0.8.6+m2-1"
+    order = ["0.8.6-1", debian_version("1.0.0-rc1"), debian_version("1.0.0-rc2"), debian_version("1.0.0")]
+    for older, newer in zip(order, order[1:]):
+        assert subprocess.run(["dpkg", "--compare-versions", older, "lt", newer]).returncode == 0, (older, newer)
 
 
 def test_control_file():
