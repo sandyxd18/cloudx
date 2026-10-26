@@ -96,9 +96,10 @@ def _busy(s):
 
 
 def _api(request: Request) -> eng.Api:
-    if not request.headers.get("Authorization"):
+    authorization = eng.caller_authorization(request.headers)
+    if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header required")
-    return eng.Api(request.headers["Authorization"])
+    return eng.Api(authorization)
 
 
 def _parse(template, parameters):
