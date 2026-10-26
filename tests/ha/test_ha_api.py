@@ -13,11 +13,14 @@ class FakeApi:
         self.vols = ["h2"]
         self.project = "p1"
 
+    names = {"web": "s9"}  # compute-api resolves a server name as well as an id
+
     def server(self, sid):
-        return {"id": sid, "host": self.host, "project_id": self.project, "status": "ACTIVE"}
+        return {"id": self.names.get(sid, sid), "host": self.host, "project_id": self.project, "status": "ACTIVE"}
 
     def server_volume_hosts(self, sid):
-        return self.vols
+        # block-store records the server id in attached_to_server_id: a name matches no volume
+        return [] if sid in self.names else self.vols
 
     def servers(self):
         return [{"id": "s1", "host": "h1", "libvirt_domain_name": "dom-s1", "status": "ACTIVE"},
@@ -141,3 +144,15 @@ def test_watchdog_endpoints(ha):
     assert ha.post("/internal/watchdog/h1", headers=HB).status_code == 200
     with ha.m.SessionLocal() as db:
         assert db.get(ha.m.Host, "h1").watchdog_at is not None
+
+
+def test_protect_and_unprotect_accept_a_server_name(ha):
+    # `cloudx ha protect web` sends the name; the volumes are attached to the id, and the row is keyed by the id
+    assert ha.put("/protected/web").status_code == 200
+    items = ha.get("/protected").json()["items"]
+    assert [i["server_id"] for i in items] == ["s9"]
+    assert ha.put("/protected/s9").status_code == 200  # the same server by id: still one row
+    assert len(ha.get("/protected").json()["items"]) == 1
+    assert ha.delete("/protected/web").status_code == 204
+    assert ha.get("/protected").json()["items"] == []
+    assert ha.delete("/protected/web").status_code == 404
