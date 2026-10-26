@@ -34,3 +34,13 @@ def test_register_never_raises(monkeypatch):
     dns_names.register("floating_ip:1", "p", "1-1-1-1.compute.cloud.lab", "A", ["1.1.1.1"])
     dns_names.unregister("floating_ip:1")
 
+
+
+def test_sweep_keeps_the_records_of_a_source_that_could_not_be_read():
+    m = worker()
+    have = {"load_balancer:1": {"fqdn": "lb-1.elb.cloud.lab", "records": ["1.1.1.1"]},
+            "load_balancer_internal:1": {"fqdn": "lb.p.internal.cloud.lab", "records": ["10.0.0.4"]},
+            "server:3": {"fqdn": "gone.p.internal.cloud.lab", "records": ["10.0.0.7"]}}
+    _, gone = m.sweep([], have, keep_kinds=("load_balancer", "load_balancer_internal"))
+    assert gone == ["server:3"]  # a down load balancer API must not wipe the load balancer names
+    assert m.sweep([], have)[1] == ["load_balancer:1", "load_balancer_internal:1", "server:3"]

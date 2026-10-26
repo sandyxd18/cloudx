@@ -99,11 +99,13 @@ def reload(role: str) -> bool:
 SWEPT = ("floating_ip", "load_balancer", "load_balancer_internal", "server")  # buckets register on create/delete only
 
 
-def sweep(want: list[dict], have: dict) -> tuple[list[dict], list[str]]:
-    """(records to register, owners to remove). `have` is dns-api's /internal/records "records" map."""
+def sweep(want: list[dict], have: dict, keep_kinds=()) -> tuple[list[dict], list[str]]:
+    """(records to register, owners to remove). `have` is dns-api's /internal/records "records" map.
+
+    Owners of a kind in `keep_kinds` are never removed: their source could not be read, so "not wanted" means "unknown"."""
     todo = [w for w in want if (h := have.get(w["owner"])) is None or (h["fqdn"], h["records"]) != (w["fqdn"], w["records"])]
     wanted = {w["owner"] for w in want}
-    return todo, [o for o in have if o.split(":")[0] in SWEPT and o not in wanted]
+    return todo, [o for o in have if (kind := o.split(":")[0]) in SWEPT and kind not in keep_kinds and o not in wanted]
 
 
 def _get(url: str, path: str) -> list:
@@ -113,10 +115,18 @@ def _get(url: str, path: str) -> list:
     return next(iter(body.values())) if isinstance(body, dict) else body
 
 
-def collect_want() -> list[dict]:
+def collect_want(unavailable: set | None = None) -> list[dict]:
+    """Names every floating IP, load balancer and server should have. The load balancer API is optional (a trimmed
+    install does not run it): when it is not in the catalog or does not answer, its kinds are added to `unavailable`
+    and skipped instead of failing the whole sweep."""
     base = dns_names.base()
     auth = os.getenv("AUTH_API_URL", "http://127.0.0.1:8005").rstrip("/")
-    networking, load_balancer, compute = (catalog.url(s).rstrip("/") for s in ("network", "load-balancer", "compute"))
+    networking, compute = (catalog.url(s).rstrip("/") for s in ("network", "compute"))
+    try:
+        load_balancer = catalog.url("load-balancer").rstrip("/")
+    except catalog.CatalogError as exc:
+        log.info("sweep: no load balancer API in the catalog (%s), skipping load balancer names", exc)
+        load_balancer = None
     r = requests.get(f"{auth}/internal/projects", headers=internal_headers(), timeout=20)
     r.raise_for_status()
     names = r.json()["projects"]
@@ -126,7 +136,14 @@ def collect_want() -> list[dict]:
         if ip:
             want.append({"owner": f"floating_ip:{f['id']}", "project_id": f.get("project_id"), "scope": "public", "type": "A",
                          "fqdn": dns_names.fip_fqdn(ip, base), "records": [ip]})
-    for lb in _get(load_balancer, "/load-balancers"):
+    try:
+        lbs = _get(load_balancer, "/load-balancers") if load_balancer else None
+    except requests.RequestException as exc:  # best-effort: the load balancer API is optional
+        log.info("sweep: load balancer API unreachable (%s), skipping load balancer names", exc)
+        lbs = None
+    if lbs is None and unavailable is not None:
+        unavailable.update(("load_balancer", "load_balancer_internal"))
+    for lb in lbs or []:
         pname = names.get(lb["project_id"], lb["project_id"])
         want.append({"owner": f"load_balancer_internal:{lb['id']}", "project_id": lb["project_id"], "scope": "internal", "type": "A",
                      "fqdn": dns_names.internal_fqdn(lb["name"], pname, base), "records": [lb["vip_address"]]})
@@ -144,7 +161,8 @@ def collect_want() -> list[dict]:
 def run_sweep() -> None:
     api = catalog.url("dns").rstrip("/")
     have = requests.get(f"{api}/internal/records", headers=internal_headers(), timeout=10).json()["records"]
-    todo, gone = sweep(collect_want(), have)
+    unavailable: set = set()
+    todo, gone = sweep(collect_want(unavailable), have, keep_kinds=unavailable)
     for w in todo:
         r = requests.post(f"{api}/internal/records", json=w, headers=internal_headers(), timeout=10)
         if r.status_code >= 400:
