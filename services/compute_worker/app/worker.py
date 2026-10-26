@@ -300,6 +300,12 @@ def get_server_logs(payload: dict) -> dict:
 
 def delete_server(server_id: str, payload: dict) -> dict:
     domain = payload.get("libvirt_domain_name")
+    if not domain:
+        # A server deleted while still BUILD has no domain name in the database yet (the build reports it when it ends),
+        # but the build may have created the domain. It is named after the server: work the name out rather than leave
+        # the VM running with its root volume open.
+        name = payload.get("name") or payload.get("_original_name")
+        domain = libvirt_driver.domain_name(name, server_id) if name else None
     tap = payload.get("tap_name") or network_manager.tap_name(server_id)
     if domain:
         libvirt_driver.delete(domain)
