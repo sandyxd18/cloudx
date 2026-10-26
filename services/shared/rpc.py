@@ -66,6 +66,21 @@ def host_queue(service: str, host: str | None) -> str:
 RPC_CALL_TIMEOUT = int(os.getenv("RPC_CALL_TIMEOUT", "30"))
 
 
+# AMQP heartbeats stay long (600 s) because a handler can run for minutes and sends none, so they cannot tell a dead
+# broker from a busy handler. TCP keepalive is done by the kernel regardless: a peer that stops answering is dropped
+# after 30 s idle + 3 probes 10 s apart, and unacknowledged data after 60 s, instead of waiting for the next heartbeat.
+TCP_OPTIONS = {"TCP_KEEPIDLE": 30, "TCP_KEEPINTVL": 10, "TCP_KEEPCNT": 3, "TCP_USER_TIMEOUT": 60000}
+
+
+def _connection_params(url: str, blocked_connection_timeout: int | None = None):
+    params = pika.URLParameters(url)
+    params.heartbeat = 600
+    if blocked_connection_timeout is not None:
+        params.blocked_connection_timeout = blocked_connection_timeout
+    params.tcp_options = dict(TCP_OPTIONS)
+    return params
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # RPCClient — publisher side
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -92,9 +107,7 @@ class RPCClient:
     def _ensure_connection(self) -> None:
         if self._connection and self._connection.is_open:
             return
-        params = pika.URLParameters(self._url)
-        params.heartbeat = 600
-        params.blocked_connection_timeout = 300
+        params = _connection_params(self._url, blocked_connection_timeout=300)
         self._connection = pika.BlockingConnection(params)
         self._channel = self._connection.channel()
         self._channel.exchange_declare(self._exchange, "topic", durable=True)
@@ -305,9 +318,7 @@ class RPCConsumer:
                 time.sleep(5)
 
     def _consume_loop(self) -> None:
-        params = pika.URLParameters(self._url)
-        params.heartbeat = 600
-        params.blocked_connection_timeout = 300
+        params = _connection_params(self._url, blocked_connection_timeout=300)
         connection = pika.BlockingConnection(params)
         channel = connection.channel()
 
@@ -418,8 +429,7 @@ class EventConsumer:
                 self._stop.wait(5)
 
     def _consume(self) -> None:
-        params = pika.URLParameters(self._url)
-        params.heartbeat = 600
+        params = _connection_params(self._url)
         connection = pika.BlockingConnection(params)
         channel = connection.channel()
         channel.exchange_declare(EVENT_EXCHANGE, "fanout", durable=True)
