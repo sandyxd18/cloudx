@@ -206,6 +206,7 @@ def protect(server_id: str, current: CurrentUser, db: DB):
     api = make_api()
     try:
         srv = api.server(server_id)
+        server_id = srv.get("id") or server_id  # the CLI may send a name; volumes and rows are keyed by the id
         vols = api.server_volume_hosts(server_id)
     except monitor.Failure:
         raise HTTPException(404, "Server not found") from None
@@ -227,6 +228,11 @@ def protect(server_id: str, current: CurrentUser, db: DB):
 @app.delete("/protected/{server_id}", status_code=204)
 def unprotect(server_id: str, current: CurrentUser, db: DB):
     p = db.get(Protected, server_id)
+    if not p:  # a name: resolve it to the id the row is keyed by
+        try:
+            p = db.get(Protected, make_api().server(server_id).get("id"))
+        except monitor.Failure:  # best-effort: the server may already be gone; then only an id can match
+            p = None
     if not p or not can_see(current, p.project_id):
         raise HTTPException(404, "Server is not protected")
     if not owns(current, p.project_id):
