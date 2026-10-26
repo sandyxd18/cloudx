@@ -63,28 +63,28 @@ libvirt/QEMU/KVM, OVN/OVS, LVM, Ceph RBD, MinIO — not mocks or simulators.
 
 ---
 
-## Fase 1: milestone core service (v0.7.10 - v0.7.13)
+## Phase 1: core service milestones (v0.7.10 - v0.7.13)
 
-> **Catatan:** Commit, push, dan release hanya dilakukan **sekali** pada versi **v0.7.13**. Milestone **v0.7.10** hingga **v0.7.12** merupakan milestone internal tanpa git tag.
+> **Note:** Commit, push and release happen **once**, at version **v0.7.13**. Milestones **v0.7.10** to **v0.7.12** are internal milestones without a git tag.
 
-| Versi | Sub-fase / Area | Deskripsi Perubahan | Status |
+| Version | Sub-phase / Area | Description of changes | Status |
 |---|---|---|:---:|
-| **v0.7.10** | 1a Keamanan & Isolasi | • Scheduler Placement + role reader + config `.conf` (SELESAI)<br>• `project_id` & ownership di Neutron (Router, Subnet, Port, FloatingIP, PortForwarding, SG rule; nama unik per project)<br>• Role table + role assignments Keystone<br>• Token access-key memakai `AccessKey.project_id`<br>• Fix rule SG IPv6 (ACL `ovn_cli` hanya ip4) | SELESAI |
-| **v0.7.11** | 1b Data Plane | • Neutron `allowed_address_pairs`, router update + extra routes, MTU, quota<br>• Cinder `revert-to-snapshot` & `retype`<br>• Glance status machine (`queued`/`saving`/`active`), inspeksi `qemu-img`, properties kustom, `os_hash_algo`/`os_hash_value` | SELESAI (diuji di VM) |
-| **v0.7.12** | 1c Operasional Nova | • Flavor `extra_specs`, aggregates/AZ, `/limits` & `quota-sets`<br>• Instance actions, `os-services`, cold migrate & evacuate | SELESAI (diuji di VM) |
-| **v0.7.13** | 1d Conformance | • Script e2e per service + dokumen parity<br>• Commit, push, tag, dan release | Release Tag |
+| **v0.7.10** | 1a Security & Isolation | • Placement scheduler + reader role + `.conf` config (DONE)<br>• `project_id` & ownership in Neutron (Router, Subnet, Port, FloatingIP, PortForwarding, SG rule; names unique per project)<br>• Role table + Keystone role assignments<br>• Access-key tokens use `AccessKey.project_id`<br>• Fix IPv6 SG rules (`ovn_cli` ACLs only handled ip4) | DONE |
+| **v0.7.11** | 1b Data Plane | • Neutron `allowed_address_pairs`, router update + extra routes, MTU, quota<br>• Cinder `revert-to-snapshot` & `retype`<br>• Glance status machine (`queued`/`saving`/`active`), `qemu-img` inspection, custom properties, `os_hash_algo`/`os_hash_value` | DONE (tested on a VM) |
+| **v0.7.12** | 1c Nova Operations | • Flavor `extra_specs`, aggregates/AZ, `/limits` & `quota-sets`<br>• Instance actions, `os-services`, cold migrate & evacuate | DONE (tested on a VM) |
+| **v0.7.13** | 1d Conformance | • E2E script per service + parity document<br>• Commit, push, tag and release | Release Tag |
 
-> **Catatan:** Gap di luar Fase 1 tetap dialokasikan pada Fase 2/3 (orchestration, LB L7, alarms, K8s, VPNaaS, dsb).
+> **Note:** Gaps outside Phase 1 stay allocated to Phase 2/3 (orchestration, L7 LB, alarms, K8s, VPNaaS, etc.).
 
-## Fase 2: milestone advanced (v0.7.14 - v0.7.16)
+## Phase 2: advanced milestones (v0.7.14 - v0.7.16)
 
-> **Catatan:** Commit, push, dan release hanya dilakukan **sekali** pada **v0.7.16**. **v0.7.14** dan **v0.7.15** adalah milestone internal tanpa git tag. Fase 3 menyusul setelahnya.
+> **Note:** Commit, push and release happen **once**, at **v0.7.16**. **v0.7.14** and **v0.7.15** are internal milestones without a git tag. Phase 3 follows afterwards.
 
-| Versi | Sub-fase / Area | Deskripsi Perubahan | Status |
+| Version | Sub-phase / Area | Description of changes | Status |
 |---|---|---|:---:|
-| **v0.7.14** | 2a Orchestration (Heat-like) | • Saat ini hanya ada Auto-Scaling Group; **engine stack (Heat) dibangun dari nol** (tabel `stacks`, `stack_resources`, `stack_events`)<br>• Perbaiki bug ASG: `scale-out` manual hanya membuat record dengan `server_id` palsu, tanpa membuat VM<br>• Template: parameters, outputs, `get_param`/`get_attr`/`get_resource`<br>• Resource: Server, Volume, Network, Subnet, Router, FloatingIP, SecurityGroup<br>• Dependency graph, update, rollback, suspend/resume, preview<br>• Tidak termasuk: autoscaling group, nested stack | Rencana |
-| **v0.7.15** | 2b Load Balancer | • Data plane ganda: **OVN LB untuk L4**, **HAProxy untuk L7**<br>• Listener, pool, member, health monitor; algoritma round-robin / least-connections / source-ip<br>• L7 policy & rule (path/host) via HAProxy<br>• VIP lewat port Neutron / floating IP<br> **Status:** ALB (HAProxy di netns compute-node via `lb-worker`, L7 policy path, health check) terbukti dengan trafik nyata. NLB (OVN) juga terbukti: klien di jaringan lain lewat router terdistribusi ke 2 backend (driver memasang LB ke switch VIP, router, dan switch non-gateway router, seperti ovn-octavia-provider). Klien di L2 yang sama dengan VIP belum bisa (hairpin tanpa SNAT). Round-robin/least-connections sejati hanya di ALB | Selesai |
-| **v0.7.16** | 2c Telemetry, Alarms, Billing | • Alarm berbasis threshold + aksi webhook/event (exchange `cloudx.events`)<br>• Retensi & agregasi metrik<br>• Tarif billing per resource dari konfigurasi (termasuk tarif LB)<br>• Commit, push, tag, dan release<br> **Status:** alarm (`/telemetry/alarms`, event `telemetry.alarm.state_changed` ke `cloudx.events` → webhook subscription), rollup per jam (`/telemetry/rollups`), tarif seed via `billing_rate_<type>` terbukti di VM | Selesai |
+| **v0.7.14** | 2a Orchestration (Heat-like) | • Today there is only an Auto-Scaling Group; the **stack (Heat) engine is built from scratch** (tables `stacks`, `stack_resources`, `stack_events`)<br>• Fix an ASG bug: a manual `scale-out` only created a record with a fake `server_id`, without creating a VM<br>• Template: parameters, outputs, `get_param`/`get_attr`/`get_resource`<br>• Resources: Server, Volume, Network, Subnet, Router, FloatingIP, SecurityGroup<br>• Dependency graph, update, rollback, suspend/resume, preview<br>• Not included: autoscaling group, nested stack | Planned |
+| **v0.7.15** | 2b Load Balancer | • Dual data plane: **OVN LB for L4**, **HAProxy for L7**<br>• Listener, pool, member, health monitor; round-robin / least-connections / source-ip algorithms<br>• L7 policy & rule (path/host) via HAProxy<br>• VIP through a Neutron port / floating IP<br> **Status:** ALB (HAProxy in the compute node's netns via `lb-worker`, L7 path policy, health check) proven with real traffic. NLB (OVN) is proven too: a client on another network through a router is distributed across 2 backends (the driver attaches the LB to the VIP switch, the router, and the router's non-gateway switches, like ovn-octavia-provider). A client on the same L2 as the VIP does not work yet (hairpin without SNAT). True round-robin/least-connections only on ALB | Done |
+| **v0.7.16** | 2c Telemetry, Alarms, Billing | • Threshold-based alarms + webhook/event actions (exchange `cloudx.events`)<br>• Metric retention & aggregation<br>• Billing rate per resource from configuration (including LB rate)<br>• Commit, push, tag and release<br> **Status:** alarms (`/telemetry/alarms`, event `telemetry.alarm.state_changed` to `cloudx.events` → webhook subscription), hourly rollup (`/telemetry/rollups`), rates seeded via `billing_rate_<type>` proven on a VM | Done |
 
 ---
 

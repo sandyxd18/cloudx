@@ -157,7 +157,7 @@ def update_bgp_agent_status(host: str, payload: dict, db: DB):
             if pfx_net.prefixlen == 0 or pfx == "0.0.0.0/0":
                 continue
 
-            # ABAIKAN: tumpang tindih subnet router (sama, lebih spesifik, atau supernet)
+            # IGNORE: overlap with a router subnet (equal, more specific, or a supernet)
             overlaps = False
             for rnet in router_nets:
                 if pfx_net.subnet_of(rnet) or rnet.subnet_of(pfx_net) or pfx_net == rnet:
@@ -175,7 +175,7 @@ def update_bgp_agent_status(host: str, payload: dict, db: DB):
                 except Exception:  # best-effort: unparsable external CIDR, nexthop check skipped
                     pass
 
-            # ABAIKAN: prefix yang sudah menjadi route statis non-BGP di router
+            # IGNORE: prefix that is already a non-BGP static route on the router
             if pfx in static_destinations:
                 continue
 
