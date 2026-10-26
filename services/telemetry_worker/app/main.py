@@ -199,12 +199,17 @@ def _get_active_instances() -> list[dict]:
         r = _api("GET", f"{catalog.url('compute').rstrip('/')}/servers?all_tenants=true&status=ACTIVE", timeout=10)
         if r.status_code in (200, 201):
             data = r.json()
-            for s in data.get("servers", []):
-                instances.append({
+            for s in data.get("items", data.get("servers", [])):  # compute-api answers {"items": [...]}
+                if COMPUTE_HOST != "single-node" and s.get("host") and s["host"] != COMPUTE_HOST:
+                    continue  # another node's worker samples it
+                inst = {
                     "id": s.get("id", s.get("uuid", "")),
                     "name": s.get("name", ""),
                     "project_id": s.get("project_id", s.get("tenant_id", "")),
-                })
+                }
+                if s.get("libvirt_domain_name"):  # libvirt calls the domain mini-os-<name>-<id8>, not the server id or name
+                    inst["domain"] = s["libvirt_domain_name"]
+                instances.append(inst)
             return instances
     except Exception as e:
         log.debug("Failed to get instances from compute-api: %s", e)
@@ -290,14 +295,17 @@ def collect_and_send():
         stats = {}
         if conn:
             try:
-                # Try to find domain by UUID or name
-                try:
-                    dom = conn.lookupByUUIDString(instance_id)
-                except Exception:  # best-effort: falls back to lookup by name
+                # The libvirt domain name from the server record, else the server UUID, else its name
+                dom = None
+                for lookup, key in ((conn.lookupByName, inst.get("domain")), (conn.lookupByUUIDString, instance_id),
+                                    (conn.lookupByName, instance_name)):
+                    if not key:
+                        continue
                     try:
-                        dom = conn.lookupByName(instance_name)
-                    except Exception:  # best-effort: instance is not on this host; dom stays None
-                        dom = None
+                        dom = lookup(key)
+                        break
+                    except Exception:  # best-effort: try the next key; the instance may not be on this host
+                        continue
                 
                 if dom:
                     stats = _get_instance_stats_libvirt(dom, instance_id)
@@ -306,7 +314,7 @@ def collect_and_send():
         
         if not stats:
             # Fallback to shell
-            stats = _get_instance_stats_shell(instance_name, instance_id)
+            stats = _get_instance_stats_shell(inst.get("domain") or instance_name, instance_id)
         
         # Build metric records
         for metric_type, value in stats.items():

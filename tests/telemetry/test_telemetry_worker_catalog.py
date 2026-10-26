@@ -24,6 +24,58 @@ def test_instances_come_from_the_compute_host_in_the_catalog(monkeypatch):
     assert seen == ["http://catalog-host:8003/servers?all_tenants=true&status=ACTIVE"]
 
 
+def test_instances_are_read_from_the_items_list_compute_api_really_returns(monkeypatch):
+    # GET /servers answers {"items": [...]}; reading only a "servers" key found no instance and no metric was ever sent
+    monkeypatch.setattr(catalog, "url", lambda service, interface="internal": "http://catalog-host:8003/")
+    monkeypatch.setattr(w, "_api", lambda method, url, **kw: SimpleNamespace(
+        status_code=200, json=lambda: {"items": [{"id": "s1", "name": "vm", "project_id": "p", "status": "ACTIVE"}]}))
+    assert w._get_active_instances() == [{"id": "s1", "name": "vm", "project_id": "p"}]
+
+
+def test_only_this_nodes_instances_are_sampled_and_the_libvirt_domain_name_is_kept(monkeypatch):
+    # libvirt names domains mini-os-<name>-<id8>, not the server id or name, so lookups need libvirt_domain_name
+    monkeypatch.setattr(catalog, "url", lambda service, interface="internal": "http://catalog-host:8003/")
+    monkeypatch.setattr(w, "COMPUTE_HOST", "infra03")
+    items = [
+        {"id": "s1", "name": "vm", "project_id": "p", "host": "infra03", "libvirt_domain_name": "mini-os-vm-s1"},
+        {"id": "s2", "name": "other", "project_id": "p", "host": "infra02", "libvirt_domain_name": "mini-os-other-s2"},
+    ]
+    monkeypatch.setattr(w, "_api", lambda method, url, **kw: SimpleNamespace(status_code=200, json=lambda: {"items": items}))
+    assert w._get_active_instances() == [{"id": "s1", "name": "vm", "project_id": "p", "domain": "mini-os-vm-s1"}]
+
+
+def test_unconfigured_compute_host_samples_every_instance(monkeypatch):
+    monkeypatch.setattr(catalog, "url", lambda service, interface="internal": "http://catalog-host:8003/")
+    monkeypatch.setattr(w, "COMPUTE_HOST", "single-node")
+    items = [{"id": "s1", "name": "a", "project_id": "p", "host": "node-a"}, {"id": "s2", "name": "b", "project_id": "p", "host": "node-b"}]
+    monkeypatch.setattr(w, "_api", lambda method, url, **kw: SimpleNamespace(status_code=200, json=lambda: {"items": items}))
+    assert [i["id"] for i in w._get_active_instances()] == ["s1", "s2"]
+
+
+def test_domain_is_looked_up_by_its_libvirt_name_first(monkeypatch):
+    looked_up = []
+
+    class Conn:
+        def lookupByName(self, name):
+            looked_up.append(("name", name))
+            return object()
+
+        def lookupByUUIDString(self, uuid):
+            looked_up.append(("uuid", uuid))
+            raise RuntimeError("no such domain")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(catalog, "url", lambda service, interface="internal": "http://catalog-host:8010/")
+    monkeypatch.setattr(w, "_api", lambda *a, **k: SimpleNamespace(status_code=200))
+    monkeypatch.setattr(w, "_get_active_instances", lambda: [{"id": "s1", "name": "vm", "project_id": "p", "domain": "mini-os-vm-s1"}])
+    monkeypatch.setattr(w, "_get_libvirt_conn", lambda: Conn())
+    monkeypatch.setattr(w, "_get_instance_stats_libvirt", lambda dom, iid: {"cpu_percent": 42.0})
+    w.collect_and_send()
+    assert looked_up == [("name", "mini-os-vm-s1")]
+
+
 def test_compute_override_wins_over_a_failing_catalog(monkeypatch):
     monkeypatch.setenv("COMPUTE_API_URL", "http://override-host:1")
     monkeypatch.setattr(catalog, "_catalog", lambda service: pytest.fail("the override must not consult the catalog"))
