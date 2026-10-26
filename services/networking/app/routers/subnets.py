@@ -17,6 +17,18 @@ from ..serializers import get_by_ref, network_mtu, obj_to_dict, subnet_to_os_dic
 router = APIRouter()
 
 
+def default_nameservers(ip_version: int) -> list[str]:
+    """DNS for a subnet created without one: the platform resolver (it answers internal names and forwards the
+    rest) when `dns_resolver_address` is set, else the upstream resolvers, so an install without the DNS service
+    still resolves names. IPv6 gets none."""
+    if ip_version != 4:
+        return []
+    resolver = os.getenv("DNS_RESOLVER_ADDRESS", "").strip()
+    if resolver:
+        return [resolver]
+    return [x.strip() for x in os.getenv("DNS_UPSTREAM", "").split(",") if x.strip()]
+
+
 @router.post("/subnets", status_code=201)
 def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
     if get_by_ref(db, Subnet, payload.name, current=current):
@@ -56,8 +68,7 @@ def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # empty list = the platform resolver (it answers internal names and forwards the rest)
-    nameservers = payload.dns_nameservers or ([os.getenv("DNS_RESOLVER_ADDRESS", "172.20.0.118")] if ip_version == 4 else [])
+    nameservers = payload.dns_nameservers or default_nameservers(ip_version)
     dns = ",".join(nameservers)
     dhcp_id = None
 

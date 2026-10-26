@@ -58,8 +58,10 @@ database_public_url = http://127.0.0.1:8019
 # ha_watchdog_timeout = 45
 # ha_watchdog_dry_run = false
 dns_platform_domain = cloud.lab
-dns_public_address = 172.20.0.120
-dns_resolver_address = 172.20.0.118
+# Set both to two IPs of the node that runs cloudx-dns-worker (see docs/dns.md). Without dns_resolver_address,
+# new subnets hand dns_upstream to VMs instead of the platform resolver.
+# dns_public_address = 172.20.0.120
+# dns_resolver_address = 172.20.0.118
 dns_upstream = 1.1.1.1,8.8.8.8
 # CIDRs allowed to recurse through the resolver. VM traffic is source-NATed to the compute/gateway node address (seen in the lab: the node IP, not the VM IP), so include the node network.
 dns_resolver_clients = 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16

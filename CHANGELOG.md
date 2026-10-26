@@ -23,6 +23,9 @@ schema between releases, so read the upgrade steps before moving a running cloud
 - Router gateways land on a real gateway chassis, and the node's OVN system-id survives an Open vSwitch restart.
 - A clean .deb install now boots a VM: stale chassis cleanup, `ovn-bridge-mappings`, block storage preparation.
 - Deleting a security group removes its OVN port group and ACLs; rule ports set from the CLI are kept.
+- Subnets created without a nameserver no longer get the lab's resolver address (`172.20.0.118`) on an install without the
+  DNS service: VMs get `dns_upstream` instead. `cloudx.conf.sample` ships `dns_public_address` and `dns_resolver_address`
+  commented out.
 - Node configuration files are written mode 640, owner `root:cloudx`, with the controller's credentials.
 - The RabbitMQ password is no longer written to logs; RPC connections use TCP keepalive, so a dead peer is noticed in
   about a minute.
