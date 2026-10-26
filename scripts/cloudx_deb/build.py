@@ -161,12 +161,13 @@ fi
 """)
 
 
-def _new_venv(staging: Path, target: str, requirements: Path) -> tuple[Path, list[str]]:
+def _new_venv(staging: Path, target: str, requirements: Path, constraints: Path) -> tuple[Path, list[str]]:
     venv = staging / target.lstrip("/")
     # The system interpreter, so venv/bin/python points at /usr/bin/python3 on the target too.
     subprocess.run(["/usr/bin/python3", "-m", "venv", str(venv)], check=True)
     pip = [str(venv / "bin/python"), "-m", "pip", "install", "--quiet", "--no-cache-dir"]
-    subprocess.run([*pip, "-r", str(requirements)], check=True)
+    # The constraints pin every package, transitive ones included, so a rebuild ships the versions that were tested.
+    subprocess.run([*pip, "-c", str(constraints), "-r", str(requirements)], check=True)
     return venv, pip
 
 
@@ -181,7 +182,7 @@ def _relocate_venv(venv: Path, target: str) -> None:
 
 
 def _build_venv(staging: Path, work_dir: Path) -> None:
-    venv, pip = _new_venv(staging, VENV, ROOT / "requirements.txt")
+    venv, pip = _new_venv(staging, VENV, ROOT / "requirements.txt", ROOT / "packaging/constraints.txt")
     # Install the shared library from a copy so pip leaves no build/ or egg-info in the repo.
     src = work_dir / "shared-src"
     if src.exists():
@@ -194,7 +195,7 @@ def _build_venv(staging: Path, work_dir: Path) -> None:
 
 
 def _build_cli_venv(staging: Path, work_dir: Path) -> None:
-    venv, pip = _new_venv(staging, CLI_VENV, ROOT / "cli/requirements.txt")
+    venv, pip = _new_venv(staging, CLI_VENV, ROOT / "cli/requirements.txt", ROOT / "packaging/cli-constraints.txt")
     src = work_dir / "cli-src"
     if src.exists():
         shutil.rmtree(src)
