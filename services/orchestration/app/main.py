@@ -238,11 +238,12 @@ class ScalingHistoryOut(BaseModel):
 
 def _compute(request: Request | None, method: str, path: str, body: dict | None = None) -> dict:
     """Call compute-api as the caller, so a manual scale really creates or deletes the VM."""
-    from .engine import Api, ResourceFailure
-    if request is None or not request.headers.get("Authorization"):
+    from .engine import Api, ResourceFailure, caller_authorization
+    authorization = caller_authorization(request.headers) if request is not None else None
+    if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header required")
     try:
-        return Api(request.headers["Authorization"]).call("compute", method, path, body, ok=(200, 201, 202, 204, 404))
+        return Api(authorization).call("compute", method, path, body, ok=(200, 201, 202, 204, 404))
     except ResourceFailure as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

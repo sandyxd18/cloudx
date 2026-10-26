@@ -28,6 +28,15 @@ class ResourceFailure(RuntimeError):
     pass
 
 
+def caller_authorization(headers) -> str | None:
+    """The caller's credentials as an Authorization header value. The shared middleware accepts either
+    `Authorization: Bearer <jwt>` or `X-Auth-Token: <jwt>` (the cloudx CLI sends the latter)."""
+    if auth := headers.get("Authorization"):
+        return auth
+    token = headers.get("X-Auth-Token", "").strip()
+    return f"Bearer {token}" if token else None
+
+
 class Api:
     """The caller's own token is forwarded, so stacks obey the caller's project and quota."""
 
