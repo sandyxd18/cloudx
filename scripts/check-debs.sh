@@ -22,7 +22,10 @@ for deb in "${debs[@]}"; do
     for field in Package Version Architecture Maintainer Description Homepage; do
         [[ -n "$(dpkg-deb --field "${deb}" "${field}")" ]] || { echo "FAIL ${name}: no ${field} field" >&2; failed=1; }
     done
-    dpkg-deb --contents "${deb}" | grep -q " \./usr/share/doc/${pkg}/copyright$" \
+    # Read the listing completely before searching it: `dpkg-deb --contents | grep -q` makes grep exit at the first match,
+    # dpkg-deb then dies of SIGPIPE and pipefail reports a missing file, depending on the order of the entries.
+    contents="$(dpkg-deb --contents "${deb}")"
+    grep -q " \./usr/share/doc/${pkg}/copyright$" <<<"${contents}" \
         || { echo "FAIL ${name}: no copyright file" >&2; failed=1; }
 done
 
