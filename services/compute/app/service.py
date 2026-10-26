@@ -63,7 +63,7 @@ def compute_hosts() -> list[str]:
     if COMPUTE_HOSTS:
         return COMPUTE_HOSTS
     try:
-        response = requests.get(f"{placement_api_url()}/resource_providers", headers=internal_headers(), timeout=5)
+        response = requests.get(f"{placement_api_url()}/internal/resource_providers", headers=internal_headers(), timeout=5)
         response.raise_for_status()
         body = response.json()
         return [rp["name"] for rp in (body.get("resource_providers", body) if isinstance(body, dict) else body)]

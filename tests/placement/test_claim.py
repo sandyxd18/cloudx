@@ -28,3 +28,25 @@ def test_claim_picks_fitting_node_honours_filters_and_releases(monkeypatch, tmp_
     assert claim("d", only_hosts=["small"]).status_code == 409                 # small RAM exhausted
     assert c.delete("/internal/allocations/b").status_code == 204
     assert claim("d", only_hosts=["small"]).json()["host"] == "small"          # freed capacity is reusable
+
+
+def test_claim_answers_409_when_every_node_is_filtered_out_and_503_only_without_inventory(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'claim409.sqlite'}")
+    import services.placement.app.main as m
+
+    m = importlib.reload(m)
+    m.Base.metadata.create_all(bind=m.engine)
+    from shared.auth_middleware import require_internal
+    m.app.dependency_overrides[require_internal] = lambda: None
+    c = TestClient(m.app)
+    body = {"consumer_uuid": "x", "project_id": "p", "resources": {"VCPU": 1, "MEMORY_MB": 256}}
+
+    assert c.post("/internal/resource_providers", json={"name": "n1"}).status_code == 201
+    assert c.post("/internal/claim", json=body).status_code == 503              # nothing reports inventory yet
+
+    inv = {"VCPU": {"total": 4, "max_unit": 4, "allocation_ratio": 1.0},
+           "MEMORY_MB": {"total": 4096, "max_unit": 4096, "allocation_ratio": 1.0}}
+    assert c.put("/internal/resource_providers/n1/inventories", json={"inventories": inv}).status_code == 200
+    # anti-affinity excluded the only node: that is "no valid host", not "no inventory"
+    assert c.post("/internal/claim", json={**body, "exclude_hosts": ["n1"]}).status_code == 409
+    assert c.post("/internal/claim", json={**body, "only_hosts": ["elsewhere"]}).status_code == 409
