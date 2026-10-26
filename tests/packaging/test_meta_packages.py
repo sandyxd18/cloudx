@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from cloudx_deb.build import build_all, relocate
+from cloudx_deb.build import MAINTAINER, build_all, relocate
 from cloudx_deb.manifest import load_manifest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -67,7 +67,7 @@ def test_meta_packages_keep_the_architecture_and_version_of_the_rest(debs):
     for pkg in ("cloudx-controller", "cloudx-compute", "cloudx-storage", "cloudx-cli"):
         assert field(debs[pkg], "Architecture") == "amd64"
         assert field(debs[pkg], "Version") == DEB_VERSION
-        assert field(debs[pkg], "Maintainer") == "CloudX <root@localhost>"
+        assert field(debs[pkg], "Maintainer") == MAINTAINER
 
 
 def test_controller_depends_and_recommends(debs):
@@ -97,9 +97,15 @@ def test_storage_depends_and_recommends(debs):
     assert names(field(debs["cloudx-storage"], "Recommends")) == ["cloudx-cli"]
 
 
+def shipped_files(deb) -> list[str]:
+    """Files a package installs, without the copyright file every package carries under /usr/share/doc."""
+    return sorted(p for p, (mode, _, _) in entries(deb).items()
+                  if not mode.startswith("d") and not p.startswith("/usr/share/doc/"))
+
+
 def test_meta_packages_have_no_maintainer_scripts(debs, tmp_path):
     for pkg in ("cloudx-controller", "cloudx-storage"):
-        files = [p for p, (mode, _, _) in entries(debs[pkg]).items() if not mode.startswith("d")]
+        files = shipped_files(debs[pkg])
         assert files == ([] if pkg == "cloudx-controller" else ["/usr/sbin/cloudx-setup-storage"]), pkg
         dest = tmp_path / pkg
         subprocess.run(["dpkg-deb", "--control", str(debs[pkg]), str(dest)], check=True)
@@ -143,10 +149,8 @@ def test_host_scripts_ship_with_their_role_and_are_never_run_by_a_maintainer_scr
 
 
 def test_compute_ships_only_the_two_host_scripts(debs):
-    files = sorted(p for p, (mode, _, _) in entries(debs["cloudx-compute"]).items() if not mode.startswith("d"))
-    assert files == ["/usr/sbin/cloudx-setup-ceph-secret", "/usr/sbin/cloudx-setup-compute"]
+    assert shipped_files(debs["cloudx-compute"]) == ["/usr/sbin/cloudx-setup-ceph-secret", "/usr/sbin/cloudx-setup-compute"]
 
 
 def test_storage_ships_only_the_storage_host_script(debs):
-    files = sorted(p for p, (mode, _, _) in entries(debs["cloudx-storage"]).items() if not mode.startswith("d"))
-    assert files == ["/usr/sbin/cloudx-setup-storage"]
+    assert shipped_files(debs["cloudx-storage"]) == ["/usr/sbin/cloudx-setup-storage"]

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from cloudx_deb.build import build_all, control_file, relocate, strip_default_secret
+from cloudx_deb.build import MAINTAINER, build_all, control_file, relocate, strip_default_secret
 from cloudx_deb.manifest import load_manifest
 from cloudx_deb.render import render_api_unit, render_nginx, render_wrapper
 
@@ -51,8 +51,9 @@ def test_control_file():
     assert text.endswith("\n")
     fields = dict(line.split(": ", 1) for line in text.splitlines())
     assert fields == {
-        "Package": "cloudx-x", "Version": "1.0-1", "Architecture": "amd64", "Maintainer": "CloudX <root@localhost>",
-        "Section": "admin", "Priority": "optional", "Depends": "a, b (>= 2)", "Description": "CloudX x",
+        "Package": "cloudx-x", "Version": "1.0-1", "Architecture": "amd64", "Maintainer": MAINTAINER,
+        "Section": "admin", "Priority": "optional", "Homepage": "https://github.com/sandyxd18/cloudx",
+        "Depends": "a, b (>= 2)", "Description": "CloudX x",
     }
 
 
@@ -161,6 +162,20 @@ def test_db_package_owns_all_migrations_and_units_do_not(debs):
     for mig in (ROOT / "services").glob("*/migrations"):
         prefix = f"/opt/cloudx/services/{mig.parent.name}/migrations/"
         assert any(p.startswith(prefix) and not p.endswith("/") for p in db), mig
+
+
+def test_every_package_ships_a_machine_readable_mit_copyright_file(debs, tmp_path):
+    license_text = (ROOT / "LICENSE").read_text()
+    for pkg, deb in debs.items():
+        assert contents(deb)[f"/usr/share/doc/{pkg}/copyright"].startswith("-rw-r--r--"), pkg
+        dest = tmp_path / pkg
+        dpkg_deb("-x", str(deb), str(dest))
+        text = (dest / f"usr/share/doc/{pkg}/copyright").read_text()
+        assert text.startswith("Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n"), pkg
+        assert "License: Expat\n" in text, pkg
+        # The license body is the repo's LICENSE minus its copyright line, indented as DEP-5 requires.
+        body = license_text.split("\n\n", 2)[2].strip()
+        assert all(f" {line}".rstrip() in text for line in body.splitlines() if line.strip()), pkg
 
 
 def test_no_file_is_owned_by_two_packages(debs):
