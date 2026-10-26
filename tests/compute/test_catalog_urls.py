@@ -75,7 +75,7 @@ def test_placement_url_comes_from_the_catalog(compute, monkeypatch):
 
     monkeypatch.setattr(requests, "get", lambda url, **kw: seen.append(url) or Resp())
     assert compute.service.compute_hosts() == ["node-1"]
-    assert seen == ["http://catalog-host:8006/resource_providers"]
+    assert seen == ["http://catalog-host:8006/internal/resource_providers"]
 
 
 def test_compute_hosts_fall_back_to_any_worker_when_the_catalog_is_down(compute, monkeypatch):

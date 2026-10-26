@@ -745,12 +745,12 @@ def claim(payload: ClaimIn, db: DB):
     """Scheduler: pick the provider with most free MEMORY_MB that fits every requested class, and allocate there."""
     best, best_free, seen_inventory = None, -1, False
     for rp in db.scalars(select(ResourceProvider)):
-        if rp.name in payload.exclude_hosts or (payload.only_hosts is not None and rp.name not in payload.only_hosts):
-            continue
         inv = {i.resource_class: i for i in db.scalars(select(Inventory).where(Inventory.resource_provider_id == rp.uuid))}
         if not inv:
             continue
-        seen_inventory = True
+        seen_inventory = True  # before the host filters: a node that anti-affinity excluded still reported inventory
+        if rp.name in payload.exclude_hosts or (payload.only_hosts is not None and rp.name not in payload.only_hosts):
+            continue
         free = {rc: int((i.total - i.reserved) * i.allocation_ratio) - _get_used(db, rp.uuid, rc) for rc, i in inv.items()}
         if all(rc in free and free[rc] >= amt for rc, amt in payload.resources.items()):
             if free.get("MEMORY_MB", 0) > best_free:

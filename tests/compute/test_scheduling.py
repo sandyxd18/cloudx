@@ -61,8 +61,11 @@ def test_hosts_come_from_placement_providers_otherwise(monkeypatch, compute):
         def json(self):
             return {"resource_providers": [{"name": "cloudx-compute-01"}, {"name": "cloudx-storage-01"}]}
 
-    monkeypatch.setattr(svc.service.requests, "get", lambda *a, **k: Reply())
+    asked = []
+    monkeypatch.setattr(svc.service.requests, "get", lambda url, *a, **k: asked.append(url) or Reply())
     assert svc.compute_hosts() == ["cloudx-compute-01", "cloudx-storage-01"]
+    # /resource_providers wants a user token and answers 401 to the internal token compute-api sends
+    assert asked == ["http://placement.test:8006/internal/resource_providers"]
 
 
 def test_placement_being_down_falls_back_to_any_worker(monkeypatch, compute):
