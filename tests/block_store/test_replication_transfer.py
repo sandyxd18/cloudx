@@ -143,23 +143,30 @@ def test_replayed_nonce_rejected(tmp_path):
         mac = hmac.new(token.encode("utf-8"), msg_str.encode("utf-8"), hashlib.sha256).hexdigest()
         header = json.dumps({"volume_id": vol_id, "size": size, "nonce": nonce, "ts": ts, "mac": mac}) + "\n"
 
-        def manual_send():
+        def manual_send(payload):
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect(("127.0.0.1", port))
             s.sendall(header.encode("utf-8"))
             try:
-                s.sendall(b"\x00" * size)
+                s.sendall(payload)
             except (BrokenPipeError, ConnectionResetError):  # the server rejects the replayed nonce and closes before the payload is sent
                 pass
-            resp = s.makefile("rb").readline(4096).decode("utf-8")
+            try:
+                resp = s.makefile("rb").readline(4096).decode("utf-8")
+            except ConnectionResetError:
+                resp = ""
             s.close()
             return resp
 
-        resp1 = manual_send()
-        assert "ERROR" not in resp1
+        resp1 = manual_send(b"\x00" * size)
+        assert "ERROR" not in resp1 and resp1.strip()  # a digest
 
-        resp2 = manual_send()
-        assert "ERROR" in resp2
+        resp2 = manual_send(b"F" * size)
+        # The server answers "ERROR: replayed nonce" and closes while the 1 MiB payload is still unread, which makes the
+        # kernel reset the connection; under load the reset can overtake the answer. What matters is that the replayed
+        # transfer is refused and writes nothing.
+        assert "ERROR" in resp2 or resp2 == ""
+        assert target_file.read_bytes() == b"\x00" * size  # what the first use of the nonce wrote; the replay would have written F
     finally:
         srv.close()
 
