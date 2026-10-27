@@ -19,6 +19,8 @@ The notes for the release this candidate leads to are in `docs/releases/v1.0.0.m
 - Messaging (Zaqar-like queues) and Reservation (Blazar-like leases) services.
 - An all-in-one quickstart for the .deb packages (`docs/quickstart.md`), the full deb install guide and a lab upgrade
   runbook (`docs/deb-install.md`), and documented known limitations.
+- Release assets: the `.deb` files, the tarball and `SHA256SUMS` are attached to each GitHub release. `docs/deb-install.md`
+  section 3 ("Downloading a release"), the quickstart and the README show how to download and check them.
 
 ### Removed
 - Files left over from the Docker Compose era and one-off scripts: the container entrypoints and reference configs under
