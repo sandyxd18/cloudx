@@ -1,4 +1,4 @@
-# Phase 5: Telemetry, Billing & Event
+# Telemetry, Billing and Event
 
 This document describes the three CloudX observability services: **Telemetry** (VM metrics), **Billing** (rating, usage, invoices) and **Event** (event log + webhooks).
 

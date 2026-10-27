@@ -1,6 +1,6 @@
-# 🚀 Phase 6 — Multi-Node Compute, Auto-Scaling & VPC Peering/BGP
+# Multi-Node Compute, Auto-Scaling and VPC Peering/BGP
 
-This document describes the architecture, API endpoints, and operation of the Phase 6 features: the **Multi-Node Scheduler (Placement extension)**, **Auto-Scaling Group Orchestration (Heat/Senlin-like)**, and **VPC Peering & BGP Dynamic Routing (Networking extension)**.
+This document describes the architecture, API endpoints, and operation of these features: the **Multi-Node Scheduler (Placement extension)**, **Auto-Scaling Group Orchestration (Heat/Senlin-like)**, and **VPC Peering & BGP Dynamic Routing (Networking extension)**.
 
 ---
 

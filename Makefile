@@ -1,4 +1,4 @@
-.PHONY: start stop status restart logs install-systemd migrate generate-certs reset package deb install-cli test test-live lint test-real-vm test-floating-ip test-metadata test-security-group test-volume-boot test-multi-network \
+.PHONY: start stop status restart logs install-systemd migrate reset package deb install-cli test test-live lint test-real-vm test-floating-ip test-metadata test-security-group test-volume-boot test-multi-network \
         cleanup-network cleanup-compute cleanup-storage cleanup-all \
         node-bootstrap dashboard-dev
 
@@ -30,10 +30,6 @@ status:
 
 logs:
 	sudo journalctl -u 'cloudx-*' -f
-
-# Internal TLS PKI: generates CA + per-service certs under services/certs/out/.
-generate-certs:
-	./services/certs/generate-certs.sh
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 reset:

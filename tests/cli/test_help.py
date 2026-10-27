@@ -67,3 +67,11 @@ def test_load_balancer_new_commands_help(cloudx):
     assert res_rule.returncode == 0
     for s in ("create", "list", "delete"):
         assert s in res_rule.stdout
+
+
+def test_network_create_help_has_no_provider_nic_options(cloudx):
+    res = cloudx("network", "create", "--help")
+    assert res.returncode == 0, res.stderr
+    assert "--external" in res.stdout
+    assert "--provider-bridge" not in res.stdout
+    assert "--provider-cidr" not in res.stdout

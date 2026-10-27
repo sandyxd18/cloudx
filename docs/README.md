@@ -16,7 +16,7 @@ CloudX runs natively under systemd on Ubuntu 24.04. There is no Docker Compose d
 | `multi-node-deployment.md` | Multi-node deployment and how to test it |
 | `single-node-lab.md` | Scope of the single-node lab |
 | `two-node-lvm-lab.md` | Lab where compute and storage nodes both run VMs and serve LVM volumes (iSCSI between nodes) |
-| `fase5-production-readiness.md` | What exists for multi-node, backups, monitoring and migrations, and what does not |
+| `production-readiness.md` | What exists for multi-node, backups, monitoring and migrations, and what does not |
 | `user-guide-cli.md` | `cloudx` CLI guide |
 | `cleanup.md`, `troubleshooting*.md` | Resource cleanup and troubleshooting |
 | `../services/migrations/README.md` | Database migrations (Alembic), `cloudx-manage db sync` |
@@ -42,9 +42,6 @@ CloudX runs natively under systemd on Ubuntu 24.04. There is no Docker Compose d
 `storage-backend.md` (images), `snapshot.md` (volumes and backups), `file-store.md` (NFS shares), `database.md` (database
 instances), `messaging.md` (queues)
 
-## By phase
-`fase5-production-readiness.md`, `fase5-telemetry-billing-events.md`, `fase6-orchestration-vpc-bgp.md`
-
-## Design notes
-`superpowers/specs/` and `superpowers/plans/` hold the design documents and implementation plans written while the
-features were built. They are working notes, not user documentation.
+## Observability and orchestration
+`telemetry-billing-events.md` (telemetry, billing, events), `orchestration-vpc-bgp.md` (multi-node scheduling,
+auto-scaling, VPC peering and BGP)
