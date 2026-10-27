@@ -18,9 +18,6 @@ ENV_FILE="$ROOT_DIR/.env"
 if [ -f "$ENV_FILE" ]; then
     set -a; source "$ENV_FILE"; set +a
     echo "✓ Loaded configuration from .env"
-elif [ -f "$ROOT_DIR/.env.example" ]; then
-    echo "⚠ No .env found — using .env.example defaults"
-    set -a; source "$ROOT_DIR/.env.example"; set +a
 fi
 
 NETWORK_INTERFACE="${NETWORK_INTERFACE:-enp0s3}"

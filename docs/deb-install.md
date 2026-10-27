@@ -1,6 +1,6 @@
 # Installing with .deb packages
 
-How to install CloudX on Ubuntu 24.04 (amd64) with `apt`, one package per service, without `scripts/install-systemd.sh`. The design is in `superpowers/specs/2026-10-21-openstack-style-packaging-design.md`. This document covers building the packages, installing them by role, spreading services across nodes, operating them, and upgrading lab nodes that were installed from the tarball.
+How to install CloudX on Ubuntu 24.04 (amd64) with `apt`, one package per service, without `scripts/install-systemd.sh`. This document covers building the packages, installing them by role, spreading services across nodes, operating them, and upgrading lab nodes that were installed from the tarball.
 
 For a single-machine install, start with [quickstart.md](quickstart.md). This page is the reference.
 

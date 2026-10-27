@@ -18,6 +18,14 @@ schema between releases, so read the upgrade steps before moving a running cloud
 - An all-in-one quickstart for the .deb packages (`docs/quickstart.md`), the full deb install guide and a lab upgrade
   runbook (`docs/deb-install.md`), and documented known limitations.
 
+### Removed
+- Files left over from the Docker Compose era and one-off scripts: the container entrypoints and reference configs under
+  `services/` (`ovn`, `postgres`, `rabbitmq`, `haproxy`, `keepalived`, `backup`, `certs`, `grafana`, `prometheus`),
+  `make generate-certs`, `.env.example`, the old per-service CLIs in `cli/` (`cloudx` replaces them), `scripts/bootstrap.sh`,
+  `postgres-init/`, the phase 7 and 8 test scripts, the VirtualBox and PowerShell lab helpers, `docs/superpowers/` and an empty `CLAUDE.md`.
+  The docs that described them say what is not provided.
+- The "phase" prefix of three docs: `production-readiness.md`, `telemetry-billing-events.md`, `orchestration-vpc-bgp.md`.
+
 ### Fixed
 - RBD volumes boot and attach against a real cephx cluster (Ceph 19.2.3 clients).
 - Router gateways land on a real gateway chassis, and the node's OVN system-id survives an Open vSwitch restart.

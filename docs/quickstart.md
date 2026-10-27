@@ -2,8 +2,6 @@
 
 This guide installs the whole CloudX stack (control plane and compute) on a single Ubuntu 24.04 machine from the `.deb` packages, then boots a VM and reaches it over a floating IP. Plan for about 30 minutes.
 
-> **Status.** Followed end to end on 2026-10-22 on a clean Ubuntu 24.04 VM (4 vCPU, 8 GB RAM, two NICs, a spare 30 GB disk, nested KVM) with the `0.8.6+m2` packages: control plane, compute, LVM storage, a CirrOS VM, floating IP ping and SSH, the dashboard, and clean-up. The sequence below depends on three fixes that were made because of that run (stale OVN chassis, `ovn-bridge-mappings`, and the packaged `cloudx-setup-storage`); it is re-run on a clean VM with the final packages before v1.0.0. If a step fails, please open an issue with the output.
-
 ## What you need
 
 | | |

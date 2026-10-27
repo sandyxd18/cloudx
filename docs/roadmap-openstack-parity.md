@@ -1504,7 +1504,7 @@ After all core services (base services) reach a high level of parity with CloudX
 |---|---|---|:---:|---|
 | 4 | **Zero-Downtime Migrations** | Infrastructure | 3-4 days | ✅ Alembic scaffold (`services/migrations/`), baseline + additive-first rules. |
 | 5 | **CI/CD & Automated Testing** | Infrastructure | 5 days | ⏭️ Deferred (not yet planned by the user). |
-| 6 | **Security Hardening (TLS/SSL)** | Cross-cutting | 3-4 days | ✅ Internal PKI (`services/certs/generate-certs.sh`), internal service-to-service TLS only. |
+| 6 | **Security Hardening (TLS/SSL)** | Cross-cutting | 3-4 days | ⏭️ Not shipped: services do not terminate TLS. |
 | 7 | **Volume Backups to Object Storage** | Block Storage | 3-4 days | ✅ `POST /volumes/{id}/backup` + worker export → MinIO, restore into a new volume. |
 
 #### 🟢 Low Priority (Ecosystem Expansion)
@@ -1515,8 +1515,8 @@ After all core services (base services) reach a high level of parity with CloudX
 | 10| **Magnum (Container Service)** | New Service | 10-14 days | ⏭️ Deferred to a later phase. |
 
 **Note:** Adaptive multi-node deployment (Control Plane / Compute / Storage / Gateway)
-was implemented through separate compose overlays, and remains compatible with single-node mode.
-Operational details: `docs/fase5-production-readiness.md`.
+is implemented by the role packages (`cloudx-controller`, `cloudx-compute`, `cloudx-storage`), and a single node runs all of them.
+Operational details: `docs/production-readiness.md`.
 
 **End goal of Phase 5:** CloudX is no longer just an API lab, but a self-contained cloud system that is resilient, secure, and observable.
 

@@ -1,21 +1,21 @@
-# Phase 5: Production Readiness & Multi-Node Deployment
+# Production readiness and multi-node deployment
 
-Operations notes for the CloudX Phase 5 features: multi-node deployment, high availability, backups, monitoring and internal TLS.
+Operations notes for multi-node deployment, high availability, backups, monitoring and internal TLS.
 
-> **What changed.** Phase 5 was first built as a Docker Compose deployment. Compose has been removed from the repository: CloudX now runs natively under systemd, installed from `.deb` packages ([deb-install.md](deb-install.md)) or the tarball ([systemd-deployment-guide.md](systemd-deployment-guide.md)). This page keeps the Phase 5 design and says, feature by feature, what exists in the native deployment and what does not.
+> CloudX runs natively under systemd, installed from `.deb` packages ([deb-install.md](deb-install.md)) or the tarball ([systemd-deployment-guide.md](systemd-deployment-guide.md)). This page says, feature by feature, what exists and what does not.
 
 ## 1. Status in the native deployment
 
 | Feature | Status | Where |
 |---|---|---|
 | Multi-node (controller, compute, storage) | Supported | [deb-install.md](deb-install.md) sections 4 and 5, [multi-node-deployment.md](multi-node-deployment.md) |
-| API load balancing across controllers | Not packaged | `services/haproxy/` (config template) and `services/keepalived/` are reference material; no unit or package uses them |
-| RabbitMQ cluster, PostgreSQL replication | Not packaged | use the distro's own tooling; `services/rabbitmq/` and `services/postgres/` hold the old container entrypoints and a `failover.sh` |
-| PostgreSQL daily backup | Script only | `services/backup/` (`backup.sh`, `retention.sh`, `restore.sh`); see section 3 |
+| API load balancing across controllers | Not provided | put your own HAProxy or keepalived in front of the nginx on each controller |
+| RabbitMQ cluster, PostgreSQL replication | Not provided | use the distro's own tooling |
+| PostgreSQL backup | Not provided | schedule `pg_dump` yourself; see section 3 |
 | Volume backup to object storage | Supported | block-store API, see section 3 |
 | Metrics endpoint on every API | Supported | `/metrics`, bearer token `metrics_token` |
-| Prometheus and Grafana | Reference configs only | `services/prometheus/`, `services/grafana/provisioning/` |
-| Internal TLS between services | Not supported | `services/certs/generate-certs.sh` still generates a CA and certificates, but no service reads them |
+| Prometheus and Grafana | Not provided | scrape `/metrics` from your own Prometheus; see section 4 |
+| Internal TLS between services | Not supported | no service terminates TLS |
 | Database migrations | Supported | section 5 |
 
 ## 2. Node topology and principles
@@ -33,7 +33,7 @@ Network principle (OVN): the NB and SB databases and `ovn-northd` are centralise
 
 ## 3. Backups
 
-**Database.** `services/backup/backup.sh` dumps PostgreSQL with `pg_dump` (custom format) and uploads the dump to the MinIO bucket `cloudx-backups`, in daily, weekly (Sunday) and monthly (day 1) tiers. `retention.sh` prunes old dumps (defaults: 7 daily, 4 weekly, 12 monthly). `restore.sh` restores the latest daily dump, or a dump you name. The scripts read their settings from the environment (`DATABASE_URL` or the `PG*` variables, `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `BACKUP_BUCKET`, `BACKUP_RETENTION_*`, `TZ`). There is no unit or timer for them: schedule `backup.sh` from cron or a systemd timer yourself (23:00 Asia/Jakarta was the old default).
+**Database.** CloudX ships no backup job for its PostgreSQL databases. Run `pg_dump` (custom format) from cron or a systemd timer and keep the dumps off the host. Database instances created through the Database service have their own scheduled backups: [database.md](database.md).
 
 **Volumes.** The block-store API backs up a volume to object storage:
 
@@ -51,7 +51,7 @@ The worker exports the volume (LVM via `qemu-img`, Ceph via `rbd export`) and up
 
 Every API exposes `/metrics` (from `shared/metrics.py`) with `cloudx_api_requests_total` and `cloudx_api_request_latency_seconds`. The endpoint answers 401 unless the request carries `Authorization: Bearer <metrics_token>`; [deb-install.md](deb-install.md) section 8 shows how to give Prometheus the token.
 
-`services/prometheus/prometheus.yml` and `services/prometheus/alerts.yml` are a starting point for your own Prometheus: the alert rules cover API, node and database down, P95 latency above 500 ms, a 5xx rate above 5%, and replication lag above 1 GB. `services/grafana/provisioning/` holds a datasource and two dashboards (Overview, Infrastructure). Installing and running Prometheus, Grafana and the exporters is up to you.
+CloudX does not ship Prometheus, Grafana or alert rules. Add each API's `/metrics` as a scrape target in your own Prometheus (with the bearer token) and alert on `cloudx_api_requests_total` and the latency histogram as you see fit.
 
 ## 5. Database migrations (Alembic)
 
