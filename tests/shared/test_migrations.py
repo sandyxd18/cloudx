@@ -163,4 +163,7 @@ def test_services_pyproject_defines_the_installable_shared_package():
     assert data["project"]["name"] == "cloudx-shared"
     assert data["tool"]["setuptools"]["packages"] == ["shared"]
     assert data["project"]["scripts"]["cloudx-db-migrate"] == "shared.migrate:main"
-    assert data["project"]["version"] == (ROOT.parent / "VERSION").read_text().strip()
+    from packaging.version import Version
+
+    # VERSION spells a pre-release 1.0.0-rc1, the Python package 1.0.0rc1: the same version in PEP 440
+    assert Version(data["project"]["version"]) == Version((ROOT.parent / "VERSION").read_text().strip())

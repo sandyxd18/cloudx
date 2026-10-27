@@ -4,7 +4,9 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
-## Unreleased (heading to 1.0.0)
+## 1.0.0-rc1 (not tagged yet)
+
+The notes for the release this candidate leads to are in `docs/releases/v1.0.0.md`.
 
 ### Added
 - OpenStack-style .deb packages: `cloudx-common`, `cloudx-db`, one package per API or daemon, role meta packages
@@ -40,6 +42,8 @@ schema between releases, so read the upgrade steps before moving a running cloud
 - A server deleted while it is still in BUILD no longer leaves a running domain behind; tap devices are recreated
   before a domain starts after a host reboot.
 - ha-watchdog falls back to the last ha-api URL that resolved when the catalog is down.
+- `cloudx ha protect` and `unprotect` accept a server name, as the CLI sends it (they only took an ID before).
+- A missing load balancer API no longer stops the DNS worker's sweep of automatic names.
 - `cloudx flavor list` shows memory and disk.
 - A server group no longer accepts a member on a node that already holds one when every node is taken (409
   `No valid host`, not a silent placement on a used node).
