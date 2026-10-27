@@ -188,6 +188,26 @@ sudo tcpdump -nn -e -i <PROVIDER_IF> 'icmp or arp'
 - No ARP for the gateway at all: check `ovn-nbctl lr-route-list <router>` (default route via the provider gateway) and that the gateway chassis has the `physnet1:br-ex` mapping.
 - Requests never reach the uplink: use `ovn-trace` on the VM's logical switch to see where the packet is dropped (security group egress ACLs, a missing router port).
 
+### A name lookup from a VM takes 5 seconds or more
+
+`ping <ip>` answers at once but `ping example.com` waits. A subnet created without nameservers hands the VM `dns_upstream` from `cloudx.conf` (`1.1.1.1,8.8.8.8` in the sample). The VM asks the first server, waits 5 seconds and only then asks the second, so one unreachable server delays every first lookup. Some networks drop UDP port 53 to some public resolvers. To see which one, query each from the compute node:
+
+```bash
+python3 - <<'EOF'
+import socket, struct
+msg = struct.pack(">HHHHHH", 1, 0x0100, 1, 0, 0, 0) + b"\x06github\x03com\x00" + struct.pack(">HH", 1, 1)
+for server in ("1.1.1.1", "8.8.8.8"):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(3)
+    try:
+        s.sendto(msg, (server, 53)); s.recvfrom(512); print(server, "answers")
+    except OSError:
+        print(server, "no reply")
+EOF
+```
+
+Put the servers that answer first, or only those, in `dns_upstream` in `/etc/cloudx/cloudx.conf`, then `sudo systemctl restart cloudx-networking-api`. Subnets that already exist keep the nameservers they were created with; create new ones, or pass `--dns-nameserver` to `cloudx subnet create`. Seen on the quickstart test machine, where `1.1.1.1`, `1.0.0.1` and `9.9.9.9` got no reply from the lab network and `8.8.8.8` answered in 20 ms. CirrOS's `nslookup` does not show this reliably; use `ping <name>` and time it.
+
 ### Gateway IP collides with the real LAN gateway (bridged provider network)
 
 If the provider network's `PROVIDER_INTERFACE` is a **bridged** adapter onto a physical LAN
