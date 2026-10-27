@@ -4,7 +4,7 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
-## 1.0.0-rc1 (not tagged yet)
+## 1.0.0-rc1 (2026-10-27)
 
 The notes for the release this candidate leads to are in `docs/releases/v1.0.0.md`.
 
