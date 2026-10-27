@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Only the latest release gets security fixes. Until 1.0.0 that is the newest 0.8.x tag; after 1.0.0 it is the newest 1.x tag.
+Only the latest release gets security fixes: the newest 1.x tag.
 
 ## Reporting a vulnerability
 
