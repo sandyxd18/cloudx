@@ -15,7 +15,7 @@ this form is for the whole run.
 
 - Machine(s): <!-- VM or bare metal, vCPU, RAM, disks, number of network interfaces -->
 - Ubuntu version (`lsb_release -ds`):
-- Release or commit you installed: <!-- for example v1.0.0-rc1 -->
+- Release or commit you installed: <!-- for example v1.0.0 -->
 - Which guide you followed: <!-- README > quickstart.md, or SETUP.md / deb-install.md for several nodes -->
 - Experience with OpenStack or other clouds: <!-- none / some / a lot; it helps us read your report -->
 

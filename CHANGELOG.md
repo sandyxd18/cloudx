@@ -4,6 +4,18 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.0 (2026-10-27)
+
+No code change since 1.0.0-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.0.md`.
+
+### Documentation
+- How to download and check the release assets: `docs/deb-install.md` section 3 ("Downloading a release"), the quickstart and the README.
+- The tarball-to-packages upgrade runbook was fixed after a rehearsal with the rc1 assets: it installs from the downloaded
+  files, keeps `cloudx-storage-init.service` (without it a loop-file volume group is gone after a reboot) and checks
+  `system-id.conf` on compute nodes set up by 0.8.x.
+- Troubleshooting entry for name lookups from a VM that take 5 seconds because a resolver in `dns_upstream` does not answer.
+- Not tested: a cloud with the controller and the compute nodes on separate machines running different versions during the upgrade.
+
 ## 1.0.0-rc1 (2026-10-27)
 
 The notes for the release this candidate leads to are in `docs/releases/v1.0.0.md`.
