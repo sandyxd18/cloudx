@@ -26,14 +26,18 @@ lsblk "$STORAGE_DISK"
 
 ## 1. Get the packages
 
-Download the `.deb` files of the release you want and put them in one directory, for example `~/cloudx-debs`:
+Download the 47 `.deb` files of a release (about 60 MB) into one directory, for example `~/cloudx-debs`. `SHA256SUMS` lists the file names, so it is also the index to download from; no GitHub account or CLI is needed:
 
 ```bash
+TAG=v1.0.0-rc1                                  # the release you want
+BASE=https://github.com/sandyxd18/cloudx/releases/download/$TAG
 mkdir -p ~/cloudx-debs && cd ~/cloudx-debs
-# Download every cloudx-*.deb and SHA256SUMS from the GitHub release page,
-# https://github.com/sandyxd18/cloudx/releases, then:
-sha256sum -c SHA256SUMS --ignore-missing
+curl -fsSLO $BASE/SHA256SUMS
+awk '$2 ~ /\.deb$/ {print $2}' SHA256SUMS | xargs -P 4 -I{} curl -fsSLO $BASE/{}
+sha256sum -c SHA256SUMS --ignore-missing        # every .deb must say OK
 ```
+
+The file names of a pre-release read `1.0.0.rc1` where the package version is `1.0.0~rc1-1`: GitHub does not keep a `~` in asset names. `apt` takes the version from inside the package, so this only matters if you type a file name by hand. More on releases and file names is in `deb-install.md` section 3.
 
 If you build from a checkout instead, `make deb` writes the packages to `dist/deb/`. Building needs `dpkg-dev`, `fakeroot`, Node.js and network access (see `deb-install.md` section 2).
 

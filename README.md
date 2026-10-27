@@ -14,10 +14,15 @@ The APIs follow the shape of OpenStack's (an identity service, compute, networki
 
 ## Install
 
-Download the `.deb` files and `SHA256SUMS` from the [releases page](https://github.com/sandyxd18/cloudx/releases), check them, and install:
+Download the `.deb` files of a [release](https://github.com/sandyxd18/cloudx/releases) and check them:
 
 ```bash
-sha256sum -c SHA256SUMS --ignore-missing
+TAG=v1.0.0-rc1                                  # the release you want
+BASE=https://github.com/sandyxd18/cloudx/releases/download/$TAG
+mkdir -p ~/cloudx-debs && cd ~/cloudx-debs
+curl -fsSLO $BASE/SHA256SUMS
+awk '$2 ~ /\.deb$/ {print $2}' SHA256SUMS | xargs -P 4 -I{} curl -fsSLO $BASE/{}
+sha256sum -c SHA256SUMS --ignore-missing        # every .deb must say OK
 ```
 
 Which packages go on which node, and what to prepare first, is in the guides (`apt install ./file.deb` resolves the dependencies between the files you name together, so no apt repository is needed):

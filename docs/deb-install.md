@@ -114,7 +114,25 @@ sudo apt install ./cloudx-common_*.deb ./cloudx-image-api_*.deb
 
 The `nginx`, `init-system-helpers` and `python3` packages come from the Ubuntu repositories.
 
-For releases, the `.deb` files and a `SHA256SUMS` file are attached to each GitHub release; download them, run `sha256sum --check SHA256SUMS`, and install with `apt install ./cloudx-*.deb` as above (name the packages you need, not the whole glob; see section 7, step 4).
+### Downloading a release
+
+Each GitHub release from v1.0.0-rc1 on carries the 47 `.deb` files (about 60 MB), the tarball `cloudx-<version>.tar.gz` and `SHA256SUMS`. Releases up to v0.8.6 have only the tarball. `SHA256SUMS` names every file, so it doubles as the index to download from:
+
+```bash
+TAG=v1.0.0-rc1                                  # the release you want
+BASE=https://github.com/sandyxd18/cloudx/releases/download/$TAG
+mkdir -p ~/cloudx-debs && cd ~/cloudx-debs
+curl -fsSLO $BASE/SHA256SUMS
+awk '$2 ~ /\.deb$/ {print $2}' SHA256SUMS | xargs -P 4 -I{} curl -fsSLO $BASE/{}
+sha256sum -c SHA256SUMS --ignore-missing        # every .deb must say OK
+```
+
+- `sha256sum -c` is given `--ignore-missing` because `SHA256SUMS` also lists the tarball, which this does not download. A line that is not `OK` means a damaged or incomplete download: fetch that file again.
+- `releases/latest/download` points at the newest release that is not a pre-release, so `BASE=https://github.com/sandyxd18/cloudx/releases/latest/download` works for a stable install. A pre-release such as `v1.0.0-rc1` is never "latest"; name its tag.
+- Pre-release file names read `1.0.0.rc1`, the package version is `1.0.0~rc1-1` (`dpkg-deb -f <file> Version`, `dpkg -l cloudx-common`). GitHub rewrites `~` in asset names, so the release workflow renames the files before it writes `SHA256SUMS`. A `~` sorts before the final release, so `1.0.0-1` upgrades `1.0.0~rc1-1` as a normal upgrade.
+- Download all 47 files into one directory on every node, even for a node that needs only a few of them: `apt install ./file.deb` resolves dependencies among the files you name, and each package depends on `cloudx-common` of the same version.
+- Install by role as in section 4. Name the packages you need rather than the whole glob (section 7, step 4); `quickstart.md` step 3 shows the filter for a controller.
+- Every node of a cloud must run one version. When you upgrade, download the new release into a new directory and keep the old one until the upgrade is verified; it is what a rollback installs (section 7).
 
 ## 4. Installing by role
 
