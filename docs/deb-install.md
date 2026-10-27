@@ -492,6 +492,12 @@ The order and commands below are put together from the package contents and from
 
 The whole lab cluster (infra01, infra02, infra03, compute01, compute02, compute03) now runs from packages: no tarball units are left, no unit has failed, `catalog sync --dry-run` reports `catalog already up to date`, and both RBD VMs stayed `ACTIVE`.
 
+**Result with the release assets (2026-10-27).** One machine with everything on it (controller, compute and LVM storage; 0.8.6 tarball code from the `v0.8.6` tag installed with `install-systemd.sh` and `setup-compute-node.sh`, volume group on the loop file), running a CirrOS VM with a floating IP and an attached volume. Upgraded to the `1.0.0~rc1-1` packages downloaded from the `v1.0.0-rc1` release page, steps 1 to 7. Afterwards: 30 of the 31 earlier units active (the 31st is `cloudx-storage-init`, see step 2), none failed; every API that is installed on the node answered `200`; no file under `/etc/cloudx` changed or disappeared (the packages added their own files and 6 `.dpkg-dist` files next to conffiles that were already there); `db sync` applied the two new migrations (`messaging`, `reservation`) and `catalog sync --dry-run` said `catalog already up to date`; the VM kept its QEMU process and answered ping and SSH on the floating IP throughout. Three things went wrong and are now in the steps above:
+
+- Step 4 as it was written (`apt install cloudx-common $PKGS`) cannot work without an apt repository, and a release gives you only files. It now installs from the downloaded files.
+- Step 2 deleted `cloudx-storage-init.service`, which has no package. A reboot after the upgrade left no volume group (`vgs` empty), and the VM was down with its volumes missing. Putting the unit back (from `/root/cloudx-units.tgz`) and enabling it brought the volume group, both logical volumes and the VM back. Step 2 now keeps the unit.
+- The node had been set up by the 0.8.6 script, so after the reboot its chassis came back under a random UUID and the floating IP stopped answering. The repair in `troubleshooting.md` fixed it; step 6 now says to check this before the first reboot.
+
 A clean install with no earlier tarball was tested later on a single VM; see [quickstart.md](quickstart.md). What the compute tests above do not prove: a new VM scheduled to compute01 or compute03 after the upgrade (the test VM on compute02 was created before those two nodes were upgraded; the scheduler puts new VMs on the least loaded node), and a full restart of a node with running VMs.
 
 Why a plain `apt install` does not work:
@@ -524,13 +530,15 @@ Order between nodes: nodes that only run a few services first, the node with aut
 2. Stop and disable all old units, then delete them.
 
    ```bash
-   systemctl list-unit-files 'cloudx-*.service' --state=enabled --no-legend | awk '{print $1}' | xargs -r sudo systemctl disable --now
+   systemctl list-unit-files 'cloudx-*.service' --state=enabled --no-legend | awk '{print $1}' | grep -v '^cloudx-storage-init' | xargs -r sudo systemctl disable --now
    sudo systemctl stop 'cloudx-*'
-   sudo rm /etc/systemd/system/cloudx-*.service
+   ls /etc/systemd/system/cloudx-*.service | grep -v storage-init | xargs -r sudo rm
    sudo systemctl daemon-reload
    ```
 
    `systemctl disable` does not accept the `cloudx-*` pattern, so the unit list is fetched first.
+
+   Keep `cloudx-storage-init.service` if the node has it. `install-systemd.sh` creates it together with the volume group `vg-cloudx` on the loop file `/var/lib/vg-cloudx.img`, and it is what attaches that file again at boot. No package replaces it. Without it the volume group is gone after the next reboot and the volumes of running VMs are missing (`vgs` prints nothing), although `cloudx server list` still says `ACTIVE`. A node whose volume group is on a real disk has no such unit.
 
 3. Move the tarball content and its old links out of the way.
 
@@ -542,12 +550,12 @@ Order between nodes: nodes that only run a few services first, the node with aut
 4. Install the package for every service that ran on this node.
 
    ```bash
-   PKGS=$(sudo cat /root/cloudx-active-before.txt | sed -e 's/\.service$//' -e '/^cloudx-named-/d')
-   sudo apt update
-   sudo apt install -o Dpkg::Options::=--force-confold cloudx-common $PKGS
+   cd ~/cloudx-debs          # the directory of "Downloading a release" (section 3)
+   PKGS=$(sudo cat /root/cloudx-active-before.txt | sed -e 's/\.service$//' -e '/^cloudx-named-/d' -e '/^cloudx-storage-init$/d')
+   sudo apt install -o Dpkg::Options::=--force-confold ./cloudx-common_*.deb $(for p in $PKGS; do echo ./${p}_*.deb; done)
    ```
 
-   On the node that used to run `make migrate`, add `cloudx-db`; on nodes that use the CLI, add `cloudx-cli`. The BIND units ship inside `cloudx-dns-worker`. Do not use `./cloudx-*.deb`: that installs all 47 packages, including every meta package.
+   On the node that used to run `make migrate`, add `./cloudx-db_*.deb`; on nodes that use the CLI, add `./cloudx-cli_*.deb`. The BIND units ship inside `cloudx-dns-worker`. Do not use `./cloudx-*.deb`: that installs all 47 packages, including every meta package. With a local apt repository (section 3) the package names alone work: `sudo apt install -o Dpkg::Options::=--force-confold cloudx-common $PKGS`.
 
    `--force-confold` keeps the existing `/etc/cloudx/<unit>/<unit>.conf`. The old `cloudx.conf` is used as it is, including the `*_api_url` keys in it (overrides); the package only fills empty secrets and resets its mode to `root:cloudx` `640`.
 
@@ -566,6 +574,15 @@ Order between nodes: nodes that only run a few services first, the node with aut
    ```
 
    The build tools it needs (`libvirt-dev`, `pkg-config`, `build-essential`, `python3-dev`) are already there from the `setup-compute-node.sh` that was run earlier; if not, see 4.2 steps 2 and 3.
+
+   A compute node that was set up by 0.8.x (or older) `setup-compute-node.sh` also needs its OVN name made permanent, or it loses it at the next Open vSwitch start, which a reboot is enough to cause. Run this check before the first reboot (the problem and its repair are in `troubleshooting.md`, "Chassis renamed after Open vSwitch restarted"):
+
+   ```bash
+   cat /etc/openvswitch/system-id.conf
+   sudo ovs-vsctl get open_vswitch . external_ids:system-id
+   ```
+
+   If the two differ, the second one is the name the node has now: `echo <that name> | sudo tee /etc/openvswitch/system-id.conf` changes nothing that is running. Left as it is, the chassis comes back under the file's random UUID after a reboot, the router gateways point at a chassis that no longer exists, and floating IPs stop answering until the repair in `troubleshooting.md` is done.
 
 7. Verify.
 
@@ -665,10 +682,11 @@ A plain `apt install` is not enough to move to packages again after a rollback. 
 Repeat upgrade steps 2 and 3, then install with the extra option and enable the units yourself:
 
 ```bash
-PKGS=$(sudo cat /root/cloudx-active-before.txt | sed -e 's/\.service$//' -e '/^cloudx-named-/d')
-sudo apt install -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confmiss cloudx-common $PKGS
+cd ~/cloudx-debs
+PKGS=$(sudo cat /root/cloudx-active-before.txt | sed -e 's/\.service$//' -e '/^cloudx-named-/d' -e '/^cloudx-storage-init$/d')
+sudo apt install -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confmiss ./cloudx-common_*.deb $(for p in $PKGS; do echo ./${p}_*.deb; done)
 sudo nginx -t && sudo systemctl restart nginx
-sudo cat /root/cloudx-active-before.txt | grep -v '^cloudx-named-' | xargs -r sudo systemctl enable --now
+sudo cat /root/cloudx-active-before.txt | grep -v -e '^cloudx-named-' -e '^cloudx-storage-init' | xargs -r sudo systemctl enable --now
 ```
 
 `--force-confmiss` restores missing conffiles; `--force-confold` still keeps files you have changed. Do not try `deb-systemd-helper purge` to clear the unit state: the helper refuses to run outside dpkg scripts (`was not called from dpkg`).
