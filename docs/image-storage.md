@@ -1,8 +1,6 @@
-# Image Storage Backends
+# Image storage
 
-MinIO has two main roles in CloudX:
-1. **CloudX Image Storage**: stores OS image blobs (`IMAGE_STORAGE_BACKEND=minio`).
-2. **Block Store Volume & PostgreSQL Backups (Phase 5)**: stores the automatic daily database backup (23:00 Asia/Jakarta) and block storage volume exports in the `cloudx-backups` bucket.
+The image service keeps image files in one place for the whole cloud, chosen by `image_storage_backend` in `/etc/cloudx/image-api/image-api.conf`: local files (the default) or MinIO. Images are not stored in Ceph. Volume backups also use a MinIO bucket, see [storage-backends.md](storage-backends.md) and [snapshot.md](snapshot.md).
 
 ## File Backend
 

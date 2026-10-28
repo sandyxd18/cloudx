@@ -1,5 +1,7 @@
 # 📖 Multi-Node Deployment & Testing Guide (2 VirtualBox VMs)
 
+> **Older page.** Written for the tarball install on two VirtualBox VMs. For several machines see [scenarios.md](scenarios.md) and [tutorials/multi-node.md](tutorials/multi-node.md). The steps below are kept as history.
+
 This document is a step-by-step guide to installing, configuring, and testing the **CloudX** platform in a **separated multi-node** architecture (1 control plane node + 1 compute worker node) on a **VirtualBox** simulation environment.
 
 ---

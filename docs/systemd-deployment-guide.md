@@ -1,5 +1,7 @@
 # 📖 Native systemd Deployment & `/etc/cloudx/` Configuration Guide
 
+> **Tarball era.** The installation part below uses the release tarball and `scripts/install-systemd.sh`. For packages see [deb-install.md](deb-install.md). The layout of `/etc/cloudx/` applies to both.
+
 This document describes how to deploy, configure, and operate the **CloudX** platform natively on Linux using **systemd services** and a standard per-service configuration file at `/etc/cloudx/<service>/<service>.conf`.
 
 ---

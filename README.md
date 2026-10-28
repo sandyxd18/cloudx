@@ -29,6 +29,7 @@ Which packages go on which node, and what to prepare first, is in the guides (`a
 
 | Guide | For |
 |---|---|
+| [docs/scenarios.md](docs/scenarios.md) | Which deployment fits (one machine, several with LVM, several with Ceph), what each needs and what has been run |
 | [docs/quickstart.md](docs/quickstart.md) | Everything on one machine: a VM with a floating IP in about 30 minutes |
 | [SETUP.md](SETUP.md) | Choosing a layout, preparing PostgreSQL, RabbitMQ and OVN, the admin account, the first network |
 | [docs/deb-install.md](docs/deb-install.md) | Installing by role (controller, compute, storage), spreading services over nodes, upgrades and rollback |

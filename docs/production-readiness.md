@@ -45,7 +45,7 @@ POST   /backups/{id}/restore     → restore into a new volume
 DELETE /backups/{id}             → delete the backup + object
 ```
 
-The worker exports the volume (LVM via `qemu-img`, Ceph via `rbd export`) and uploads it with `mc` to `cloudx-backups/volumes/`. This needs a MinIO (see [storage-backend.md](storage-backend.md)). Database instances use the same mechanism with a schedule: [database.md](database.md).
+The worker exports the volume (LVM via `qemu-img`, Ceph via `rbd export`) and uploads it with `mc` to `cloudx-backups/volumes/`. This needs a MinIO (see [image-storage.md](image-storage.md)). Database instances use the same mechanism with a schedule: [database.md](database.md).
 
 ## 4. Monitoring
 

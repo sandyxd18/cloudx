@@ -8,7 +8,8 @@ How to install CloudX on Ubuntu 24.04 from the `.deb` packages, on one machine o
 |---|---|
 | Try CloudX on one machine: control plane and compute together, a VM and a floating IP in about 30 minutes | [docs/quickstart.md](docs/quickstart.md) |
 | Several nodes: a controller, compute nodes, storage nodes, services spread across hosts | this page (sections 2 to 4), then [docs/deb-install.md](docs/deb-install.md) sections 4 and 5 |
-| A larger cluster with Ceph | [docs/deb-install.md](docs/deb-install.md) and [docs/storage-backend.md](docs/storage-backend.md) |
+| A cluster with Ceph RBD volumes | [docs/scenarios.md](docs/scenarios.md) (scenario C), then [docs/tutorials/ceph.md](docs/tutorials/ceph.md) and [docs/deb-install.md](docs/deb-install.md) |
+| Not sure which layout fits | [docs/scenarios.md](docs/scenarios.md): what each deployment needs and how much of it has been run |
 | A node still installed from the release tarball | [docs/tarball-install.md](docs/tarball-install.md) (legacy) and the upgrade runbook in [docs/deb-install.md](docs/deb-install.md) section 7 |
 
 The packages come from the GitHub release page (`cloudx-*.deb` and `SHA256SUMS`; the download commands are in [docs/deb-install.md](docs/deb-install.md) section 3, "Downloading a release"); `apt install ./cloudx-*.deb` resolves the dependencies between the files you name. Building them yourself is covered in [docs/deb-install.md](docs/deb-install.md) section 2.

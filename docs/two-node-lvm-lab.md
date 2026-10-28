@@ -1,5 +1,7 @@
 # Two-Node LVM Lab (compute-node + storage-node)
 
+> **Older page.** Written for the tarball install. With packages, the same layout (two nodes that both run VMs and serve LVM volumes) is [tutorials/multi-node.md](tutorials/multi-node.md); the storage node settings are in [deb-install.md](deb-install.md) section 4.3.
+
 Scenario: `storage-node` runs VMs too, and both `compute-node` and `storage-node` serve volumes from LVM on their own
 `/dev/sdb`. A VM can use volumes from either node.
 
