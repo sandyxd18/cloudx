@@ -40,7 +40,7 @@ A controller that holds the control plane, and worker nodes that run VMs and kee
 | Volume backend | LVM, one volume group per node |
 | Time | About 2 hours, most of it `apt` |
 
-The nodes do not share a disk: each volume lives on one node and the others reach it over iSCSI, on the same network as everything else. What that means when a VM has to move is in [storage-backends.md](storage-backends.md#sharing-volumes-between-nodes-and-moving-vms). A node can also hold volumes without running VMs (the `cloudx-storage` role, [deb-install.md](deb-install.md) section 4.3), and services can be moved to other nodes ([deb-install.md](deb-install.md) section 5).
+The nodes do not share a disk: each volume lives on one node and the others reach it over iSCSI, on the same network as everything else. What that means when a VM has to move is in [storage-backends.md](storage-backends.md#sharing-volumes-between-nodes-and-moving-vms). The lab sent iSCSI over the management network. For production that is not a good idea in general: volume traffic then shares the network with RabbitMQ, the APIs and SSH, and one busy volume can slow the control plane down. Give iSCSI its own network (an interface or a VLAN) and pass that network's address of each storage node as `--portal-ip`. CloudX has no CHAP and no multipath, only an access list of initiator names per volume, and iSCSI is not encrypted, so that network should be closed to everything else. A separate iSCSI network was not tried. A node can also hold volumes without running VMs (the `cloudx-storage` role, [deb-install.md](deb-install.md) section 4.3), and services can be moved to other nodes ([deb-install.md](deb-install.md) section 5).
 
 ## C. Several machines with Ceph RBD
 
@@ -51,10 +51,20 @@ The same control plane, with volumes and root disks stored as RBD images in a Ce
 | Ceph nodes | 3 at least: three monitors and replica 3. They can be the controller and two other nodes. Each needs an empty disk for an OSD |
 | Size of the tested nodes | 7 GB of RAM, with the control plane on the same machines. Smaller nodes were not tried |
 | Compute nodes | Separate machines in the tested lab (three Ceph and control plane nodes, three compute nodes). Each needs `ceph-common`, the cluster's `ceph.conf`, the `client.cloudx` keyring and a libvirt secret (`cloudx-setup-ceph-secret`) |
-| Network interfaces | Management, and optionally a Ceph public network (clients) and a Ceph cluster network (replication) |
+| Networks | Management, and optionally a Ceph public network and a Ceph cluster network. Who joins which is in the table below |
 | Ceph version | Install the cluster from the image `quay.io/ceph/ceph:v19.2.3`. Ubuntu 24.04's Ceph client packages are 19.2.3 and cannot read the keys that 19.2.7 hands out |
 | Volume backend | Ceph RBD ([tutorials/ceph.md](tutorials/ceph.md) turns the LVM and NFS drivers off on the block store node) |
 | Time | About 2 hours |
+
+Which node joins which network when the Ceph networks are kept apart:
+
+| Node | Management | Ceph public | Ceph cluster | Provider |
+|---|---|---|---|---|
+| Control plane node (with the Ceph `block-store-worker`) | yes | yes | no | no |
+| Ceph nodes (monitors and OSDs) | yes | yes | yes | no |
+| Compute nodes | yes | yes | no | yes, where VMs reach the provider network |
+
+The Ceph public network carries everything between Ceph and its clients: the monitors and OSDs, the block store worker (it creates and converts RBD images) and QEMU on each compute node (it opens the images itself). The cluster network carries only OSD to OSD traffic (replication, recovery), so only the Ceph nodes need it. A node that runs no Ceph client and no Ceph daemon needs neither. `ceph.conf` on every client lists monitor addresses on the public network.
 
 Losing one of three Ceph nodes leaves the cluster running but degraded: there is no fourth host to create the third copy on. Not covered: images in Ceph (the image service still stores files or MinIO), Ceph Object Gateway for object storage, CephFS for file shares, and how instance HA fences a node whose volumes are RBD images.
 
