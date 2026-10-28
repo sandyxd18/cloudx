@@ -48,6 +48,18 @@ NFS volumes exist in the code and the driver is on by default. The package guide
 
 The compute side needs no setting for the backend: it looks at the path of the volume and builds an LVM, RBD or file disk for libvirt.
 
+### Sharing volumes between nodes, and moving VMs
+
+LVM nodes do not share a disk. A volume lives on the one node whose volume group holds it. A VM on another node reaches it over iSCSI: the storage node publishes the volume at `iscsi_portal_ip` on port 3260 and lets in only the initiator name of the compute node that attaches it. A VM on the node that holds the volume uses the block device directly.
+
+- The storage node of a new LVM volume is the one with the least allocated space among `block_store_lvm_hosts`. It is not the node where the VM runs, so a VM on one node can well have its root volume on the other.
+- CloudX does not require or set up a separate network interface for iSCSI. `iscsi_portal_ip` is only the address that compute nodes are told to connect to; the lab used the management address. An address on a storage network should work the same way, but no guide describes it and it was not tried.
+- Instance HA restarts a protected VM on another compute node when its node dies. The disk is reached over iSCSI from the storage node, so this works only when that node is still alive. A VM with a root or data volume on the dead node is skipped ([ha.md](ha.md)).
+- Live migration: the compute API has `POST /servers/{id}/live-migrate` (no `cloudx` command). It migrates with libvirt over `qemu+ssh://<target>/system`, assumes the disk is reachable from both nodes, and does not log the target node in to the volume's iSCSI target first. A guide from the tarball era says a VM with a remote iSCSI volume cannot be migrated. It was not tested for LVM or for Ceph.
+- Replication of a volume to another storage node is manual and asynchronous (`cloudx volume enable-replication`, `sync-replication`, `failover`). It is a copy made when you ask, not a mirror.
+
+With Ceph RBD the disk is reachable from every compute node, so a VM can restart on any node as long as the cluster is healthy, and none of the limits above for LVM apply. Live migration with RBD is not tested either.
+
 ### Using LVM and Ceph together
 
 Not tested. Do not rely on it yet: use one backend per cloud.

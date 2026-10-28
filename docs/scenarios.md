@@ -40,7 +40,7 @@ A controller that holds the control plane, and worker nodes that run VMs and kee
 | Volume backend | LVM, one volume group per node |
 | Time | About 2 hours, most of it `apt` |
 
-A node can also hold volumes without running VMs (the `cloudx-storage` role, [deb-install.md](deb-install.md) section 4.3), and services can be moved to other nodes ([deb-install.md](deb-install.md) section 5).
+The nodes do not share a disk: each volume lives on one node and the others reach it over iSCSI, on the same network as everything else. What that means when a VM has to move is in [storage-backends.md](storage-backends.md#sharing-volumes-between-nodes-and-moving-vms). A node can also hold volumes without running VMs (the `cloudx-storage` role, [deb-install.md](deb-install.md) section 4.3), and services can be moved to other nodes ([deb-install.md](deb-install.md) section 5).
 
 ## C. Several machines with Ceph RBD
 
