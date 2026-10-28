@@ -263,8 +263,9 @@ def server_volume():
 @click.option("--volume", required=True)
 @click.pass_context
 def server_volume_attach(ctx, server_ref, volume):
-    data = _api("post", f"{DEFAULT_URLS['compute']}/servers/{server_ref}/volumes/attach",
-                ctx.obj["profile"], json={"volume_id": volume})
+    # block-store resolves the volume's path and host and then calls compute; the compute endpoint alone needs both
+    data = _api("post", f"{DEFAULT_URLS['volume']}/volumes/{volume}/attach",
+                ctx.obj["profile"], json={"server": server_ref, "server_id": server_ref})
     _output(data, ctx.obj["fmt"])
 
 
@@ -273,8 +274,7 @@ def server_volume_attach(ctx, server_ref, volume):
 @click.option("--volume", required=True)
 @click.pass_context
 def server_volume_detach(ctx, server_ref, volume):
-    _api("post", f"{DEFAULT_URLS['compute']}/servers/{server_ref}/volumes/detach",
-         ctx.obj["profile"], json={"volume_id": volume})
+    _api("post", f"{DEFAULT_URLS['volume']}/volumes/{volume}/detach", ctx.obj["profile"])
     click.echo(f"✓ Volume {volume} detached")
 
 
