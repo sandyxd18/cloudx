@@ -1,5 +1,7 @@
 # Single-Node Lab Scope
 
+> **Out of date.** This describes the first single-host VM backend. CloudX now has a scheduler and a Placement service. For one machine see [quickstart.md](quickstart.md).
+
 The real VM backend is intentionally scoped to one lab host:
 
 - no scheduler

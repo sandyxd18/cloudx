@@ -16,7 +16,7 @@ cloudx volume create vol2 --size 10 --snapshot snap1
 
 ## Volume Backup (MinIO Object Storage)
 
-In Phase 5, CloudX implements block storage volume backup:
+CloudX backs up block storage volumes:
 - It exports the full volume (`qemu-img` / `rbd export`) and uploads the raw file to the MinIO bucket `cloudx-backups`.
 - It survives even a total failure of the physical storage node.
 

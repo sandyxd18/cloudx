@@ -1,5 +1,7 @@
 # 🗺️ Roadmap to CloudX Base Services Parity
 
+> **Historical.** Written between June and August 2026, when CloudX was a Docker Compose project. The Phase 5 items it marks as done (HAProxy and Keepalived, RabbitMQ and PostgreSQL clustering, database backup, Prometheus and Grafana) were configuration files that were removed before 1.0.0; they are not provided. See [production-readiness.md](production-readiness.md) and [feature-comparison.md](feature-comparison.md) for what exists. The percentages are the author's estimates of that time.
+
 > **This document** analyses the current state of **CloudX** and details the work needed
 > to reach higher similarity with the seven CloudX base services:
 > **Compute, Networking, Block Storage, Image, Identity, Placement, and the CloudX Dashboard**.
