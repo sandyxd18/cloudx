@@ -150,6 +150,10 @@ cloudx volume detach data-1
 
 For the root volume, CloudX creates an RBD image in `volumes` and converts the CirrOS image into it. Both root and data volumes are reached by QEMU directly over the network; no iSCSI is involved, so any compute node can run the VM.
 
+## LVM and Ceph volumes in one cloud
+
+The steps above switch off the LVM driver on the block-store node. To serve LVM and RBD volumes side by side, keep both drivers on the API and give the Ceph driver to every block-store worker: workers also consume a shared queue, and a worker without the Ceph driver fails the Ceph volume requests it picks up. [ha-control-plane.md](ha-control-plane.md) section 5 has the settings and the test results.
+
 ## What this does not cover
 
 - The `images` and `vms` pools are created for later use; nothing in this tutorial uses them, and the image service still stores files (or MinIO).
