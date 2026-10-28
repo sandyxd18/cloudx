@@ -98,6 +98,11 @@ def snapshot(image_name: str, snapshot_name: str, _size_gb: int = 0) -> str:
     return f"rbd:{p}/{image_name}@{snapshot_name}"
 
 
+def delete_snapshot(path: str) -> None:
+    """Remove the RBD snapshot a snapshot() call created; path is the rbd:pool/image@snap it returned."""
+    _rbd("snap", "rm", path.removeprefix("rbd:"))
+
+
 def clone(source_image: str, source_snap: str, dest_image: str) -> str:
     """Clone an RBD image from a protected snapshot."""
     p = pool()
