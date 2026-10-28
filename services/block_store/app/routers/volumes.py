@@ -10,7 +10,7 @@ from ..clients import _response_detail, get_server
 from ..config import compute_api_url
 from ..db import DB
 from ..lookups import next_target_device, require_volume
-from ..models import Volume, VolumeQuota
+from ..models import Snapshot, Volume, VolumeQuota
 from ..schemas import AttachIn, InternalAttachIn, VolumeIn, VolumeInternalIn
 from ..serializers import obj_to_dict, volume_to_os_dict
 from ..service import (
@@ -133,6 +133,9 @@ def delete_volume(ref: str, current: UserOrInternal, db: DB):
     volume = require_volume(db, ref, current)
     if volume.status == "in-use":
         raise HTTPException(status_code=409, detail="detach volume before delete")
+    if db.scalar(select(Snapshot.id).where(Snapshot.volume_id == volume.id).limit(1)):
+        # the backend cannot remove a volume that has snapshots, and the row would be gone, leaving the backend volume behind
+        raise HTTPException(status_code=409, detail="volume has snapshots, delete them first")
     volume.status = "deleting"
     db.commit()
     # Cast to worker for backend cleanup, then conductor will delete the record
