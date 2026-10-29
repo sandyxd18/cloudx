@@ -125,7 +125,10 @@ class _LazyUrls(dict):
 
     def __getitem__(self, key):
         value = super().__getitem__(key)
-        if key == "auth" or key in self._explicit:
+        if key == "auth":
+            # the catalog comes from the auth API, so its address cannot: env, then what `cloudx auth login` saved
+            return os.getenv("CLOUDX_AUTH_URL") or _load_config(_profile).get("auth_url") or value
+        if key in self._explicit:
             return value
         return _catalog_url(self._catalog_names[key]) or value
 
@@ -141,10 +144,11 @@ def _load_config(profile: str = "default") -> dict:
     if CONFIG_FILE.exists():
         parser = configparser.ConfigParser()
         parser.read(CONFIG_FILE)
-        # [DEFAULT] is read via parser.defaults() — has_section("default") is False
+        # [DEFAULT] is read via parser.defaults() — has_section("default") is False. `cloudx auth configure` writes
+        # [DEFAULT]; `cloudx auth login` writes [default], which configparser treats as an ordinary section.
         cfg.update(dict(parser.defaults()))
-        section = f"profile {profile}" if profile != "default" else None
-        if section and parser.has_section(section):
+        section = "default" if profile == "default" else f"profile {profile}"
+        if parser.has_section(section):
             cfg.update(dict(parser[section]))
     return cfg
 
