@@ -11,6 +11,8 @@ schema between releases, so read the upgrade steps before moving a running cloud
   never read back, so on any machine other than the controller every later command went to `127.0.0.1:8005` unless
   `CLOUDX_AUTH_URL` was exported. The `[default]` section that `auth login` writes (`auth_url`, `project`, `output`) is
   now read; `CLOUDX_AUTH_URL` still wins.
+- `PATCH /volume-types/{ref}` exists. `cloudx volume-type set` and the dashboard's API client already called it and got a 405. It changes
+  `description`, `max_iops`, `max_throughput` and `is_public`; `backend`, `disk_type` and `lvm_type` are refused with 422.
 
 ## 1.0.0 (2026-10-28)
 

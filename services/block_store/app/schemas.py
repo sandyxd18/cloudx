@@ -62,6 +62,16 @@ class VolumeTypeIn(BaseModel):
     lvm_type:       str = "default"   # default | thin
 
 
+class VolumeTypeUpdateIn(BaseModel):
+    """Mutable fields only: backend, disk_type and lvm_type decide where volumes live, so they are not editable."""
+    model_config = {"extra": "forbid"}
+
+    description:    str | None = None
+    max_iops:       int | None = Field(None, ge=0)
+    max_throughput: int | None = Field(None, ge=0)
+    is_public:      bool = True
+
+
 class ConsistencyGroupIn(BaseModel):
     name:        str
     description: str | None = None
