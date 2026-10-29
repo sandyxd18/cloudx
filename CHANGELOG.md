@@ -4,6 +4,14 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## Unreleased
+
+### Fixed
+- The CLI finds the auth API again after `cloudx auth login --auth-url`. The address was written to `~/.cloudx/config` and
+  never read back, so on any machine other than the controller every later command went to `127.0.0.1:8005` unless
+  `CLOUDX_AUTH_URL` was exported. The `[default]` section that `auth login` writes (`auth_url`, `project`, `output`) is
+  now read; `CLOUDX_AUTH_URL` still wins.
+
 ## 1.0.0 (2026-10-28)
 
 No code change since 1.0.0-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.0.md`.
