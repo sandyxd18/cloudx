@@ -153,7 +153,6 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Pause** (hypervisor-level suspend) | `POST /servers/{ref}/pause` | ✅ |
 | **Resume** from pause | `POST /servers/{ref}/resume` | ✅ |
 | **Suspend** (managed save to disk) | `POST /servers/{ref}/suspend` | ✅ |
-| **Unsuspend** (restore from managed save) | `POST /servers/{ref}/unsuspend` | ✅ |
 | **Resize** (live vCPU + RAM hotplug) | `POST /servers/{ref}/resize` | ✅ |
 | **Confirm / revert resize** | `POST /servers/{ref}/confirmResize\|revertResize` | ✅ |
 | **Rebuild** (replace the root disk from a new image) | `POST /servers/{ref}/rebuild` | ✅ |
@@ -255,6 +254,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 ### ❌ Missing Features (vs. the real Compute service)
 | Feature | Notes |
 |---|---|
+| **Unsuspend** | No endpoint. `POST /servers/{ref}/start` restores a suspended server (libvirt restores the managed save). The worker's power-state sync reports a suspended domain as shut off, so `SUSPENDED` turns into `SHUTOFF` within `SYNC_POWER_STATE_INTERVAL` (30 s) |
 | **Separate ephemeral disk** | Volume-first, no ephemeral disk (flavors carry `ephemeral_gb` but it is not used) |
 | **noVNC proxy** | `console-url` returns a noVNC link (`NOVNC_BASE_URL`, default `localhost:6080`); no package or unit in this repo starts a proxy on that port |
 | **vfat config drive format** | ISO9660 only |
@@ -282,7 +282,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | List / Show / Delete subnet | `GET\|DELETE /subnets` | ✅ |
 | `no-dhcp` option for provider subnets | Integrated | ✅ |
 | Subnet pools | `/subnetpools` | ✅ |
-| IPv6 and dual-stack subnets (`ip_version: 6`, RA and address modes) | `POST /subnets` | ✅ |
+| IPv6 subnets (`ip_version: 6`, RA and address modes; `--ip-version 6` in the CLI) | `POST /subnets` | ✅ |
 
 #### Router & L3
 | Feature | Endpoint | Status |
@@ -368,6 +368,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Firewall as a Service (FWaaS)** | Deliberately excluded |
 | **BGP Dynamic Routing** | Advertise and learn (BIRD, eBGP IPv4), not 1:1; see docs/bgp-dynamic-routing.md |
 | **VPN as a Service** | Site-to-site only (strongSwan), see docs/vpn-site-to-site.md |
+| **IPv6 addressing by default** | A port gets an IPv6 address only when `fixed_ips` asks for it on a network that also has an IPv4 subnet. A VM on an IPv6-only network gets no address (checked on a 1.0.0 lab), and `cloudx subnet create` has no RA or address mode flags |
 | **Network Segment** | No manual VLAN/VXLAN segments; the segment fields in responses are empty |
 | **DNS Integration (Designate)** | Per-port `dns_name` only; zones and recordsets are in the separate DNS service (docs/dns.md) |
 | **RBAC policies per network** | A `shared` flag per network, no per-project RBAC entries |

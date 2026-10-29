@@ -9,8 +9,6 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ### Fixed
 - `PATCH /volume-types/{ref}` exists. `cloudx volume-type set` and the dashboard's API client already called it and got a 405. It changes
   `description`, `max_iops`, `max_throughput` and `is_public`; `backend`, `disk_type` and `lvm_type` are refused with 422.
-- `POST /servers/{ref}/unsuspend` and `cloudx server unsuspend`. The worker could restore a suspended VM but compute-api had
-  no route to ask for it, and `resume` on a suspended server reported ACTIVE while the domain stayed off.
 
 ## 1.0.0 (2026-10-28)
 
