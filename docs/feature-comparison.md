@@ -153,6 +153,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Pause** (hypervisor-level suspend) | `POST /servers/{ref}/pause` | ✅ |
 | **Resume** from pause | `POST /servers/{ref}/resume` | ✅ |
 | **Suspend** (managed save to disk) | `POST /servers/{ref}/suspend` | ✅ |
+| **Unsuspend** (restore from managed save) | `POST /servers/{ref}/unsuspend` | ✅ |
 | **Resize** (live vCPU + RAM hotplug) | `POST /servers/{ref}/resize` | ✅ |
 | **Confirm / revert resize** | `POST /servers/{ref}/confirmResize\|revertResize` | ✅ |
 | **Rebuild** (replace the root disk from a new image) | `POST /servers/{ref}/rebuild` | ✅ |
@@ -254,7 +255,6 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 ### ❌ Missing Features (vs. the real Compute service)
 | Feature | Notes |
 |---|---|
-| **Unsuspend endpoint** | The worker has an `unsuspend` handler but compute-api has no route for it |
 | **Separate ephemeral disk** | Volume-first, no ephemeral disk (flavors carry `ephemeral_gb` but it is not used) |
 | **noVNC proxy** | `console-url` returns a noVNC link (`NOVNC_BASE_URL`, default `localhost:6080`); no package or unit in this repo starts a proxy on that port |
 | **vfat config drive format** | ISO9660 only |
@@ -467,6 +467,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | List volume types (alphabetical) | `GET /volume-types` | ✅ |
 | Create volume type (admin) | `POST /volume-types` | ✅ |
 | Show volume type | `GET /volume-types/{ref}` | ✅ |
+| Update volume type (`description`, `max_iops`, `max_throughput`, `is_public`) | `PATCH /volume-types/{ref}` | ✅ |
 | Delete volume type (admin) | `DELETE /volume-types/{ref}` | ✅ |
 | **Delete protection while the type is in use** | Embedded | ✅ |
 | **No auto-bootstrap** — an admin must create them | Design | ✅ |
@@ -474,8 +475,6 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Field `max_iops` | Schema | ✅ |
 | Field `max_throughput` MB/s | Schema | ✅ |
 | Field `backend`: `lvm` or `ceph` (infrastructure) | Schema | ✅ |
-
-> The CLI calls `PATCH /volume-types/{ref}` (`cloudx volume-type update`), but `block-store-api` has no such route yet.
 
 #### Storage Backend
 | Feature | Status |
@@ -517,7 +516,6 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Generic volume groups** | Consistency groups only |
 | **FC backend** | LVM (with iSCSI), Ceph and NFS only |
 | **QoS enforcement on LVM** | `max_iops` / `max_throughput` are applied only on Ceph; LVM volumes ignore them |
-| **Volume type update** | CLI exists, API route missing (see the note above) |
 
 **Estimated Block Storage similarity: ~82%**
 

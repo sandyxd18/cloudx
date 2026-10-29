@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from ..db import DB
 from ..models import DISK_TYPES, Volume, VolumeType
-from ..schemas import VolumeTypeIn
+from ..schemas import VolumeTypeIn, VolumeTypeUpdateIn
 
 router = APIRouter()
 
@@ -43,6 +43,18 @@ def show_volume_type(ref: str, _: CurrentUser, db: DB):
     vt = db.get(VolumeType, ref) or db.scalar(select(VolumeType).where(VolumeType.name == ref))
     if not vt:
         raise HTTPException(status_code=404, detail=f"volume type '{ref}' not found")
+    return _vt_to_dict(vt)
+
+
+@router.patch("/volume-types/{ref}")
+def update_volume_type(ref: str, payload: VolumeTypeUpdateIn, _: AdminUser, db: DB):
+    vt = db.get(VolumeType, ref) or db.scalar(select(VolumeType).where(VolumeType.name == ref))
+    if not vt:
+        raise HTTPException(status_code=404, detail=f"volume type '{ref}' not found")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(vt, field, value)
+    db.commit()
+    db.refresh(vt)
     return _vt_to_dict(vt)
 
 
