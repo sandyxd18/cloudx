@@ -4,6 +4,12 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## Unreleased
+
+### Fixed
+- `PATCH /volume-types/{ref}` exists. `cloudx volume-type set` and the dashboard's API client already called it and got a 405. It changes
+  `description`, `max_iops`, `max_throughput` and `is_public`; `backend`, `disk_type` and `lvm_type` are refused with 422.
+
 ## 1.0.0 (2026-10-28)
 
 No code change since 1.0.0-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.0.md`.
