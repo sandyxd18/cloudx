@@ -307,6 +307,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Enable / Disable port security | `POST /ports/{ref}/security/enable\|disable` | ✅ |
 | Inspect a port's OVN state | `GET /ports/{ref}/ovn` | ✅ |
 | Automatic MAC address | Integrated | ✅ |
+| Dual-stack port (`fixed_ips` with an IPv4 and an IPv6 subnet; the IPv6 address is allocated and checked) | `POST /ports` | ✅ |
 | Trunk ports with subports | `/trunks`, `PUT /trunks/{ref}/add_subports\|remove_subports` | ✅ |
 
 #### Floating IP

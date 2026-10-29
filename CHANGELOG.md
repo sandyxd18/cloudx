@@ -7,6 +7,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ## Unreleased
 
 ### Fixed
+- A second dual-stack port on the same network no longer fails with a 502. IPv6 addresses held by other ports were not
+  counted, so every automatic allocation returned the same address (`::2`) and OVN refused the duplicate. An IPv6 address
+  given in `fixed_ips` was never checked either: it could be a duplicate or lie outside the subnet. It now gets the same
+  checks as an IPv4 address (400 outside the subnet or not an address, 409 when taken or the gateway).
 - `PATCH /volume-types/{ref}` exists. `cloudx volume-type set` and the dashboard's API client already called it and got a 405. It changes
   `description`, `max_iops`, `max_throughput` and `is_public`; `backend`, `disk_type` and `lvm_type` are refused with 422.
 
