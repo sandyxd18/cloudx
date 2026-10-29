@@ -410,7 +410,8 @@ def handle_delete_snapshot(args: dict) -> None:
         if backend == "lvm":
             lvm.delete(snap_lv)
         elif backend == "ceph":
-            ceph.delete(snap_lv)
+            if args.get("path"):  # no path: the snapshot never got created on the backend
+                ceph.delete_snapshot(args["path"])
         else:
             nfs.delete(snap_lv)
     except Exception as exc:
