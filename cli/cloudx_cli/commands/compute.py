@@ -112,14 +112,6 @@ def server_suspend(ctx, ref):
     click.echo(f"✓ Server {ref} suspended")
 
 
-@server.command("unsuspend")
-@click.argument("ref")
-@click.pass_context
-def server_unsuspend(ctx, ref):
-    _api("post", f"{DEFAULT_URLS['compute']}/servers/{ref}/unsuspend", ctx.obj["profile"])
-    click.echo(f"✓ Server {ref} unsuspended")
-
-
 @server.command("resize")
 @click.argument("ref")
 @click.option("--flavor", required=True)
