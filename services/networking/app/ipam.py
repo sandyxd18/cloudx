@@ -139,13 +139,22 @@ def resolve_association_port(db: Session, payload: FloatingIPAssociateIn) -> Por
         raise HTTPException(status_code=404, detail=f"port for server '{payload.server}' not found")
     raise HTTPException(status_code=400, detail="floating IP association requires --server or --port")
 
-def allocate_fixed_ip(db: Session, subnet: Subnet, requested: str | None = None) -> str:
-    if db.get_bind().dialect.name == "postgresql":
-        # Serialize allocation per subnet across gunicorn workers; released at the caller's commit/rollback.
-        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": subnet.id})
-    network = ipaddress.ip_network(subnet.cidr, strict=False)
-    gateway_str = subnet.gateway_ip or subnet.gateway
-    gateway_ip = ipaddress.ip_address(gateway_str) if gateway_str else None
+def _used_addresses(db: Session, subnet: Subnet, network) -> set:
+    if network.version == 6:
+        # A dual-stack port keeps its IPv6 address in ipv6_address while subnet_id points at its IPv4 subnet, so an
+        # IPv6 subnet is matched by network and range instead of by subnet_id.
+        rows = db.execute(
+            select(Port.ipv6_address, Port.fixed_ip, Port.ip_address).where(Port.network_id == subnet.network_id)
+        ).all()
+        used = set()
+        for value in (v for row in rows for v in row if v):
+            try:
+                address = ipaddress.ip_address(value)
+            except ValueError:
+                continue
+            if address in network:
+                used.add(address)
+        return used
     used = {
         ipaddress.ip_address(ip)
         for ip in db.scalars(select(Port.fixed_ip).where(Port.subnet_id == subnet.id, Port.fixed_ip.is_not(None))).all()
@@ -154,8 +163,22 @@ def allocate_fixed_ip(db: Session, subnet: Subnet, requested: str | None = None)
         ipaddress.ip_address(ip)
         for ip in db.scalars(select(Port.ip_address).where(Port.subnet_id == subnet.id, Port.ip_address.is_not(None))).all()
     )
+    return used
+
+
+def allocate_fixed_ip(db: Session, subnet: Subnet, requested: str | None = None) -> str:
+    if db.get_bind().dialect.name == "postgresql":
+        # Serialize allocation per subnet across gunicorn workers; released at the caller's commit/rollback.
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": subnet.id})
+    network = ipaddress.ip_network(subnet.cidr, strict=False)
+    gateway_str = subnet.gateway_ip or subnet.gateway
+    gateway_ip = ipaddress.ip_address(gateway_str) if gateway_str else None
+    used = _used_addresses(db, subnet, network)
     if requested:
-        candidate = ipaddress.ip_address(requested)
+        try:
+            candidate = ipaddress.ip_address(requested)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"requested IP {requested} is not an IP address") from None
         if candidate not in network:
             raise HTTPException(status_code=400, detail=f"requested IP {requested} is outside subnet {subnet.cidr}")
         if (gateway_ip and candidate == gateway_ip) or candidate in used:

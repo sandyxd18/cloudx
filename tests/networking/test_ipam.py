@@ -127,3 +127,45 @@ def test_huge_subnets_do_not_hang(networking):
         assert networking.ipam._host_range(ipaddress.ip_network(cidr)) is not None
     assert networking.ipam.allocation_bounds_for_network("10.0.0.0/8", "10.0.0.1", None, None) == ("10.0.0.2", "10.255.255.254")
     assert time.monotonic() - started < 2
+
+
+def hold_ipv6(networking, db, network_id, ipv6, ipv4_subnet_id=None, n=None):
+    """A dual-stack port: the IPv4 address and subnet_id belong to the IPv4 subnet, the IPv6 address is on the side."""
+    n = db.query(networking.models.Port).count() if n is None else n
+    db.add(networking.models.Port(name=f"d{n}", network_id=network_id, subnet_id=ipv4_subnet_id,
+                                  mac_address=f"02:00:00:00:01:{n:02x}", ipv6_address=ipv6))
+    db.commit()
+
+
+def test_ipv6_held_by_a_dual_stack_port_is_not_handed_out_again(networking, make_subnet):
+    # a second dual-stack port was given the first one's address and OVN refused it (HTTP 502)
+    db, subnet = make_subnet("fd42:7:7::/64", gateway="fd42:7:7::1", version=6, name="v6")
+    assert networking.ipam.allocate_fixed_ip(db, subnet) == "fd42:7:7::2"
+    hold_ipv6(networking, db, subnet.network_id, "fd42:7:7::2")
+    assert networking.ipam.allocate_fixed_ip(db, subnet) == "fd42:7:7::3"
+    hold_ipv6(networking, db, subnet.network_id, "fd42:7:7::3")
+    assert networking.ipam.allocate_fixed_ip(db, subnet) == "fd42:7:7::4"
+
+
+def test_an_ipv6_address_is_only_taken_on_its_own_network_and_range(networking, make_subnet):
+    db, subnet = make_subnet("fd42:7:7::/64", gateway="fd42:7:7::1", version=6, name="v6")
+    hold_ipv6(networking, db, "some-other-network", "fd42:7:7::2")     # same range, another network
+    hold_ipv6(networking, db, subnet.network_id, "fd42:9:9::2")        # same network, another subnet's range
+    assert networking.ipam.allocate_fixed_ip(db, subnet) == "fd42:7:7::2"
+
+
+def test_a_requested_ipv6_address_must_be_free_inside_the_subnet_and_not_the_gateway(networking, make_subnet):
+    db, subnet = make_subnet("fd42:7:7::/64", gateway="fd42:7:7::1", version=6, name="v6")
+    hold_ipv6(networking, db, subnet.network_id, "fd42:7:7::5")
+    for requested, status in (("fd42:7:7::5", 409), ("fd42:7:7::1", 409), ("fd99::5", 400), ("10.0.0.5", 400), ("nope", 400)):
+        with pytest.raises(HTTPException) as exc:
+            networking.ipam.allocate_fixed_ip(db, subnet, requested=requested)
+        assert exc.value.status_code == status, requested
+    assert networking.ipam.allocate_fixed_ip(db, subnet, requested="fd42:7:7::6") == "fd42:7:7::6"
+
+
+def test_a_garbage_requested_ipv4_address_is_a_400_not_a_crash(networking, make_subnet):
+    db, subnet = make_subnet("10.1.0.0/29", gateway="10.1.0.1")
+    with pytest.raises(HTTPException) as exc:
+        networking.ipam.allocate_fixed_ip(db, subnet, requested="10.1.0")
+    assert exc.value.status_code == 400

@@ -30,6 +30,8 @@ export CLOUDX_PASSWORD='<password>'
 
 If you have an access key (created in the dashboard or with `cloudx auth access-key create`), `cloudx auth configure` stores it, or set `CLOUDX_ACCESS_KEY_ID` and `CLOUDX_SECRET_ACCESS_KEY`.
 
+`cloudx auth login --auth-url` also saves the address in `~/.cloudx/config`, so later commands find the auth API without `CLOUDX_AUTH_URL`; the variable wins when both are set.
+
 After login the CLI learns every service URL from the service catalog. To force one service to another address, set `CLOUDX_<SERVICE>_URL`, for example `CLOUDX_COMPUTE_URL`.
 
 ## 2. Command cheat sheet
