@@ -70,6 +70,7 @@ def net(monkeypatch, tmp_path):
         if k.startswith("CLOUDX_"):
             monkeypatch.delenv(k)
     monkeypatch.setattr(common, "CREDS_FILE", tmp_path / "credentials")
+    monkeypatch.setattr(common, "CONFIG_FILE", tmp_path / "config")  # not the developer's own ~/.cloudx/config
     monkeypatch.setattr(common, "DEFAULT_URLS", common._LazyUrls())
     common._reset_catalog()
     yield FakeNet(monkeypatch)

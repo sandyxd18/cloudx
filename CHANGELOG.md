@@ -11,6 +11,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
   counted, so every automatic allocation returned the same address (`::2`) and OVN refused the duplicate. An IPv6 address
   given in `fixed_ips` was never checked either: it could be a duplicate or lie outside the subnet. It now gets the same
   checks as an IPv4 address (400 outside the subnet or not an address, 409 when taken or the gateway).
+- The CLI finds the auth API again after `cloudx auth login --auth-url`. The address was written to `~/.cloudx/config` and
+  never read back, so on any machine other than the controller every later command went to `127.0.0.1:8005` unless
+  `CLOUDX_AUTH_URL` was exported. The `[default]` section that `auth login` writes (`auth_url`, `project`, `output`) is
+  now read; `CLOUDX_AUTH_URL` still wins.
 - `PATCH /volume-types/{ref}` exists. `cloudx volume-type set` and the dashboard's API client already called it and got a 405. It changes
   `description`, `max_iops`, `max_throughput` and `is_public`; `backend`, `disk_type` and `lvm_type` are refused with 422.
 
