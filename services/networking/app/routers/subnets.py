@@ -46,12 +46,9 @@ def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if not gateway:
-        # For IPv6 with SLAAC, gateway is optional
-        if ip_version == 6 and payload.ipv6_ra_mode in ("slaac", "dhcpv6-stateless"):
-            gateway = None
-        else:
-            raise HTTPException(status_code=400, detail="gateway_ip or gateway is required")
+    if not gateway and ip_version != 6:
+        # an IPv6 subnet may have none: without a router there is no gateway, and hosts learn routers from RAs
+        raise HTTPException(status_code=400, detail="gateway_ip or gateway is required")
 
     try:
         cidr = ipaddress.ip_network(payload.cidr, strict=False)
@@ -77,9 +74,7 @@ def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
             dhcp_id = ovn_cli.ovn(*dhcp_options_args(payload.cidr, gateway, nameservers, mtu=network_mtu(network))) if gateway else None
         elif ip_version == 6:
             # IPv6: set up DHCPv6 options or RA mode in OVN
-            dhcp_id = _ensure_dhcpv6_options(
-                payload.cidr, gateway, payload.ipv6_ra_mode, payload.ipv6_address_mode
-            )
+            dhcp_id = _ensure_dhcpv6_options(payload.cidr, payload.ipv6_ra_mode, payload.ipv6_address_mode, nameservers)
 
     subnet = Subnet(
         name=payload.name,

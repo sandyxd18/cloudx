@@ -149,7 +149,7 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
             project_id=project_id,
             backend=backend,
             mac_address=port.get("mac_address"),
-            ip_address=port.get("fixed_ip") or port.get("ip_address"),
+            ip_address=port.get("fixed_ip") or port.get("ip_address") or port.get("ipv6_address"),
             status="BUILD",
         )
         _check_project_quota(db, project_id, flavor.vcpus, flavor.ram_mb)  # again, under the domain lock the commit below releases

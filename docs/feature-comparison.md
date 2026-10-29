@@ -282,7 +282,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | List / Show / Delete subnet | `GET\|DELETE /subnets` | ✅ |
 | `no-dhcp` option for provider subnets | Integrated | ✅ |
 | Subnet pools | `/subnetpools` | ✅ |
-| IPv6 subnets (`ip_version: 6`, RA and address modes; `--ip-version 6` in the CLI) | `POST /subnets` | ✅ |
+| IPv6 subnets (`ip_version: 6`, RA and address modes, optional gateway; the CLI takes the version from `--cidr`) | `POST /subnets` | ✅ |
 
 #### Router & L3
 | Feature | Endpoint | Status |
@@ -307,7 +307,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Enable / Disable port security | `POST /ports/{ref}/security/enable\|disable` | ✅ |
 | Inspect a port's OVN state | `GET /ports/{ref}/ovn` | ✅ |
 | Automatic MAC address | Integrated | ✅ |
-| Dual-stack port (`fixed_ips` with an IPv4 and an IPv6 subnet; the IPv6 address is allocated and checked) | `POST /ports` | ✅ |
+| A port gets an address from each IP family the network has a subnet for, so a network with only an IPv6 subnet works; `fixed_ips` picks or pins addresses, and an IPv6 address is allocated and checked | `POST /ports` | ✅ |
 | Trunk ports with subports | `/trunks`, `PUT /trunks/{ref}/add_subports\|remove_subports` | ✅ |
 
 #### Floating IP
@@ -369,7 +369,8 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Firewall as a Service (FWaaS)** | Deliberately excluded |
 | **BGP Dynamic Routing** | Advertise and learn (BIRD, eBGP IPv4), not 1:1; see docs/bgp-dynamic-routing.md |
 | **VPN as a Service** | Site-to-site only (strongSwan), see docs/vpn-site-to-site.md |
-| **IPv6 addressing by default** | A port gets an IPv6 address only when `fixed_ips` asks for it on a network that also has an IPv4 subnet. A VM on an IPv6-only network gets no address (checked on a 1.0.0 lab), and `cloudx subnet create` has no RA or address mode flags |
+| **IPv6 router advertisements (SLAAC)** | OVN sends no RA: nothing sets `ipv6_ra_configs` on router ports. A VM gets its IPv6 address and prefix from the config drive (static, like IPv4), so cloud-init images work; DHCPv6 options are created and bound to ports but have not been tried against a guest |
+| **IPv6 in the default security group** | Its rules are IPv4 only, so IPv6 traffic is dropped until rules are added (`cloudx security-group rule add --ethertype IPv6`) |
 | **Network Segment** | No manual VLAN/VXLAN segments; the segment fields in responses are empty |
 | **DNS Integration (Designate)** | Per-port `dns_name` only; zones and recordsets are in the separate DNS service (docs/dns.md) |
 | **RBAC policies per network** | A `shared` flag per network, no per-project RBAC entries |

@@ -174,6 +174,19 @@ def port_to_os_dict(db: Session, port: Port, current: dict | None = None) -> dic
     """Serialize a Port to an OpenStack-compatible dict."""
     network = db.get(Network, port.network_id)
     subnet = db.get(Subnet, port.subnet_id) if port.subnet_id else None
+    ipv6_subnet = None
+    if port.ipv6_address:
+        # the IPv6 address is not tied to subnet_id (that is the IPv4 subnet of a dual-stack port): find it by range
+        try:
+            address = ipaddress.ip_address(port.ipv6_address)
+            for candidate in db.scalars(select(Subnet).where(Subnet.network_id == port.network_id, Subnet.ip_version == 6)):
+                if address in ipaddress.ip_network(candidate.cidr, strict=False):
+                    ipv6_subnet = candidate
+                    break
+        except ValueError:
+            pass
+    if subnet is not None and subnet.ip_version != 4:
+        subnet = None  # a port on an IPv6-only network points subnet_id at its IPv6 subnet; cidr/gateway_ip below are IPv4
 
     ip_addr = port.ip_address or port.fixed_ip
     fixed_ips = []
@@ -243,6 +256,9 @@ def port_to_os_dict(db: Session, port: Port, current: dict | None = None) -> dic
         "gateway_ip": (subnet.gateway_ip or subnet.gateway) if subnet else None,
         "dns_nameservers": ([s.strip() for s in subnet.dns_nameservers.split(",") if s.strip()] if subnet and subnet.dns_nameservers else []),
         "subnet_id": port.subnet_id,
+        "ipv6_cidr": ipv6_subnet.cidr if ipv6_subnet else None,
+        "ipv6_gateway_ip": (ipv6_subnet.gateway_ip or ipv6_subnet.gateway or None) if ipv6_subnet else None,
+        "ipv6_dns_nameservers": ([s.strip() for s in ipv6_subnet.dns_nameservers.split(",") if s.strip()] if ipv6_subnet and ipv6_subnet.dns_nameservers else []),
     }
 
 def fip_to_os_dict(db: Session, fip: FloatingIP, current: dict | None = None) -> dict:

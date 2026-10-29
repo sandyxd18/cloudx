@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from shared.cors import cors_origins
 
 from .metadata_service import (
+    _ipv4,
     default_user_data,
     first_public_key,
     instance_identity_document,
@@ -105,7 +106,7 @@ def latest_instance_type(request: Request, instance_id: str | None = None, port_
 def latest_local_ipv4(request: Request, instance_id: str | None = None, port_id: str | None = None, fixed_ip: str | None = None):
     metadata = lookup_metadata(request, instance_id, port_id, fixed_ip)
     port = metadata.get("network") or {}
-    ip = metadata.get("fixed_ip") or port.get("fixed_ip") or port.get("ip_address") or ""
+    ip = _ipv4(metadata.get("fixed_ip") or port.get("fixed_ip") or port.get("ip_address")) or ""
     if not ip:
         raise HTTPException(status_code=404, detail="no local IPv4 assigned")
     return ip + "\n"
@@ -231,7 +232,7 @@ def ec2_instance_type(version: str, request: Request, instance_id: str | None = 
 def ec2_local_ipv4(version: str, request: Request, instance_id: str | None = None, port_id: str | None = None, fixed_ip: str | None = None):
     metadata = lookup_metadata(request, instance_id, port_id, fixed_ip)
     port = metadata.get("network") or {}
-    ip = metadata.get("fixed_ip") or port.get("fixed_ip") or port.get("ip_address") or ""
+    ip = _ipv4(metadata.get("fixed_ip") or port.get("fixed_ip") or port.get("ip_address")) or ""
     if not ip:
         raise HTTPException(status_code=404, detail="no local IPv4 assigned")
     return ip + "\n"

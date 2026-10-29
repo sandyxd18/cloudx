@@ -7,6 +7,20 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ## Unreleased
 
 ### Fixed
+- A server on a network that has only an IPv6 subnet gets an address. `create_port` only looked at the IPv4 subnet, so
+  the port had no address and the server showed none. A port now gets one address from each IP family the network has
+  a subnet for (naming addresses in the request still pins them), the server record shows the IPv6 address when there
+  is no IPv4 one, and the config drive and `network_data.json` carry the IPv6 address, prefix and gateway. Config
+  drives write `dhcp4: false` for an IPv6-only port instead of waiting for DHCPv4. `local-ipv4` never returns an IPv6
+  address.
+- The DHCPv6 options row of an IPv6 subnet used an IPv6 address as `server_id`; OVN wants an Ethernet address, so the
+  row was refused (the error was only logged) and `dhcp_options_id` stayed empty. It now uses a MAC, adds
+  `dhcpv6_stateless` for the stateless mode and the subnet's DNS servers, and ports on the subnet are bound to it with
+  `lsp-set-dhcpv6-options`. Not run against OVN: the binding is best effort and cannot fail a port. An IPv6 subnet no
+  longer needs a gateway.
+- `cloudx subnet create --dns-nameserver` was answered with HTTP 422 (a joined string was sent for a list field).
+- CLI: `subnet create` takes `--ipv6-ra-mode` and `--ipv6-address-mode` and works out the IP version from `--cidr`;
+  `security-group rule add` takes `--ethertype` (IPv6 when `--remote-ip` is an IPv6 prefix).
 - A suspended server stays `SUSPENDED`. libvirt calls a domain suspended to disk "shut off", and the compute worker's
   power-state sync (every 30 s) rewrote the status to `SHUTOFF`. The worker now tells a domain with a managed save apart
   and keeps the status. A server that is `ACTIVE` in the database while its domain is suspended (after `resume`, or a host

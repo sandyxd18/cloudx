@@ -40,23 +40,30 @@ def render_user_data(public_key: str | None = None) -> str:
 
 
 def render_network_config(port: dict | None = None) -> str:
-    if not port or not (port.get("fixed_ip") or port.get("ip_address")):
+    ipv4 = (port or {}).get("fixed_ip") or (port or {}).get("ip_address")
+    ipv6 = (port or {}).get("ipv6_address")
+    if not port or not (ipv4 or ipv6):
         return "version: 2\nethernets:\n  eth0:\n    dhcp4: true\n"
-    fixed_ip = port.get("fixed_ip") or port.get("ip_address")
-    prefix = ipaddress.ip_network(port.get("cidr", "0.0.0.0/24"), strict=False).prefixlen
-    gateway = port.get("gateway_ip")
-    dns = port.get("dns_nameservers") or []
     mac = port.get("mac_address")  # Ubuntu renames eth0 to ens3, so match the NIC by MAC
+    addresses, dns = [], list(port.get("dns_nameservers") or [])
     lines = [
         "version: 2",
         "ethernets:",
         "  nic0:",
         *([f"    match: {{macaddress: \"{mac.lower()}\"}}", "    set-name: eth0"] if mac else []),
-        "    dhcp4: false",
-        f"    addresses: [{fixed_ip}/{prefix}]",
+        "    dhcp4: false",  # also for an IPv6-only port: waiting for DHCPv4 there only delays the boot
     ]
-    if gateway:
-        lines.append(f"    gateway4: {gateway}")
+    if ipv4:
+        addresses.append(f"{ipv4}/{ipaddress.ip_network(port.get('cidr', '0.0.0.0/24'), strict=False).prefixlen}")
+    if ipv6:
+        # the address and prefix are static, like the IPv4 ones: no RA or DHCPv6 is needed to get them
+        addresses.append(f"{ipv6}/{ipaddress.ip_network(port.get('ipv6_cidr') or '::/64', strict=False).prefixlen}")
+        dns += [d for d in port.get("ipv6_dns_nameservers") or [] if d not in dns]
+    lines.append(f"    addresses: [{', '.join(addresses)}]")
+    if ipv4 and port.get("gateway_ip"):
+        lines.append(f"    gateway4: {port['gateway_ip']}")
+    if ipv6 and port.get("ipv6_gateway_ip"):
+        lines.append(f"    gateway6: {port['ipv6_gateway_ip']}")
     if dns:
         lines.extend(["    nameservers:", f"      addresses: [{', '.join(dns)}]"])
     return "\n".join(lines) + "\n"

@@ -63,17 +63,25 @@ def subnet(ctx):
 @click.option("--network", required=True)
 @click.option("--cidr", required=True)
 @click.option("--gateway")
-@click.option("--ip-version", type=click.Choice(["4", "6"]), default="4")
+@click.option("--ip-version", type=click.Choice(["4", "6"]), default=None, help="Default: taken from --cidr")
 @click.option("--dhcp/--no-dhcp", default=True)
 @click.option("--dns-nameserver", "dns", multiple=True)
 @click.option("--allocation-start")
 @click.option("--allocation-end")
+@click.option("--ipv6-ra-mode", type=click.Choice(["slaac", "dhcpv6-stateful", "dhcpv6-stateless"]),
+              help="IPv6 only: how routers advertise the prefix")
+@click.option("--ipv6-address-mode", type=click.Choice(["slaac", "dhcpv6-stateful", "dhcpv6-stateless"]),
+              help="IPv6 only: how instances get their address")
 @click.pass_context
-def subnet_create(ctx, name, network, cidr, gateway, ip_version, dhcp, dns, allocation_start, allocation_end):
+def subnet_create(ctx, name, network, cidr, gateway, ip_version, dhcp, dns, allocation_start, allocation_end,
+                  ipv6_ra_mode, ipv6_address_mode):
+    """Create a subnet. --gateway is required for IPv4; an IPv6 subnet may go without one."""
     payload = {"name": name, "network": network, "cidr": cidr, "enable_dhcp": dhcp,
-               "ip_version": int(ip_version)}
+               "ip_version": int(ip_version or (6 if ":" in cidr else 4))}
+    if ipv6_ra_mode:      payload["ipv6_ra_mode"] = ipv6_ra_mode
+    if ipv6_address_mode: payload["ipv6_address_mode"] = ipv6_address_mode
     if gateway:           payload["gateway"] = gateway
-    if dns:               payload["dns_nameservers"] = ",".join(dns)
+    if dns:               payload["dns_nameservers"] = list(dns)  # the API field is a list; a joined string was a 422
     if allocation_start:  payload["allocation_start"] = allocation_start
     if allocation_end:    payload["allocation_end"] = allocation_end
     data = _api("post", f"{DEFAULT_URLS['network']}/subnets", ctx.obj["profile"], json=payload)
@@ -337,10 +345,14 @@ def sg_rule():
 @click.option("--port", type=int)
 @click.option("--port-range-min", type=int)
 @click.option("--port-range-max", type=int)
-@click.option("--remote-ip", default="0.0.0.0/0")
+@click.option("--ethertype", type=click.Choice(["IPv4", "IPv6"]), default=None, help="Default: IPv6 if --remote-ip is an IPv6 prefix, else IPv4")
+@click.option("--remote-ip", default=None, help="Remote prefix. Default: 0.0.0.0/0, or ::/0 with --ethertype IPv6")
 @click.pass_context
-def sg_rule_add(ctx, sg_ref, direction, protocol, port, port_range_min, port_range_max, remote_ip):
-    payload = {"direction": direction, "protocol": protocol, "remote_ip_prefix": remote_ip}
+def sg_rule_add(ctx, sg_ref, direction, protocol, port, port_range_min, port_range_max, ethertype, remote_ip):
+    """Add a rule. The default security group only carries IPv4 rules: IPv6 traffic needs rules with --ethertype IPv6."""
+    ethertype = ethertype or ("IPv6" if remote_ip and ":" in remote_ip else "IPv4")
+    remote_ip = remote_ip or ("::/0" if ethertype == "IPv6" else "0.0.0.0/0")
+    payload = {"direction": direction, "protocol": protocol, "ethertype": ethertype, "remote_ip_prefix": remote_ip}
     if port:             payload["port_min"] = payload["port_max"] = port
     if port_range_min:   payload["port_min"] = port_range_min
     if port_range_max:   payload["port_max"] = port_range_max
