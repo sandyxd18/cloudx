@@ -9,8 +9,8 @@ Operations notes for multi-node deployment, high availability, backups, monitori
 | Feature | Status | Where |
 |---|---|---|
 | Multi-node (controller, compute, storage) | Supported | [deb-install.md](deb-install.md) sections 4 and 5, [multi-node-deployment.md](multi-node-deployment.md) |
-| API load balancing across controllers | Not provided | put your own HAProxy or keepalived in front of the nginx on each controller |
-| RabbitMQ cluster, PostgreSQL replication | Not provided | use the distro's own tooling |
+| API load balancing across controllers | Not provided by CloudX; documented and tried once (2026-10-28) | HAProxy and keepalived in front of three controllers, with the limits found: [tutorials/ha-control-plane.md](tutorials/ha-control-plane.md) |
+| RabbitMQ cluster, PostgreSQL replication | Not provided by CloudX; documented and tried once (2026-10-28) | a three-node RabbitMQ cluster, Patroni with etcd, and an OVN raft cluster: [tutorials/ha-control-plane.md](tutorials/ha-control-plane.md) |
 | PostgreSQL backup | Not provided | schedule `pg_dump` yourself; see section 3 |
 | Volume backup to object storage | Supported | block-store API, see section 3 |
 | Metrics endpoint on every API | Supported | `/metrics`, bearer token `metrics_token` |
