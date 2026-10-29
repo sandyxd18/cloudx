@@ -69,7 +69,7 @@ def create_port(payload: PortIn, current: UserOrInternal, db: DB):
             if entry_subnet_id:
                 entry_subnet = db.get(Subnet, entry_subnet_id)
                 if entry_subnet and entry_subnet.ip_version == 6:
-                    ipv6_address = allocate_fixed_ip(db, entry_subnet, entry_ip) if not entry_ip else entry_ip
+                    ipv6_address = allocate_fixed_ip(db, entry_subnet, entry_ip)
 
     port = Port(
         name=payload.name,
