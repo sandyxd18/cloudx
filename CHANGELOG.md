@@ -4,6 +4,16 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## Unreleased
+
+### Fixed
+- A suspended server stays `SUSPENDED`. libvirt calls a domain suspended to disk "shut off", and the compute worker's
+  power-state sync (every 30 s) rewrote the status to `SHUTOFF`. The worker now tells a domain with a managed save apart
+  and keeps the status. A server that is `ACTIVE` in the database while its domain is suspended (after `resume`, or a host
+  that saved its guests on shutdown) is restored by the same auto-recovery pass that restarts a shut-off domain.
+- `POST /servers/{ref}/unsuspend` and `cloudx server unsuspend`: restore a `SUSPENDED` server (409 in any other state).
+  `start` also restores it.
+
 ## 1.0.0 (2026-10-28)
 
 No code change since 1.0.0-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.0.md`.

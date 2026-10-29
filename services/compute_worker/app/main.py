@@ -203,6 +203,8 @@ _SYNC_MANAGED_STATUSES = {"ACTIVE", "SHUTOFF", "PAUSED", "SUSPENDED"}
 _EXPECTED_STATUS_FOR_POWER_STATE = {
     "RUNNING": "ACTIVE",
     "PAUSED": "PAUSED",
+    # Suspended to disk: libvirt calls it shut off, get_all_domain_states tells it apart by the managed save.
+    "SUSPENDED": "SUSPENDED",
     # A domain that libvirt reports as SHUTOFF, or one missing entirely
     # (destroyed/undefined outside of our control), both mean: not running.
     "SHUTOFF": "SHUTOFF",
@@ -247,9 +249,12 @@ def sync_power_states() -> None:
         expected_status = _EXPECTED_STATUS_FOR_POWER_STATE[power_state]
 
         if expected_status != db_status:
-            if db_status == "ACTIVE" and power_state in ("SHUTOFF", "MISSING") and FENCED_FLAG.exists():
+            # ACTIVE in the DB but not running: crashed, powered off outside CloudX, or suspended and then asked to
+            # resume (start restores the managed save)
+            down = db_status == "ACTIVE" and power_state in ("SHUTOFF", "MISSING", "SUSPENDED")
+            if down and FENCED_FLAG.exists():
                 continue  # self-fenced by the HA watchdog: leave it for the evacuation, never restart or rewrite it
-            if AUTO_RECOVERY and db_status == "ACTIVE" and power_state in ("SHUTOFF", "MISSING"):
+            if AUTO_RECOVERY and down:
                 log.warning(
                     "[auto-recovery] server %s (%s): domain '%s' is %s on hypervisor — attempting auto-restart",
                     server.get("name"), server.get("id"), domain_name, power_state,

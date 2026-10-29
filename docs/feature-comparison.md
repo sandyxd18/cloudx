@@ -153,6 +153,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Pause** (hypervisor-level suspend) | `POST /servers/{ref}/pause` | ✅ |
 | **Resume** from pause | `POST /servers/{ref}/resume` | ✅ |
 | **Suspend** (managed save to disk) | `POST /servers/{ref}/suspend` | ✅ |
+| **Unsuspend** (restore from managed save) | `POST /servers/{ref}/unsuspend` | ✅ |
 | **Resize** (live vCPU + RAM hotplug) | `POST /servers/{ref}/resize` | ✅ |
 | **Confirm / revert resize** | `POST /servers/{ref}/confirmResize\|revertResize` | ✅ |
 | **Rebuild** (replace the root disk from a new image) | `POST /servers/{ref}/rebuild` | ✅ |
