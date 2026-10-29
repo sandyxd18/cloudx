@@ -786,8 +786,9 @@ The similarity percentage is calculated along three dimensions:
 > CloudX has hundreds of sub-features per service; cloudx focuses on the **operational happy path** that is enough
 > to run real cloud infrastructure on a handful of nodes.
 >
-> The endpoint tables list what the code exposes. They do not show that each endpoint works in every
-> deployment; a route can exist and still be only lightly tested. The roadmap and release notes
+> The endpoint tables list what the code exposes. `scripts/check_feature_comparison.py` (it runs in the test suite)
+> fails when a table names an endpoint that is not a route in `services/*/app`. It does not show that each endpoint
+> works in every deployment; a route can exist and still be only lightly tested. The roadmap and release notes
 > (`docs/releases/`) say which features were exercised on a lab.
 
 ### Deliberately Excluded Features (by design)
