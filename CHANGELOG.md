@@ -7,6 +7,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ## Unreleased
 
 ### Fixed
+- A second dual-stack port on the same network no longer fails with a 502. IPv6 addresses held by other ports were not
+  counted, so every automatic allocation returned the same address (`::2`) and OVN refused the duplicate. An IPv6 address
+  given in `fixed_ips` was never checked either: it could be a duplicate or lie outside the subnet. It now gets the same
+  checks as an IPv4 address (400 outside the subnet or not an address, 409 when taken or the gateway).
 - The CLI finds the auth API again after `cloudx auth login --auth-url`. The address was written to `~/.cloudx/config` and
   never read back, so on any machine other than the controller every later command went to `127.0.0.1:8005` unless
   `CLOUDX_AUTH_URL` was exported. The `[default]` section that `auth login` writes (`auth_url`, `project`, `output`) is
