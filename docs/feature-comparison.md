@@ -1,49 +1,50 @@
 # 📊 Feature Comparison: cloudx vs Standard Private Cloud
 
-> This document maps the features implemented in the **cloudx private cloud lab**
-> against a standard cloud specification, with an estimated similarity percentage.
+> This document maps the features implemented in **cloudx** against a standard private cloud specification,
+> with an estimated similarity percentage.
 >
-> **Updated:** August 2026 — covers Phases 1–4 (base-service API parity) and
-> Phase 5 (production readiness and the AWS Cloudscape Dashboard; the status marks in the Phase 5 table say
-> what is shipped and what is not).
+> **Updated:** October 2026, for release 1.0.0. The endpoint tables were checked against the routes in
+> `services/*/app`; the percentages are estimates (see [Assessment Methodology](#-assessment-methodology)).
 
 ---
 
 ## 🔢 Overall Summary
 
-| cloudx service | CloudX equivalent | Initial | After P1–P4 | After P5 |
-|---|---|:---:|:---:|:---:|
-| `auth-api` | **Identity** | 0% | ~93% | **~95%** |
-| `compute-api` + `compute-worker` | **Compute** | ~45% | ~94% | **~95%** |
-| `networking-api` | **Networking** | ~55% | ~88% | **~90%** |
-| `image-api` | **Image** | ~40% | ~90% | **~92%** |
-| `block-store-api` | **Block Storage** | ~35% | ~93% | **~95%** |
-| `metadata-api` | **Metadata API** | ~75% | ~92% | **~92%** |
-| `placement-api` | **Placement** | ~15% | ~92% | **~93%** |
-| `dashboard` | **CloudX Dashboard** | 0% | ~85% | **~90%** |
-| *(none)* | **Heat** | 0% | 0% | 0% |
-| *(none)* | **Swift** | 0% | 0% | 0% (MinIO as a substitute) |
-| *(none)* | **Ironic** | 0% | 0% | 0% |
+| cloudx service | CloudX equivalent | Estimated similarity |
+|---|---|:---:|
+| `auth-api` | **Identity** | ~75% |
+| `compute-api` + `compute-worker` | **Compute** | ~85% |
+| `networking-api` | **Networking** | ~80% |
+| `image-api` | **Image** | ~78% |
+| `block-store-api` | **Block Storage** | ~82% |
+| `metadata-api` | **Metadata API** | ~92% |
+| `placement-api` | **Placement** | ~82% |
+| `dashboard` | **CloudX Dashboard** | ~90% |
 
-**Overall average (implemented services): ~92%**
-*(vs ~72% before Phases 1–4 started)*
+**Average over these eight services: ~83%**
 
-### Phase 5 Additions — Production Readiness (cross-service)
+The services below have no percentage because they are partial re-implementations, "not 1:1" with their counterparts.
+Section 9 says what each one covers: Heat, Swift, Barbican, Octavia, Ceilometer/Aodh, CloudKitty, Panko, Designate,
+Manila, Zun, Magnum, Masakari, Trove, Blazar and Zaqar. Ironic and Senlin (as a separate service) do not exist.
+
+### Production Readiness (cross-service)
 
 Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 
 | Area | Feature | Status |
 |---|---|:---:|
 | Infrastructure | Adaptive multi-node deployment (Control Plane / Compute / Storage) | ✅ |
-| Infrastructure | High Availability: RabbitMQ cluster + PostgreSQL streaming replication (not provided; use your distro's tooling) | ✗ |
-| Infrastructure | HAProxy multi-backend round-robin + Keepalived VIP (not provided) | ✗ |
-| Backup | PostgreSQL backup job (not provided; schedule `pg_dump` yourself) | ✗ |
-| Backup | Full volume backup to object storage + restore (`POST /volumes/{id}/backup`) | ✅ |
+| Infrastructure | Instance HA: host monitor, evacuation, self-fencing watchdog, second `ha-api` (see docs/ha.md) | ✅ |
+| Infrastructure | HA for the control plane's own RabbitMQ and PostgreSQL (not provided; use your distro's tooling) | ✗ |
+| Infrastructure | HAProxy multi-backend round-robin + Keepalived VIP in front of the APIs (not provided) | ✗ |
+| Backup | PostgreSQL backup job for CloudX's own databases (not provided; schedule `pg_dump` yourself) | ✗ |
+| Backup | Full volume backup to object storage + restore (`POST /volumes/{id}/backup`), with schedules | ✅ |
+| Observability | `/metrics` endpoint on all API services (bearer token) | ✅ |
 | Observability | Prometheus scrape config, alert rules and Grafana dashboards (not provided; you run your own) | ✗ |
-| Observability | `/metrics` endpoint on all API services + alert rules | ✅ |
 | Security | Internal TLS between services | ✗ |
-| Database | Alembic migration scaffold (baseline stamp, additive-first) | ✅ |
-| CloudX Dashboard | UI redesigned in the style of the AWS Console with the Cloudscape Design System | ✅ |
+| Database | Alembic migrations, one history per service, `cloudx-manage db sync` | ✅ |
+| Packaging | OpenStack-style `.deb` packages and a service catalog in `auth-api` | ✅ |
+| CloudX Dashboard | UI in the style of the AWS Console with the Cloudscape Design System | ✅ |
 
 ---
 
@@ -55,8 +56,9 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Feature | Endpoint | Status |
 |---|---|:---:|
 | Login (username + password + project) | `POST /auth/tokens` | ✅ |
-| Token validation | `GET /auth/tokens` | ✅ |
-| Logout (revoke token) | `DELETE /auth/tokens` | ✅ |
+| Token validation | `GET /auth/tokens/validate` | ✅ |
+| Logout | `DELETE /auth/tokens/current` | ✅ |
+| Switch the project of a session | `POST /session/switch-project` | ✅ |
 | JWT-based token (stateless) | Internal | ✅ |
 | Token expiry (configurable) | `AUTH_TOKEN_EXPIRE_HOURS` | ✅ |
 
@@ -65,8 +67,9 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 |---|---|:---:|
 | Create project | `POST /projects` | ✅ |
 | List projects | `GET /projects` | ✅ |
-| Show project | `GET /projects/{ref}` | ✅ |
+| Show / update project | `GET\|PUT /projects/{ref}` | ✅ |
 | Delete project | `DELETE /projects/{ref}` | ✅ |
+| Project quota | `GET\|PUT /projects/{ref}/quota` | ✅ |
 | Default project `admin` auto-bootstrap | Startup | ✅ |
 
 #### User Management
@@ -74,41 +77,63 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 |---|---|:---:|
 | Create user | `POST /users` | ✅ |
 | List users | `GET /users` | ✅ |
-| Show user | `GET /users/{ref}` | ✅ |
+| Show / update user | `GET\|PUT /users/{ref}` | ✅ |
 | Delete user | `DELETE /users/{ref}` | ✅ |
-| Role assignment (admin/member/reader) | Integrated | ✅ |
+| Role assignment per project (admin/member/reader) | `PUT\|DELETE /projects/{project}/users/{user}/roles/{role}` | ✅ |
+| List role assignments | `GET /role-assignments` | ✅ |
 | Default admin user auto-bootstrap | Startup | ✅ |
 
 #### Group Management
 | Feature | Endpoint | Status |
 |---|---|:---:|
 | Create group | `POST /groups` | ✅ |
-| List / Show / Delete group | `GET\|DELETE /groups` | ✅ |
-| Add / Remove user to/from a group | `POST\|DELETE /groups/{ref}/users` | ✅ |
+| List / Delete group | `GET\|DELETE /groups` | ✅ |
+| Add / Remove user to/from a group | `PUT\|DELETE /groups/{ref}/members/{user_ref}` | ✅ |
 
-#### Access Key (AWS-style CLI Auth)
+#### Domains
+| Feature | Endpoint | Status |
+|---|---|:---:|
+| Create / list / show / update / delete domain | `/v3/domains` | ✅ |
+| Domain quota | `GET\|PUT\|DELETE /v3/domains/{id}/quota` | ✅ |
+| Domain isolation (a domain only sees its own projects) | Integrated | ✅ |
+
+#### Service Catalog
+| Feature | Endpoint | Status |
+|---|---|:---:|
+| Register / list / delete a service | `/v3/services` | ✅ |
+| Register / list / delete an endpoint | `/v3/endpoints` | ✅ |
+| Catalog for the current token | `GET /v3/auth/catalog` | ✅ |
+| Catalog sync from the packages | `cloudx-manage catalog sync` | ✅ |
+
+#### Access Key & Application Credentials
 | Feature | Endpoint | Status |
 |---|---|:---:|
 | Create access key | `POST /access-keys` | ✅ |
 | List access keys | `GET /access-keys` | ✅ |
 | Delete access key | `DELETE /access-keys/{key_id}` | ✅ |
-| Validate access key | `POST /auth/access-key` | ✅ |
+| Token from an access key | `POST /auth/tokens/access-key` | ✅ |
+| Create / list / show / delete application credential | `/v3/users/{user}/application_credentials` | ✅ |
+| Token from an application credential | `POST /auth/tokens/application-credential` | ✅ |
+
+#### Policy & Audit
+| Feature | Endpoint | Status |
+|---|---|:---:|
+| Central RBAC policy map for all services | `GET /policy` | ✅ |
+| Check an action against the policy | `POST /policy/enforce` | ✅ |
+| Audit log | `GET\|POST /audit-logs` | ✅ |
 
 ### ❌ Missing Features (vs. the real Identity service)
 | Feature | Notes |
 |---|---|
-| **Service Catalog** | No endpoint discovery catalog |
-| **Domain** (multi-domain hierarchy) | Only one domain |
-| **Scoped tokens** (domain/system scope) | Project scope only |
+| **Scoped tokens** (domain/system scope) | Login issues project-scoped tokens only |
 | **Federation / SAML / OAuth2** | No SSO |
-| **Application credentials** | Similar to access keys, but no secret rotation |
+| **Application credential rotation** | Create and delete only |
 | **Multi-factor authentication** | None |
-| **Token audit / Fernet token** | JWT only, no Fernet |
-| **Endpoint registration** | No service catalog API |
-| **Policy (oslo.policy)** | Simple RBAC, not oslo.policy |
+| **Fernet token** | JWT only |
 | **Trust** (delegated token) | None |
+| **Policy files (oslo.policy)** | A central rule map, not oslo.policy files |
 
-**Estimated Identity similarity: ~65%**
+**Estimated Identity similarity: ~75%**
 
 ---
 
@@ -128,37 +153,52 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Pause** (hypervisor-level suspend) | `POST /servers/{ref}/pause` | ✅ |
 | **Resume** from pause | `POST /servers/{ref}/resume` | ✅ |
 | **Suspend** (managed save to disk) | `POST /servers/{ref}/suspend` | ✅ |
-| **Unsuspend** (restore from managed save) | `POST /servers/{ref}/unsuspend` | ✅ |
 | **Resize** (live vCPU + RAM hotplug) | `POST /servers/{ref}/resize` | ✅ |
+| **Confirm / revert resize** | `POST /servers/{ref}/confirmResize\|revertResize` | ✅ |
 | **Rebuild** (replace the root disk from a new image) | `POST /servers/{ref}/rebuild` | ✅ |
 | **Rescue** (boot from a rescue image) | `POST /servers/{ref}/rescue` | ✅ |
 | **Unrescue** (return to the root disk) | `POST /servers/{ref}/unrescue` | ✅ |
+| **Shelve / Unshelve** | `POST /servers/{ref}/shelve\|unshelve` | ✅ |
+| **Lock / Unlock** | `POST /servers/{ref}/lock\|unlock` | ✅ |
 | Delete server | `DELETE /servers/{ref}` | ✅ |
 | Delete + keep root volume | `DELETE /servers/{ref}?keep_root_volume=true` | ✅ |
 | Snapshot a server to an image | `POST /servers/{ref}/snapshots` | ✅ |
+
+#### Migration & Recovery
+| Feature | Endpoint | Status |
+|---|---|:---:|
+| Live migration to a target host | `POST /servers/{ref}/live-migrate` | ✅ |
+| Cold migration | `POST /servers/{ref}/migrate` | ✅ |
+| List possible target hosts | `GET /servers/{ref}/migration-candidates` | ✅ |
+| Evacuate a server from a failed host | `POST /servers/{ref}/evacuate` | ✅ |
+| Automatic recovery of protected VMs | `ha-api` (docs/ha.md) | ✅ |
 
 #### Server Console & Diagnostics
 | Feature | Endpoint | Status |
 |---|---|:---:|
 | Serial console (virsh console) | `GET /servers/{ref}/console` | ✅ |
-| Console URL (VNC info) | `GET /servers/{ref}/console-url` | ✅ |
+| Console URL (VNC info + noVNC link) | `GET /servers/{ref}/console-url` | ✅ |
+| Remote console request | `POST /servers/{ref}/remote-consoles` | ✅ |
 | Console log (PTY output) | `GET /servers/{ref}/logs` | ✅ |
+| Server metrics | `GET /servers/{ref}/metrics` | ✅ |
+| Instance action history | `GET /servers/{ref}/os-instance-actions` | ✅ |
 | SSH info (IP + keypair) | `GET /servers/{ref}/ssh-info` | ✅ |
 | Password injection via QEMU GA | `POST /servers/{ref}/password` | ✅ |
 
-#### Metadata & User Data
+#### Metadata, User Data & Tags
 | Feature | Endpoint | Status |
 |---|---|:---:|
 | Get server metadata | `GET /servers/{ref}/metadata` | ✅ |
-| Get user-data | `GET /servers/{ref}/user-data` | ✅ |
-| Set user-data | `PUT /servers/{ref}/user-data` | ✅ |
+| Get / set user-data | `GET\|PUT /servers/{ref}/user-data` | ✅ |
+| Server tags | `GET\|PUT /servers/{ref}/tags`, `PUT\|DELETE /servers/{ref}/tags/{tag}` | ✅ |
 
 #### Flavor
 | Feature | Endpoint | Status |
 |---|---|:---:|
 | Create flavor (vCPU, RAM, Disk) | `POST /flavors` | ✅ |
 | List / Show / Delete flavor | `GET\|DELETE /flavors` | ✅ |
-| Default flavors (nano, micro, tiny, small, medium) | Bootstrap | ✅ |
+| Flavor extra specs | `/flavors/{ref}/os-extra_specs` | ✅ |
+| Default flavors (tiny, small, medium) | Bootstrap | ✅ |
 
 #### Keypair
 | Feature | Endpoint | Status |
@@ -174,6 +214,15 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Policy: affinity / anti-affinity | Integrated | ✅ |
 | List / Show / Delete server group | `GET\|DELETE /server-groups` | ✅ |
 | Affinity enforcement on server create | Integrated in `POST /servers` | ✅ |
+
+#### Aggregates, Zones, Quotas & Services
+| Feature | Endpoint | Status |
+|---|---|:---:|
+| Host aggregates | `/os-aggregates` | ✅ |
+| Availability zones | `GET /os-availability-zone`, `availability_zone` on create | ✅ |
+| Compute quota | `GET\|PUT /os-quota-sets/{project}` | ✅ |
+| Absolute limits | `GET /limits` | ✅ |
+| Compute service list and update | `GET /os-services`, `PUT /os-services/{host}` | ✅ |
 
 #### Network & Volume Hotplug
 | Feature | Endpoint | Status |
@@ -193,32 +242,26 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Feature | Status |
 |---|:---:|
 | Provisioning via **libvirt/QEMU/KVM** | ✅ |
-| Boot from an **LVM block device** (`/dev/VG/LV`) | ✅ |
+| Boot from an **LVM block device** (`/dev/VG/LV`), local or over iSCSI | ✅ |
 | Boot from **Ceph RBD** (network disk) | ✅ |
 | NoCloud ISO config drive for cloud-init | ✅ |
 | Inject an SSH public key via cloud-init | ✅ |
 | Tap interface + OVS binding | ✅ |
 | OVN port binding per VM | ✅ |
 | libvirt XML auto-detect: block / network / file | ✅ |
+| Multi-node scheduling through placement (`select_destination`) | ✅ |
 
 ### ❌ Missing Features (vs. the real Compute service)
 | Feature | Notes |
 |---|---|
-| **Live Migration** | Single-node, no live migration |
-| **Evacuation** | Single-node only |
-| **Aggregates / Availability Zones** | Deliberately excluded |
-| **Separate ephemeral disk** | Volume-first, no ephemeral disk |
-| **VNC/SPICE console via noVNC** | Serial console only (VNC port exists but is not proxied yet) |
-| **Multi-node scheduling** | Single-node only |
+| **Unsuspend endpoint** | The worker has an `unsuspend` handler but compute-api has no route for it |
+| **Separate ephemeral disk** | Volume-first, no ephemeral disk (flavors carry `ephemeral_gb` but it is not used) |
+| **noVNC proxy** | `console-url` returns a noVNC link (`NOVNC_BASE_URL`, default `localhost:6080`); no package or unit in this repo starts a proxy on that port |
 | **vfat config drive format** | ISO9660 only |
 | **Trusted image certificates** | None |
-| **Cold migration / resize confirm/revert** | Resize is live-only (hotplug), no confirm/revert |
-| **Shelve / Unshelve** | None |
-| **Lock / Unlock server** | None |
-| **Server tags** | None |
 | **Trigger crash dump** | None |
 
-**Estimated Compute similarity: ~80%**
+**Estimated Compute similarity: ~85%**
 
 ---
 
@@ -231,21 +274,26 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 |---|---|:---:|
 | Create network (internal/tenant) | `POST /networks` | ✅ |
 | Create external/provider network | `POST /networks` (`external=true`) | ✅ |
+| Shared network (visible to other projects) | `POST /networks` (`shared=true`) | ✅ |
 | List / Show / Delete network | `GET\|DELETE /networks` | ✅ |
 | Create subnet with CIDR, gateway, DNS | `POST /subnets` | ✅ |
 | DHCP via OVN DHCP options | Integrated | ✅ |
 | IPAM (automatic IP allocation) | Integrated in port | ✅ |
 | List / Show / Delete subnet | `GET\|DELETE /subnets` | ✅ |
 | `no-dhcp` option for provider subnets | Integrated | ✅ |
+| Subnet pools | `/subnetpools` | ✅ |
+| IPv6 and dual-stack subnets (`ip_version: 6`, RA and address modes) | `POST /subnets` | ✅ |
 
 #### Router & L3
 | Feature | Endpoint | Status |
 |---|---|:---:|
 | Create router | `POST /routers` | ✅ |
+| Update router | `PUT\|PATCH /routers/{ref}` | ✅ |
 | Set gateway (external network) | `POST /routers/{ref}/gateway` | ✅ |
 | Add interface (subnet) | `POST /routers/{ref}/interfaces` | ✅ |
 | Remove interface | `DELETE /routers/{ref}/interfaces/{subnet}` | ✅ |
 | List / Show / Delete router | `GET\|DELETE /routers` | ✅ |
+| VPC peering between routers | `POST /routers/{ref}/peering`, `/vpc-peerings` | ✅ |
 | OVN Logical Router | OVN backend | ✅ |
 | Gateway chassis binding (OVN) | OVN backend | ✅ |
 
@@ -253,12 +301,13 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Feature | Endpoint | Status |
 |---|---|:---:|
 | Create port (manual) | `POST /ports` | ✅ |
-| List / Show / Delete port | `GET\|DELETE /ports` | ✅ |
+| List / Show / Update / Delete port | `GET\|PUT\|PATCH\|DELETE /ports` | ✅ |
 | Set security group on a port | `POST /ports/{ref}/security-groups` | ✅ |
 | Clear security groups | `POST /ports/{ref}/security-groups/clear` | ✅ |
 | Enable / Disable port security | `POST /ports/{ref}/security/enable\|disable` | ✅ |
 | Inspect a port's OVN state | `GET /ports/{ref}/ovn` | ✅ |
 | Automatic MAC address | Integrated | ✅ |
+| Trunk ports with subports | `/trunks`, `PUT /trunks/{ref}/add_subports\|remove_subports` | ✅ |
 
 #### Floating IP
 | Feature | Endpoint | Status |
@@ -268,6 +317,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Disassociate FIP | `POST /floating-ips/{ref}/disassociate` | ✅ |
 | Delete FIP | `DELETE /floating-ips/{ref}` | ✅ |
 | List / Show FIP | `GET /floating-ips` | ✅ |
+| Port forwarding on a FIP | `/floatingips/{fip}/port_forwardings` | ✅ |
 | OVN DNAT+SNAT NAT rule | OVN backend | ✅ |
 
 #### Security Group
@@ -278,11 +328,25 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Add rule (ingress/egress, TCP/UDP/ICMP/any) | `POST /security-groups/{ref}/rules` | ✅ |
 | Delete rule | `DELETE /security-group-rules/{id}` | ✅ |
 | List rules per SG | `GET /security-groups/{ref}/rules` | ✅ |
+| IPv6 rules (`ethertype`, ND allowed) | `POST /security-groups/{ref}/rules` | ✅ |
+| Rule presets | `GET /security-groups/presets`, `POST /security-groups/{ref}/apply-preset` | ✅ |
 | Automatic default SG per project | Bootstrap | ✅ |
 | OVN Port Group + ACL translation | OVN backend | ✅ |
 | Remote group (an SG referencing another SG) | Integrated | ✅ |
 | Inspect an SG's OVN state | `GET /security-groups/{ref}/ovn` | ✅ |
 | Port-level security group enforcement | OVN ACL | ✅ |
+
+#### QoS
+| Feature | Endpoint | Status |
+|---|---|:---:|
+| QoS policies with bandwidth limit rules | `/qos/policies`, `/qos/policies/{id}/bandwidth_limit_rules` | ✅ |
+| Per-port rate limit (`qos_max_kbps`, `qos_burst_kbps`) | `POST\|PUT /ports` | ✅ |
+
+#### VPN & BGP
+| Feature | Endpoint | Status |
+|---|---|:---:|
+| Site-to-site VPN: IKE policy, IPsec policy, site connection | `/vpn/ikepolicies`, `/vpn/ipsecpolicies`, `/vpn/site-connections` | ✅ |
+| BGP peers | `/bgp-peers` | ✅ |
 
 #### Provider Network (OVN Localnet)
 | Feature | Status |
@@ -300,22 +364,17 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 ### ❌ Missing Features (vs. the real Networking service)
 | Feature | Notes |
 |---|---|
-| **QoS (Quality of Service)** | No bandwidth limiting |
-| **Load Balancer (Octavia)** | Deliberately excluded |
-| **VPN as a Service** | Deliberately excluded |
+| **Load Balancer** | Separate service, see section 9 (`load-balancer-api`), not in `networking-api` |
 | **Firewall as a Service (FWaaS)** | Deliberately excluded |
 | **BGP Dynamic Routing** | Advertise and learn (BIRD, eBGP IPv4), not 1:1; see docs/bgp-dynamic-routing.md |
-| **Network Segment** | No manual VLAN/VXLAN segments |
-| **Trunk ports (VLAN-in-VLAN)** | None |
-| **IPv6** | IPv4 only |
+| **VPN as a Service** | Site-to-site only (strongSwan), see docs/vpn-site-to-site.md |
+| **Network Segment** | No manual VLAN/VXLAN segments; the segment fields in responses are empty |
 | **DNS Integration (Designate)** | Per-port `dns_name` only; zones and recordsets are in the separate DNS service (docs/dns.md) |
-| **RBAC policies per network** | Multi-tenancy by project, not network RBAC |
-| **Port forwarding** | No per-port DNAT |
-| **Address scopes** | None |
-| **Shared networks** | No network sharing between projects |
-| **Subnet pools / address pools** | Manual IPAM per subnet |
+| **RBAC policies per network** | A `shared` flag per network, no per-project RBAC entries |
+| **Address scopes** | None (the fields in responses are empty) |
+| **QoS rule types** | Bandwidth limit only |
 
-**Estimated Networking similarity: ~65%**
+**Estimated Networking similarity: ~80%**
 
 ---
 
@@ -327,13 +386,18 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 |---|---|:---:|
 | Upload image (multipart file) | `POST /images` | ✅ |
 | Import an image from a local path | `POST /images/import-path` | ✅ |
-| List images | `GET /images` | ✅ |
+| List images (filters, sort, `limit`) | `GET /images` | ✅ |
 | Show image detail | `GET /images/{ref}` | ✅ |
 | Download image | `GET /images/{ref}/download` | ✅ |
 | Delete image | `DELETE /images/{ref}` | ✅ |
 | Update image metadata | `PATCH /images/{ref}` | ✅ |
 | **Deactivate image** | `POST /images/{ref}/deactivate` | ✅ |
 | **Reactivate image** | `POST /images/{ref}/reactivate` | ✅ |
+| **Image members** (share with another project) | `/images/{ref}/members` | ✅ |
+| **Image tags** | `PUT\|DELETE /images/{ref}/tags/{tag}` | ✅ |
+| **Sign and verify** | `POST /images/{ref}/sign`, `GET /images/{ref}/verify` | ✅ |
+| **Tasks** (async import) | `/v2/tasks` | ✅ |
+| **Prefetch** to the compute nodes' cache | `POST /images/{ref}/prefetch` | ✅ |
 | **Visibility: public / private** | Integrated + project scoping | ✅ |
 | Format: `qcow2`, `raw`, `iso` | Integrated | ✅ |
 | Backend: **local file** | Default | ✅ |
@@ -344,17 +408,13 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 ### ❌ Missing Features (vs. the real Image service)
 | Feature | Notes |
 |---|---|
-| **Image member** (share an image between projects) | No explicit sharing |
-| **Image tags** | No tagging |
-| **Image signing & verification** | No Barbican integration |
-| **Import tasks** (async via the task API) | Upload is synchronous |
 | **Multi-store backend** (Ceph, Swift, HTTP) | File + MinIO only (deliberately limited) |
 | **Image encryption** | None |
-| **Pagination & advanced filtering** | Basic filters only |
-| **Image caching** (dedicated cache service) | Cache only in compute-worker |
-| **Image conversion** (automatic format conversion) | No task-based conversion |
+| **Pagination** | `limit` only, no `marker` |
+| **Dedicated image cache service** | Prefetch to compute nodes only |
+| **Image conversion** (automatic format conversion) | None |
 
-**Estimated Image similarity: ~70%**
+**Estimated Image similarity: ~78%**
 
 ---
 
@@ -370,13 +430,36 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Create a volume from a snapshot | `POST /volumes` (`snapshot=...`) | ✅ |
 | Create a volume from another volume (clone) | `POST /volumes` (`source_volume=...`) | ✅ |
 | List / Show volume | `GET /volumes` | ✅ |
-| Delete volume | `DELETE /volumes/{ref}` | ✅ |
+| Delete volume (refused while it has snapshots) | `DELETE /volumes/{ref}` | ✅ |
 | Attach a volume to a server | `POST /volumes/{ref}/attach` | ✅ |
 | Detach a volume from a server | `POST /volumes/{ref}/detach` | ✅ |
 | Force detach | `POST /volumes/{ref}/force-detach` | ✅ |
 | Detach all volumes from a server | `POST /servers/{id}/volumes/detach-all` | ✅ |
 | **Extend volume** (resize) | `POST /volumes/{ref}/extend` | ✅ |
-| **Backup volume** (snapshot as backup) | `POST /volumes/{ref}/backup` | ✅ |
+| **Multi-attach** (when created with `multiattach=true`) | `POST /volumes/{ref}/attach` | ✅ |
+| **Migrate volume** (cold, `available` volumes only) | `POST /volumes/{ref}/action` (`os-migrate_volume`) | ✅ |
+| **Volume actions** (reset status, force delete) | `POST /volumes/{ref}/action` | ✅ |
+
+#### Backup
+| Feature | Endpoint | Status |
+|---|---|:---:|
+| Backup a volume to object storage | `POST /volumes/{ref}/backup` | ✅ |
+| List / show / delete backups | `GET\|DELETE /backups` | ✅ |
+| Restore a backup into a new volume | `POST /backups/{id}/restore` | ✅ |
+| Scheduled backups | `POST\|GET /volumes/{ref}/schedules`, `DELETE /schedules/{id}` | ✅ |
+
+#### Replication
+| Feature | Endpoint | Status |
+|---|---|:---:|
+| Enable / disable replication | `POST /volumes/{ref}/enable-replication\|disable-replication` | ✅ |
+| Sync and failover | `POST /volumes/{ref}/sync-replication\|failover` | ✅ |
+
+#### Consistency Groups & Quotas
+| Feature | Endpoint | Status |
+|---|---|:---:|
+| Consistency groups | `/consistencygroups` | ✅ |
+| Consistency group snapshots | `/cgsnapshots` | ✅ |
+| Volume quota per project | `GET\|PUT\|DELETE /os-quota-sets/{project}` | ✅ |
 
 #### Volume Types — AWS EBS-style Performance Profiles
 | Feature | Endpoint | Status |
@@ -384,27 +467,31 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | List volume types (alphabetical) | `GET /volume-types` | ✅ |
 | Create volume type (admin) | `POST /volume-types` | ✅ |
 | Show volume type | `GET /volume-types/{ref}` | ✅ |
-| Update volume type (mutable fields) | `PATCH /volume-types/{ref}` | ✅ |
 | Delete volume type (admin) | `DELETE /volume-types/{ref}` | ✅ |
 | **Delete protection while the type is in use** | Embedded | ✅ |
 | **No auto-bootstrap** — an admin must create them | Design | ✅ |
 | Field `disk_type`: `sata_ssd`/`sas_ssd`/`nvme_ssd`/`sata_hdd`/`sas_hdd` | Schema | ✅ |
-| Field `max_iops` (informational, not enforced) | Schema | ✅ |
-| Field `max_throughput` MB/s (informational) | Schema | ✅ |
+| Field `max_iops` | Schema | ✅ |
+| Field `max_throughput` MB/s | Schema | ✅ |
 | Field `backend`: `lvm` or `ceph` (infrastructure) | Schema | ✅ |
+
+> The CLI calls `PATCH /volume-types/{ref}` (`cloudx volume-type update`), but `block-store-api` has no such route yet.
 
 #### Storage Backend
 | Feature | Status |
 |---|:---:|
-| **LVM backend** (block device `/dev/VG/LV`) | ✅ |
+| **LVM backend** (block device `/dev/VG/LV`), thick or thin (`lvm_type: thin`) | ✅ |
 | **Auto-create VG** from `LVM_PV_NAME` at startup | ✅ |
 | **Ceph RBD backend** (network disk `rbd:pool/image`) | ✅ |
 | Both backends can be active at the same time | ✅ |
 | `STORAGE_LVM_DRIVER` + `STORAGE_CEPH_RBD_DRIVER` toggles | ✅ |
+| LVM volumes shared over **iSCSI** between nodes (`ISCSI_EXPORT`) | ✅ |
+| NFS file driver (`qcow2` files on a shared mount) | ✅ |
 | Image-to-LVM: `qemu-img convert -O raw ... /dev/VG/LV` | ✅ |
 | Image-to-Ceph: `qemu-img convert ... rbd:pool/image` | ✅ |
 | LVM snapshot (COW, 20% size) | ✅ |
 | Ceph RBD snapshot | ✅ |
+| QoS on Ceph volumes (`rbd_qos_iops_limit`, `rbd_qos_bps_limit` from the volume type) | ✅ |
 
 #### Snapshot
 | Feature | Endpoint | Status |
@@ -424,18 +511,15 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 ### ❌ Missing Features (vs. the real Block Storage service)
 | Feature | Notes |
 |---|---|
-| **Volume encryption** | No Barbican integration |
-| **Volume migration** (between backends) | No online migration |
+| **Volume encryption** | The `encrypted` field is always false; key-manager is not wired in |
+| **Online volume migration** | Cold only, the volume must be `available` |
 | **Volume replication** | Cross-host replica, promote/failover (full copy, not 1:1) |
-| **Consistency groups** | None |
-| **Generic volume groups** | None |
-| **Quota management** | No per-project volume quota |
-| **Multi-attach volume** | 1 server per volume |
-| **iSCSI / NFS / FC backend** | LVM + Ceph only |
-| **LVM thin provisioning** | Thick LVM only |
-| **QoS enforcement** | max_iops/max_throughput are informational only, no cgroups/rate limit |
+| **Generic volume groups** | Consistency groups only |
+| **FC backend** | LVM (with iSCSI), Ceph and NFS only |
+| **QoS enforcement on LVM** | `max_iops` / `max_throughput` are applied only on Ceph; LVM volumes ignore them |
+| **Volume type update** | CLI exists, API route missing (see the note above) |
 
-**Estimated Block Storage similarity: ~75%**
+**Estimated Block Storage similarity: ~82%**
 
 ---
 
@@ -518,9 +602,11 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 #### Resource Provider
 | Feature | Endpoint | Status |
 |---|---|:---:|
-| Create resource provider | `POST /resource_providers` | ✅ |
-| List / Show resource provider | `GET /resource_providers` | ✅ |
+| Create resource provider (optionally with `parent_provider_id`) | `POST /resource_providers` | ✅ |
+| List / Show resource provider (`in_tree` and parent filters) | `GET /resource_providers` | ✅ |
 | Delete resource provider | `DELETE /resource_providers/{uuid}` | ✅ |
+| Heartbeat from a compute node | `GET\|POST /resource_providers/{uuid}/heartbeat` | ✅ |
+| List compute nodes | `GET /compute_nodes` | ✅ |
 
 #### Inventory
 | Feature | Endpoint | Status |
@@ -528,19 +614,24 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Set inventory (VCPU, MEMORY_MB, DISK_GB) | `PUT /resource_providers/{uuid}/inventories` | ✅ |
 | Get inventory | `GET /resource_providers/{uuid}/inventories` | ✅ |
 
-#### Traits
+#### Resource Classes, Traits & Aggregates
 | Feature | Endpoint | Status |
 |---|---|:---:|
+| List / show / create / delete resource class | `/resource_classes` | ✅ |
 | List traits | `GET /traits` | ✅ |
 | Set traits on a provider | `PUT /resource_providers/{uuid}/traits` | ✅ |
 | Get a provider's traits | `GET /resource_providers/{uuid}/traits` | ✅ |
+| Provider aggregates | `GET\|PUT /resource_providers/{uuid}/aggregates` | ✅ |
 
-#### Allocations
+#### Allocations & Scheduling
 | Feature | Endpoint | Status |
 |---|---|:---:|
 | Create an allocation (consume resources) | `POST /allocations` | ✅ |
 | Get allocations per consumer (server) | `GET /allocations/{consumer_uuid}` | ✅ |
 | Delete an allocation | `DELETE /allocations/{consumer_uuid}` | ✅ |
+| Allocation candidates | `GET /allocation_candidates` | ✅ |
+| Reshaper (atomic inventory + allocation move) | `POST /reshaper` | ✅ |
+| Select a destination host | `POST /scheduler/select_destination` | ✅ |
 
 #### Usages
 | Feature | Endpoint | Status |
@@ -551,15 +642,11 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 ### ❌ Missing Features (vs. the real Placement service)
 | Feature | Notes |
 |---|---|
-| **Nested Resource Providers** | No provider hierarchy |
-| **Allocation candidates** (`GET /allocation_candidates`) | No scheduling hints |
-| **Reshaper** (atomic inventory+allocation) | None |
-| **Aggregate association** | No aggregates |
 | **Forbidden traits** | No negative trait filtering |
 | **Microversion** header | No API versioning |
 | **RBAC** at the placement level | Basic auth token only |
 
-**Estimated Placement similarity: ~70%**
+**Estimated Placement similarity: ~82%**
 
 ---
 
@@ -585,9 +672,10 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Actions dropdown: pause/resume/suspend/rescue/shelve/lock/resize confirm-revert | ✅ |
 | Launch instance modal (flavor/image/network/keypair select) | ✅ |
 | Instance detail tabs: Details / Networking / Storage / Console | ✅ |
-| **noVNC console** embedded (modal + detail tab + full page) | ✅ |
+| **noVNC console** embedded (modal + detail tab + full page); needs a proxy on `NOVNC_BASE_URL` | ✅ |
 | Live console log with 2-second auto-refresh | ✅ |
 | Flavors, Key Pairs, Server Groups CRUD | ✅ |
+| Hypervisors | ✅ |
 
 #### Storage Pages
 | Feature | Status |
@@ -595,6 +683,8 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Volumes — table + create/extend/snapshot/detach modals | ✅ |
 | Volume backup to object storage + restore from the detail page | ✅ |
 | Snapshots, Volume Types (with AWS EBS presets) | ✅ |
+| Object Storage: buckets, bucket types, objects | ✅ |
+| File Store (NFS shares) | ✅ |
 
 #### Networking Pages
 | Feature | Status |
@@ -602,7 +692,20 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Networks (network + subnet modal), Routers, Floating IPs | ✅ |
 | Security Groups with a rules manager (inbound/outbound, AWS-style) | ✅ |
 | Network detail tabs (Details/Subnets/Ports) | ✅ |
-| Network topology graph (force-directed SVG) + node inspector panel | ✅ |
+| Network topology graph + node inspector panel | ✅ |
+| VPC peering, VPN gateways, BGP peers | ✅ |
+| Load balancers (create, detail) | ✅ |
+| DNS zones and records | ✅ |
+
+#### Platform Pages
+| Feature | Status |
+|---|:---:|
+| Stacks and scaling groups | ✅ |
+| Telemetry, alarms, billing, event logs | ✅ |
+| Secrets (key manager) | ✅ |
+| Kubernetes clusters, containers, databases | ✅ |
+| Queues (messaging), reservations | ✅ |
+| High availability (protected VMs, hosts) | ✅ |
 
 #### Admin & Overview
 | Feature | Status |
@@ -610,56 +713,64 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Overview dashboard: stat cards, allocation charts, quota progress bars | ✅ |
 | API Access panel (endpoint catalog from the Identity service catalog) | ✅ |
 | Admin: Projects / Users / Access Keys (tabs) | ✅ |
-| Role management with an inline role selector | ✅ |
+| Role management with an inline role selector, role assignments page | ✅ |
 | WebSocket live events → auto-refresh of the instances & volumes tables | ✅ |
 
 ### ❌ Missing Features (vs. the real CloudX Dashboard)
 | Feature | Notes |
 |---|---|
-| **Heat / Orchestration UI** | The Heat service is not implemented |
-| **Object Storage (Swift) UI** | MinIO is only an image/backup backend, not a file manager UI |
+| **Built-in noVNC proxy** | The console pages expect a proxy at `NOVNC_BASE_URL`; nothing in the packages starts one |
+| **Trunks, QoS policies, subnet pools** | API and CLI only, no dedicated page |
 
 **Estimated CloudX Dashboard similarity: ~90%**
-*(UI redesigned with the AWS Cloudscape Design System in Phase 5)*
 
 ---
 
-## 9. Services That Do Not Exist At All
+## 9. Other Services
+
+These services exist in the repository. Each is a partial re-implementation, so none is 1:1 with its counterpart.
+The linked page for each says what is and is not covered.
+
+| Cloud service | cloudx service | What it covers | What it lacks |
+|---|---|---|---|
+| **Heat** | `orchestration-api` | Stacks (create, update, preview, delete), resources, events, outputs, template; auto-scaling groups with scale-out and scale-in; docs/orchestration-vpc-bgp.md | Not 1:1; stacks run in a thread of the API process, so a restart mid-run leaves the stack `*_IN_PROGRESS` |
+| **Swift** | `object-store-api` | Buckets, objects, bucket types; `s3` or `filesystem` driver | Not 1:1; the API is its own, not Swift's |
+| **Barbican** | `key-manager-api` | Secrets and secret containers, stored encrypted with a master key | No orders or ACLs; volumes are not encrypted with it yet |
+| **Octavia** | `load-balancer-api`, `lb-worker` | Load balancers, listeners, pools, members, health monitors, L7 policies and rules, certificates; HAProxy for L7 and OVN for L4 | Not 1:1 with Octavia's API |
+| **Ceilometer / Aodh** | `telemetry-api`, `telemetry-worker` | Per-VM metrics from libvirt, alarms, rollups, retention; docs/telemetry-billing-events.md | Not 1:1 |
+| **CloudKitty** | `billing-api`, `billing-worker` | Rating sheets, usage records, invoices (PDF/HTML); docs/telemetry-billing-events.md | Not 1:1 |
+| **Panko** | `event-api`, `event-worker` | Event log, webhook subscriptions with HMAC and retry; docs/telemetry-billing-events.md | Not 1:1 |
+| **Magnum** | `k8s-engine-api` | K3s clusters in CloudX VMs, not 1:1; see docs/k8s-engine.md | |
+| **Designate** | `dns-api`, `dns-worker` | BIND9 zones, recordsets, secondaries and automatic names, not 1:1; see docs/dns.md | |
+| **Manila** | `file-store-api` | NFSv4 shares via NFS-Ganesha, access rules, extend; no snapshots, quotas or CIFS, not 1:1; see docs/file-store.md | |
+| **Zun** | `container-api` | Single containers with local storage, hardened by default; no block volumes or exec, not 1:1; see docs/container.md | |
+| **Masakari** | `ha-api`, `ha-watchdog` | Heartbeat host monitor, iSCSI fencing, evacuate and a self-fencing watchdog; no IPMI/STONITH, ha-api is a single point of failure unless you run the second instance, not 1:1; see docs/ha.md | |
+| **Trove** | `database-api` | PostgreSQL and MariaDB on a VM or container, crash-consistent volume backup and restore; no guest agent, replication or PITR, not 1:1; see docs/database.md | |
+| **Blazar** | `reservation-api` | Time-boxed flavor leases admitted against Placement VCPU / RAM; a ledger only, not enforced against compute, not 1:1; see docs/reservation.md | |
+| **Zaqar** | `messaging-api` | Queues with post, claim and delete (at-least-once) in PostgreSQL; no topics, subscriptions or webhooks, not 1:1; see docs/messaging.md | |
+
+### Not Implemented
 
 | Cloud service | Function | Notes |
 |---|---|---|
-| **Heat** | Orchestration / IaC (stack templates) | No template engine |
-| **Swift** | Object storage | MinIO is used instead as the image backend |
-| **Ironic** | Bare-metal provisioning | Single-node VMs only |
-| **Magnum** | Container orchestration (Kubernetes-as-a-Service) | K3s clusters in CloudX VMs, not 1:1; see docs/k8s-engine.md |
-| **Octavia** | Load balancer as a Service | Deliberately excluded |
-| **Barbican** | Secret / certificate management | None |
-| **Designate** | DNS as a Service | BIND9 zones, recordsets, secondaries and automatic names, not 1:1; see docs/dns.md |
-| **Manila** | Shared file system (NFS, CIFS) | NFSv4 shares via NFS-Ganesha, access rules, extend; no snapshots, quotas or CIFS, not 1:1; see docs/file-store.md |
-| **Zun** | Container service (Docker) | Single containers with local storage, hardened by default; no block volumes or exec, not 1:1; see docs/container.md |
-| **Masakari** | Instance HA / failover | Heartbeat host monitor, iSCSI fencing, evacuate and a self-fencing watchdog; no IPMI/STONITH, ha-api is a single point of failure, not 1:1; see docs/ha.md |
-| **Trove** | Database as a Service | PostgreSQL and MariaDB on a VM or container, crash-consistent volume backup and restore; no guest agent, replication or PITR, not 1:1; see docs/database.md |
-| **Blazar** | Resource reservation | Time-boxed flavor leases admitted against Placement VCPU / RAM; a ledger only, not enforced against compute, not 1:1; see docs/reservation.md |
-| **Zaqar** | Messaging / queues | Queues with post, claim and delete (at-least-once) in PostgreSQL; no topics, subscriptions or webhooks, not 1:1; see docs/messaging.md |
-| **Senlin** | Clustering service | None |
+| **Ironic** | Bare-metal provisioning | VMs only |
+| **Senlin** | Clustering service | Only the scaling groups in `orchestration-api` |
 
 ---
 
 ## 📈 Percentage Comparison Chart
 
 ```
-Service         Initial   After P1–P4   After P5
-──────────────────────────────────────────────────────
-Identity           0%  ██████████████  ~93%  ██████████████▌  ~95%
-Compute              45%  ██████████████  ~94%  ██████████████▌  ~95%
-Networking           55%  █████████████   ~88%  █████████████▌   ~90%
-Image            40%  █████████████   ~90%  █████████████▌   ~92%
-Block Storage            35%  █████████████   ~93%  █████████████▌   ~95%
-Metadata          75%  █████████████   ~92%  █████████████    ~92%
-Placement         15%  █████████████   ~92%  █████████████▌   ~93%
-CloudX Dashboard            0%  ████████████    ~85%  █████████████    ~90% (*)
-
-(*) The CloudX Dashboard was redesigned with the AWS Cloudscape Design System in Phase 5.
+Service            Estimate
+─────────────────────────────────────────────
+Identity           ███████████████░░░░░  ~75%
+Compute            █████████████████░░░  ~85%
+Networking         ████████████████░░░░  ~80%
+Image              ███████████████▌░░░░  ~78%
+Block Storage      ████████████████▌░░░  ~82%
+Metadata API       ██████████████████▌░  ~92%
+Placement          ████████████████▌░░░  ~82%
+CloudX Dashboard   ██████████████████░░  ~90%
 ```
 
 ---
@@ -673,17 +784,17 @@ The similarity percentage is calculated along three dimensions:
 3. **Authentic backend** — whether real components are used (libvirt, OVN, LVM, Ceph) rather than mocks/simulations
 
 > **Note:** The percentages are **qualitative estimates**, not a formal measurement. Some features are deliberately
-> excluded (LBaaS, multi-AZ, and so on), not because they cannot be built, but because they are outside the scope of this lab.
+> excluded (FWaaS, ephemeral disks, and so on), not because they cannot be built, but because they are outside the scope of this project.
 > CloudX has hundreds of sub-features per service; cloudx focuses on the **operational happy path** that is enough
-> to run real cloud infrastructure on a single node.
+> to run real cloud infrastructure on a handful of nodes.
+>
+> The endpoint tables list what the code exposes. They do not show that each endpoint works in every
+> deployment; a route can exist and still be only lightly tested. The roadmap and release notes
+> (`docs/releases/`) say which features were exercised on a lab.
 
 ### Deliberately Excluded Features (by design)
 | Feature | Reason |
 |---|---|
-| Aggregates / Availability Zones | Single-node, not relevant |
 | Ephemeral disk | Volume-first architecture — every disk is a persistent volume |
-| Load Balancer (Octavia) | High complexity, out of scope |
-| VPN as a Service | Out of scope |
-| FWaaS | Security groups are enough for the lab |
-| BGP Dynamic Routing | Out of scope |
+| FWaaS | Security groups are enough |
 | Multi-store image backend | File + MinIO is enough |
