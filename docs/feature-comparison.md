@@ -255,7 +255,6 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 ### ❌ Missing Features (vs. the real Compute service)
 | Feature | Notes |
 |---|---|
-| **Unsuspend endpoint** | The worker has an `unsuspend` handler but compute-api has no route for it |
 | **Separate ephemeral disk** | Volume-first, no ephemeral disk (flavors carry `ephemeral_gb` but it is not used) |
 | **noVNC proxy** | `console-url` returns a noVNC link (`NOVNC_BASE_URL`, default `localhost:6080`); no package or unit in this repo starts a proxy on that port |
 | **vfat config drive format** | ISO9660 only |
@@ -283,7 +282,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | List / Show / Delete subnet | `GET\|DELETE /subnets` | ✅ |
 | `no-dhcp` option for provider subnets | Integrated | ✅ |
 | Subnet pools | `/subnetpools` | ✅ |
-| IPv6 and dual-stack subnets (`ip_version: 6`, RA and address modes) | `POST /subnets` | ✅ |
+| IPv6 subnets (`ip_version: 6`, RA and address modes; `--ip-version 6` in the CLI) | `POST /subnets` | ✅ |
 
 #### Router & L3
 | Feature | Endpoint | Status |
@@ -369,6 +368,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Firewall as a Service (FWaaS)** | Deliberately excluded |
 | **BGP Dynamic Routing** | Advertise and learn (BIRD, eBGP IPv4), not 1:1; see docs/bgp-dynamic-routing.md |
 | **VPN as a Service** | Site-to-site only (strongSwan), see docs/vpn-site-to-site.md |
+| **IPv6 addressing by default** | A port gets an IPv6 address only when `fixed_ips` asks for it on a network that also has an IPv4 subnet. A VM on an IPv6-only network gets no address (checked on a 1.0.0 lab), and `cloudx subnet create` has no RA or address mode flags |
 | **Network Segment** | No manual VLAN/VXLAN segments; the segment fields in responses are empty |
 | **DNS Integration (Designate)** | Per-port `dns_name` only; zones and recordsets are in the separate DNS service (docs/dns.md) |
 | **RBAC policies per network** | A `shared` flag per network, no per-project RBAC entries |
@@ -468,6 +468,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | List volume types (alphabetical) | `GET /volume-types` | ✅ |
 | Create volume type (admin) | `POST /volume-types` | ✅ |
 | Show volume type | `GET /volume-types/{ref}` | ✅ |
+| Update volume type (`description`, `max_iops`, `max_throughput`, `is_public`) | `PATCH /volume-types/{ref}` | ✅ |
 | Delete volume type (admin) | `DELETE /volume-types/{ref}` | ✅ |
 | **Delete protection while the type is in use** | Embedded | ✅ |
 | **No auto-bootstrap** — an admin must create them | Design | ✅ |
@@ -475,8 +476,6 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Field `max_iops` | Schema | ✅ |
 | Field `max_throughput` MB/s | Schema | ✅ |
 | Field `backend`: `lvm` or `ceph` (infrastructure) | Schema | ✅ |
-
-> The CLI calls `PATCH /volume-types/{ref}` (`cloudx volume-type update`), but `block-store-api` has no such route yet.
 
 #### Storage Backend
 | Feature | Status |
@@ -518,7 +517,6 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Generic volume groups** | Consistency groups only |
 | **FC backend** | LVM (with iSCSI), Ceph and NFS only |
 | **QoS enforcement on LVM** | `max_iops` / `max_throughput` are applied only on Ceph; LVM volumes ignore them |
-| **Volume type update** | CLI exists, API route missing (see the note above) |
 
 **Estimated Block Storage similarity: ~82%**
 

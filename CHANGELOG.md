@@ -13,6 +13,8 @@ schema between releases, so read the upgrade steps before moving a running cloud
   that saved its guests on shutdown) is restored by the same auto-recovery pass that restarts a shut-off domain.
 - `POST /servers/{ref}/unsuspend` and `cloudx server unsuspend`: restore a `SUSPENDED` server (409 in any other state).
   `start` also restores it.
+- `PATCH /volume-types/{ref}` exists. `cloudx volume-type set` and the dashboard's API client already called it and got a 405. It changes
+  `description`, `max_iops`, `max_throughput` and `is_public`; `backend`, `disk_type` and `lvm_type` are refused with 422.
 
 ## 1.0.0 (2026-10-28)
 
