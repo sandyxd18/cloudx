@@ -7,6 +7,12 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ## Unreleased
 
 ### Fixed
+- A suspended server stays `SUSPENDED`. libvirt calls a domain suspended to disk "shut off", and the compute worker's
+  power-state sync (every 30 s) rewrote the status to `SHUTOFF`. The worker now tells a domain with a managed save apart
+  and keeps the status. A server that is `ACTIVE` in the database while its domain is suspended (after `resume`, or a host
+  that saved its guests on shutdown) is restored by the same auto-recovery pass that restarts a shut-off domain.
+- `POST /servers/{ref}/unsuspend` and `cloudx server unsuspend`: restore a `SUSPENDED` server (409 in any other state).
+  `start` also restores it.
 - A second dual-stack port on the same network no longer fails with a 502. IPv6 addresses held by other ports were not
   counted, so every automatic allocation returned the same address (`::2`) and OVN refused the duplicate. An IPv6 address
   given in `fixed_ips` was never checked either: it could be a duplicate or lie outside the subnet. It now gets the same

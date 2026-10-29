@@ -217,12 +217,21 @@ _LIBVIRT_STATE_MAP = {
 }
 
 
+def _has_managed_save(domain) -> bool:
+    try:
+        return bool(domain.hasManagedSaveImage(0))
+    except Exception:  # best-effort: if libvirt cannot say, the domain is reported shut off as before
+        return False
+
+
 def get_all_domain_states() -> dict[str, str]:
     """Snapshot every domain known to this hypervisor: {domain_name: state}.
 
-    ``state`` is one of ``RUNNING`` / ``PAUSED`` / ``SHUTOFF``. A domain
-    defined-but-not-running still shows up here as ``SHUTOFF`` — only a
-    domain absent from this dict is truly "MISSING" from the hypervisor
+    ``state`` is one of ``RUNNING`` / ``PAUSED`` / ``SUSPENDED`` / ``SHUTOFF``.
+    A domain that is not running and has no managed save shows up as ``SHUTOFF``;
+    one that was suspended to disk (``suspend_to_disk``) is shut off as far as
+    libvirt is concerned, but holds a managed save and shows up as ``SUSPENDED``.
+    Only a domain absent from this dict is truly "MISSING" from the hypervisor
     (undefined, e.g. after ``virsh undefine`` or a destroyed transient domain).
 
     Used by the power-state reconciliation loop; never raises — callers should
@@ -235,7 +244,10 @@ def get_all_domain_states() -> dict[str, str]:
         states: dict[str, str] = {}
         for domain in conn.listAllDomains():
             state_id, _reason = domain.state()
-            states[domain.name()] = _LIBVIRT_STATE_MAP.get(state_id, "SHUTOFF")
+            state = _LIBVIRT_STATE_MAP.get(state_id, "SHUTOFF")
+            if state == "SHUTOFF" and _has_managed_save(domain):
+                state = "SUSPENDED"
+            states[domain.name()] = state
         return states
     finally:
         conn.close()

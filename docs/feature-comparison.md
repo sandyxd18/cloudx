@@ -153,6 +153,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Pause** (hypervisor-level suspend) | `POST /servers/{ref}/pause` | ✅ |
 | **Resume** from pause | `POST /servers/{ref}/resume` | ✅ |
 | **Suspend** (managed save to disk) | `POST /servers/{ref}/suspend` | ✅ |
+| **Unsuspend** (restore from managed save) | `POST /servers/{ref}/unsuspend` | ✅ |
 | **Resize** (live vCPU + RAM hotplug) | `POST /servers/{ref}/resize` | ✅ |
 | **Confirm / revert resize** | `POST /servers/{ref}/confirmResize\|revertResize` | ✅ |
 | **Rebuild** (replace the root disk from a new image) | `POST /servers/{ref}/rebuild` | ✅ |
@@ -254,7 +255,6 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 ### ❌ Missing Features (vs. the real Compute service)
 | Feature | Notes |
 |---|---|
-| **Unsuspend** | No endpoint. `POST /servers/{ref}/start` restores a suspended server (libvirt restores the managed save). The worker's power-state sync reports a suspended domain as shut off, so `SUSPENDED` turns into `SHUTOFF` within `SYNC_POWER_STATE_INTERVAL` (30 s) |
 | **Separate ephemeral disk** | Volume-first, no ephemeral disk (flavors carry `ephemeral_gb` but it is not used) |
 | **noVNC proxy** | `console-url` returns a noVNC link (`NOVNC_BASE_URL`, default `localhost:6080`); no package or unit in this repo starts a proxy on that port |
 | **vfat config drive format** | ISO9660 only |

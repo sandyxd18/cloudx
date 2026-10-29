@@ -92,6 +92,18 @@ def suspend_server(ref: str, current: CurrentUser, db: DB):
     return obj_to_dict(server)
 
 
+@router.post("/servers/{ref}/unsuspend")
+def unsuspend_server(ref: str, current: CurrentUser, db: DB):
+    server = require_server(db, ref, current)
+    if server.status != "SUSPENDED":
+        raise HTTPException(status_code=409, detail=f"server must be SUSPENDED to unsuspend; current status is {server.status}")
+    server.status = "RESUMING"
+    db.commit()
+    clients.cast_to_worker("unsuspend", server_worker_payload(server))
+    db.refresh(server)
+    return obj_to_dict(server)
+
+
 @router.post("/servers/{ref}/resize")
 def resize_server(ref: str, payload: ServerResizeIn, current: CurrentUser, db: DB):
     server = require_server(db, ref, current)
