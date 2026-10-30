@@ -111,14 +111,23 @@ def clone(source_image: str, source_snap: str, dest_image: str) -> str:
     return f"rbd:{p}/{dest_image}"
 
 
-def exists(image_name: str) -> bool:
+def _info_exists(spec: str) -> bool:
     try:
-        _rbd("info", f"{pool()}/{image_name}")
+        _rbd("info", spec)
         return True
     except RuntimeError as exc:
         if "No such file or directory" in str(exc):   # rbd: error opening image ...: (2) No such file or directory
             return False
         raise
+
+
+def exists(image_name: str) -> bool:
+    return _info_exists(f"{pool()}/{image_name}")
+
+
+def snapshot_exists(path: str) -> bool:
+    """Whether the RBD snapshot a snapshot() call created is still there; path is the rbd:pool/image@snap it returned."""
+    return _info_exists(path.removeprefix("rbd:"))
 
 
 def list_images() -> list[str]:

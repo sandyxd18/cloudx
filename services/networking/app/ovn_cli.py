@@ -222,19 +222,23 @@ def dhcpv6_options_args(
     ipv6_address_mode: str | None,
     dns_nameservers: list[str] | None = None,
 ) -> list[str]:
-    """ovn-nbctl arguments for a DHCPv6 DHCP_Options row (ovn-nb(5): `server_id` of a DHCPv6 row is an Ethernet address)."""
+    """ovn-nbctl arguments for a DHCPv6 DHCP_Options row (ovn-nb(5): `server_id` of a DHCPv6 row is an Ethernet address).
+
+    The values are OVSDB strings and are quoted: an unquoted `cidr=fd42:7:7::/64` is refused by ovn-nbctl ('unexpected ":"
+    parsing string'). IPv4 has no colon, which is why the DHCPv4 arguments get away without.
+    """
     args = [
         "create",
         "DHCP_Options",
-        f"cidr={cidr}",
+        f'cidr="{cidr}"',
         "external_ids:cloudx=true",
         "external_ids:ipv6=true",
-        f"options:server_id={stable_mac(f'dhcpv6-{cidr}')}",
+        f'options:server_id="{stable_mac(f"dhcpv6-{cidr}")}"',
     ]
     if "dhcpv6-stateless" in (ipv6_ra_mode, ipv6_address_mode):
-        args.append("options:dhcpv6_stateless=true")  # addresses come from RA (SLAAC), DHCPv6 only hands out options
+        args.append('options:dhcpv6_stateless="true"')  # addresses come from RA (SLAAC), DHCPv6 only hands out options
     if dns_nameservers:
-        args.append(f"options:dns_server={{{','.join(dns_nameservers)}}}")
+        args.append(f'options:dns_server="{{{",".join(dns_nameservers)}}}"')
     return args
 
 

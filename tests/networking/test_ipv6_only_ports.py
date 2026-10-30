@@ -104,9 +104,9 @@ def test_dhcpv6_options_use_a_mac_as_server_id(lab):
     _, client, calls = lab
     r = _subnet(client, "s6", "v6only", "fd42:7:7::/64", "fd42:7:7::1", ip_version=6, ipv6_ra_mode="dhcpv6-stateful", ipv6_address_mode="dhcpv6-stateful")
     (args,) = _created_options(calls)
-    server_id = next(a for a in args if a.startswith("options:server_id=")).split("=", 1)[1]
+    server_id = next(a for a in args if a.startswith("options:server_id=")).split("=", 1)[1].strip('"')
     assert len(server_id.split(":")) == 6 and server_id != "fd42:7:7::1"
-    assert "cidr=fd42:7:7::/64" in args and "options:dhcpv6_stateless=true" not in args
+    assert 'cidr="fd42:7:7::/64"' in args and 'options:dhcpv6_stateless="true"' not in args
     assert r.json()["dhcp_options_id"] == "dhcp-uuid-1"
 
 
@@ -115,14 +115,25 @@ def test_stateless_adds_the_flag_and_pure_slaac_creates_nothing(lab):
     _subnet(client, "a", "v6only", "fd42:1::/64", ip_version=6, ipv6_ra_mode="dhcpv6-stateless", ipv6_address_mode="dhcpv6-stateless")
     _subnet(client, "b", "dual", "fd42:2::/64", ip_version=6, ipv6_ra_mode="slaac", ipv6_address_mode="slaac")
     created = _created_options(calls)
-    assert len(created) == 1 and "options:dhcpv6_stateless=true" in created[0]
+    assert len(created) == 1 and 'options:dhcpv6_stateless="true"' in created[0]
 
 
 def test_dns_servers_reach_the_dhcpv6_row(lab):
     _, client, calls = lab
     _subnet(client, "s6", "v6only", "fd42:7:7::/64", ip_version=6, dns_nameservers=["2001:4860:4860::8888"])
     (args,) = _created_options(calls)
-    assert "options:dns_server={2001:4860:4860::8888}" in args
+    assert 'options:dns_server="{2001:4860:4860::8888}"' in args
+
+
+def test_every_value_with_a_colon_in_the_dhcpv6_row_is_quoted(lab):
+    # ovn-nbctl refuses an unquoted `cidr=fd42:7:7::/64` ('unexpected ":" parsing string'); the row was never created on the
+    # lab with 1.0.1~rc1, and only the error log said so. The DHCPv4 row has no colon and needs no quotes.
+    networking, _, _ = lab
+    args = networking.ovn_cli.dhcpv6_options_args("fd42:7:7::/64", "dhcpv6-stateless", "dhcpv6-stateless", ["2001:4860:4860::8888"])
+    for arg in args[2:]:
+        _, _, value = arg.partition("=")
+        if ":" in value:
+            assert value.startswith('"') and value.endswith('"'), arg
 
 
 def test_a_port_is_bound_to_the_dhcpv6_options_without_failing_when_ovn_refuses(lab, monkeypatch):

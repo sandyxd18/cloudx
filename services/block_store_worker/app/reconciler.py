@@ -92,10 +92,15 @@ def _backend_exists_for_snapshot(snap: dict) -> bool | None:
             log.warning("[reconcile] cannot check lvm object %s: %s", name, exc)
             return None  # unknown: never treated as 'missing'
     if backend == "ceph":
+        # a Ceph snapshot is pool/image@snap, not an image called snap-<id>: look for it by the path stored when it was
+        # made (checking the image name found nothing, so every Ceph snapshot was marked error within a minute)
+        path = snap.get("path") or ""
+        if not path:
+            return None  # nothing to look for: unknown, never treated as 'missing'
         try:
-            return ceph.exists(name)
+            return ceph.snapshot_exists(path)
         except Exception as exc:
-            log.warning("[reconcile] cannot check ceph object %s: %s", name, exc)
+            log.warning("[reconcile] cannot check ceph snapshot %s: %s", path, exc)
             return None  # unknown: never treated as 'missing'
     path = snap.get("path", "")
     if path:
