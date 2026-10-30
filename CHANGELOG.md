@@ -4,10 +4,11 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
-## 1.0.1 (2026-10-30)
+## 1.0.1-rc1 (2026-10-30)
 
-Fixes for what the 1.0.0 cloud showed on the lab, and IPv6 for servers. No schema change. The notes, with the upgrade
-steps and what was and was not tested, are in `docs/releases/v1.0.1.md`.
+Release candidate: it is installed on the lab before the final 1.0.1 is tagged. Fixes for what the 1.0.0 cloud showed
+on the lab, and IPv6 for servers. No schema change. The notes, with the upgrade steps and what was and was not
+tested, are in `docs/releases/v1.0.1.md`.
 
 ### Added
 - A server on a network that has only an IPv6 subnet gets an address. `create_port` only looked at the IPv4 subnet, so
