@@ -18,10 +18,12 @@ def bootstrap_default_security_group() -> None:
             db.refresh(group)
         ensure_security_group_port_group(group)
 
-        def ensure_rule(direction: str, protocol: str, port_min: int | None = None, remote_ip_prefix: str | None = None):
+        def ensure_rule(direction: str, protocol: str, port_min: int | None = None, remote_ip_prefix: str | None = None,
+                        ethertype: str = "IPv4"):
             existing = db.scalar(
                 select(SecurityGroupRule).where(
                     SecurityGroupRule.security_group_id == group.id,
+                    SecurityGroupRule.ethertype == ethertype,
                     SecurityGroupRule.direction == direction,
                     SecurityGroupRule.protocol == protocol,
                     SecurityGroupRule.port_min == (str(port_min) if port_min is not None else None),
@@ -34,6 +36,7 @@ def bootstrap_default_security_group() -> None:
                 SecurityGroupRule(
                     security_group_id=group.id,
                     direction=direction,
+                    ethertype=ethertype,
                     protocol=protocol,
                     port_min=str(port_min) if port_min is not None else None,
                     port_max=str(port_min) if port_min is not None else None,
@@ -42,11 +45,13 @@ def bootstrap_default_security_group() -> None:
                 )
             )
 
-        ensure_rule("egress", "any", remote_ip_prefix="0.0.0.0/0")
-        if DEFAULT_SECURITY_GROUP_ALLOW_SSH:
-            ensure_rule("ingress", "tcp", 22, "0.0.0.0/0")
-        if DEFAULT_SECURITY_GROUP_ALLOW_ICMP:
-            ensure_rule("ingress", "icmp", remote_ip_prefix="0.0.0.0/0")
+        # the same rules for both families; a restart adds the IPv6 ones to a default group made before they existed
+        for ethertype, anywhere in (("IPv4", "0.0.0.0/0"), ("IPv6", "::/0")):
+            ensure_rule("egress", "any", remote_ip_prefix=anywhere, ethertype=ethertype)
+            if DEFAULT_SECURITY_GROUP_ALLOW_SSH:
+                ensure_rule("ingress", "tcp", 22, anywhere, ethertype)
+            if DEFAULT_SECURITY_GROUP_ALLOW_ICMP:
+                ensure_rule("ingress", "icmp", remote_ip_prefix=anywhere, ethertype=ethertype)
         group.updated_at = now()
         db.commit()
         db.refresh(group)

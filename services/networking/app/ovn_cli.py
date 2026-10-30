@@ -299,6 +299,15 @@ def nat_rule_args(router_name: str, external_ip: str, logical_ip: str) -> list[s
 def port_group_name(security_group_id: str) -> str:
     return f"pg_{security_group_id.replace('-', '')}"
 
+def _matches_any_ipv6(prefix: str, v6: bool) -> bool:
+    """`::/0` adds nothing to `ip6`. ovn-nbctl does not check the match, and OVN drops an ACL it cannot compile without
+    saying so, so the one family not yet proven with a /0 prefix gets the plain `ip6` that the drop ACL already uses."""
+    try:
+        return v6 and ipaddress.ip_network(prefix, strict=False).prefixlen == 0
+    except ValueError:
+        return False
+
+
 def acl_match(security_group_id: str, rule: SecurityGroupRule) -> str:
     port_field = "outport" if rule.direction == "ingress" else "inport"
     v6 = rule.ethertype == "IPv6"
@@ -316,7 +325,7 @@ def acl_match(security_group_id: str, rule: SecurityGroupRule) -> str:
             parts.append(f"{rule.port_min} <= {dst_field} && {dst_field} <= {rule.port_max}")
         else:
             parts.append(f"{dst_field} == {rule.port_min}")
-    if rule.remote_ip_prefix:
+    if rule.remote_ip_prefix and not _matches_any_ipv6(rule.remote_ip_prefix, v6):
         parts.append(f"{remote_field} == {rule.remote_ip_prefix}")
     if rule.remote_group_id:
         remote_port_field = "inport" if rule.direction == "ingress" else "outport"

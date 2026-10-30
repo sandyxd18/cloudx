@@ -1,5 +1,6 @@
 """A network with only an IPv6 subnet used to give its ports no address at all: create_port looked for an IPv4 subnet
-and, finding none, left fixed_ip empty. Now a port gets one address from each family the network has a subnet for."""
+and, finding none, left fixed_ip empty. Now such a port gets an IPv6 address; on a network that also has an IPv4 subnet
+IPv6 stays opt-in through fixed_ips."""
 import pytest
 from fastapi.testclient import TestClient
 from shared.auth_middleware import require_auth
@@ -52,13 +53,17 @@ def test_a_port_on_an_ipv6_only_network_gets_an_ipv6_address(lab):
     assert (a["ipv6_cidr"], a["ipv6_gateway_ip"]) == ("fd42:7:7::/64", "fd42:7:7::1")
 
 
-def test_a_dual_stack_network_gives_both_families_without_being_asked(lab):
+def test_a_dual_stack_network_stays_opt_in_for_ipv6(lab):
+    # only a network with nothing else to offer gives IPv6 unasked; where IPv4 exists, IPv6 has to be requested
     _, client, _ = lab
-    _subnet(client, "s4", "dual", "10.99.0.0/24", "10.99.0.1")
-    _subnet(client, "s6", "dual", "fd42:8:8::/64", "fd42:8:8::1")
-    port = _port(client, "p1", "dual").json()
-    assert (port["fixed_ip"], port["ipv6_address"]) == ("10.99.0.2", "fd42:8:8::2")
-    assert (port["cidr"], port["ipv6_cidr"]) == ("10.99.0.0/24", "fd42:8:8::/64")
+    v4 = _subnet(client, "s4", "dual", "10.99.0.0/24", "10.99.0.1").json()
+    v6 = _subnet(client, "s6", "dual", "fd42:8:8::/64", "fd42:8:8::1").json()
+    plain = _port(client, "p1", "dual").json()
+    assert (plain["fixed_ip"], plain["ipv6_address"], plain["ipv6_cidr"]) == ("10.99.0.2", None, None)
+    both = _port(client, "p2", "dual", fixed_ips=[{"subnet_id": v4["id"]}, {"subnet_id": v6["id"]}]).json()
+    assert (both["fixed_ip"], both["ipv6_address"], both["ipv6_cidr"]) == ("10.99.0.3", "fd42:8:8::2", "fd42:8:8::/64")
+    only4 = _port(client, "p3", "dual", fixed_ips=[{"subnet_id": v4["id"]}]).json()
+    assert only4["ipv6_address"] is None
 
 
 def test_an_ipv4_only_network_is_unchanged(lab):
@@ -68,13 +73,12 @@ def test_an_ipv4_only_network_is_unchanged(lab):
     assert (port["fixed_ip"], port["ipv6_address"], port["ipv6_cidr"]) == ("10.98.0.2", None, None)
 
 
-def test_asking_for_an_address_turns_the_automatic_ipv6_off(lab):
-    # the callers that pick their own IPv4 (a router interface, a VIP) should not suddenly hold an IPv6 address too
+def test_a_pinned_ipv4_address_on_a_dual_stack_network_gets_no_ipv6(lab):
+    # callers that pick their own IPv4 (a router interface, a VIP) are untouched
     _, client, _ = lab
-    v4 = _subnet(client, "s4", "dual", "10.99.0.0/24", "10.99.0.1").json()
+    _subnet(client, "s4", "dual", "10.99.0.0/24", "10.99.0.1")
     _subnet(client, "s6", "dual", "fd42:8:8::/64", "fd42:8:8::1")
     assert _port(client, "p1", "dual", fixed_ip="10.99.0.50").json()["ipv6_address"] is None
-    assert _port(client, "p2", "dual", fixed_ips=[{"subnet_id": v4["id"]}]).json()["ipv6_address"] is None
 
 
 def test_an_ipv6_subnet_does_not_need_a_gateway_but_an_ipv4_one_does(lab):

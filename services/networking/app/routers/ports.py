@@ -60,8 +60,8 @@ def create_port(payload: PortIn, current: UserOrInternal, db: DB):
     security_group_ids = payload.security_group_ids or ["default"]
     groups = [require_owned(current, db, SecurityGroup, group_id, "security-group") for group_id in security_group_ids]
 
-    # IPv6: fixed_ips can ask for it; with no address asked for at all, the port gets one address from each family
-    # the network has a subnet for (so a network with only an IPv6 subnet works without naming it)
+    # IPv6: fixed_ips can ask for it. A network with no IPv4 subnet has nothing else to give, so a port on it gets an
+    # IPv6 address without naming one; on a dual-stack network IPv6 stays opt-in (fixed_ips), as before
     ipv6_address: str | None = None
     ipv6_subnet: Subnet | None = None
     if payload.fixed_ips:
@@ -73,7 +73,7 @@ def create_port(payload: PortIn, current: UserOrInternal, db: DB):
                 if entry_subnet and entry_subnet.ip_version == 6:
                     ipv6_address = allocate_fixed_ip(db, entry_subnet, entry_ip)
                     ipv6_subnet = entry_subnet
-    elif not requested_ip:
+    elif not requested_ip and subnet is None:
         ipv6_subnet = db.scalar(select(Subnet).where(Subnet.network_id == network.id).where(Subnet.ip_version == 6).order_by(Subnet.created_at))
         if ipv6_subnet:
             ipv6_address = allocate_fixed_ip(db, ipv6_subnet)
