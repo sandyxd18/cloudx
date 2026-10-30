@@ -3,7 +3,7 @@
 > This document maps the features implemented in **cloudx** against a standard private cloud specification,
 > with an estimated similarity percentage.
 >
-> **Updated:** October 2026, for release 1.0.0. The endpoint tables were checked against the routes in
+> **Updated:** October 2026, for release 1.0.1. The endpoint tables were checked against the routes in
 > `services/*/app`; the percentages are estimates (see [Assessment Methodology](#-assessment-methodology)).
 
 ---

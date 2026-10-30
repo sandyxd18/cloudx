@@ -29,7 +29,7 @@ lsblk "$STORAGE_DISK"
 Download the 47 `.deb` files of a release (about 60 MB) into one directory, for example `~/cloudx-debs`. `SHA256SUMS` lists the file names, so it is also the index to download from; no GitHub account or CLI is needed:
 
 ```bash
-TAG=v1.0.0                                      # the release you want
+TAG=v1.0.1                                      # the release you want
 BASE=https://github.com/sandyxd18/cloudx/releases/download/$TAG
 mkdir -p ~/cloudx-debs && cd ~/cloudx-debs
 curl -fsSLO $BASE/SHA256SUMS

@@ -4,7 +4,24 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
-## Unreleased
+## 1.0.1 (2026-10-30)
+
+Fixes for what the 1.0.0 cloud showed on the lab, and IPv6 for servers. No schema change. The notes, with the upgrade
+steps and what was and was not tested, are in `docs/releases/v1.0.1.md`.
+
+### Added
+- A server on a network that has only an IPv6 subnet gets an address. `create_port` only looked at the IPv4 subnet, so
+  the port had no address and the server showed none. A port on such a network now gets an IPv6 address (on a network
+  that also has an IPv4 subnet IPv6 stays opt-in through `fixed_ips`), the server record shows the IPv6 address when
+  there is no IPv4 one, and the config drive and `network_data.json` carry the IPv6 address, prefix and gateway. Config
+  drives write `dhcp4: false` for an IPv6-only port instead of waiting for DHCPv4. `local-ipv4` never returns an IPv6
+  address.
+- `POST /servers/{ref}/unsuspend` and `cloudx server unsuspend`: restore a `SUSPENDED` server (409 in any other state).
+  `start` also restores it.
+- CLI: `subnet create` takes `--ipv6-ra-mode` and `--ipv6-address-mode` and works out the IP version from `--cidr`;
+  `security-group rule add` takes `--ethertype` (IPv6 when `--remote-ip` is an IPv6 prefix).
+- `scripts/check_feature_comparison.py`, run by the tests: it fails when `docs/feature-comparison.md` names an endpoint
+  that is not a route.
 
 ### Changed
 - The default security group has the same rules for IPv6 as for IPv4: egress to `::/0`, and ingress for ssh and ICMPv6
@@ -14,36 +31,39 @@ schema between releases, so read the upgrade steps before moving a running cloud
   prefix is `::/0` is written as plain `ip6`, since OVN drops an ACL it cannot compile without saying so.
 
 ### Fixed
-- A server on a network that has only an IPv6 subnet gets an address. `create_port` only looked at the IPv4 subnet, so
-  the port had no address and the server showed none. A port on such a network now gets an IPv6 address (on a network
-  that also has an IPv4 subnet IPv6 stays opt-in through `fixed_ips`), the server record shows the IPv6 address when
-  there is no IPv4 one, and the config drive and `network_data.json` carry the IPv6 address, prefix and gateway. Config
-  drives write `dhcp4: false` for an IPv6-only port instead of waiting for DHCPv4. `local-ipv4` never returns an IPv6
-  address.
+- A suspended server stays `SUSPENDED`. libvirt calls a domain suspended to disk "shut off", and the compute worker's
+  power-state sync (every 30 s) rewrote the status to `SHUTOFF`. The worker now tells a domain with a managed save apart
+  and keeps the status. A server that is `ACTIVE` in the database while its domain is suspended (after `resume`, or a host
+  that saved its guests on shutdown) is restored by the same auto-recovery pass that restarts a shut-off domain.
+- A second dual-stack port on the same network no longer fails with a 502. IPv6 addresses held by other ports were not
+  counted, so every automatic allocation returned the same address (`::2`) and OVN refused the duplicate. An IPv6 address
+  given in `fixed_ips` was never checked either: it could be a duplicate or lie outside the subnet. It now gets the same
+  checks as an IPv4 address (400 outside the subnet or not an address, 409 when taken or the gateway).
 - The DHCPv6 options row of an IPv6 subnet used an IPv6 address as `server_id`; OVN wants an Ethernet address, so the
   row was refused (the error was only logged) and `dhcp_options_id` stayed empty. It now uses a MAC, adds
   `dhcpv6_stateless` for the stateless mode and the subnet's DNS servers, and ports on the subnet are bound to it with
   `lsp-set-dhcpv6-options`. Not run against OVN: the binding is best effort and cannot fail a port. An IPv6 subnet no
   longer needs a gateway.
-- `cloudx subnet create --dns-nameserver` was answered with HTTP 422 (a joined string was sent for a list field).
-- CLI: `subnet create` takes `--ipv6-ra-mode` and `--ipv6-address-mode` and works out the IP version from `--cidr`;
-  `security-group rule add` takes `--ethertype` (IPv6 when `--remote-ip` is an IPv6 prefix).
-- A suspended server stays `SUSPENDED`. libvirt calls a domain suspended to disk "shut off", and the compute worker's
-  power-state sync (every 30 s) rewrote the status to `SHUTOFF`. The worker now tells a domain with a managed save apart
-  and keeps the status. A server that is `ACTIVE` in the database while its domain is suspended (after `resume`, or a host
-  that saved its guests on shutdown) is restored by the same auto-recovery pass that restarts a shut-off domain.
-- `POST /servers/{ref}/unsuspend` and `cloudx server unsuspend`: restore a `SUSPENDED` server (409 in any other state).
-  `start` also restores it.
-- A second dual-stack port on the same network no longer fails with a 502. IPv6 addresses held by other ports were not
-  counted, so every automatic allocation returned the same address (`::2`) and OVN refused the duplicate. An IPv6 address
-  given in `fixed_ips` was never checked either: it could be a duplicate or lie outside the subnet. It now gets the same
-  checks as an IPv4 address (400 outside the subnet or not an address, 409 when taken or the gateway).
+- `PATCH /volume-types/{ref}` exists. `cloudx volume-type set` and the dashboard's API client already called it and got a 405. It changes
+  `description`, `max_iops`, `max_throughput` and `is_public`; `backend`, `disk_type` and `lvm_type` are refused with 422.
 - The CLI finds the auth API again after `cloudx auth login --auth-url`. The address was written to `~/.cloudx/config` and
   never read back, so on any machine other than the controller every later command went to `127.0.0.1:8005` unless
   `CLOUDX_AUTH_URL` was exported. The `[default]` section that `auth login` writes (`auth_url`, `project`, `output`) is
   now read; `CLOUDX_AUTH_URL` still wins.
-- `PATCH /volume-types/{ref}` exists. `cloudx volume-type set` and the dashboard's API client already called it and got a 405. It changes
-  `description`, `max_iops`, `max_throughput` and `is_public`; `backend`, `disk_type` and `lvm_type` are refused with 422.
+- `cloudx subnet create --dns-nameserver` was answered with HTTP 422 (a joined string was sent for a list field).
+- `cloudx server volume attach` and `detach` posted to the compute endpoint, which also needs the volume's path, and were
+  answered with HTTP 422. They now call block-store, like `cloudx volume attach` and `detach`.
+- Deleting a volume that still has snapshots is refused (409). It used to drop the database row and leave the backend
+  volume behind for good (on Ceph, `rbd rm` refuses an image that has snapshots).
+- Deleting a Ceph snapshot removes the RBD snapshot (`rbd snap rm pool/image@snap`). The worker ran `rbd rm` on a name
+  that does not exist, logged a warning and dropped the record, so the snapshot stayed on the cluster.
+
+### Documentation
+- A tutorial for a highly available control plane with LVM and Ceph volumes (`docs/tutorials/ha-control-plane.md`); the
+  docs are organised by deployment and storage backend, with notes on which nodes join the Ceph networks and where iSCSI
+  should run in production.
+- `docs/feature-comparison.md` was rewritten against the code (it described phases 1 to 5 and listed shipped features as
+  missing); `docs/ipam.md` and `docs/security-group.md` cover IPv6.
 
 ## 1.0.0 (2026-10-28)
 
