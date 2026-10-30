@@ -216,45 +216,53 @@ def dhcp_options_args(cidr: str, gateway: str, dns_nameservers: list[str], serve
         args.append(f"options:dns_server={{{','.join(dns_nameservers)}}}")
     return args
 
-def _ensure_dhcpv6_options(
+def dhcpv6_options_args(
     cidr: str,
-    gateway: str | None,
     ipv6_ra_mode: str | None,
     ipv6_address_mode: str | None,
+    dns_nameservers: list[str] | None = None,
+) -> list[str]:
+    """ovn-nbctl arguments for a DHCPv6 DHCP_Options row (ovn-nb(5): `server_id` of a DHCPv6 row is an Ethernet address)."""
+    args = [
+        "create",
+        "DHCP_Options",
+        f"cidr={cidr}",
+        "external_ids:cloudx=true",
+        "external_ids:ipv6=true",
+        f"options:server_id={stable_mac(f'dhcpv6-{cidr}')}",
+    ]
+    if "dhcpv6-stateless" in (ipv6_ra_mode, ipv6_address_mode):
+        args.append("options:dhcpv6_stateless=true")  # addresses come from RA (SLAAC), DHCPv6 only hands out options
+    if dns_nameservers:
+        args.append(f"options:dns_server={{{','.join(dns_nameservers)}}}")
+    return args
+
+
+def _ensure_dhcpv6_options(
+    cidr: str,
+    ipv6_ra_mode: str | None,
+    ipv6_address_mode: str | None,
+    dns_nameservers: list[str] | None = None,
 ) -> str | None:
     """
     Set up OVN DHCPv6 options for an IPv6 subnet.
 
     Mode mapping:
-      dhcpv6-stateful  → OVN DHCPv6 options with dhcpv6_stateful_opt
-      dhcpv6-stateless → OVN DHCPv6 options without address (SLAAC for addr, DHCPv6 for opts)
-      slaac            → Router Advertisement only — no OVN DHCP_Options entry needed
+      dhcpv6-stateful  → DHCP_Options row; a port bound to it (lsp-set-dhcpv6-options) is offered its own address
+      dhcpv6-stateless → same row with dhcpv6_stateless=true (options only, the address comes from RA)
+      slaac            → Router Advertisement only — no DHCP_Options entry needed
+      not given        → treated as dhcpv6-stateful
 
-    Returns the OVN DHCP_Options UUID or None.
+    Returns the OVN DHCP_Options UUID, or None when there is none or OVN refused it (the addresses are still
+    allocated and written to the port, and cloud-init configures them from the config drive).
     """
     if ipv6_ra_mode == "slaac" and ipv6_address_mode == "slaac":
-        # Pure SLAAC — no DHCP_Options in OVN, RA handles everything
         return None
-
-    if not gateway:
-        # No gateway → cannot set up server_id for DHCPv6
-        return None
-
     try:
-        dhcp_uuid = ovn(
-            "create",
-            "DHCP_Options",
-            f"cidr={cidr}",
-            "external_ids:cloudx=true",
-            f"external_ids:ipv6=true",
-            f"options:server_id={gateway}",
-        )
-        return dhcp_uuid
+        return ovn(*dhcpv6_options_args(cidr, ipv6_ra_mode, ipv6_address_mode, dns_nameservers))
     except Exception as exc:
         import logging
-        logging.getLogger("networking-api").warning(
-            "DHCPv6 options setup failed for %s: %s", cidr, exc
-        )
+        logging.getLogger("networking-api").warning("DHCPv6 options setup failed for %s: %s", cidr, exc)
         return None
 
 def router_external_port_names(router_name: str) -> tuple[str, str]:

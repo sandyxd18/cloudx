@@ -33,3 +33,13 @@ def test_rule_add_sends_the_port_names_the_api_schema_knows(monkeypatch):
     assert (sent[0]["port_min"], sent[0]["port_max"]) == (22, 22)
     assert (sent[1]["port_min"], sent[1]["port_max"]) == (8000, 8100)
     assert not any("port_range_min" in payload or "port_range_max" in payload for payload in sent)
+
+
+def test_rule_add_ethertype_follows_the_prefix_unless_given(monkeypatch):
+    sent = []
+    monkeypatch.setattr(network, "_api", lambda method, url, profile="default", **kw: sent.append(kw["json"]) or {})
+    runner = CliRunner()
+    for extra in ([], ["--remote-ip", "fd42:7:7::/64"], ["--ethertype", "IPv6"], ["--ethertype", "IPv6", "--remote-ip", "fd42::/16"]):
+        assert runner.invoke(cli, ["security-group", "rule", "add", "sg1", "--port", "22", *extra]).exit_code == 0
+    assert [(p["ethertype"], p["remote_ip_prefix"]) for p in sent] == [
+        ("IPv4", "0.0.0.0/0"), ("IPv6", "fd42:7:7::/64"), ("IPv6", "::/0"), ("IPv6", "fd42::/16")]

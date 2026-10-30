@@ -169,6 +169,14 @@ def _prefix_len(cidr: str | None) -> int | None:
         return None
 
 
+def _ipv4(address: str | None) -> str | None:
+    """The server record shows the IPv6 address when a port has no IPv4 one; network_data's ipv4 entry must not."""
+    try:
+        return address if address and ipaddress.ip_address(address).version == 4 else None
+    except ValueError:
+        return None
+
+
 def network_data_json(metadata: dict) -> dict:
     """Build network_data.json.
 
@@ -177,7 +185,7 @@ def network_data_json(metadata: dict) -> dict:
     """
     primary_port = metadata.get("network") or {}
     port_id = metadata.get("port_id") or primary_port.get("id")
-    fixed_ip = metadata.get("fixed_ip") or primary_port.get("fixed_ip") or primary_port.get("ip_address")
+    fixed_ip = _ipv4(metadata.get("fixed_ip") or primary_port.get("fixed_ip") or primary_port.get("ip_address"))
     mac = metadata.get("mac_address") or primary_port.get("mac_address")
     cidr = primary_port.get("cidr")
     gateway = primary_port.get("gateway_ip")
@@ -187,7 +195,7 @@ def network_data_json(metadata: dict) -> dict:
     networks = []
     services = []
 
-    def _add_link_and_network(p_id, p_mac, p_ip, p_cidr, p_gw, p_dns, idx):
+    def _add_link_and_network(p_id, p_mac, p_ip, p_cidr, p_gw, p_dns, idx, p_port=None):
         link_id = f"tap{p_id[:8]}" if p_id else f"eth{idx}"
         link = {
             "id": link_id,
@@ -197,25 +205,41 @@ def network_data_json(metadata: dict) -> dict:
         }
         links.append(link)
 
-        net = {
-            "id": f"network{idx}",
-            "type": "ipv4",
-            "link": link_id,
-            "ip_address": p_ip or "",
-            "netmask": _netmask(p_cidr),
-            "routes": [],
-            "network_id": primary_port.get("network_id", "") if idx == 0 else "",
-        }
-        if p_gw:
-            net["routes"].append({"network": "0.0.0.0", "netmask": "0.0.0.0", "gateway": p_gw})
-        networks.append(net)
+        ipv6 = (p_port or {}).get("ipv6_address")
+        if p_ip or not ipv6:  # an IPv6-only port has no IPv4 entry
+            net = {
+                "id": f"network{idx}",
+                "type": "ipv4",
+                "link": link_id,
+                "ip_address": p_ip or "",
+                "netmask": _netmask(p_cidr),
+                "routes": [],
+                "network_id": primary_port.get("network_id", "") if idx == 0 else "",
+            }
+            if p_gw:
+                net["routes"].append({"network": "0.0.0.0", "netmask": "0.0.0.0", "gateway": p_gw})
+            networks.append(net)
+        if ipv6:
+            net6 = {
+                "id": f"network{idx}-ipv6",
+                "type": "ipv6",
+                "link": link_id,
+                "ip_address": ipv6,
+                "netmask": _netmask(p_port.get("ipv6_cidr")),
+                "routes": [],
+                "network_id": primary_port.get("network_id", "") if idx == 0 else "",
+            }
+            if p_port.get("ipv6_gateway_ip"):
+                net6["routes"].append({"network": "::", "netmask": "::", "gateway": p_port["ipv6_gateway_ip"]})
+            networks.append(net6)
+            p_dns = [*(p_dns if isinstance(p_dns, list) else [p_dns] if p_dns else []), *(p_port.get("ipv6_dns_nameservers") or [])]
 
         for dns in (p_dns if isinstance(p_dns, list) else [p_dns] if p_dns else []):
             entry = {"type": "dns", "address": dns}
             if entry not in services:
                 services.append(entry)
 
-    _add_link_and_network(port_id, mac, fixed_ip, cidr, gateway, dns_list, 0)
+    _add_link_and_network(port_id, mac, fixed_ip, cidr, gateway, dns_list, 0, primary_port)
 
     # Extra ports (multi-NIC): metadata stores them as extra_ports list if present
     for idx, extra_port in enumerate(metadata.get("extra_ports") or [], start=1):
@@ -227,6 +251,7 @@ def network_data_json(metadata: dict) -> dict:
             extra_port.get("gateway_ip"),
             extra_port.get("dns_nameservers") or [],
             idx,
+            extra_port,
         )
 
     return {"links": links, "networks": networks, "services": services}

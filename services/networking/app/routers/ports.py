@@ -60,8 +60,10 @@ def create_port(payload: PortIn, current: UserOrInternal, db: DB):
     security_group_ids = payload.security_group_ids or ["default"]
     groups = [require_owned(current, db, SecurityGroup, group_id, "security-group") for group_id in security_group_ids]
 
-    # Dual-stack: look for an IPv6 subnet on the same network if fixed_ips requests it
+    # IPv6: fixed_ips can ask for it; with no address asked for at all, the port gets one address from each family
+    # the network has a subnet for (so a network with only an IPv6 subnet works without naming it)
     ipv6_address: str | None = None
+    ipv6_subnet: Subnet | None = None
     if payload.fixed_ips:
         for fip_entry in payload.fixed_ips:
             entry_subnet_id = fip_entry.get("subnet_id")
@@ -70,11 +72,16 @@ def create_port(payload: PortIn, current: UserOrInternal, db: DB):
                 entry_subnet = db.get(Subnet, entry_subnet_id)
                 if entry_subnet and entry_subnet.ip_version == 6:
                     ipv6_address = allocate_fixed_ip(db, entry_subnet, entry_ip)
+                    ipv6_subnet = entry_subnet
+    elif not requested_ip:
+        ipv6_subnet = db.scalar(select(Subnet).where(Subnet.network_id == network.id).where(Subnet.ip_version == 6).order_by(Subnet.created_at))
+        if ipv6_subnet:
+            ipv6_address = allocate_fixed_ip(db, ipv6_subnet)
 
     port = Port(
         name=payload.name,
         network_id=network.id,
-        subnet_id=subnet.id if subnet else None,
+        subnet_id=(subnet or ipv6_subnet).id if (subnet or ipv6_subnet) else None,
         mac_address=port_mac,
         ip_address=fixed_ip,
         fixed_ip=fixed_ip,
@@ -103,6 +110,9 @@ def create_port(payload: PortIn, current: UserOrInternal, db: DB):
 
     if subnet and subnet.dhcp_options_id:
         ovn_cli.ovn("lsp-set-dhcpv4-options", port.name, subnet.ovn_dhcp_options_uuid or subnet.dhcp_options_id)
+    if ipv6_address and ipv6_subnet and (ipv6_subnet.ovn_dhcp_options_uuid or ipv6_subnet.dhcp_options_id):
+        # best effort: the address is already in the port's addresses, DHCPv6 only lets a client ask for it
+        ovn_cli.ovn("lsp-set-dhcpv6-options", port.name, ipv6_subnet.ovn_dhcp_options_uuid or ipv6_subnet.dhcp_options_id, check=False)
 
     # Register DNS entry in OVN NB DB if dns_name provided
     # This enables VM-to-VM hostname resolution within the network.

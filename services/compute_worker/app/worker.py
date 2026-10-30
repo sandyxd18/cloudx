@@ -61,7 +61,7 @@ def spawn_server(server_id: str, payload: dict) -> dict:
     port = payload["port"]
     logical_port_name = port.get("logical_port_name") or port.get("name")
     mac_address = payload.get("mac_address") or port["mac_address"]
-    fixed_ip = port.get("fixed_ip") or port.get("ip_address")
+    fixed_ip = port.get("fixed_ip") or port.get("ip_address") or port.get("ipv6_address")  # what the server record shows
     tap = network_manager.tap_name(server_id)
     instance_dir = INSTANCE_DIR / server_id
     domain = libvirt_driver.domain_name(server_name, server_id)

@@ -23,3 +23,34 @@ def test_cloud_init_rendering():
     by_mac = render_network_config({"fixed_ip": "10.10.0.2", "cidr": "10.10.0.0/24", "mac_address": "02:75:C1:C6:AF:52"})
     assert 'match: {macaddress: "02:75:c1:c6:af:52"}' in by_mac and "set-name: eth0" in by_mac
     assert "match:" not in network_config
+
+
+def test_network_config_for_an_ipv6_only_port():
+    from services.compute_worker.app.cloudinit import render_network_config
+
+    text = render_network_config({
+        "ipv6_address": "fd42:7:7::2", "ipv6_cidr": "fd42:7:7::/64", "ipv6_gateway_ip": "fd42:7:7::1",
+        "ipv6_dns_nameservers": ["2001:4860:4860::8888"], "mac_address": "02:75:C1:C6:AF:52",
+    })
+    assert "dhcp4: false" in text            # no DHCPv4 to wait for
+    assert "addresses: [fd42:7:7::2/64]" in text
+    assert "gateway6: fd42:7:7::1" in text and "gateway4" not in text
+    assert "nameservers:\n      addresses: [2001:4860:4860::8888]" in text
+
+
+def test_network_config_for_a_dual_stack_port():
+    from services.compute_worker.app.cloudinit import render_network_config
+
+    text = render_network_config({
+        "fixed_ip": "10.10.0.2", "cidr": "10.10.0.0/24", "gateway_ip": "10.10.0.1", "dns_nameservers": ["1.1.1.1"],
+        "ipv6_address": "fd42:7:7::2", "ipv6_cidr": "fd42:7:7::/64", "ipv6_gateway_ip": "fd42:7:7::1",
+    })
+    assert "addresses: [10.10.0.2/24, fd42:7:7::2/64]" in text
+    assert "gateway4: 10.10.0.1" in text and "gateway6: fd42:7:7::1" in text
+    assert "addresses: [1.1.1.1]" in text
+
+
+def test_a_port_without_any_address_still_asks_dhcp():
+    from services.compute_worker.app.cloudinit import render_network_config
+
+    assert render_network_config({"mac_address": "02:00:00:00:00:01"}) == "version: 2\nethernets:\n  eth0:\n    dhcp4: true\n"
