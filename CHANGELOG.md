@@ -6,11 +6,18 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Changed
+- The default security group has the same rules for IPv6 as for IPv4: egress to `::/0`, and ingress for ssh and ICMPv6
+  under the same `DEFAULT_SECURITY_GROUP_ALLOW_SSH` / `DEFAULT_SECURITY_GROUP_ALLOW_ICMP` switches. networking-api adds
+  them to an existing default group when it starts, so after an upgrade a server with an IPv6 address accepts ssh and
+  ping over IPv6 from anywhere, as it already does over IPv4. Before, IPv6 traffic was dropped. An ACL whose remote
+  prefix is `::/0` is written as plain `ip6`, since OVN drops an ACL it cannot compile without saying so.
+
 ### Fixed
 - A server on a network that has only an IPv6 subnet gets an address. `create_port` only looked at the IPv4 subnet, so
-  the port had no address and the server showed none. A port now gets one address from each IP family the network has
-  a subnet for (naming addresses in the request still pins them), the server record shows the IPv6 address when there
-  is no IPv4 one, and the config drive and `network_data.json` carry the IPv6 address, prefix and gateway. Config
+  the port had no address and the server showed none. A port on such a network now gets an IPv6 address (on a network
+  that also has an IPv4 subnet IPv6 stays opt-in through `fixed_ips`), the server record shows the IPv6 address when
+  there is no IPv4 one, and the config drive and `network_data.json` carry the IPv6 address, prefix and gateway. Config
   drives write `dhcp4: false` for an IPv6-only port instead of waiting for DHCPv4. `local-ipv4` never returns an IPv6
   address.
 - The DHCPv6 options row of an IPv6 subnet used an IPv6 address as `server_id`; OVN wants an Ethernet address, so the

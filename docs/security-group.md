@@ -13,7 +13,7 @@ DEFAULT_SECURITY_GROUP_ALLOW_SSH=true
 DEFAULT_SECURITY_GROUP_ALLOW_ICMP=true
 ```
 
-If a port is created without a security group, `default` is used automatically. Ingress is dropped by default and IPv4 egress is allowed by default. Allow rules use `allow-related` for OVN's stateful behaviour.
+If a port is created without a security group, `default` is used automatically. Ingress is dropped by default and egress is allowed by default, for IPv4 and IPv6 alike: the default group has egress to `0.0.0.0/0` and `::/0`, and ssh and ICMP (ICMPv6 for IPv6) ingress from anywhere unless the switches above are `false`. The IPv6 rules are added to an existing default group when networking-api starts. Other groups carry only the rules you give them: a rule is IPv4 unless it says `--ethertype IPv6` (or its `--remote-ip` is an IPv6 prefix). Allow rules use `allow-related` for OVN's stateful behaviour.
 
 Workflow:
 

@@ -307,7 +307,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Enable / Disable port security | `POST /ports/{ref}/security/enable\|disable` | ✅ |
 | Inspect a port's OVN state | `GET /ports/{ref}/ovn` | ✅ |
 | Automatic MAC address | Integrated | ✅ |
-| A port gets an address from each IP family the network has a subnet for, so a network with only an IPv6 subnet works; `fixed_ips` picks or pins addresses, and an IPv6 address is allocated and checked | `POST /ports` | ✅ |
+| IPv6 on a port: automatic on a network with no IPv4 subnet; opt-in with `fixed_ips` where an IPv4 subnet exists. The address is allocated and checked | `POST /ports` | ✅ |
 | Trunk ports with subports | `/trunks`, `PUT /trunks/{ref}/add_subports\|remove_subports` | ✅ |
 
 #### Floating IP
@@ -329,7 +329,8 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Add rule (ingress/egress, TCP/UDP/ICMP/any) | `POST /security-groups/{ref}/rules` | ✅ |
 | Delete rule | `DELETE /security-group-rules/{id}` | ✅ |
 | List rules per SG | `GET /security-groups/{ref}/rules` | ✅ |
-| IPv6 rules (`ethertype`, ND allowed) | `POST /security-groups/{ref}/rules` | ✅ |
+| IPv6 rules (`ethertype`; `--ethertype` in the CLI) | `POST /security-groups/{ref}/rules` | ✅ |
+| The default group has the same rules for IPv6 as for IPv4 (egress, ssh, ICMPv6) | Bootstrap | ✅ |
 | Rule presets | `GET /security-groups/presets`, `POST /security-groups/{ref}/apply-preset` | ✅ |
 | Automatic default SG per project | Bootstrap | ✅ |
 | OVN Port Group + ACL translation | OVN backend | ✅ |
@@ -370,7 +371,6 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **BGP Dynamic Routing** | Advertise and learn (BIRD, eBGP IPv4), not 1:1; see docs/bgp-dynamic-routing.md |
 | **VPN as a Service** | Site-to-site only (strongSwan), see docs/vpn-site-to-site.md |
 | **IPv6 router advertisements (SLAAC)** | OVN sends no RA: nothing sets `ipv6_ra_configs` on router ports. A VM gets its IPv6 address and prefix from the config drive (static, like IPv4), so cloud-init images work; DHCPv6 options are created and bound to ports but have not been tried against a guest |
-| **IPv6 in the default security group** | Its rules are IPv4 only, so IPv6 traffic is dropped until rules are added (`cloudx security-group rule add --ethertype IPv6`) |
 | **Network Segment** | No manual VLAN/VXLAN segments; the segment fields in responses are empty |
 | **DNS Integration (Designate)** | Per-port `dns_name` only; zones and recordsets are in the separate DNS service (docs/dns.md) |
 | **RBAC policies per network** | A `shared` flag per network, no per-project RBAC entries |
