@@ -4,6 +4,20 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.1-rc2 (2026-10-30)
+
+Second release candidate, after rc1 was installed on the lab. The rc1 section below is part of it; the notes are in
+`docs/releases/v1.0.1.md`.
+
+### Fixed
+- The DHCPv6 options row of an IPv6 subnet is created. ovn-nbctl refused `cidr=fd42:7:7::/64` ('unexpected ":" parsing
+  string'): the values of the row are OVSDB strings and are now quoted. The error was only logged, so rc1 still left
+  `dhcp_options_id` empty on the lab. DHCPv4 needs no quotes and is unchanged.
+- A Ceph snapshot no longer turns to `error` a minute after it is made. The block-store reconciler looked for an image
+  called `snap-<id>`, which does not exist, instead of the snapshot `pool/image@snap` it recorded, so every Ceph snapshot
+  was marked `error` while the worker log said it had just created it (a bug since 1.0.0, seen on the lab with rc1). A
+  snapshot already marked `error` recovers by itself once the snapshot is found.
+
 ## 1.0.1-rc1 (2026-10-30)
 
 Release candidate: it is installed on the lab before the final 1.0.1 is tagged. Fixes for what the 1.0.0 cloud showed
