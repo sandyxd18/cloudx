@@ -17,7 +17,7 @@ The APIs follow the shape of OpenStack's (an identity service, compute, networki
 Download the `.deb` files of a [release](https://github.com/sandyxd18/cloudx/releases) and check them:
 
 ```bash
-TAG=v1.0.1                                      # the release you want
+TAG=v1.0.1-rc1                                  # the release you want
 BASE=https://github.com/sandyxd18/cloudx/releases/download/$TAG
 mkdir -p ~/cloudx-debs && cd ~/cloudx-debs
 curl -fsSLO $BASE/SHA256SUMS
