@@ -17,6 +17,7 @@ class ServerIn(BaseModel):
     availability_zone: str | None = None
     volume_size: int | None = None    # root volume size override (GB)
     volume_type: str | None = None    # root volume type override (gp2, gp3, io1, sc1)
+    ipv6: bool = False                # also allocate an IPv6 address on every network (refused if one has no IPv6 subnet)
 
 
 class ServerResizeIn(BaseModel):

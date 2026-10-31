@@ -72,7 +72,7 @@ cloudx server resize web-1 --flavor medium
 cloudx server delete web-1
 ```
 
-Every server boots from a root volume; `--volume-size` sets its size in GB. `cloudx hypervisor list` shows the compute nodes and `cloudx placement provider-list` their capacity.
+Every server boots from a root volume; `--volume-size` sets its size in GB. `--ipv6` also gives the server an IPv6 address (see [IPAM](ipam.md#ipv6)). `cloudx hypervisor list` shows the compute nodes and `cloudx placement provider-list` their capacity.
 
 ### Networking (`network`, `subnet`, `router`, `floating-ip`, `security-group`)
 

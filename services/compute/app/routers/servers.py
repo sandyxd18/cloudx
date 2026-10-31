@@ -34,6 +34,15 @@ from ..service import (
 router = APIRouter()
 
 
+def ipv6_fixed_ips_of(networking_url: str, net: dict) -> list[dict]:
+    """`fixed_ips` for a port that wants the IPv6 address of the network too. Its IPv4 address, if the network has an
+    IPv4 subnet, still comes from the first IPv4 subnet."""
+    for subnet_id in net.get("subnets") or []:
+        if clients.api_get(f"{networking_url}/subnets/{subnet_id}").get("ip_version") == 6:
+            return [{"subnet_id": subnet_id}]
+    raise HTTPException(status_code=400, detail=f"network {net.get('name') or net['id']} has no IPv6 subnet")
+
+
 @router.post("/servers", status_code=201)
 def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
     if get_active_server_by_name(db, payload.name):
@@ -56,6 +65,12 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
     networking_url, block_store_url = networking_api_url(), block_store_api_url()
     image_url = image_api_url() if payload.image else None
     network = clients.api_get(f"{networking_url}/networks/{payload.network}")
+    # IPv6 is opt-in on a dual-stack network. Look the subnets up now, before a root volume is created from the image.
+    ipv6_fixed_ips: dict[str, list[dict]] = {}
+    if payload.ipv6:
+        for network_ref in dict.fromkeys([payload.network, *payload.networks]):
+            net = network if network_ref == payload.network else clients.api_get(f"{networking_url}/networks/{network_ref}")
+            ipv6_fixed_ips[net["id"]] = ipv6_fixed_ips_of(networking_url, net)
     server_id = new_id()
     root_volume = None
     auto_root_volume = False
@@ -118,6 +133,7 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
                     "device_id": server_id,
                     "device_owner": "compute:instance",
                     "security_group_ids": payload.security_groups,
+                    **({"fixed_ips": ipv6_fixed_ips[net["id"]]} if payload.ipv6 else {}),
                 },
             )
             ports.append(port)
