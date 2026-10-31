@@ -15,7 +15,7 @@ from ..ipam import subnet_ip_with_prefix
 from ..models import Network, Router, RouterInterface, Subnet, mac
 from ..ovn_cli import ensure_router_gateway_ovn
 from ..schemas import RouterGatewayIn, RouterIn, RouterInterfaceIn, RouterUpdate
-from ..serializers import get_by_ref, obj_to_dict, router_to_os_dict
+from ..serializers import get_by_ref, network_mtu, obj_to_dict, router_to_os_dict
 
 router = APIRouter()
 
@@ -138,6 +138,7 @@ def add_router_interface(ref: str, payload: RouterInterfaceIn, current: CurrentU
     port_ip = subnet_ip_with_prefix(subnet)
     ovn_cli.ovn("--may-exist", "lrp-add", router.name, lrp, port_mac, port_ip)
     ovn_cli.ovn("set", "logical_router_port", lrp, "external_ids:cloudx=true")
+    ovn_cli.ensure_router_port_ra(lrp, subnet, network_mtu(network))
     ovn_cli.ovn("--may-exist", "lsp-add", network.name, lsp)
     ovn_cli.ovn("set", "logical_switch_port", lsp, "external_ids:cloudx=true")
     ovn_cli.ovn("lsp-set-type", lsp, "router")
