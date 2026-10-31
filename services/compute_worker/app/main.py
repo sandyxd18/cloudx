@@ -38,7 +38,7 @@ from shared.internal import internal_headers  # noqa: E402
 from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
 from . import iscsi, libvirt_driver, volume_manager, worker  # noqa: E402
-from .config import COMPUTE_HOST, LIBVIRT_URI, OVS_BRIDGE, VM_NAME_PREFIX, endpoint  # noqa: E402
+from .config import COMPUTE_HOST, LIBVIRT_URI, OVS_BRIDGE, ROOT_VOLUME_WAIT_TIMEOUT, VM_NAME_PREFIX, endpoint  # noqa: E402
 FENCED_FLAG = Path("/var/lib/cloudx/ha-watchdog/fenced")  # written by cloudx-ha-watchdog after it destroyed VMs
 from shared.proc import CommandError, succeeds
 from .utils import run, tool_available  # noqa: E402
@@ -506,49 +506,40 @@ def _probe_block_store_url(base_url: str) -> str:
     return base_url
 
 
-def wait_for_volume_ready(
-    volume_id: str,
-    block_store_url: str,
-    timeout_sec: int = 300,
-    poll_interval: float = 2.0,
-) -> dict:
-    """Poll block-store API until volume is 'available' with a valid path.
+VOLUME_POLL_SECONDS = 5
 
-    Volume creation is async (block-store-worker via RabbitMQ). compute-api
-    dispatches build_instance immediately after POST /internal/volumes, so
-    compute-worker may receive an empty path. We must wait here.
 
-    Raises RuntimeError if volume reaches error status or timeout expires.
+class VolumeGone(Exception):
+    """The root volume no longer exists: its server was deleted while the build waited for it."""
+
+
+def poll_root_volume(volume_id: str, block_store_url: str) -> dict | None:
+    """One look at the root volume: its record once it is 'available', None while it is still being created.
+
+    Volume creation is async (block-store-worker via RabbitMQ). compute-api dispatches build_instance immediately
+    after POST /internal/volumes, so the volume is usually not there yet. handle_build_instance does not wait for it
+    in a loop (see there).
+
+    Raises RuntimeError if the volume is in error state, VolumeGone if it was deleted.
     """
     # Find the correct base URL (important when running in host network mode)
-    resolved_url = _probe_block_store_url(block_store_url)
-    url = f"{resolved_url}/internal/volumes/{volume_id}"
-    deadline = time.time() + timeout_sec
-    log.info("Waiting for volume %s to become available (timeout=%ds, url=%s)...",
-             volume_id, timeout_sec, url)
-    while time.time() < deadline:
-        try:
-            resp = requests.get(url, headers=internal_headers(), timeout=10)
-            if resp.status_code == 200:
-                vol = resp.json()
-                status = vol.get("status", "")
-                path = vol.get("path", "")
-                if status == "available":
-                    log.info("Volume %s is ready at %s", volume_id, path)
-                    return vol
-                if status == "error":
-                    raise RuntimeError(
-                        f"Volume {volume_id} entered error state: {vol.get('error_message', 'unknown')}"
-                    )
-                log.debug("Volume %s status=%s path=%r — waiting...", volume_id, status, path)
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            log.debug("Volume poll failed: %s", exc)
-        time.sleep(poll_interval)
-    raise RuntimeError(
-        f"Timed out waiting for volume {volume_id} to become available after {timeout_sec}s"
-    )
+    url = f"{_probe_block_store_url(block_store_url)}/internal/volumes/{volume_id}"
+    try:
+        resp = requests.get(url, headers=internal_headers(), timeout=10)
+        vol = resp.json() if resp.status_code == 200 else {}
+    except Exception as exc:
+        log.debug("Volume poll failed: %s", exc)
+        return None
+    if resp.status_code == 404:
+        raise VolumeGone(volume_id)
+    status = vol.get("status", "")
+    if status == "available":
+        log.info("Volume %s is ready at %s", volume_id, vol.get("path", ""))
+        return vol
+    if status == "error":
+        raise RuntimeError(f"Volume {volume_id} entered error state: {vol.get('error_message', 'unknown')}")
+    log.debug("Volume %s status=%s path=%r — waiting...", volume_id, status, vol.get("path", ""))
+    return None
 
 
 
@@ -605,9 +596,24 @@ def handle_build_instance(args: dict) -> None:
         # ── Wait for root volume to be ready (async creation race condition) ──
         # block-store-worker creates the LV asynchronously via RabbitMQ.
         # compute-api sends build_instance immediately after POST /internal/volumes,
-        # so root_volume.path may be empty. Poll until volume is available.
+        # so root_volume.path may be empty. Until the volume is available the build
+        # goes back on the queue instead of waiting here.
         if root_volume_id:
-            ready_volume = wait_for_volume_ready(root_volume_id, block_store_url)
+            try:
+                ready_volume = poll_root_volume(root_volume_id, block_store_url)
+            except VolumeGone:
+                log.warning("Root volume %s of %s is gone: the server was deleted while it was built; dropping the build", root_volume_id, server_id)
+                return
+            if ready_volume is None:
+                # Not ready. Do not wait in this handler: the consumer runs one handler at a time, so a build that sleeps
+                # until a 10-minute image import ends stalls every other request for this node (delete, stop, console...).
+                # Look again when the message comes round again.
+                deadline = args.setdefault("_volume_wait_deadline", time.time() + ROOT_VOLUME_WAIT_TIMEOUT)
+                if time.time() > deadline:
+                    raise RuntimeError(f"Timed out waiting for volume {root_volume_id} to become available after {ROOT_VOLUME_WAIT_TIMEOUT}s")
+                time.sleep(VOLUME_POLL_SECONDS)
+                _rpc.cast(host_queue("compute", COMPUTE_HOST), "build_instance", args)
+                return
             # Inject the real path into args so worker.spawn_server can use it
             if args.get("root_volume") is not None:
                 args["root_volume"]["path"] = ready_volume.get("path", "")
