@@ -4,6 +4,17 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.3-rc1 (2026-10-31)
+
+Release candidate: it is installed on the lab before the final 1.0.3 is tagged. One fix, found with the Ubuntu 24.04
+guest on the 1.0.1 lab. No schema change. The notes, with the upgrade steps and what was and was not tested, are in
+`docs/releases/v1.0.3.md`.
+
+### Fixed
+- The default `user-data` keeps the image's own user. It listed `users: [{name: cirros, ...}]`, which replaces the image's
+  user, so an Ubuntu server had no `ubuntu` user. It lists `users: [default]` now and the key goes to the default user
+  (`ubuntu` on Ubuntu, `cirros` on CirrOS). On an image that is not CirrOS, use that user instead of `cirros@`.
+
 ## 1.0.2 (2026-10-31)
 
 No code change since 1.0.2-rc2; the full list is in the rc2 and rc1 sections below and the notes are in
