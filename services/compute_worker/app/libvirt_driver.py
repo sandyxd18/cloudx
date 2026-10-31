@@ -131,6 +131,7 @@ def domain_xml(
     seed_iso: str | Path,
     tap_name: str,
     mac_address: str,
+    extra_interfaces: list[tuple[str, str]] | None = None,
 ) -> str:
     domain = ET.Element("domain", type="kvm")
     ET.SubElement(domain, "name").text = name
@@ -172,10 +173,11 @@ def domain_xml(
     ET.SubElement(cdrom, "target", dev="hda", bus="ide")
     ET.SubElement(cdrom, "readonly")
 
-    iface = ET.SubElement(devices, "interface", type="ethernet")
-    ET.SubElement(iface, "mac", address=mac_address)
-    ET.SubElement(iface, "target", dev=tap_name, managed="no")
-    ET.SubElement(iface, "model", type="virtio")
+    for tap, mac in [(tap_name, mac_address), *(extra_interfaces or [])]:  # (tap, MAC) of each port, primary first
+        iface = ET.SubElement(devices, "interface", type="ethernet")
+        ET.SubElement(iface, "mac", address=mac)
+        ET.SubElement(iface, "target", dev=tap, managed="no")
+        ET.SubElement(iface, "model", type="virtio")
 
     # Serial console — target type="serial" port 0 so virsh console attaches to ttyS0
     instance_dir = Path(seed_iso).parent
