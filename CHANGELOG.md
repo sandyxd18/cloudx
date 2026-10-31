@@ -4,6 +4,23 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.2-rc1 (2026-10-31)
+
+Release candidate: it is installed on the lab before the final 1.0.2 is tagged. Two fixes found by running the 1.0.1 cloud
+with an Ubuntu 24.04 guest. No schema change. The notes, with the upgrade steps and what was and was not tested, are in
+`docs/releases/v1.0.2.md`.
+
+### Fixed
+- A server created on several networks gets one NIC per port. Only the primary port was plugged: the extra ports were
+  allocated and recorded as attached, but the guest had a single NIC (and `server port add --port` answered 409). The
+  extra NICs are plugged on create and on evacuation, their taps are removed when the build fails or the server is
+  deleted, and `network-config` configures them (`eth1`, ...; only `eth0` has a default route).
+
+### Added
+- `cloudx server create --ipv6` (`"ipv6": true` in the create request) gives a server an IPv6 address on each of its
+  networks. On a dual-stack network the create request could only ask for IPv4. A network without an IPv6 subnet is
+  refused with 400 before the root volume is created.
+
 ## 1.0.1 (2026-10-30)
 
 No code change since 1.0.1-rc2; the full list is in the rc2 and rc1 sections below and the notes are in
