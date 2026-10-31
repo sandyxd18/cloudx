@@ -4,6 +4,17 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.3-rc2 (2026-11-01)
+
+Second release candidate, after rc1 was installed on the lab. The rc1 section below is part of it; the notes are in
+`docs/releases/v1.0.3.md`.
+
+### Added
+- A router port on an IPv6 subnet sends router advertisements. DHCPv6 gives an address but no prefix length and no
+  routes, so a DHCPv6 client got a /128 and could not reach its gateway or a neighbour. The mode is the subnet's
+  `ipv6_ra_mode` (else `ipv6_address_mode`, else `dhcpv6-stateful`), the MTU the network's. Router ports that already
+  exist get it when networking-api starts. Best effort: a refusal is logged and the interface is kept. No `rdnss` yet.
+
 ## 1.0.3-rc1 (2026-10-31)
 
 Release candidate: it is installed on the lab before the final 1.0.3 is tagged. One fix, found with the Ubuntu 24.04
