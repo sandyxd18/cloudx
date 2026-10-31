@@ -4,6 +4,19 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.2-rc2 (2026-10-31)
+
+Second release candidate, after rc1 was installed on the lab. The rc1 section below is part of it; the notes are in
+`docs/releases/v1.0.2.md`.
+
+### Fixed
+- A build no longer waits for its root volume inside the compute worker's RPC handler. The worker runs one handler at a
+  time, so the loop (up to 300 s) stalled every other request for the node, and a 600 MB Ubuntu image took about 17
+  minutes to import into Ceph on the lab, so the server went to `ERROR` although the volume became available later. The
+  handler now looks at the volume once and, while it is being created, puts the build back on the node's queue. The
+  wait is limited by the new setting `root_volume_wait_timeout` (3600 s by default, in `compute-worker.conf`): a volume
+  that stays `creating` for good now holds the server in `BUILD` for up to an hour instead of 5 minutes.
+
 ## 1.0.2-rc1 (2026-10-31)
 
 Release candidate: it is installed on the lab before the final 1.0.2 is tagged. Two fixes found by running the 1.0.1 cloud
