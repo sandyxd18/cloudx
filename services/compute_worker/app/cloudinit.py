@@ -29,12 +29,10 @@ def render_user_data(public_key: str | None = None) -> str:
     ]
     if public_key:
         lines.extend([
-            "ssh_authorized_keys:",
+            "ssh_authorized_keys:",  # cloud-init gives them to the image's own user (ubuntu, cirros, ...)
             f"  - {public_key.strip()}",
-            "users:",
-            "  - name: cirros",
-            "    ssh_authorized_keys:",
-            f"      - {public_key.strip()}",
+            "users:",  # without `default` here, a `users:` list replaces the image's user
+            "  - default",
         ])
     return "\n".join(lines) + "\n"
 

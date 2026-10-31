@@ -54,3 +54,25 @@ def test_a_port_without_any_address_still_asks_dhcp():
     from services.compute_worker.app.cloudinit import render_network_config
 
     assert render_network_config({"mac_address": "02:00:00:00:00:01"}) == "version: 2\nethernets:\n  eth0:\n    dhcp4: true\n"
+
+
+def test_the_default_user_data_keeps_the_images_own_user():
+    # a `users:` list without `default` replaces the image's user: an Ubuntu image then had only `cirros`
+    import pytest
+
+    yaml = pytest.importorskip("yaml")
+    from services.compute_worker.app.cloudinit import render_user_data
+
+    config = yaml.safe_load(render_user_data("ssh-ed25519 AAAATEST user@example"))
+    assert config["users"] == ["default"]
+    assert config["ssh_authorized_keys"] == ["ssh-ed25519 AAAATEST user@example"]      # cloud-init gives them to that user
+
+
+def test_the_default_user_data_without_a_key_has_no_users_list():
+    import pytest
+
+    yaml = pytest.importorskip("yaml")
+    from services.compute_worker.app.cloudinit import render_user_data
+
+    config = yaml.safe_load(render_user_data(None))
+    assert "users" not in config and "ssh_authorized_keys" not in config
