@@ -119,7 +119,7 @@ The `nginx`, `init-system-helpers` and `python3` packages come from the Ubuntu r
 Each GitHub release from v1.0.0-rc1 on carries the 47 `.deb` files (about 60 MB), the tarball `cloudx-<version>.tar.gz` and `SHA256SUMS`. Releases up to v0.8.6 have only the tarball. `SHA256SUMS` names every file, so it doubles as the index to download from:
 
 ```bash
-TAG=v1.0.2-rc2                                  # the release you want
+TAG=v1.0.2                                      # the release you want
 BASE=https://github.com/sandyxd18/cloudx/releases/download/$TAG
 mkdir -p ~/cloudx-debs && cd ~/cloudx-debs
 curl -fsSLO $BASE/SHA256SUMS
