@@ -63,6 +63,9 @@ def spawn_server(server_id: str, payload: dict) -> dict:
     mac_address = payload.get("mac_address") or port["mac_address"]
     fixed_ip = port.get("fixed_ip") or port.get("ip_address") or port.get("ipv6_address")  # what the server record shows
     tap = network_manager.tap_name(server_id)
+    # a server on several networks has one port, and so one NIC, per network; the primary port is the one above
+    extra_ports = [p for p in payload.get("ports") or [] if p.get("id") != port.get("id")]
+    extra_taps = [network_manager.port_tap_name(server_id, p["id"]) for p in extra_ports]
     instance_dir = INSTANCE_DIR / server_id
     domain = libvirt_driver.domain_name(server_name, server_id)
     try:
@@ -78,6 +81,7 @@ def spawn_server(server_id: str, payload: dict) -> dict:
             port,
             payload.get("user_data"),
             payload.get("keypair_name"),
+            extra_ports=extra_ports,
         )
         console_log = instance_dir / "console.log"
         console_log.touch(exist_ok=True)
@@ -85,7 +89,13 @@ def spawn_server(server_id: str, payload: dict) -> dict:
         expose_to_host_libvirt(instance_dir, disk_path, seed_iso, console_log)
         network_manager.create_tap(tap)
         network_manager.bind_tap_to_ovs(tap, logical_port_name, mac_address, server_id)
-        xml = libvirt_driver.domain_xml(domain, int(flavor["ram_mb"]), int(flavor["vcpus"]), disk_path, seed_iso, tap, mac_address)
+        for extra_tap, extra in zip(extra_taps, extra_ports):
+            network_manager.create_tap(extra_tap)
+            network_manager.bind_tap_to_ovs(extra_tap, extra.get("logical_port_name") or extra.get("name"), extra["mac_address"], server_id)
+        xml = libvirt_driver.domain_xml(
+            domain, int(flavor["ram_mb"]), int(flavor["vcpus"]), disk_path, seed_iso, tap, mac_address,
+            extra_interfaces=[(extra_tap, extra["mac_address"]) for extra_tap, extra in zip(extra_taps, extra_ports)],
+        )
         (instance_dir / "domain.xml").write_text(xml, encoding="utf-8")
         libvirt_driver.define_and_start(xml)
     except Exception:
@@ -93,7 +103,8 @@ def spawn_server(server_id: str, payload: dict) -> dict:
             libvirt_driver.delete(domain)
         except Exception as exc:
             log.warning("rollback: could not delete domain %s: %s", domain, exc)
-        network_manager.delete_tap(tap)
+        for name in [tap, *extra_taps]:
+            network_manager.delete_tap(name)
         if instance_dir.exists() and instance_dir.is_dir():
             shutil.rmtree(instance_dir)
         raise
@@ -307,9 +318,11 @@ def delete_server(server_id: str, payload: dict) -> dict:
         name = payload.get("name") or payload.get("_original_name")
         domain = libvirt_driver.domain_name(name, server_id) if name else None
     tap = payload.get("tap_name") or network_manager.tap_name(server_id)
+    extra_taps = [network_manager.port_tap_name(server_id, pid) for pid in (payload.get("extra_port_ids") or "").split(",") if pid.strip()]
     if domain:
         libvirt_driver.delete(domain)
-    network_manager.delete_tap(tap)
+    for name in [tap, *extra_taps]:
+        network_manager.delete_tap(name)
     instance_dir = Path(payload.get("instance_dir") or INSTANCE_DIR / server_id)
     if instance_dir.exists() and instance_dir.is_dir():
         shutil.rmtree(instance_dir)
