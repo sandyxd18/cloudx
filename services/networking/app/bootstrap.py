@@ -2,9 +2,9 @@ from sqlalchemy import select
 
 from .config import DEFAULT_SECURITY_GROUP_ALLOW_ICMP, DEFAULT_SECURITY_GROUP_ALLOW_SSH
 from .db import SessionLocal
-from .models import SecurityGroup, SecurityGroupRule, now
-from .ovn_cli import apply_security_group_acls, ensure_security_group_port_group
-from .serializers import get_by_ref
+from .models import Network, RouterInterface, SecurityGroup, SecurityGroupRule, Subnet, now
+from .ovn_cli import apply_security_group_acls, ensure_router_port_ra, ensure_security_group_port_group
+from .serializers import get_by_ref, network_mtu
 
 
 def bootstrap_default_security_group() -> None:
@@ -56,5 +56,16 @@ def bootstrap_default_security_group() -> None:
         db.commit()
         db.refresh(group)
         apply_security_group_acls(db, group)
+    finally:
+        db.close()
+
+
+def bootstrap_router_advertisements() -> None:
+    """Router ports on IPv6 subnets that were made before routers sent advertisements get them now. Setting the same
+    values again at every start is harmless, and every networking-api instance does it."""
+    db = SessionLocal()
+    try:
+        for iface, subnet in db.execute(select(RouterInterface, Subnet).join(Subnet, Subnet.id == RouterInterface.subnet_id).where(Subnet.ip_version == 6)).all():
+            ensure_router_port_ra(iface.router_port_name, subnet, network_mtu(db.get(Network, subnet.network_id)))
     finally:
         db.close()

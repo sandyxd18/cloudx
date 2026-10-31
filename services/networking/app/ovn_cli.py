@@ -269,6 +269,33 @@ def _ensure_dhcpv6_options(
         logging.getLogger("networking-api").warning("DHCPv6 options setup failed for %s: %s", cidr, exc)
         return None
 
+# ipv6_ra_mode / ipv6_address_mode of a subnet -> address_mode of the router port's advertisements (ovn-nb(5))
+RA_ADDRESS_MODES = {"slaac": "slaac", "dhcpv6-stateful": "dhcpv6_stateful", "dhcpv6-stateless": "dhcpv6_stateless"}
+
+
+def router_ra_args(lrp: str, ra_mode: str | None, address_mode: str | None, mtu: int) -> list[str]:
+    """ovn-nbctl arguments that make a router port send router advertisements (and answer router solicitations).
+
+    The advertisement carries the on-link prefix and the router lifetime, i.e. what DHCPv6 cannot: without it a DHCPv6
+    client gets its address as a /128 with no route. The mode is the subnet's ra_mode, else its address_mode, else
+    dhcpv6-stateful (the default of the DHCPv6 row too). The values are quoted, as ovn-nbctl wants for DHCP_Options."""
+    mode = RA_ADDRESS_MODES.get(ra_mode or address_mode or "dhcpv6-stateful", "dhcpv6_stateful")
+    return ["set", "logical_router_port", lrp,
+            f'ipv6_ra_configs:address_mode="{mode}"', 'ipv6_ra_configs:send_periodic="true"', f'ipv6_ra_configs:mtu="{mtu}"']
+
+
+def ensure_router_port_ra(lrp: str, subnet, mtu: int) -> None:
+    """Advertisements for a router port on an IPv6 subnet; nothing for an IPv4 one. Best effort: the guest still has the
+    address and route of its static network-config, so a refusal is logged and the interface is kept."""
+    if subnet.ip_version != 6:
+        return
+    try:
+        ovn(*router_ra_args(lrp, subnet.ipv6_ra_mode, subnet.ipv6_address_mode, mtu), check=False)
+    except Exception as exc:
+        import logging
+        logging.getLogger("networking-api").warning("router advertisements for %s not set: %s", lrp, exc)
+
+
 def router_external_port_names(router_name: str) -> tuple[str, str]:
     return f"lrp-{router_name}-external", f"lsp-{router_name}-external"
 

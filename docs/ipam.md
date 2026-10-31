@@ -45,7 +45,7 @@ cloudx server create vm6 --image cirros --network v6net
 cloudx server create vm46 --image cirros --network dualnet --ipv6   # a network with both subnets: IPv4 and IPv6
 ```
 
-The address and prefix reach the guest through the config drive (`network-config`) and `network_data.json`, as static configuration. There are no router advertisements, so a guest that is not configured by cloud-init does not learn its address by itself. `--ipv6-ra-mode` and `--ipv6-address-mode` on `subnet create` decide whether OVN gets a DHCPv6 options row (`slaac` for both: none).
+The address and prefix reach the guest through the config drive (`network-config`) and `network_data.json`, as static configuration. A router port on an IPv6 subnet also sends router advertisements, so a guest that is not configured by cloud-init learns the on-link prefix and its default router from them, and its address from DHCPv6 (a DHCPv6 client alone gets a /128 and no route). The advertisement follows the subnet's `--ipv6-ra-mode` (`--ipv6-address-mode` if that is not given, else `dhcpv6-stateful`): `dhcpv6-stateful` sets the managed flag, `dhcpv6-stateless` and `slaac` make the guest build its own address from the prefix, next to the one CloudX allocated (the allocated address is sequential, the guest's is derived from its MAC, so they differ). Router ports made before this was added get the advertisements when networking-api starts. A subnet with no router has none, and a security group that drops ICMPv6 drops them. `--ipv6-ra-mode` and `--ipv6-address-mode` on `subnet create` also decide whether OVN gets a DHCPv6 options row (`slaac` for both: none).
 
 Commands:
 
