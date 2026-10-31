@@ -16,7 +16,7 @@ Per instance:
 `user-data` includes:
 
 - hostname through metadata
-- optional SSH authorized key
+- optional SSH authorized key, given to the image's own default user (`ubuntu` on an Ubuntu image, `cirros` on CirrOS): the default `user-data` lists `users: [default]`, so it does not replace that user. Releases up to 1.0.2 created a user `cirros` instead, and an Ubuntu image had no `ubuntu` user
 - `ssh_pwauth: false`
 - root disable hint
 - growpart/rootfs resize hints
