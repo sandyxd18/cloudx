@@ -49,3 +49,10 @@ def test_deleting_a_port_frees_its_ipv6_address(client):
     first = _port(client, "p1")
     assert client.delete(f"/ports/{first.json()['id']}").status_code in (200, 204)
     assert _port(client, "p2").json()["ipv6_address"] == "fd42:7:7::2"
+
+
+def test_naming_only_the_ipv6_subnet_still_gives_an_ipv4_address(client):
+    # what compute-api sends for `ipv6` on a create request: it does not look up the IPv4 subnet
+    port = client.post("/ports", json={"name": "only6", "network": "ds", "fixed_ips": [{"subnet_id": "v6"}]})
+    assert port.status_code == 201
+    assert port.json()["fixed_ip"] == "10.99.0.2" and port.json()["ipv6_address"] == "fd42:7:7::2"

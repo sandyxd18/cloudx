@@ -25,12 +25,14 @@ def server(ctx):
 @click.option("--security-group", "security_groups", multiple=True)
 @click.option("--user-data", type=click.Path())
 @click.option("--volume-size", type=int, help="Root volume size GB (boot from volume)")
+@click.option("--ipv6", is_flag=True, help="Also give the server an IPv6 address (the network needs an IPv6 subnet)")
 @click.pass_context
-def server_create(ctx, name, image, flavor, network, key_name, security_groups, user_data, volume_size):
+def server_create(ctx, name, image, flavor, network, key_name, security_groups, user_data, volume_size, ipv6):
     payload = {"name": name, "image": image, "flavor": flavor, "network": network}
     if key_name:          payload["key_name"] = key_name
     if security_groups:   payload["security_groups"] = list(security_groups)
     if volume_size:       payload["volume_size"] = volume_size
+    if ipv6:              payload["ipv6"] = True
     if user_data:
         with open(user_data) as f:
             payload["user_data"] = f.read()
