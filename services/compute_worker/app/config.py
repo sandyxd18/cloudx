@@ -13,6 +13,8 @@ OVS_BRIDGE = os.getenv("OVS_BRIDGE", "br-int")
 VM_NAME_PREFIX = os.getenv("VM_NAME_PREFIX", "mini-os")
 DEFAULT_VM_USER = os.getenv("DEFAULT_VM_USER", "ubuntu")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://cloudx:cloudx@127.0.0.1:5672/")
+# How long a build waits for its root volume (importing a large image into Ceph can take many minutes) before the server goes to ERROR
+ROOT_VOLUME_WAIT_TIMEOUT = int(os.getenv("ROOT_VOLUME_WAIT_TIMEOUT", "3600"))
 
 
 # env name -> (catalog name, last-resort address when neither the catalog nor the message knows it)

@@ -80,6 +80,8 @@ sudo systemctl restart cloudx-compute-worker cloudx-compute-api cloudx-block-sto
 
 The paths under `/var/lib/cloudx/compute/instances`, `/var/lib/cloudx/compute/cache`, and `/var/lib/cloudx/volumes` must exist on the node that runs the worker.
 
+If the error says `Timed out waiting for volume ... to become available`, the root volume was still being created when `root_volume_wait_timeout` (3600 s by default) ran out. `cloudx volume list` shows it as `creating`. Importing a large image into a slow Ceph cluster is the usual cause (a 600 MB Ubuntu image took about 17 minutes on the lab); if the volume is `available` now, create the server again with `--boot-volume` (API) instead of importing the image again, and raise `root_volume_wait_timeout` in `/etc/cloudx/compute-worker/compute-worker.conf`. A volume that stays `creating` for good means block-store-worker is not answering: look at `journalctl -u cloudx-block-store-worker` on the controllers and storage nodes.
+
 Then clean leftovers:
 
 ```bash
