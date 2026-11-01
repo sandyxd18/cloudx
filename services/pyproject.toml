@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cloudx-shared"
-version = "1.0.3rc2"
+version = "1.0.3"
 description = "CloudX shared library (config, auth middleware, RPC) imported by every service as `shared`"
 requires-python = ">=3.10"
 
