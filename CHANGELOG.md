@@ -8,6 +8,9 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 Release candidate: it is installed on the lab before the final 1.0.4 is tagged. Two changes, both found on the 1.0.3 lab.
 No schema change. The notes, with the upgrade steps and what was and was not tested, are in `docs/releases/v1.0.4.md`.
+The candidate was installed on the lab (three controllers, two compute nodes) and both changes were checked there: an evacuated
+two-network server left no tap and no port claims on the source node, and Ubuntu and CirrOS guests on `slaac` and
+`dhcpv6-stateless` subnets had exactly one global address, the allocated one.
 
 ### Fixed
 - After an evacuation the compute node that still had the old domain destroyed it but left its taps in Open vSwitch.
