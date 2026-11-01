@@ -37,7 +37,7 @@ from shared import catalog  # noqa: E402
 from shared.internal import internal_headers  # noqa: E402
 from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
-from . import iscsi, libvirt_driver, volume_manager, worker  # noqa: E402
+from . import iscsi, libvirt_driver, network_manager, volume_manager, worker  # noqa: E402
 from .config import COMPUTE_HOST, LIBVIRT_URI, OVS_BRIDGE, ROOT_VOLUME_WAIT_TIMEOUT, VM_NAME_PREFIX, endpoint  # noqa: E402
 FENCED_FLAG = Path("/var/lib/cloudx/ha-watchdog/fenced")  # written by cloudx-ha-watchdog after it destroyed VMs
 from shared.proc import CommandError, succeeds
@@ -166,11 +166,21 @@ def reconcile_stale_domains() -> None:
         if api_host and api_host != COMPUTE_HOST:
             log.warning("[reconcile] domain %s host in API is %s (this node=%s) — destroying stale domain", domain_name, api_host, COMPUTE_HOST)
             try:
+                taps = libvirt_driver.interface_taps(domain_name)  # read before the domain is undefined
+            except Exception as exc:  # best-effort: the domain must still go, a missed tap is only logged
+                log.warning("[reconcile] could not read the taps of %s: %s", domain_name, exc)
+                taps = []
+            try:
                 sessions = libvirt_driver.iscsi_sessions(domain_name)  # read before the domain is undefined
                 libvirt_driver.delete(domain_name)
             except Exception as exc:
                 log.error("[reconcile] failed to destroy stale domain %s: %s", domain_name, exc)
                 continue
+            for tap in taps:  # a tap left in OVS keeps its iface-id: ovn-controller here and on the new host then fight for the port
+                try:
+                    network_manager.delete_tap(tap)
+                except Exception as exc:
+                    log.warning("[reconcile] could not delete tap %s of %s: %s", tap, domain_name, exc)
             for portal, target in sessions:  # the evacuated VM lives elsewhere; drop its leftover session here
                 try:
                     iscsi.logout(portal, target)
