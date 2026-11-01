@@ -4,6 +4,13 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.4 (2026-11-01)
+
+No code change since 1.0.4-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.4.md`.
+The candidate was installed on the lab (three controllers, two compute nodes) and checked with a server on two networks
+that was evacuated while its source host was alive, and with Ubuntu 24.04 and CirrOS guests on `slaac` and
+`dhcpv6-stateless` subnets.
+
 ## 1.0.4-rc1 (2026-11-01)
 
 Release candidate: it is installed on the lab before the final 1.0.4 is tagged. Two changes, both found on the 1.0.3 lab.
