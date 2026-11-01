@@ -169,3 +169,62 @@ def test_a_garbage_requested_ipv4_address_is_a_400_not_a_crash(networking, make_
     with pytest.raises(HTTPException) as exc:
         networking.ipam.allocate_fixed_ip(db, subnet, requested="10.1.0")
     assert exc.value.status_code == 400
+
+
+# ── EUI-64 addresses for subnets where the guest builds its own address (slaac, dhcpv6-stateless) ──
+
+def test_eui64_address_follows_rfc_4291(networking):
+    # RFC 4291 appendix A: the universal/local bit of the first octet is flipped, ff:fe goes in the middle
+    assert networking.ipam.eui64_address("2001:db8:1:2::/64", "34:56:78:9a:bc:de") == "2001:db8:1:2:3656:78ff:fe9a:bcde"
+
+
+def test_eui64_address_is_what_the_lab_guests_built(networking):
+    # measured on the lab: CirrOS and Ubuntu 24.04 both built this address from the port's MAC on a slaac subnet
+    assert networking.ipam.eui64_address("fd42:9:1::/64", "02:d3:2f:b8:2a:42") == "fd42:9:1:0:d3:2fff:feb8:2a42"
+
+
+@pytest.mark.parametrize("version, mode, cidr, expected", [
+    (6, "slaac", "fd42:9:1::/64", True),
+    (6, "dhcpv6-stateless", "fd42:9:1::/64", True),
+    (6, "dhcpv6-stateful", "fd42:9:1::/64", False),
+    (6, None, "fd42:9:1::/64", False),
+    (6, "slaac", "fd42:9:1::/80", False),      # EUI-64 needs a 64-bit interface id; an old subnet like this keeps counting up
+    (4, "slaac", "10.1.0.0/24", False),
+])
+def test_only_slaac_and_stateless_64_subnets_use_eui64(networking, version, mode, cidr, expected):
+    subnet = networking.models.Subnet(name="s", cidr=cidr, ip_version=version, ipv6_address_mode=mode)
+    assert networking.ipam.uses_eui64(subnet) is expected
+
+
+def _slaac_subnet(make_subnet, gateway="fd42:9:1::1"):
+    db, subnet = make_subnet("fd42:9:1::/64", gateway=gateway, version=6, name="s6")
+    subnet.ipv6_address_mode = "slaac"
+    return db, subnet
+
+
+def test_the_eui64_address_of_a_free_mac_is_allocated_and_the_mac_kept(networking, make_subnet):
+    db, subnet = _slaac_subnet(make_subnet)
+    got_mac, got_ip = networking.ipam.allocate_eui64_address(db, subnet, "02:00:00:00:00:01", lambda: pytest.fail("no new MAC needed"))
+    assert (got_mac, got_ip) == ("02:00:00:00:00:01", "fd42:9:1::ff:fe00:1")
+
+
+def test_a_taken_eui64_address_draws_a_new_mac(networking, make_subnet):
+    db, subnet = _slaac_subnet(make_subnet)
+    take(networking, db, subnet, networking.ipam.eui64_address(subnet.cidr, "02:00:00:00:00:01"))
+    got_mac, got_ip = networking.ipam.allocate_eui64_address(db, subnet, "02:00:00:00:00:01", iter(["02:00:00:00:00:02"]).__next__)
+    assert got_mac == "02:00:00:00:00:02" and got_ip == networking.ipam.eui64_address(subnet.cidr, "02:00:00:00:00:02")
+
+
+def test_the_gateway_is_never_handed_out_as_an_eui64_address(networking, make_subnet):
+    gateway = "fd42:9:1::ff:fe00:1"
+    db, subnet = _slaac_subnet(make_subnet, gateway=gateway)
+    got_mac, got_ip = networking.ipam.allocate_eui64_address(db, subnet, "02:00:00:00:00:01", iter(["02:00:00:00:00:02"]).__next__)
+    assert got_mac == "02:00:00:00:00:02" and got_ip != gateway
+
+
+def test_giving_up_on_a_taken_eui64_address_is_a_conflict(networking, make_subnet):
+    db, subnet = _slaac_subnet(make_subnet)
+    take(networking, db, subnet, networking.ipam.eui64_address(subnet.cidr, "02:00:00:00:00:01"))
+    with pytest.raises(HTTPException) as exc:
+        networking.ipam.allocate_eui64_address(db, subnet, "02:00:00:00:00:01", lambda: "02:00:00:00:00:01")
+    assert exc.value.status_code == 409
