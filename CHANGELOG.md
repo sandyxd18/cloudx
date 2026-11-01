@@ -4,6 +4,24 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.4-rc1 (2026-11-01)
+
+Release candidate: it is installed on the lab before the final 1.0.4 is tagged. Two changes, both found on the 1.0.3 lab.
+No schema change. The notes, with the upgrade steps and what was and was not tested, are in `docs/releases/v1.0.4.md`.
+
+### Fixed
+- After an evacuation the compute node that still had the old domain destroyed it but left its taps in Open vSwitch.
+  A leftover tap keeps its `iface-id`, so `ovn-controller` on that node and on the new host both claimed the port
+  (about 60 claims a minute on each node, the port's chassis flipping every ~2 s). The node now deletes the taps of
+  a stale domain with the domain. Taps left by an earlier evacuation stay until they are removed by hand.
+
+### Changed
+- On a subnet whose `ipv6_address_mode` is `slaac` or `dhcpv6-stateless`, a new port gets the EUI-64 address of its MAC,
+  which is what the guest builds for itself, so the port, the server record, the OVN addresses and the guest agree on one
+  address (Ubuntu had two, CirrOS only the one CloudX did not allocate). If that address is taken the port gets another
+  MAC. An address named in `fixed_ips` is kept. `subnet create` refuses these modes on a prefix that is not a /64.
+  Ports that exist keep their address.
+
 ## 1.0.3 (2026-11-01)
 
 No code change since 1.0.3-rc2; the full list is in the rc2 and rc1 sections below and the notes are in
