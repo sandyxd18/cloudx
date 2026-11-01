@@ -8,6 +8,7 @@ from sqlalchemy import select
 from .. import ovn_cli
 from ..access import require_owned, scope
 from ..db import DB
+from ..ipam import AUTO_ADDRESS_MODES
 from ..quota import check_quota
 from ..models import Network, Port, RouterInterface, Subnet
 from ..ovn_cli import _ensure_dhcpv6_options, dhcp_options_args
@@ -43,6 +44,9 @@ def create_subnet(payload: SubnetIn, current: CurrentUser, db: DB):
         cidr_net = ipaddress.ip_network(payload.cidr, strict=False)
         if cidr_net.version != ip_version:
             raise ValueError(f"CIDR {payload.cidr} is IPv{cidr_net.version} but ip_version={ip_version}")
+        if ip_version == 6 and payload.ipv6_address_mode in AUTO_ADDRESS_MODES and cidr_net.prefixlen != 64:
+            raise ValueError(f"ipv6_address_mode {payload.ipv6_address_mode} needs a /64 prefix: the guest builds a 64-bit "
+                             f"interface id, and {payload.cidr} is a /{cidr_net.prefixlen}")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -166,10 +166,14 @@ def _used_addresses(db: Session, subnet: Subnet, network) -> set:
     return used
 
 
-def allocate_fixed_ip(db: Session, subnet: Subnet, requested: str | None = None) -> str:
+def _lock_subnet(db: Session, subnet: Subnet) -> None:
     if db.get_bind().dialect.name == "postgresql":
         # Serialize allocation per subnet across gunicorn workers; released at the caller's commit/rollback.
         db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": subnet.id})
+
+
+def allocate_fixed_ip(db: Session, subnet: Subnet, requested: str | None = None) -> str:
+    _lock_subnet(db, subnet)
     network = ipaddress.ip_network(subnet.cidr, strict=False)
     gateway_str = subnet.gateway_ip or subnet.gateway
     gateway_ip = ipaddress.ip_address(gateway_str) if gateway_str else None
@@ -191,3 +195,42 @@ def allocate_fixed_ip(db: Session, subnet: Subnet, requested: str | None = None)
             return str(current)
         current += 1
     raise HTTPException(status_code=409, detail=f"no available IP addresses in subnet '{subnet.name}'")
+
+
+# ── EUI-64 ─────────────────────────────────────────────────────────────────────
+# On a subnet where the guest builds its own address from the advertised prefix, it makes the modified EUI-64 address
+# of its MAC (Ubuntu 24.04 and CirrOS both did on the lab). CloudX allocates that same address, so the port, the server
+# record, the OVN addresses and the guest agree on one address instead of two.
+
+AUTO_ADDRESS_MODES = ("slaac", "dhcpv6-stateless")
+
+
+def uses_eui64(subnet: Subnet) -> bool:
+    """A subnet whose guests build their own address. It needs a /64: the interface id is 64 bits."""
+    return (subnet.ip_version == 6 and subnet.ipv6_address_mode in AUTO_ADDRESS_MODES
+            and ipaddress.ip_network(subnet.cidr, strict=False).prefixlen == 64)
+
+
+def eui64_address(cidr: str, mac: str) -> str:
+    """The prefix of `cidr` with the modified EUI-64 interface id of `mac` (RFC 4291 appendix A)."""
+    octets = [int(part, 16) for part in mac.split(":")]
+    interface_id = bytes([octets[0] ^ 0x02, *octets[1:3], 0xFF, 0xFE, *octets[3:]])
+    prefix = int(ipaddress.ip_network(cidr, strict=False).network_address)
+    return str(ipaddress.ip_address(prefix | int.from_bytes(interface_id, "big")))
+
+
+def allocate_eui64_address(db: Session, subnet: Subnet, port_mac: str, new_mac, tries: int = 8) -> tuple[str, str]:
+    """(mac, address): the EUI-64 address of `port_mac`. When it is taken, or is the gateway, the port gets a new MAC
+    from `new_mac()` instead (a random MAC makes this a one-in-2**40 event), up to `tries` times."""
+    _lock_subnet(db, subnet)
+    network = ipaddress.ip_network(subnet.cidr, strict=False)
+    gateway = subnet.gateway_ip or subnet.gateway
+    gateway_ip = ipaddress.ip_address(gateway) if gateway else None
+    used = _used_addresses(db, subnet, network)
+    for attempt in range(tries):
+        if attempt:
+            port_mac = new_mac()
+        candidate = ipaddress.ip_address(eui64_address(subnet.cidr, port_mac))
+        if candidate not in used and candidate != gateway_ip:
+            return port_mac, str(candidate)
+    raise HTTPException(status_code=409, detail=f"no free EUI-64 address in subnet '{subnet.name}'")

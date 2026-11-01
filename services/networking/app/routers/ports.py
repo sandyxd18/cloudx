@@ -11,7 +11,7 @@ from ..access import require_owned, scope
 from ..db import DB
 from ..quota import check_quota
 from ..events import _actor, _publish_net_event
-from ..ipam import allocate_fixed_ip, format_id_list, parse_id_list
+from ..ipam import allocate_eui64_address, allocate_fixed_ip, format_id_list, parse_id_list, uses_eui64
 from ..models import FloatingIP, Network, Port, Router, SecurityGroup, Subnet, mac
 from ..ovn_cli import _ovn_register_dns, apply_security_groups, port_group_name
 from ..schemas import PortIn, PortSecurityGroupsIn, PortUpdate
@@ -31,6 +31,14 @@ def _lsp_addresses(port: Port) -> list[str]:
     main = [port.mac_address, *filter(None, [port.fixed_ip, port.ipv6_address])]
     main += [p["ip_address"] for p in pairs if p.get("mac_address") in (None, port.mac_address)]
     return [" ".join(main)] + [f'{p["mac_address"]} {p["ip_address"]}' for p in pairs if p.get("mac_address") not in (None, port.mac_address)]
+
+
+def _allocate_ipv6(db: Session, subnet: Subnet, requested: str | None, port_mac: str) -> tuple[str, str]:
+    """(mac, address). Where the guest builds its own address, an address nobody asked for is the EUI-64 one of the
+    port's MAC, so the port may get a different MAC when that address is taken; a requested address is kept as given."""
+    if not requested and uses_eui64(subnet):
+        return allocate_eui64_address(db, subnet, port_mac, mac)
+    return port_mac, allocate_fixed_ip(db, subnet, requested)
 
 
 @router.post("/ports", status_code=201)
@@ -71,12 +79,12 @@ def create_port(payload: PortIn, current: UserOrInternal, db: DB):
             if entry_subnet_id:
                 entry_subnet = db.get(Subnet, entry_subnet_id)
                 if entry_subnet and entry_subnet.ip_version == 6:
-                    ipv6_address = allocate_fixed_ip(db, entry_subnet, entry_ip)
+                    port_mac, ipv6_address = _allocate_ipv6(db, entry_subnet, entry_ip, port_mac)
                     ipv6_subnet = entry_subnet
     elif not requested_ip and subnet is None:
         ipv6_subnet = db.scalar(select(Subnet).where(Subnet.network_id == network.id).where(Subnet.ip_version == 6).order_by(Subnet.created_at))
         if ipv6_subnet:
-            ipv6_address = allocate_fixed_ip(db, ipv6_subnet)
+            port_mac, ipv6_address = _allocate_ipv6(db, ipv6_subnet, None, port_mac)
 
     port = Port(
         name=payload.name,
