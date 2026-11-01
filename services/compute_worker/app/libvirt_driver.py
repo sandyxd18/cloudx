@@ -403,6 +403,17 @@ def iscsi_sessions(name: str) -> list[tuple[str, str]]:
     finally:
         conn.close()
 
+def interface_taps_from_xml(xml: str) -> list[str]:
+    """Tap devices of a domain: the target of each ethernet interface (CloudX plugs every port of a server that way)."""
+    return [t.attrib["dev"] for t in ET.fromstring(xml).findall("./devices/interface[@type='ethernet']/target") if t.attrib.get("dev")]
+
+def interface_taps(name: str) -> list[str]:
+    conn = connect()
+    try:
+        return interface_taps_from_xml(conn.lookupByName(name).XMLDesc(0))
+    finally:
+        conn.close()
+
 def delete(name: str) -> None:
     conn = connect()
     try:
