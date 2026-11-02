@@ -4,6 +4,13 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.5 (2026-11-02)
+
+No code change since 1.0.5-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.5.md`.
+The candidate was installed on the lab (three controllers, two compute nodes) and checked with a gateway-less IPv6 subnet
+(refused with 400) and a CirrOS guest on a `slaac` subnet that got the RDNSS in its router advertisement and used it as its
+only resolver.
+
 ## 1.0.5-rc1 (2026-11-02)
 
 Release candidate: it is installed on the lab before the final 1.0.5 is tagged. Two changes, both from the known limitations
