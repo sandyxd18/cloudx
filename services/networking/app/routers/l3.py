@@ -132,6 +132,9 @@ def add_router_interface(ref: str, payload: RouterInterfaceIn, current: CurrentU
     existing = db.scalar(select(RouterInterface).where(RouterInterface.router_id == router.id, RouterInterface.subnet_id == subnet.id))
     if existing:
         raise HTTPException(status_code=409, detail="router interface already exists")
+    if not (subnet.gateway_ip or subnet.gateway):
+        # an IPv6 subnet may be made without one; the router port's address is the gateway, and "/64" is no address
+        raise HTTPException(status_code=400, detail=f"subnet {subnet.name} has no gateway_ip, and a router port takes its address from it; subnets cannot be edited, so create the subnet again with --gateway")
     lrp = f"lrp-{router.name}-{subnet.name}"
     lsp = f"lsp-{router.name}-{subnet.name}"
     port_mac = mac()
