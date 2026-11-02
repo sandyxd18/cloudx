@@ -6,9 +6,12 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## 1.0.6-rc1 (2026-11-02)
 
-Release candidate: it is checked on the lab before the final 1.0.6 is tagged. One change, in the CLI only; the services, the
+Release candidate: it is installed on the lab before the final 1.0.6 is tagged. One change, in the CLI only; the services, the
 API and the database are the same as in 1.0.5. The notes, with the upgrade steps and what was and was not tested, are in
 `docs/releases/v1.0.6.md`.
+The candidate was installed on the lab (three controllers, two compute nodes) and checked there: a server made with two
+`--network` values has two NICs, both ports bound, and keeps both after an evacuation with 0% loss on each; a repeated
+network is refused.
 
 ### Added
 - `cloudx server create` takes `--network` more than once: the first is the primary network, every other one adds a NIC. The
