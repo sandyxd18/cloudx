@@ -4,6 +4,23 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.6-rc1 (2026-11-02)
+
+Release candidate: it is checked on the lab before the final 1.0.6 is tagged. One change, in the CLI only; the services, the
+API and the database are the same as in 1.0.5. The notes, with the upgrade steps and what was and was not tested, are in
+`docs/releases/v1.0.6.md`.
+
+### Added
+- `cloudx server create` takes `--network` more than once: the first is the primary network, every other one adds a NIC. The
+  API has taken several networks since 1.0.2; the CLI sent only one, and a second `--network` was silently ignored. A network
+  given twice is refused before anything is sent.
+
+### Documentation
+- `docs/releases/v1.0.5.md` and `docs/releases/v1.0.4.md` carry the lab results found after those releases (Ubuntu guest,
+  `dhcpv6-stateful`, a security group, evacuation of a one-NIC server). `docs/ipam.md`, `docs/feature-comparison.md` and
+  `docs/releases/v1.0.3.md` no longer say that a security group which drops ICMPv6 drops the router advertisements: on the lab
+  it does not.
+
 ## 1.0.5 (2026-11-02)
 
 No code change since 1.0.5-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.5.md`.
