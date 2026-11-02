@@ -61,6 +61,7 @@ cloudx keypair create my-key                    # writes the private key to my-k
 cloudx image list
 
 cloudx server create web-1 --image ubuntu --flavor small --network app-net --key-name my-key --security-group web-sg
+cloudx server create web-2 --image ubuntu --flavor small --network app-net --network db-net   # one NIC per --network, the first is the primary (multi-network.md)
 cloudx server list
 cloudx server show web-1
 cloudx server console web-1                     # serial console, Ctrl+] to leave
