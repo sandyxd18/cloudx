@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import INTERNAL_VIP_ADDRESS, OVN_NB_DB, PROVIDER_BRIDGE, PROVIDER_PHYSNET
-from .ipam import parse_id_list
+from .ipam import parse_id_list, subnet_dns
 from .models import Network, Port, Router, SecurityGroup, SecurityGroupRule, stable_mac
 
 # ovn-nbctl/ovs-vsctl get --timeout=8 themselves; this is the hard stop if the process hangs anyway.
@@ -273,15 +273,33 @@ def _ensure_dhcpv6_options(
 RA_ADDRESS_MODES = {"slaac": "slaac", "dhcpv6-stateful": "dhcpv6_stateful", "dhcpv6-stateless": "dhcpv6_stateless"}
 
 
-def router_ra_args(lrp: str, ra_mode: str | None, address_mode: str | None, mtu: int) -> list[str]:
+def first_ipv6_nameserver(nameservers: list[str]) -> str | None:
+    """The one DNS server an advertisement can name: ovn-nb(5) says "OVN supports only one RDNSS server at this time",
+    and an IPv4 address is no RDNSS at all."""
+    for item in nameservers:
+        try:
+            if ipaddress.ip_address(item).version == 6:
+                return item
+        except ValueError:
+            continue
+    return None
+
+
+def router_ra_args(lrp: str, ra_mode: str | None, address_mode: str | None, mtu: int, dns_nameservers: list[str] | None = None) -> list[str]:
     """ovn-nbctl arguments that make a router port send router advertisements (and answer router solicitations).
 
     The advertisement carries the on-link prefix and the router lifetime, i.e. what DHCPv6 cannot: without it a DHCPv6
     client gets its address as a /128 with no route. The mode is the subnet's ra_mode, else its address_mode, else
-    dhcpv6-stateful (the default of the DHCPv6 row too). The values are quoted, as ovn-nbctl wants for DHCP_Options."""
+    dhcpv6-stateful (the default of the DHCPv6 row too). It also names the subnet's first IPv6 DNS server (RDNSS,
+    RFC 8106), the one place a `slaac` guest without cloud-init can learn a resolver from. The values are quoted, as
+    ovn-nbctl wants for DHCP_Options."""
     mode = RA_ADDRESS_MODES.get(ra_mode or address_mode or "dhcpv6-stateful", "dhcpv6_stateful")
-    return ["set", "logical_router_port", lrp,
+    args = ["set", "logical_router_port", lrp,
             f'ipv6_ra_configs:address_mode="{mode}"', 'ipv6_ra_configs:send_periodic="true"', f'ipv6_ra_configs:mtu="{mtu}"']
+    rdnss = first_ipv6_nameserver(dns_nameservers or [])
+    if rdnss:
+        args.append(f'ipv6_ra_configs:rdnss="{rdnss}"')
+    return args
 
 
 def ensure_router_port_ra(lrp: str, subnet, mtu: int) -> None:
@@ -290,7 +308,7 @@ def ensure_router_port_ra(lrp: str, subnet, mtu: int) -> None:
     if subnet.ip_version != 6:
         return
     try:
-        ovn(*router_ra_args(lrp, subnet.ipv6_ra_mode, subnet.ipv6_address_mode, mtu), check=False)
+        ovn(*router_ra_args(lrp, subnet.ipv6_ra_mode, subnet.ipv6_address_mode, mtu, subnet_dns(subnet)), check=False)
     except Exception as exc:
         import logging
         logging.getLogger("networking-api").warning("router advertisements for %s not set: %s", lrp, exc)
