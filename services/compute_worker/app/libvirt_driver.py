@@ -695,8 +695,10 @@ def set_password(name: str, password: str, username: str = "root") -> None:
 # ── Rebuild (re-provision root disk) ──────────────────────────────────────────
 
 def rebuild(name: str, new_disk_path: str, seed_iso: str, tap_name: str,
-            mac_address: str, ram_mb: int, vcpus: int) -> None:
-    """Destroy current domain, swap root disk, redefine and start."""
+            mac_address: str, ram_mb: int, vcpus: int,
+            extra_interfaces: list[tuple[str, str]] | None = None) -> None:
+    """Destroy current domain, swap root disk, redefine and start. `extra_interfaces` are the (tap, MAC) of the other
+    ports of a server on several networks: the domain is defined again from scratch, so a NIC left out is gone."""
     conn = connect()
     try:
         try:
@@ -711,8 +713,9 @@ def rebuild(name: str, new_disk_path: str, seed_iso: str, tap_name: str,
                 domain.undefine()
         except Exception as exc:
             log.warning("could not remove the old domain %s before rebuild: %s", name, exc)
-        xml = domain_xml(name, ram_mb, vcpus, new_disk_path, seed_iso, tap_name, mac_address)
+        xml = domain_xml(name, ram_mb, vcpus, new_disk_path, seed_iso, tap_name, mac_address, extra_interfaces=extra_interfaces)
         new_domain = conn.defineXML(xml)
+        _ensure_unmanaged_taps(new_domain)  # libvirt refuses to start a managed='no' interface whose tap is gone
         new_domain.create()
     finally:
         conn.close()

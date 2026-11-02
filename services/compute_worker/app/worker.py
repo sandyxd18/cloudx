@@ -190,6 +190,15 @@ def resize_server(payload: dict) -> dict:
 
 # ── Rebuild ────────────────────────────────────────────────────────────────────
 
+def _nics_of(server_id: str, payload: dict) -> tuple[dict, list[dict], list[tuple[str, str]]]:
+    """(primary port, extra ports, (tap, MAC) of each extra port) of a server whose domain is built again. A server on
+    several networks has one port, and so one NIC, per network; the primary port is `port`."""
+    port = payload.get("port") or {}
+    extra_ports = [p for p in payload.get("ports") or [] if p.get("id") != port.get("id")]
+    interfaces = [(network_manager.port_tap_name(server_id, p["id"]), p["mac_address"]) for p in extra_ports]
+    return port, extra_ports, interfaces
+
+
 def rebuild_server(server_id: str, payload: dict) -> dict:
     """Replace root disk with a new image, keeping the same network config."""
     domain = payload["libvirt_domain_name"]
@@ -212,13 +221,13 @@ def rebuild_server(server_id: str, payload: dict) -> dict:
     download_and_prepare_disk(image_ref, new_disk_path)
     expose_to_host_libvirt(new_disk_path)
 
-    port = payload.get("port") or {}
+    port, extra_ports, extra_interfaces = _nics_of(server_id, payload)
     seed_iso = cloudinit.create_config_drive(
         instance_dir, server_id, payload.get("name", ""),
-        payload.get("public_key_snapshot"), port, payload.get("user_data"),
+        payload.get("public_key_snapshot"), port, payload.get("user_data"), extra_ports=extra_ports,
     )
     expose_to_host_libvirt(seed_iso)
-    libvirt_driver.rebuild(domain, str(new_disk_path), str(seed_iso), tap, mac_address, ram_mb, vcpus)
+    libvirt_driver.rebuild(domain, str(new_disk_path), str(seed_iso), tap, mac_address, ram_mb, vcpus, extra_interfaces=extra_interfaces)
     return {"status": "ACTIVE", "disk_path": str(new_disk_path)}
 
 
@@ -245,13 +254,13 @@ def rescue_server(server_id: str, payload: dict) -> dict:
     download_and_prepare_disk(rescue_image_id, rescue_disk)
     expose_to_host_libvirt(rescue_disk)
 
-    port = payload.get("port") or {}
+    port, extra_ports, extra_interfaces = _nics_of(server_id, payload)
     seed_iso = cloudinit.create_config_drive(
         instance_dir, server_id, payload.get("name", ""),
-        payload.get("public_key_snapshot"), port, payload.get("user_data"),
+        payload.get("public_key_snapshot"), port, payload.get("user_data"), extra_ports=extra_ports,
     )
     expose_to_host_libvirt(seed_iso)
-    libvirt_driver.rebuild(domain, str(rescue_disk), str(seed_iso), tap, mac_address, ram_mb, vcpus)
+    libvirt_driver.rebuild(domain, str(rescue_disk), str(seed_iso), tap, mac_address, ram_mb, vcpus, extra_interfaces=extra_interfaces)
     return {"status": "RESCUE", "rescue_disk": str(rescue_disk)}
 
 
@@ -269,13 +278,13 @@ def unrescue_server(server_id: str, payload: dict) -> dict:
         raise ValueError("unrescue payload missing disk_path")
 
     instance_dir = Path(payload.get("instance_dir") or INSTANCE_DIR / server_id)
-    port = payload.get("port") or {}
+    port, extra_ports, extra_interfaces = _nics_of(server_id, payload)
     seed_iso = cloudinit.create_config_drive(
         instance_dir, server_id, payload.get("name", ""),
-        payload.get("public_key_snapshot"), port, payload.get("user_data"),
+        payload.get("public_key_snapshot"), port, payload.get("user_data"), extra_ports=extra_ports,
     )
     expose_to_host_libvirt(seed_iso)
-    libvirt_driver.rebuild(domain, disk_path, str(seed_iso), tap, mac_address, ram_mb, vcpus)
+    libvirt_driver.rebuild(domain, disk_path, str(seed_iso), tap, mac_address, ram_mb, vcpus, extra_interfaces=extra_interfaces)
 
     rescue_disk = instance_dir / "disk-rescue.qcow2"
     if rescue_disk.exists():

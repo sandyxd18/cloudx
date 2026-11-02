@@ -168,14 +168,23 @@ def revert_resize(ref: str, current: CurrentUser, db: DB):
     return obj_to_dict(server)
 
 
+def ports_of(server) -> tuple[dict, list[dict]]:
+    """The primary port and every port of the server, primary first. The worker makes one NIC per port and describes
+    each in the config drive, so an action that builds the domain again needs the ports, not only their ids."""
+    url = networking_api_url()
+    port = clients.api_get(f"{url}/ports/{server.port_id}")
+    return port, [port] + [clients.api_get(f"{url}/ports/{p}") for p in comma_list(server.extra_port_ids)]
+
+
 @router.post("/servers/{ref}/rebuild")
 def rebuild_server(ref: str, payload: ServerRebuildIn, current: CurrentUser, db: DB):
     server = require_server(db, ref, current)
     image = clients.api_get(f"{image_api_url()}/images/{payload.image}")
+    port, ports = ports_of(server)
     server.image_id = image["id"]
     server.status = "REBUILD"
     db.commit()
-    clients.cast_to_worker("rebuild", {**server_worker_payload(server), "image": image})
+    clients.cast_to_worker("rebuild", {**server_worker_payload(server, port, ports), "image": image})
     db.refresh(server)
     return obj_to_dict(server)
 
@@ -187,9 +196,10 @@ def rescue_server(ref: str, payload: ServerRescueIn, current: CurrentUser, db: D
     if payload.image:
         rescue_img = clients.api_get(f"{image_api_url()}/images/{payload.image}")
         rescue_image_id = rescue_img["id"]
+    port, ports = ports_of(server)
     server.status = "RESCUE"
     db.commit()
-    clients.cast_to_worker("rescue", {**server_worker_payload(server), "rescue_image_id": rescue_image_id})
+    clients.cast_to_worker("rescue", {**server_worker_payload(server, port, ports), "rescue_image_id": rescue_image_id})
     db.refresh(server)
     return obj_to_dict(server)
 
@@ -197,9 +207,10 @@ def rescue_server(ref: str, payload: ServerRescueIn, current: CurrentUser, db: D
 @router.post("/servers/{ref}/unrescue")
 def unrescue_server(ref: str, current: CurrentUser, db: DB):
     server = require_server(db, ref, current)
+    port, ports = ports_of(server)
     server.status = "UNRESCUING"
     db.commit()
-    clients.cast_to_worker("unrescue", server_worker_payload(server))
+    clients.cast_to_worker("unrescue", server_worker_payload(server, port, ports))
     db.refresh(server)
     return obj_to_dict(server)
 
