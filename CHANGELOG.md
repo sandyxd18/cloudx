@@ -8,6 +8,9 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 Release candidate: it is installed on the lab before the final 1.0.5 is tagged. Two changes, both from the known limitations
 of 1.0.4. No schema change. The notes, with the upgrade steps and what was and was not tested, are in `docs/releases/v1.0.5.md`.
+The candidate was installed on the lab (three controllers, two compute nodes) and both changes were checked there: the
+gateway-less subnet is refused with 400, and a CirrOS guest on a `slaac` subnet got the RDNSS in its router advertisement and
+used it as its only resolver.
 
 ### Fixed
 - `cloudx router add-interface` on an IPv6 subnet that was created without a gateway answered 502
