@@ -4,6 +4,19 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.7 (2026-11-03)
+
+No code change since 1.0.7-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.7.md`.
+The candidate was installed on the lab (three controllers, two compute nodes) and checked there: a NIC and two data volumes
+(`ceph-rbd` and `gp2`) attached after creation survived `reboot --hard`, and a server with two NICs kept both through
+`rebuild`, `rescue` and `unrescue`, with 4/4 pings on each network.
+
+### Documentation
+- `docs/releases/v1.0.7.md` and `docs/releases/v1.0.6.md` carry the lab results found after 1.0.6 (dual-stack `slaac` port,
+  explicit IPv6 `fixed_ips`, rebuild).
+- The supported OVN is stated: the one from the Ubuntu 24.04 archive, 24.03.8 in `noble-updates`, which is what the lab tests of
+  1.0.5 to 1.0.7 ran on. An older OVN is not tested (`docs/deb-install.md` section 8, `docs/releases/v1.0.7.md`).
+
 ## 1.0.7-rc1 (2026-11-02)
 
 Release candidate: it is installed on the lab before the final 1.0.7 is tagged. Two bug fixes in the compute service and the
