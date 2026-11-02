@@ -4,6 +4,21 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.5-rc1 (2026-11-02)
+
+Release candidate: it is installed on the lab before the final 1.0.5 is tagged. Two changes, both from the known limitations
+of 1.0.4. No schema change. The notes, with the upgrade steps and what was and was not tested, are in `docs/releases/v1.0.5.md`.
+
+### Fixed
+- `cloudx router add-interface` on an IPv6 subnet that was created without a gateway answered 502
+  (`ovn-nbctl: invalid network address: /64`), because the router port takes its address from the gateway. It now answers 400
+  before anything reaches OVN, and says to create the subnet again with `--gateway` (a subnet cannot be edited).
+
+### Added
+- The router advertisements of a router port on an IPv6 subnet carry a DNS server (RDNSS, RFC 8106): the first IPv6 address
+  in the subnet's `--dns`. OVN takes one RDNSS server per port. Router ports that exist get it when networking-api starts.
+  IPv6 subnets have no default DNS, so a subnet advertises one only if it was made with an IPv6 `--dns`.
+
 ## 1.0.4 (2026-11-01)
 
 No code change since 1.0.4-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.4.md`.
