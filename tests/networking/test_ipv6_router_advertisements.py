@@ -105,3 +105,42 @@ def test_router_ports_that_exist_get_advertisements_when_networking_api_starts(l
     calls.clear()
     networking.bootstrap.bootstrap_router_advertisements()      # a restart does it again; setting a value twice is harmless
     assert len(_ra(calls)) == 1
+
+
+# ── RDNSS (RFC 8106): the advertisement names a DNS server, which is all a slaac guest without cloud-init can learn it from ──
+
+def test_the_advertisement_names_the_subnets_ipv6_dns_server(lab):
+    _, client, calls = lab
+    sub = _subnet(client, "dns6", "v6net", "fd42:7:a::/64", "fd42:7:a::1", ipv6_ra_mode="slaac", dns_nameservers=["2001:4860:4860::8888"])
+    assert client.post("/routers/r/interfaces", json={"subnet": sub}).status_code == 201
+    (_, config, _), = _ra(calls)
+    assert config["rdnss"] == '"2001:4860:4860::8888"'
+
+
+def test_only_the_first_ipv6_server_is_advertised_since_ovn_takes_one(lab):
+    # ovn-nb(5): "OVN supports only one RDNSS server at this time"; an IPv4 address is no RDNSS at all
+    _, client, calls = lab
+    sub = _subnet(client, "dns6x", "v6net", "fd42:7:b::/64", "fd42:7:b::1",
+                  dns_nameservers=["10.0.0.53", "2001:db8::53", "2001:db8::54"])
+    client.post("/routers/r/interfaces", json={"subnet": sub})
+    (_, config, _), = _ra(calls)
+    assert config["rdnss"] == '"2001:db8::53"'
+
+
+@pytest.mark.parametrize("nameservers", [[], ["10.0.0.53"]])
+def test_without_an_ipv6_dns_server_the_advertisement_has_no_rdnss(lab, nameservers):
+    _, client, calls = lab
+    sub = _subnet(client, "nodns6", "v6net", "fd42:7:c::/64", "fd42:7:c::1", dns_nameservers=nameservers)
+    client.post("/routers/r/interfaces", json={"subnet": sub})
+    (_, config, _), = _ra(calls)
+    assert "rdnss" not in config
+
+
+def test_router_ports_that_exist_get_the_rdnss_when_networking_api_starts(lab):
+    networking, client, calls = lab
+    sub = _subnet(client, "olddns6", "v6net", "fd42:7:d::/64", "fd42:7:d::1", dns_nameservers=["2001:db8::53"])
+    client.post("/routers/r/interfaces", json={"subnet": sub})
+    calls.clear()
+    networking.bootstrap.bootstrap_router_advertisements()
+    (_, config, _), = _ra(calls)
+    assert config["rdnss"] == '"2001:db8::53"'
