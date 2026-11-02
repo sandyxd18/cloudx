@@ -119,7 +119,7 @@ The `nginx`, `init-system-helpers` and `python3` packages come from the Ubuntu r
 Each GitHub release from v1.0.0-rc1 on carries the 47 `.deb` files (about 60 MB), the tarball `cloudx-<version>.tar.gz` and `SHA256SUMS`. Releases up to v0.8.6 have only the tarball. `SHA256SUMS` names every file, so it doubles as the index to download from:
 
 ```bash
-TAG=v1.0.7-rc1                                      # the release you want
+TAG=v1.0.7                                      # the release you want
 BASE=https://github.com/sandyxd18/cloudx/releases/download/$TAG
 mkdir -p ~/cloudx-debs && cd ~/cloudx-debs
 curl -fsSLO $BASE/SHA256SUMS
@@ -703,6 +703,7 @@ If you already used `apt purge`, restore the deleted `/etc/cloudx/<unit>/<unit>.
 | TLS and path routing | not available yet. nginx only listens on HTTP on each external port; there is no path-based routing (`/image`) |
 | `nginx -t` fails at install | installing an API package does not fail; a `warning: nginx -t failed` message is printed. Check with `sudo nginx -t`, fix it, then `sudo systemctl reload nginx`. A port still held by another process (for example an old gunicorn) makes the reload fail to bind; stop that process and run `sudo systemctl restart nginx` |
 | Architecture and distro | Ubuntu 24.04 amd64 with Python 3.12 only |
+| OVN | the OVN of the Ubuntu 24.04 archive, which the packages only `Recommends` and do not pin: 24.03.8 (`noble-updates`) is what the lab tests of 1.0.5 to 1.0.7 ran on. An older OVN is not tested; it may accept the router-advertisement settings (for example `rdnss`) and ignore them without an error, so check what a guest receives |
 | VM metadata | `169.254.169.254` is served through an `iptables` rule on the host where `metadata-proxy` runs (`scripts/setup-metadata-route.sh`), not by an agent on every compute node. VMs on other compute nodes cannot reach it; SSH keys and user-data still arrive through the config drive (`troubleshooting.md`) |
 | Provider network CIDR | do not use `172.17.0.0/16` when Docker is installed: `docker0` uses `172.17.0.1/16` and breaks routing from the host (`troubleshooting.md`) |
 
