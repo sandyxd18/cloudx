@@ -370,7 +370,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Firewall as a Service (FWaaS)** | Deliberately excluded |
 | **BGP Dynamic Routing** | Advertise and learn (BIRD, eBGP IPv4), not 1:1; see docs/bgp-dynamic-routing.md |
 | **VPN as a Service** | Site-to-site only (strongSwan), see docs/vpn-site-to-site.md |
-| **IPv6 router advertisements (SLAAC)** | OVN sends no RA: nothing sets `ipv6_ra_configs` on router ports. A VM gets its IPv6 address and prefix from the config drive (static, like IPv4), so cloud-init images work; DHCPv6 options are created and bound to ports but have not been tried against a guest |
+| **IPv6 router advertisements (SLAAC)** | A router port on an IPv6 subnet sends them: `ipv6_ra_configs` is set when the interface is added and again when networking-api starts. The mode is the subnet's `--ipv6-ra-mode`, else its `--ipv6-address-mode`, else `dhcpv6-stateful`; the advertisement carries the prefix, the router lifetime, the network's MTU and one DNS server (RDNSS: the first IPv6 address in the subnet's `--dns`, since OVN takes one). On a `slaac` or `dhcpv6-stateless` subnet a port gets the EUI-64 address the guest builds for itself. A VM also gets its address and prefix from the config drive (static, like IPv4), so cloud-init images work; a subnet with no router sends none, and a security group that drops ICMPv6 drops them |
 | **Network Segment** | No manual VLAN/VXLAN segments; the segment fields in responses are empty |
 | **DNS Integration (Designate)** | Per-port `dns_name` only; zones and recordsets are in the separate DNS service (docs/dns.md) |
 | **RBAC policies per network** | A `shared` flag per network, no per-project RBAC entries |
