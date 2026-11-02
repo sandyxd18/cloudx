@@ -368,6 +368,29 @@ def start(name: str) -> None:
         conn.close()
 
 
+def hard_reboot(name: str) -> bool:
+    """Power-cycle a domain: destroy it if it runs and start it again from the definition libvirt holds. That definition
+    has the NICs and disks added after the server was created (attach_interface and attach_disk write to the persistent
+    config), which the domain.xml saved at creation does not. False when libvirt has no such domain, so the caller can
+    define it again from something else."""
+    conn = connect()
+    try:
+        try:
+            domain = conn.lookupByName(name)
+        except Exception as exc:
+            log.info("domain %s is not defined: %s", name, exc)
+            return False
+        if domain.isActive():
+            domain.destroy()
+        if domain.hasManagedSaveImage(0):  # a suspended domain would resume from it instead of booting
+            domain.managedSaveRemove(0)
+        _ensure_unmanaged_taps(domain)
+        domain.create()
+        return True
+    finally:
+        conn.close()
+
+
 def stop(name: str) -> None:
     conn, domain = lookup(name)
     try:

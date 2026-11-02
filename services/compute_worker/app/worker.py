@@ -134,9 +134,12 @@ def reboot_server(payload: dict) -> dict:
     domain = payload["libvirt_domain_name"]
     reboot_type = payload.get("reboot_type", "soft")
     if reboot_type == "hard":
-        # Hard reboot: destroy and start (without re-provision)
+        # Hard reboot: destroy and start (without re-provision), from the definition libvirt holds: it has the NICs and
+        # disks attached after creation, which the domain.xml saved at creation does not
+        if libvirt_driver.hard_reboot(domain):
+            return {"status": "ACTIVE"}
+        # libvirt lost the domain: define it again from the XML saved at creation if there is one
         libvirt_driver.delete(domain)
-        # Re-define from saved XML if available
         instance_dir = Path(payload.get("instance_dir") or INSTANCE_DIR / domain)
         domain_xml_path = instance_dir / "domain.xml"
         if domain_xml_path.exists():
