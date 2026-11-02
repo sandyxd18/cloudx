@@ -20,15 +20,21 @@ def server(ctx):
 @click.argument("name")
 @click.option("--image", required=True)
 @click.option("--flavor", default="tiny")
-@click.option("--network", required=True)
+@click.option("--network", "networks", multiple=True, required=True,
+              help="Network to attach; repeat it for more NICs. The first one is the primary network")
 @click.option("--key-name")
 @click.option("--security-group", "security_groups", multiple=True)
 @click.option("--user-data", type=click.Path())
 @click.option("--volume-size", type=int, help="Root volume size GB (boot from volume)")
 @click.option("--ipv6", is_flag=True, help="Also give the server an IPv6 address (the network needs an IPv6 subnet)")
 @click.pass_context
-def server_create(ctx, name, image, flavor, network, key_name, security_groups, user_data, volume_size, ipv6):
-    payload = {"name": name, "image": image, "flavor": flavor, "network": network}
+def server_create(ctx, name, image, flavor, networks, key_name, security_groups, user_data, volume_size, ipv6):
+    repeated = sorted({n for n in networks if networks.count(n) > 1})
+    if repeated:
+        # the API drops a repeated network without a word: the server would get fewer NICs than asked for
+        raise click.UsageError(f"network {repeated[0]} is given twice; each --network adds one NIC on a different network")
+    payload = {"name": name, "image": image, "flavor": flavor, "network": networks[0]}
+    if len(networks) > 1: payload["networks"] = list(networks[1:])
     if key_name:          payload["key_name"] = key_name
     if security_groups:   payload["security_groups"] = list(security_groups)
     if volume_size:       payload["volume_size"] = volume_size
