@@ -4,6 +4,23 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.7-rc1 (2026-11-02)
+
+Release candidate: it is installed on the lab before the final 1.0.7 is tagged. Two bug fixes in the compute service and the
+compute worker; no schema change and no change in the CLI. The notes, with the upgrade steps and what was and was not tested,
+are in `docs/releases/v1.0.7.md`.
+
+### Fixed
+- `cloudx server reboot --hard` no longer drops the NICs that were added after the server was created. It destroyed and
+  undefined the domain and defined it again from the `domain.xml` written at creation, which does not have a NIC attached
+  later (`POST /servers/{id}/ports`); the record still listed the port and the guest did not have it. A hard reboot now stops
+  the domain and starts it again from the definition libvirt holds. The saved XML is used only when libvirt no longer has the
+  domain. (#90)
+- `rebuild`, `rescue` and `unrescue` keep every NIC of a server on several networks. They defined the domain with the primary
+  NIC only: on the lab a server with two NICs had one after each of the three. The compute API now sends every port of the
+  server to the worker, as evacuation already did, and the worker defines one NIC per port. The config drive of the three
+  actions now also describes the primary port (it was sent empty). (#91)
+
 ## 1.0.6 (2026-11-02)
 
 No code change since 1.0.6-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.6.md`.
