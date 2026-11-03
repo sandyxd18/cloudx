@@ -164,7 +164,7 @@ if [[ ! -d "${OPT_DIR}/venv" ]]; then
     python3 -m venv "${OPT_DIR}/venv"
 fi
 "${OPT_DIR}/venv/bin/pip" install --upgrade pip setuptools wheel
-"${OPT_DIR}/venv/bin/pip" install gunicorn uvicorn psycopg2-binary "psycopg[binary]" requests pydantic sqlalchemy cryptography fernet fastapi "python-jose[cryptography]" bcrypt passlib prometheus-client httpx paramiko pika boto3 botocore pyyaml jinja2 alembic psutil python-multipart websockets pymemcache
+"${OPT_DIR}/venv/bin/pip" install gunicorn uvicorn psycopg2-binary "psycopg[binary]" requests pydantic sqlalchemy cryptography fernet fastapi "python-jose[cryptography]" bcrypt passlib prometheus-client httpx paramiko pika boto3 botocore pyyaml jinja2 alembic psutil python-multipart websockets websockify pymemcache
 
 echo "===> Installing shared library (import name: shared)..."
 "${OPT_DIR}/venv/bin/pip" install --upgrade --force-reinstall --no-deps "${OPT_DIR}/services"
