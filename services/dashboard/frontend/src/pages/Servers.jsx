@@ -226,7 +226,7 @@ export default function ServersPage() {
   const isShutoff = one?.status === 'SHUTOFF'
   const isPaused  = one?.status === 'PAUSED'
   const isShelved = one?.status === 'SHELVED_OFFLOADED'
-  const isVerify  = one?.status === 'VERIFY_RESIZE' || one?.status === 'RESIZE'
+  const isVerify  = one?.status === 'VERIFY_RESIZE'
 
   return (
     <ContentLayout

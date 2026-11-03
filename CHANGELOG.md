@@ -12,6 +12,21 @@ schema between releases, so read the upgrade steps before moving a running cloud
   in the project until someone called the API by hand.
 
 ### Changed
+- **A resized server waits in `VERIFY_RESIZE`** until `confirmResize` or `revertResize`, as in Nova. It went straight to
+  `ACTIVE` with its rollback snapshot still in the record, so a second resize silently replaced the size to go back to.
+  Now: a resize is accepted only from `ACTIVE` or `SHUTOFF` (409 otherwise, and 409 from `VERIFY_RESIZE` until the resize
+  is confirmed or reverted); `confirmResize` needs `VERIFY_RESIZE` (or an `ACTIVE` server that an older version left with
+  its snapshot); `revertResize` works from `VERIFY_RESIZE`, from `ERROR` (a resize that failed) and from such an `ACTIVE`
+  server, and the worker ends it with `ACTIVE`. `cloudx server confirm-resize` and `revert-resize` are new, and `cloudx
+  server resize` tells the user about them. A stack update that changes a server's flavor confirms the resize itself. The
+  dashboard already had both buttons for `VERIFY_RESIZE`, now enabled in that status only. A script that resizes and then
+  uses the server must wait for `VERIFY_RESIZE` (the new size is already in the guest) and may confirm at once.
+- **A resized server that was stopped ends stopped.** The worker and `confirmResize` set `ACTIVE` whatever the server was
+  before, so the power-state loop found a stopped domain under an `ACTIVE` record and its auto-recovery started it as if
+  it had crashed. The compute record now keeps the status from before the resize (`original_status`) and confirm and revert
+  restore it.
+- **Schema change:** `compute_servers.original_status` (migration `compute_0004`). Run `cloudx-manage db sync` after the
+  upgrade, before the compute API serves resize.
 - The lb-worker logs a failing poll of load-balancer-api once, then again every 5 minutes while it keeps failing (and
   says when it works again), instead of a warning every 5 seconds. A compute node of a cloud that does not run
   load-balancer-api logged the same line 720 times an hour. Every failure is still logged at debug level.

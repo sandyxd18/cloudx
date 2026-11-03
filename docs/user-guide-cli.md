@@ -69,7 +69,9 @@ cloudx server logs web-1
 cloudx server stop web-1
 cloudx server start web-1
 cloudx server reboot web-1
-cloudx server resize web-1 --flavor medium
+cloudx server resize web-1 --flavor medium       # the server then waits in VERIFY_RESIZE
+cloudx server confirm-resize web-1              # keep the new size
+cloudx server revert-resize web-1               # or go back to the old one
 cloudx server delete web-1
 ```
 

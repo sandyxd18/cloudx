@@ -12,6 +12,12 @@ def _add_big(svc):
         db.commit()
 
 
+def _worker_finishes_the_resize(svc):
+    with svc.SessionLocal() as db:
+        db.get(svc.Server, "srv1").status = "VERIFY_RESIZE"
+        db.commit()
+
+
 def _record(svc):
     with svc.SessionLocal() as db:
         s = db.get(svc.Server, "srv1")
@@ -34,6 +40,7 @@ def test_revert_restores_the_name_vcpus_and_ram_of_the_old_flavor(api):
     _add_big(svc)
     _server(svc, "ACTIVE", flavor_name="small", vcpus=1, ram_mb=512)
     client.post("/servers/srv1/resize", json={"flavor": "big"})
+    _worker_finishes_the_resize(svc)
 
     r = client.post("/servers/srv1/revertResize")
 
@@ -47,6 +54,7 @@ def test_revert_leaves_the_status_to_the_worker(api):
     _add_big(svc)
     _server(svc, "ACTIVE", flavor_name="small", vcpus=1, ram_mb=512)
     client.post("/servers/srv1/resize", json={"flavor": "big"})
+    _worker_finishes_the_resize(svc)
 
     client.post("/servers/srv1/revertResize")
 
