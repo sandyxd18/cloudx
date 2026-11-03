@@ -208,14 +208,22 @@ def port_show(ctx, ref):
 
 @port.command("delete")
 @click.argument("ref")
-@click.option("--force", is_flag=True, help="Delete a port that a server still uses")
+@click.option("--force", is_flag=True, help="Delete a port that a server, a router or another service still uses")
 @click.pass_context
 def port_delete(ctx, ref, force):
-    """Delete a port. A port that a server uses is refused: detach it first with `cloudx server port remove`."""
+    """Delete a port. A port that something uses is refused: detach a server's port first with `cloudx server port remove`."""
     data = _api("get", f"{DEFAULT_URLS['network']}/ports/{ref}", ctx.obj["profile"])
-    if data.get("device_id") and not force:
-        raise click.ClickException(
-            f"port {ref} is used by {data['device_id']}; detach it first with `cloudx server port remove`, or pass --force")
+    if not force:
+        # device_id is not enough: `server port add --network` makes a port with none, and the compute API does not set
+        # one when it attaches the port, so the servers' own records are the ones that say which ports they use
+        servers = _api("get", f"{DEFAULT_URLS['compute']}/servers", ctx.obj["profile"])
+        users = [s.get("name") or s["id"] for s in servers.get("items", servers)
+                 if data["id"] == s.get("port_id") or data["id"] in (s.get("extra_port_ids") or "").split(",")]
+        if users or data.get("device_id") or data.get("device_owner"):
+            used_by = ", ".join(users) or data.get("device_id") or data.get("device_owner")
+            owner = f" ({data['device_owner']})" if data.get("device_owner") and users else ""
+            raise click.ClickException(
+                f"port {ref} is used by {used_by}{owner}; detach it first with `cloudx server port remove`, or pass --force")
     _api("delete", f"{DEFAULT_URLS['network']}/ports/{ref}", ctx.obj["profile"])
     click.echo(f"✓ Port {ref} deleted")
 
