@@ -723,7 +723,6 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Feature | Notes |
 |---|---|
 | **Built-in noVNC proxy** | The console pages expect a proxy at `NOVNC_BASE_URL`; nothing in the packages starts one |
-| **Trunks, QoS policies, subnet pools** | API and CLI only, no dedicated page |
 
 **Estimated CloudX Dashboard similarity: ~90%**
 
