@@ -107,6 +107,19 @@ class AppCredTokenIn(BaseModel):
     application_credential_secret: str
 
 
+class TrustIn(BaseModel):
+    """Delegate `roles` in `project_id` (default: the caller's token project) to the trustee."""
+    trustee_user_id: str                      # id or username
+    project_id: str | None = None
+    roles: list[str]
+    expires_at: str | None = None             # ISO 8601
+    remaining_uses: int | None = Field(None, ge=1)    # None = unlimited
+
+
+class TrustTokenIn(BaseModel):
+    trust_id: str
+
+
 class SwitchProjectIn(BaseModel):
     project_id: str
 

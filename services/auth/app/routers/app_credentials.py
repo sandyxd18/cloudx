@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from ..config import TOKEN_EXPIRE_H
 from ..db import DB
-from ..deps import CurrentUser, scope_domain
+from ..deps import CurrentUser, forbid_trust_token, scope_domain
 from ..lookups import _get_user_by_ref
 from ..models import ApplicationCredential, User, utcnow
 from ..schemas import AppCredIn, AppCredTokenIn, RotateIn
@@ -37,6 +37,7 @@ def _appcred_to_dict(ac: "ApplicationCredential", secret: str | None = None) -> 
 @router.post("/v3/users/{user_ref}/application_credentials", status_code=201)
 def create_app_credential(user_ref: str, payload: AppCredIn, current: CurrentUser, db: DB):
     """Create an application credential for a user."""
+    forbid_trust_token(current)
     u = _get_user_by_ref(db, user_ref, scope_domain(current))
     # Users can only create creds for themselves; admins can do it for anyone
     if current.get("role") != "admin" and u.id != current["sub"]:
@@ -120,6 +121,7 @@ def delete_app_credential(user_ref: str, cred_ref: str, current: CurrentUser, db
 def rotate_app_credential(user_ref: str, cred_ref: str, current: CurrentUser, db: DB,
                           payload: RotateIn | None = Body(default=None)):
     """Issue a new secret for the credential. The replaced secret keeps working for `grace_seconds` (default 0)."""
+    forbid_trust_token(current)
     grace = payload.grace_seconds if payload else 0
     u = _get_user_by_ref(db, user_ref, scope_domain(current))
     if current.get("role") != "admin" and u.id != current["sub"]:

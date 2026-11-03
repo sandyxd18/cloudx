@@ -51,6 +51,11 @@ def _require_domain_admin(payload: dict = Depends(_require_token)) -> dict:
         raise HTTPException(status_code=403, detail="admin or domain admin required")
     return payload
 
+def forbid_trust_token(current: dict) -> None:
+    """A token issued from a trust may not mint credentials, tokens or trusts: that would outlive or widen the trust."""
+    if current.get("trust_id"):
+        raise HTTPException(status_code=403, detail="not allowed with a trust token")
+
 def scope_domain(current: dict) -> str | None:
     """None = system admin (every domain); otherwise the one domain this caller may touch."""
     return None if current.get("role") == "admin" else current.get("domain_id", "default")

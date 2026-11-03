@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from ..config import TOKEN_EXPIRE_H
 from ..db import DB
-from ..deps import CurrentUser
+from ..deps import CurrentUser, forbid_trust_token
 from ..models import AccessKey, Domain, Group, GroupMember, Project, RevokedToken, RoleAssignment, User
 from ..schemas import LoginIn, SwitchProjectIn
 from ..serializers import _project_to_dict, _user_to_dict
@@ -173,6 +173,7 @@ def logout(current: CurrentUser, db: DB):
 @router.post("/session/switch-project")
 def switch_project(payload: SwitchProjectIn, current: CurrentUser, db: DB):
     """Re-issue a token for a different project (user must be a member or admin)."""
+    forbid_trust_token(current)
     user = db.get(User, current["sub"])
     if not user:
         raise HTTPException(status_code=404, detail="user not found")

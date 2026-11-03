@@ -52,6 +52,8 @@ def _create_token(
     *,
     project_id: str | None = None,
     domain_id: str | None = None,
+    trust_id: str | None = None,
+    trustee_id: str | None = None,
 ) -> str:
     """Create a JWT token.
 
@@ -63,6 +65,7 @@ def _create_token(
         role: role in the active project (defaults to user.role).
         project_id: None = user.project_id; "" = a token without a project (domain scope).
         domain_id: None = user.domain_id (or "default").
+        trust_id, trustee_id: set on a token issued from a trust (sub is then the trustor).
     """
     jti = str(uuid.uuid4())
     payload = {
@@ -79,6 +82,10 @@ def _create_token(
         "exp":          utcnow() + timedelta(hours=TOKEN_EXPIRE_H),
         "iat":          utcnow(),
     }
+    if trust_id:
+        payload["trust_id"] = trust_id
+    if trustee_id:
+        payload["trustee_id"] = trustee_id
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 

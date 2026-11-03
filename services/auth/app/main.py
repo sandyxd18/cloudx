@@ -23,6 +23,7 @@ from .routers import (
     projects,
     role_assignments,
     tokens,
+    trusts,
     users,
 )
 
@@ -82,5 +83,6 @@ app.include_router(app_credentials.router)
 app.include_router(catalog.router)
 app.include_router(domains.router)
 app.include_router(policy.router)
+app.include_router(trusts.router)
 app.include_router(audit.router)
 app.include_router(discovery.router)
