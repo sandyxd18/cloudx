@@ -1,5 +1,7 @@
 import logging
+import os
 import re
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -610,15 +612,71 @@ def resume_from_disk(name: str) -> None:
         conn.close()
 
 
-# ── Live resize ────────────────────────────────────────────────────────────────
+# ── Resize ─────────────────────────────────────────────────────────────────────
+
+# How long a running guest gets to answer the ACPI shutdown before a resize that needs a restart destroys it.
+RESIZE_SHUTDOWN_WAIT = int(os.getenv("RESIZE_SHUTDOWN_WAIT", "30"))
+
+_UNIT_TO_KIB = {"b": 1 / 1024, "bytes": 1 / 1024, "kib": 1, "k": 1, "mib": 1024, "m": 1024, "gib": 1024 ** 2, "g": 1024 ** 2}
+
+
+def _max_limits(root: ET.Element) -> tuple[int, int]:
+    """(max vCPUs, max memory in KiB) of a domain definition."""
+    memory = root.find("memory")
+    unit = (memory.get("unit") or "KiB").lower()
+    return int(root.findtext("vcpu")), int(int(memory.text) * _UNIT_TO_KIB[unit])
+
+
+def _redefine_with_limits(conn, domain, root: ET.Element, new_vcpus: int | None, new_ram_mb: int | None):
+    """Define the domain again with the new vCPU count and memory as its maximum and its current size."""
+    if new_vcpus is not None:
+        vcpu = root.find("vcpu")
+        vcpu.text = str(new_vcpus)
+        vcpu.attrib.pop("current", None)
+    if new_ram_mb is not None:
+        for tag in ("memory", "currentMemory"):
+            element = root.find(tag)
+            element.text = str(new_ram_mb)
+            element.set("unit", "MiB")
+    return conn.defineXML(ET.tostring(root, encoding="unicode"))
+
+
+def _shut_down(domain) -> None:
+    """Ask the guest to power off and wait; destroy it when it does not answer."""
+    domain.shutdown()
+    deadline = time.monotonic() + RESIZE_SHUTDOWN_WAIT
+    while domain.isActive() and time.monotonic() < deadline:
+        time.sleep(1)
+    if domain.isActive():
+        log.warning("guest ignored the shutdown for %ss, destroying it", RESIZE_SHUTDOWN_WAIT)
+        domain.destroy()
+
 
 def resize(name: str, new_vcpus: int | None, new_ram_mb: int | None) -> None:
-    """Hot-plug CPU and/or memory.  Both parameters are optional; pass None to skip."""
+    """Change the vCPU count and/or memory. Both parameters are optional; pass None to skip.
+
+    Within the maximums the domain was defined with, the change is live (CPU hot-plug, memory balloon). libvirt refuses
+    anything above them, so then the persistent definition gets the new values as its limits and a running domain is
+    shut down and started again from it."""
     conn, domain = lookup(name)
     try:
         live = getattr(libvirt, "VIR_DOMAIN_AFFECT_LIVE", 1)
         cfg  = getattr(libvirt, "VIR_DOMAIN_AFFECT_CONFIG", 2)
         flags = live | cfg
+
+        root = ET.fromstring(domain.XMLDesc(getattr(libvirt, "VIR_DOMAIN_XML_INACTIVE", 2)))
+        max_vcpus, max_kib = _max_limits(root)
+        if (new_vcpus or 0) > max_vcpus or (new_ram_mb or 0) * 1024 > max_kib:
+            was_active = domain.isActive()
+            if was_active:
+                _shut_down(domain)
+            domain = _redefine_with_limits(conn, domain, root, new_vcpus, new_ram_mb)
+            if was_active:
+                if domain.hasManagedSaveImage(0):
+                    domain.managedSaveRemove(0)
+                _ensure_unmanaged_taps(domain)
+                domain.create()
+            return
 
         if new_vcpus is not None:
             # setVcpusFlags can fail if the guest doesn't support VCPU hotplug;

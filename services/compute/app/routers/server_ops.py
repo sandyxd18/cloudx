@@ -8,16 +8,15 @@ from .. import clients
 from ..config import (
     block_store_api_url,
     DEFAULT_VM_USER,
-    image_api_url,
-    networking_api_url,
     NOVNC_BASE_URL,
     ONLY_BACKEND,
     RPC_CALL_TIMEOUT,
     log,
 )
 from ..db import DB
-from ..lookups import require_server
+from ..lookups import require_server, require_unlocked_server
 from ..service import server_worker_payload
+from .ops import place_and_build
 
 router = APIRouter()
 
@@ -110,26 +109,28 @@ async def console_websocket(websocket: WebSocket, ref: str):
 @router.post("/servers/{ref}/shelve")
 def shelve_server(ref: str, current: CurrentUser, db: DB):
     """
-    Shelve a server: snapshot its state to an image, then stop and free resources.
-    Status: ACTIVE/SHUTOFF → SHELVED_OFFLOADED
+    Shelve a server: the worker removes the domain, its taps and the volume sessions from the node and the placement
+    allocation is released. The server record, its ports and its volumes stay.
+    Status: ACTIVE/SHUTOFF/PAUSED/SUSPENDED → SHELVING → SHELVED_OFFLOADED
     """
-    server = require_server(db, ref, current)
-    if server.locked and current.get("role") != "admin":
-        raise HTTPException(status_code=409, detail="server is locked")
+    server = require_unlocked_server(db, ref, current)
     if server.status not in ("ACTIVE", "SHUTOFF", "PAUSED", "SUSPENDED"):
         raise HTTPException(status_code=409, detail=f"cannot shelve server in state {server.status}")
     if not server.root_volume_id:
         raise HTTPException(status_code=409, detail="shelve requires a root volume (boot-from-volume)")
 
     try:
-        image_url, block_store_url = image_api_url(), block_store_api_url()
+        block_store_url = block_store_api_url()
+        attached = [v["id"] for v in clients.block_get("/volumes").get("items", [])
+                    if v.get("attached_to_server_id") == server.id and v["id"] != server.root_volume_id]
     except CatalogError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     server.status = "SHELVING"
     db.commit()
     clients.cast_to_worker("shelve", {
         **server_worker_payload(server),
-        "_image_api_url": image_url,
+        "_root_volume_id": server.root_volume_id,
+        "_volume_ids": [server.root_volume_id, *attached],
         "_block_store_url": block_store_url,
     })
     return {"server": server.name, "status": "shelving"}
@@ -138,27 +139,20 @@ def shelve_server(ref: str, current: CurrentUser, db: DB):
 @router.post("/servers/{ref}/unshelve")
 def unshelve_server(ref: str, current: CurrentUser, db: DB):
     """
-    Unshelve a server: restore from shelved image and restart.
-    Status: SHELVED_OFFLOADED → ACTIVE
+    Unshelve a server: placement picks a node and the domain is built there again from the root volume, with the same
+    ports and data volumes (the path evacuate takes).
+    Status: SHELVED_OFFLOADED → UNSHELVING → ACTIVE
     """
-    server = require_server(db, ref, current)
-    if server.locked and current.get("role") != "admin":
-        raise HTTPException(status_code=409, detail="server is locked")
+    server = require_unlocked_server(db, ref, current)
     if server.status != "SHELVED_OFFLOADED":
         raise HTTPException(status_code=409, detail=f"server must be SHELVED_OFFLOADED to unshelve (current: {server.status})")
 
     try:
-        image_url, block_store_url, networking_url = image_api_url(), block_store_api_url(), networking_api_url()
+        _, _, build = place_and_build(db, server, "UNSHELVING", "ACTIVE")
     except CatalogError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    server.status = "UNSHELVING"
-    db.commit()
-    clients.cast_to_worker("unshelve", {
-        **server_worker_payload(server),
-        "_image_api_url": image_url,
-        "_block_store_url": block_store_url,
-        "_networking_url": networking_url,
-    })
+    clients.release_server_volumes(server.id)  # the build attaches them again
+    clients.cast_to_worker("build_instance", build)
     return {"server": server.name, "status": "unshelving"}
 
 

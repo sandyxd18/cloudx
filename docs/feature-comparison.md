@@ -3,8 +3,9 @@
 > This document maps the features implemented in **cloudx** against a standard private cloud specification,
 > with an estimated similarity percentage.
 >
-> **Updated:** October 2026, for release 1.0.1. The endpoint tables were checked against the routes in
-> `services/*/app`; the percentages are estimates (see [Assessment Methodology](#-assessment-methodology)).
+> **Updated:** November 2026. The endpoint tables were checked against the routes in `services/*/app`. The rows for
+> server actions in section 2 were also tried in a lab on 1.0.7~rc1; the rest was last reviewed for release 1.0.1. The
+> percentages are estimates (see [Assessment Methodology](#-assessment-methodology)).
 
 ---
 
@@ -154,21 +155,21 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Resume** from pause | `POST /servers/{ref}/resume` | ✅ |
 | **Suspend** (managed save to disk) | `POST /servers/{ref}/suspend` | ✅ |
 | **Unsuspend** (restore from managed save) | `POST /servers/{ref}/unsuspend` | ✅ |
-| **Resize** (live vCPU + RAM hotplug) | `POST /servers/{ref}/resize` | ✅ |
-| **Confirm / revert resize** | `POST /servers/{ref}/confirmResize\|revertResize` | ✅ |
+| **Resize** (live vCPU + RAM change up to the size the domain was created with; a larger flavor shuts the guest down and starts it again) | `POST /servers/{ref}/resize` | ✅ |
+| **Confirm / revert resize** (the server is ACTIVE right after a resize, there is no VERIFY_RESIZE wait; revert works until the resize is confirmed) | `POST /servers/{ref}/confirmResize\|revertResize` | ✅ |
 | **Rebuild** (replace the root disk from a new image) | `POST /servers/{ref}/rebuild` | ✅ |
 | **Rescue** (boot from a rescue image) | `POST /servers/{ref}/rescue` | ✅ |
 | **Unrescue** (return to the root disk) | `POST /servers/{ref}/unrescue` | ✅ |
-| **Shelve / Unshelve** | `POST /servers/{ref}/shelve\|unshelve` | ✅ |
-| **Lock / Unlock** | `POST /servers/{ref}/lock\|unlock` | ✅ |
+| **Shelve / Unshelve** (shelve removes the domain from the node and frees its vCPU and memory; the ports and volumes stay, no image is made; unshelve builds the domain again on a node placement picks) | `POST /servers/{ref}/shelve\|unshelve` | ✅ |
+| **Lock / Unlock** (a locked server refuses every action that changes it from a member, including volume attach and detach; snapshot and reads stay open; admins and services bypass it) | `POST /servers/{ref}/lock\|unlock` | ✅ |
 | Delete server | `DELETE /servers/{ref}` | ✅ |
 | Delete + keep root volume | `DELETE /servers/{ref}?keep_root_volume=true` | ✅ |
-| Snapshot a server to an image | `POST /servers/{ref}/snapshots` | ✅ |
+| Snapshot a server to an image (asynchronous: the worker that holds the root volume uploads it as qcow2; the image appears when the upload ends) | `POST /servers/{ref}/snapshots` | ✅ |
 
 #### Migration & Recovery
 | Feature | Endpoint | Status |
 |---|---|:---:|
-| Live migration to a target host | `POST /servers/{ref}/live-migrate` | ✅ |
+| Live migration to a target host (answers 501; planned, use cold migration for now) | `POST /servers/{ref}/live-migrate` | ✗ |
 | Cold migration | `POST /servers/{ref}/migrate` | ✅ |
 | List possible target hosts | `GET /servers/{ref}/migration-candidates` | ✅ |
 | Evacuate a server from a failed host | `POST /servers/{ref}/evacuate` | ✅ |
@@ -433,7 +434,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Create a volume from a snapshot | `POST /volumes` (`snapshot=...`) | ✅ |
 | Create a volume from another volume (clone) | `POST /volumes` (`source_volume=...`) | ✅ |
 | List / Show volume | `GET /volumes` | ✅ |
-| Delete volume (refused while it has snapshots) | `DELETE /volumes/{ref}` | ✅ |
+| Delete volume (refused while it has snapshots; deleting a server keeps its root volume for the same reason) | `DELETE /volumes/{ref}` | ✅ |
 | Attach a volume to a server | `POST /volumes/{ref}/attach` | ✅ |
 | Detach a volume from a server | `POST /volumes/{ref}/detach` | ✅ |
 | Force detach | `POST /volumes/{ref}/force-detach` | ✅ |
@@ -499,6 +500,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Feature | Endpoint | Status |
 |---|---|:---:|
 | Create a snapshot from a volume | `POST /volumes/{ref}/snapshots` | ✅ |
+| Upload a volume's snapshot as an image (server snapshots use it) | `POST /volumes/{ref}/upload-image` | ✅ |
 | Create a snapshot (standalone) | `POST /snapshots` | ✅ |
 | List / Show / Delete snapshot | `GET\|DELETE /snapshots` | ✅ |
 

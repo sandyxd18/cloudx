@@ -6,7 +6,7 @@ from .. import clients
 from ..db import DB
 from ..lookups import can_access, require_snapshot, require_volume
 from ..models import Snapshot, Volume
-from ..schemas import SnapshotIn
+from ..schemas import ImageUploadIn, SnapshotIn
 from ..serializers import snapshot_to_os_dict
 from ..service import _do_create_snapshot
 
@@ -19,6 +19,17 @@ router = APIRouter()
 def create_volume_snapshot(ref: str, payload: SnapshotIn, current: UserOrInternal, db: DB):
     require_volume(db, ref, current)
     return _do_create_snapshot(db, ref, payload.name)
+
+
+@router.post("/volumes/{ref}/upload-image", status_code=202)
+def upload_volume_image(ref: str, payload: ImageUploadIn, current: UserOrInternal, db: DB):
+    """Snapshot the volume and upload the snapshot as an image (Cinder's os-volume_upload_image). The work is done by
+    the block-store-worker that owns the volume; the image appears when it ends, and a failure leaves the snapshot in
+    `error` with the reason. Returns the snapshot."""
+    volume = require_volume(db, ref, current)
+    image = {"name": payload.image_name, "project_id": payload.project_id or volume.project_id,
+             "visibility": payload.visibility, "disk_format": "qcow2"}
+    return _do_create_snapshot(db, ref, f"{payload.image_name}-root", upload_image=image)
 
 
 @router.post("/snapshots", status_code=201)

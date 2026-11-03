@@ -35,6 +35,15 @@ def require_server(db: Session, ref: str, current: dict | None = None):
     return server
 
 
+def require_unlocked_server(db: Session, ref: str, current: dict):
+    """require_server for an action that changes the server: a locked server refuses a member. Admins pass (the internal
+    token acts as admin), so does an owner who unlocks first."""
+    server = require_server(db, ref, current)
+    if server.locked and current.get("role") != "admin":
+        raise HTTPException(status_code=409, detail="server is locked; unlock it first")
+    return server
+
+
 def get_flavor(db: Session, ref: str):
     return db.get(Flavor, ref) or db.scalar(select(Flavor).where(Flavor.name == ref))
 

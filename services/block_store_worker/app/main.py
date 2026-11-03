@@ -32,6 +32,7 @@ import requests
 
 # Append parent so shared/ is importable
 from shared import catalog  # noqa: E402
+from shared.internal import internal_headers  # noqa: E402
 from shared.proc import run  # noqa: E402
 from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
@@ -395,9 +396,36 @@ def handle_create_snapshot(args: dict) -> None:
             "path": path,
         })
         log.info("Snapshot %s created at %s", snapshot_id, path)
+        if args.get("_upload_image"):  # a server snapshot: the volume snapshot is only the frozen source of the image
+            _upload_snapshot_as_image(path, backend, args["_upload_image"], args)
+            handle_delete_snapshot({"snapshot_id": snapshot_id, "backend": backend, "path": path})
     except Exception as exc:
         log.error("Failed to create snapshot %s: %s", snapshot_id, exc, exc_info=True)
         conductor_mark_snapshot_error(snapshot_id, str(exc))
+
+
+def _upload_snapshot_as_image(snapshot_path: str, backend: str, image: dict, args: dict) -> None:
+    """Export a snapshot, convert it to qcow2 and upload it to image-api as an image of `image["project_id"]`."""
+    raw = qcow = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as f:
+            raw = f.name
+        with tempfile.NamedTemporaryFile(suffix=".qcow2", delete=False) as f:
+            qcow = f.name
+        _export_volume_to_file(snapshot_path, backend, raw)
+        run(["qemu-img", "convert", "-f", "raw", "-O", "qcow2", raw, qcow], timeout=7200)
+        form = {"name": image["name"], "disk_format": "qcow2", "container_format": "bare",
+                "visibility": image.get("visibility", "private"), "project_id": image["project_id"]}
+        with open(qcow, "rb") as fh:
+            resp = requests.post(f"{_image_api_url(args)}/images", headers=internal_headers(), data=form,
+                                 files={"file": (f"{image['name']}.qcow2", fh)}, timeout=7200)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"image upload failed: image-api answered {resp.status_code}: {resp.text[:200]}")
+        log.info("Uploaded snapshot %s as image %s", snapshot_path, image["name"])
+    finally:
+        for tmp in (raw, qcow):
+            if tmp:
+                Path(tmp).unlink(missing_ok=True)
 
 
 def handle_delete_snapshot(args: dict) -> None:
@@ -632,6 +660,7 @@ def _export_volume_to_file(volume_path: str, backend: str, dest_file: str) -> No
     if backend == "ceph":
         # volume_path like rbd:pool/image → strip prefix to pool/image
         rbd_name = volume_path.replace("rbd:", "").split("/", 1)[-1]
+        Path(dest_file).unlink(missing_ok=True)  # rbd export will not write over a file ("File exists"); callers pass one they made
         run(["rbd", "export", "--pool", CEPH_POOL, rbd_name, dest_file], timeout=7200)
     else:  # lvm (volume_path is a device like /dev/vg/vol-xxx)
         run(["qemu-img", "convert", "-f", "raw", "-O", "raw", volume_path, dest_file], timeout=7200)

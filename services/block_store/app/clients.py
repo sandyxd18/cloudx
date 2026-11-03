@@ -35,6 +35,12 @@ def get_server(ref: str) -> dict:
     return dict(row)
 
 
+def server_locked(server_id: str) -> bool:
+    """True when the server is locked (compute_servers.locked). A server that is gone is not locked."""
+    with SessionLocal() as db:
+        return bool(db.execute(text("SELECT locked FROM compute_servers WHERE id = :id"), {"id": server_id}).scalar())
+
+
 # ── RPC helpers ────────────────────────────────────────────────────────────────
 
 def worker_host(payload: dict) -> str | None:

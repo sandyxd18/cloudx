@@ -408,9 +408,11 @@ def upload_image(
     disk_format: str = Form("qcow2"),
     container_format: str = Form("bare"),
     visibility: str = Form("public"),
+    project_id: str | None = Form(None),   # only a service may name the owner: it uploads on a user's behalf
 ):
     if get_image(db, name):
         raise HTTPException(status_code=409, detail="image already exists")
+    owner = project_id if project_id and current.get("sub") == "internal" else current["project_id"]
     image_id = new_id()
     object_name = f"{image_id}-{Path(file.filename or name).name}"
     backend = storage_backend()
@@ -426,7 +428,7 @@ def upload_image(
         checksum="",
         status="saving",
         visibility=visibility,
-        project_id=current["project_id"],
+        project_id=owner,
     )
     db.add(image)
     db.commit()
@@ -453,7 +455,7 @@ def upload_image(
                 "name":       image.name,
                 "size":       image.size,
                 "status":     "ACTIVE",
-                "project_id": current["project_id"],
+                "project_id": owner,
             })
     except Exception as exc:
         log.warning("image upload event not published: %s", exc)
