@@ -76,3 +76,5 @@ dns_resolver_clients = 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 # Seconds a build waits for its root volume before the server goes to ERROR. The wait does not hold up the node's other
 # requests. Importing a large image into Ceph can take many minutes (600 MB took about 17 on a slow lab).
 # root_volume_wait_timeout = 3600
+# Address browsers use to reach port 6080 (websockify) on this node; the console link points here. Defaults to the node name.
+# console_proxy_host = 203.0.113.10

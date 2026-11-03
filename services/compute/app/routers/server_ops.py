@@ -4,11 +4,10 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from shared.auth_middleware import CurrentUser
 from shared.catalog import CatalogError
 
-from .. import clients
+from .. import clients, console as console_links
 from ..config import (
     block_store_api_url,
     DEFAULT_VM_USER,
-    NOVNC_BASE_URL,
     ONLY_BACKEND,
     RPC_CALL_TIMEOUT,
     log,
@@ -44,16 +43,13 @@ def console_url(ref: str, current: CurrentUser, db: DB):
         vnc = clients.call_worker("get_console_info", server_worker_payload(server), timeout=RPC_CALL_TIMEOUT)
     except Exception as exc:
         log.warning("could not get console info from the compute worker: %s", exc)
-    novnc_url = NOVNC_BASE_URL
-    if vnc.get("port"):
-        novnc_url = f"{NOVNC_BASE_URL}?host=localhost&port={vnc['port']}"
     return {
         "server": server.name,
         "domain": server.libvirt_domain_name,
         "virsh_console": f"virsh -c qemu:///system console {server.libvirt_domain_name}",
         "vnc": vnc,
-        "novnc_url": novnc_url,
-        "note": "noVNC static UI is exposed on port 6080; VNC port is discovered from libvirt when available.",
+        "novnc_url": console_links.novnc_url(server.id, vnc),
+        "note": "The noVNC link points at the websockify on the server's compute node (port 6080) and expires after a few minutes.",
     }
 
 
@@ -75,15 +71,11 @@ def remote_console(ref: str, payload: dict, current: CurrentUser, db: DB):
     except Exception as exc:
         log.warning("could not get console info from the compute worker: %s", exc)
 
-    novnc_url = NOVNC_BASE_URL
-    if vnc_info.get("port"):
-        novnc_url = f"{NOVNC_BASE_URL}?host=localhost&port={vnc_info['port']}"
-
     return {
         "remote_console": {
             "type": "novnc",
             "protocol": "vnc",
-            "url": novnc_url,
+            "url": console_links.novnc_url(server.id, vnc_info),
             "vnc_port": vnc_info.get("port"),
             "server": server.name,
             "websocket_url": f"/servers/{ref}/console/ws",

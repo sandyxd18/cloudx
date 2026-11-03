@@ -40,3 +40,5 @@ def endpoint(args: dict, key: str, env_name: str, default: str | None = None) ->
 
 # Name of this compute node: its placement provider, server.host, and the suffix of its own RPC queue.
 COMPUTE_HOST = os.getenv("COMPUTE_HOST", os.getenv("NODE_NAME", "cloudx-compute-01"))
+# Address browsers use to reach this node's websockify on port 6080 (the console link compute-api hands out); defaults to the node name.
+CONSOLE_PROXY_HOST = os.getenv("CONSOLE_PROXY_HOST") or COMPUTE_HOST
