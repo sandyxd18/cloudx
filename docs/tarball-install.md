@@ -458,6 +458,14 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now cloudx-compute-worker.service cloudx-metadata-proxy.service
 ```
 
+Browser console: the unit `cloudx-novnc-proxy.service` is copied with the other units, and `cloudx-compute-worker.service` has `Wants=` on it. Its `websockify` comes from `requirements.txt` (`pip install -r`), but the noVNC client does not: install it with `sudo apt install novnc`. Without `/usr/share/novnc` the unit is skipped without an error and nothing listens on port 6080. Then:
+
+- Open port 6080/tcp on this node to your users' browsers.
+- The proxy must see the same `COMPUTE_HOST` as the worker and the cluster's `auth_secret_key`; the key is in `/etc/cloudx/cloudx.conf`, so copy that file from the controller to this node if it is not here yet. This section sets `COMPUTE_HOST` as an `Environment=` line of the worker unit, so set it for the proxy too (`sudo systemctl edit cloudx-novnc-proxy`), or move it to `/etc/cloudx/compute-worker/compute-worker.conf` (`compute_host = ...`), which both read. A proxy that does not match refuses every console token.
+- Optional: `console_proxy_host = <address a browser can reach>` in the same conf (default: the `COMPUTE_HOST` name).
+
+The whole console flow is in [console.md](console.md).
+
 ---
 
 ## 5. End-to-End Verification & Testing of the 3-Node Cluster

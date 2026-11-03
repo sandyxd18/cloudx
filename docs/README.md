@@ -37,6 +37,9 @@ Kept as history. New installs use the packages above.
 | `code-structure.md` | Code layout, rules, tests, error handling, running commands |
 | `feature-comparison.md`, `roadmap-openstack-parity.md` | Feature comparison with OpenStack and the roadmap |
 
+## Identity
+`identity.md` (token scopes, application credential rotation, trusts)
+
 ## Compute
 `real-vm.md`, `libvirt.md`, `flavor.md`, `keypair.md`, `console.md`, `cloud-init.md`, `placement-lite.md`,
 `boot-from-volume.md`, `root-volume.md`, `ha.md` (instance HA), `container.md`, `k8s-engine.md`, `reservation.md`

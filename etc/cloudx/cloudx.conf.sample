@@ -71,6 +71,8 @@ dns_resolver_clients = 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 # reaper_max_age_hours = 24
 # reaper_interval = 600
 # reaper_dry_run = false
+# Seconds a server may wait in VERIFY_RESIZE before the reaper confirms the resize; 0 turns this off.
+# resize_confirm_window_seconds = 86400
 
 # Compute workers (put this in /etc/cloudx/compute-worker/compute-worker.conf under [DEFAULT]):
 # Seconds a build waits for its root volume before the server goes to ERROR. The wait does not hold up the node's other

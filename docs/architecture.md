@@ -55,11 +55,12 @@ Package names are `cloudx-<service>`. APIs marked *nginx* listen on a unix socke
 
 | Service | Port | Role | What it does |
 |---|---|---|---|
-| `auth-api` | 8005 nginx | C | Users, projects, domains, roles, access keys, tokens, the service catalog |
+| `auth-api` | 8005 nginx | C | Users, projects, domains, roles, access keys, application credentials, trusts, tokens (project, domain and system scope), the service catalog |
 | `compute-api` | 8003 nginx | C | Servers, flavors, key pairs, server groups, aggregates, quotas |
 | `conductor` | - | C | Database proxy and event publisher for the compute and block-store workers |
 | `placement-api` | 8006 nginx | C | Capacity inventory and host selection |
 | `compute-worker` | - | N | Runs VMs through libvirt; registers the node in placement |
+| `cloudx-novnc-proxy` (shipped with `compute-worker`) | 6080 direct | N | `websockify` and the noVNC client for the browser console of this node's VMs (see [console.md](console.md)) |
 | `networking-api` | 8001 nginx | C | Networks, subnets, ports, routers, floating IPs, security groups, VPC peering, VPN and BGP records; writes OVN |
 | `metadata-api` | 8775 direct | C | Instance metadata and network data |
 | `metadata-proxy` | 8776 direct | N | Serves `169.254.169.254` to VMs on its host |
@@ -87,7 +88,7 @@ Package names are `cloudx-<service>`. APIs marked *nginx* listen on a unix socke
 | `telemetry-api`, `telemetry-worker` | 8010 nginx | C, N | Metrics, alarms, rollups |
 | `billing-api`, `billing-worker` | 8011 nginx | C | Rating sheets, usage records, invoices |
 | `event-api`, `event-worker` | 8012 nginx | C | Event log and webhook subscriptions |
-| `reaper` | - | C | Cleans up failed builds and runs scheduled database backups |
+| `reaper` | - | C | Cleans up failed builds, runs scheduled database backups and confirms resizes left in `VERIFY_RESIZE` |
 | `dashboard` | 8080 direct | C | The web UI |
 
 ## Other ports
