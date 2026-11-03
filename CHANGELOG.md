@@ -4,11 +4,14 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
-## Unreleased
+## 1.0.8-rc1 (2026-11-03)
 
-Found by a lifecycle sweep on the 1.0.7-rc1 lab: a server with two NICs and a Ceph and an LVM data volume went through every
-server action. The fixes below were built as 1.0.8~rc1 to rc4 test packages and installed on the lab (three controllers,
-two compute nodes), where they were checked with CirrOS servers:
+Release candidate: it is installed on the lab before the final 1.0.8 is tagged. Fixes for six findings of a lifecycle sweep
+on the 1.0.7-rc1 lab (a server with two NICs and a Ceph and an LVM data volume went through every server action), in the
+compute, block-store and image services and their workers. No schema change and no change in the CLI. The notes, with the
+upgrade steps and what was and was not tested, are in `docs/releases/v1.0.8.md`.
+The fixes were first built as test packages (also named 1.0.8~rc1, up to rc4, which are not this release) and installed on the
+lab (three controllers, two compute nodes), where they were checked with CirrOS servers:
 - Resize from `small` to `medium` (1 to 2 vCPUs, 1 to 2 GB) ended `ACTIVE` in 9 s with the larger size in the guest;
   `revertResize` gave back the flavor name `small`.
 - Shelve and unshelve kept both NICs and all three disks, on the same node and on the other one (where the LVM volume came
