@@ -3,7 +3,7 @@ from sqlalchemy import select
 
 from ..config import ADMIN_USERNAME
 from ..db import DB
-from ..deps import CurrentUser, DomainAdminUser, forbid_trust_token, scope_domain
+from ..deps import CurrentUser, DomainAdminUser, scope_domain
 from ..lookups import _get_user_by_ref, _scoped_project, _scoped_user
 from ..models import User
 from ..schemas import UserIn, UserUpdate
@@ -77,7 +77,6 @@ def update_user(ref: str, payload: UserUpdate, current: CurrentUser, db: DB):
         raise HTTPException(status_code=403, detail="only a system admin can change domain admins")
     data = payload.model_dump(exclude_none=True)
     if "password" in data:
-        forbid_trust_token(current)
         u.password_hash = _hash_password(data.pop("password"))
     for k, v in data.items():
         setattr(u, k, v)

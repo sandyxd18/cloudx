@@ -29,8 +29,11 @@ def auth(monkeypatch, tmp_path):
             m.User(id="u1", username="u1", email="u1@x", password_hash=pw, project_id="p1", domain_id="default"),
             m.User(id="u2", username="u2", email="u2@x", password_hash=pw, project_id="p1", domain_id="default"),
             m.User(id="u3", username="u3", email="u3@x", password_hash=pw, project_id="p2", domain_id="default"),
+            m.User(id="dadm", username="dadm", email="d@x", password_hash=pw, project_id="p1", domain_id="default", is_domain_admin=True),
+            m.User(id="pa", username="pa", email="pa@x", password_hash=pw, project_id="p1", domain_id="default"),
             m.User(id="x1", username="x1", email="x1@x", password_hash=pw, project_id="pd2", domain_id="d2"),
         ])
+        db.add(m.RoleAssignment(user_id="pa", project_id="p1", role="admin"))   # project admin only: User.role is member
         db.commit()
     a.client = TestClient(a.app)
     return a
@@ -346,26 +349,107 @@ def test_trust_token_cannot_chain_another_trust_token(auth):
     assert auth.client.post("/auth/tokens/trust", json={"trust_id": t["id"]}, headers=h).status_code == 403
 
 
-@pytest.mark.parametrize("call", ["switch", "access_key", "app_cred", "password"])
-def test_trust_token_cannot_mint_credentials_for_the_trustor(auth, call):
-    set_role(auth, "u1", "p1", "member")
-    t = make_trust(auth).json()
-    h = {"X-Auth-Token": redeem(auth, t["id"]).json()["token"]}
+TRUST_ONLY = "trust tokens cannot modify identity"
+
+
+def forge(auth, user, **claim_overrides):
+    """A real token for `user` with claims changed afterwards, signed with the service key."""
+    from jose import jwt
+    c = auth.tokens._decode_token(login(auth, user)["X-Auth-Token"])
+    c.update(claim_overrides)
+    return {"X-Auth-Token": jwt.encode(c, auth.config.SECRET_KEY, algorithm=auth.config.ALGORITHM)}
+
+
+def admin_trust_token(auth):
+    """(trust, trust token headers): an admin trustor delegating the admin role to u2."""
+    t = make_trust(auth, as_user="adm", roles=["admin"]).json()
+    return t, {"X-Auth-Token": redeem(auth, t["id"]).json()["token"]}
+
+
+def mutating_calls(auth, trust_id, group_id, cred_id):
+    """name -> (call(headers), user whose ordinary token must succeed, expected status for that token)."""
     c = auth.client
-    r = {
-        "switch": lambda: c.post("/session/switch-project", json={"project_id": "p1"}, headers=h),
-        "access_key": lambda: c.post("/access-keys", json={"name": "k"}, headers=h),
-        "app_cred": lambda: c.post("/v3/users/u1/application_credentials", json={"name": "k", "roles": ["admin"]}, headers=h),
-        "password": lambda: c.put("/users/u1", json={"password": "new"}, headers=h),
-    }[call]()
-    assert r.status_code == 403, r.text
+    return {
+        "post_users": (lambda h: c.post("/users", json={"username": "n1", "email": "n@x", "password": "pw", "project_id": "p1"}, headers=h), "adm", 201),
+        "put_users_role": (lambda h: c.put("/users/u3", json={"role": "reader"}, headers=h), "adm", 200),
+        "put_users_password": (lambda h: c.put("/users/u3", json={"password": "new"}, headers=h), "adm", 200),
+        "access_key": (lambda h: c.post("/access-keys", json={"name": "k"}, headers=h), "adm", 201),
+        "app_cred_create": (lambda h: c.post("/v3/users/adm/application_credentials", json={"name": "k2"}, headers=h), "adm", 201),
+        "app_cred_rotate": (lambda h: c.post(f"/v3/users/adm/application_credentials/{cred_id}/rotate", headers=h), "adm", 200),
+        "switch_project": (lambda h: c.post("/session/switch-project", json={"project_id": "p2"}, headers=h), "adm", 200),
+        "role_assignment": (lambda h: c.put("/projects/p1/users/u3/roles/member", headers=h), "adm", 204),
+        "project_create": (lambda h: c.post("/projects", json={"name": "newp"}, headers=h), "adm", 201),
+        "group_member_add": (lambda h: c.put(f"/groups/{group_id}/members/u3", headers=h), "adm", 200),
+        "trust_create": (lambda h: c.post("/v3/OS-TRUST/trusts", json={"trustee_user_id": "u3", "project_id": "p1", "roles": ["member"]}, headers=h), "adm", 201),
+        "trust_exchange": (lambda h: c.post("/auth/tokens/trust", json={"trust_id": trust_id}, headers=h), "u2", 201),
+    }
 
 
-def test_trust_token_can_still_read_and_log_out(auth):
-    t = make_trust(auth).json()
-    h = {"X-Auth-Token": redeem(auth, t["id"]).json()["token"]}
+def test_trust_token_is_refused_on_every_mutating_auth_route_but_ordinary_tokens_are_not(auth):
+    t, trust_h = admin_trust_token(auth)
+    adm = login(auth, "adm")
+    group_id = auth.client.post("/groups", json={"name": "g"}, headers=adm).json()["id"]
+    cred_id = auth.client.post("/v3/users/adm/application_credentials", json={"name": "k"}, headers=adm).json()["id"]
+    calls = mutating_calls(auth, t["id"], group_id, cred_id)
+
+    for name, (call, _, _) in calls.items():      # all refused first, so nothing below depends on a side effect
+        r = call(trust_h)
+        assert (name, r.status_code, r.json()["detail"]) == (name, 403, TRUST_ONLY)
+    for name, (call, user, ok) in calls.items():
+        r = call(login(auth, user))
+        assert (name, r.status_code) == (name, ok), r.text
+
+
+def test_trust_token_needs_the_central_rule_even_for_a_reader_or_member_trust(auth):
+    for roles in (["member"], ["reader"]):
+        t = make_trust(auth, roles=roles).json()
+        h = {"X-Auth-Token": redeem(auth, t["id"]).json()["token"]}
+        assert auth.client.post("/session/switch-project", json={"project_id": "p1"}, headers=h).status_code == 403
+
+
+def test_trust_token_can_read_and_log_out(auth):
+    t, h = admin_trust_token(auth)
+    assert auth.client.get("/users", headers=h).status_code == 200
     assert auth.client.get("/auth/tokens/validate", headers=h).status_code == 200
+    assert auth.client.get("/v3/OS-TRUST/trusts", headers=h).status_code == 200
     assert auth.client.delete("/auth/tokens/current", headers=h).status_code == 204
+    assert auth.client.get("/users", headers=h).status_code == 401    # revoked
+
+
+@pytest.mark.parametrize("claim", [None, "", 0, False])
+def test_an_empty_trust_id_claim_is_not_a_trust_token(auth, claim):
+    h = forge(auth, "adm", trust_id=claim)
+    r = auth.client.post("/projects", json={"name": f"np{claim!r}"}, headers=h)
+    assert r.status_code == 201, r.text
+    assert auth.client.post("/session/switch-project", json={"project_id": "p2"}, headers=h).status_code == 200
+
+
+def test_a_truthy_trust_id_claim_makes_it_a_trust_token(auth):
+    r = auth.client.post("/projects", json={"name": "np"}, headers=forge(auth, "adm", trust_id="anything"))
+    assert (r.status_code, r.json()["detail"]) == (403, TRUST_ONLY)
+
+
+@pytest.mark.parametrize("roles", [["member"], ["reader"]])
+def test_trust_token_does_not_inherit_the_trustors_domain_admin(auth, roles):
+    t = make_trust(auth, as_user="dadm", roles=roles).json()
+    r = redeem(auth, t["id"])
+    assert r.status_code == 201
+    assert claims(auth, r)["domain_admin"] is False
+    h = {"X-Auth-Token": r.json()["token"]}
+    body = {"username": "n1", "email": "n@x", "password": "pw", "project_id": "p1"}
+    assert auth.client.post("/users", json=body, headers=h).status_code == 403
+    # the trustor's own token still has the right
+    assert auth.client.post("/users", json=body, headers=login(auth, "dadm")).status_code == 201
+
+
+def test_project_level_admin_is_not_a_system_admin_for_trusts(auth):
+    # pa is admin only through a role assignment in p1; User.role is member
+    assert make_trust(auth, as_user="pa", project_id="p2").status_code == 403           # not a member of p2
+    assert make_trust(auth, as_user="pa", trustee_user_id="x1").status_code == 403      # cross-domain trustee
+    assert make_trust(auth, as_user="pa", roles=["admin"]).status_code == 201           # own project, own domain: fine
+    # a real (DB) admin still can
+    assert make_trust(auth, as_user="adm", project_id="p2", roles=["admin"]).status_code == 201
+    assert make_trust(auth, as_user="adm", trustee_user_id="x1").status_code == 201
 
 
 # ── audit ─────────────────────────────────────────────────────────────────────

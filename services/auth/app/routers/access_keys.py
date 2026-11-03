@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
 from ..db import DB
-from ..deps import CurrentUser, forbid_trust_token
+from ..deps import CurrentUser
 from ..models import AccessKey
 from ..schemas import AccessKeyIn
 from ..serializers import _key_to_dict
@@ -15,7 +15,6 @@ router = APIRouter()
 @router.post("/access-keys", status_code=201)
 def create_access_key(payload: AccessKeyIn, current: CurrentUser, db: DB):
     """Generate a new CLDX access key for the current user."""
-    forbid_trust_token(current)
     if not current.get("project_id"):
         raise HTTPException(status_code=403, detail="project-scoped token required")
     access_key_id = _gen_access_key_id()

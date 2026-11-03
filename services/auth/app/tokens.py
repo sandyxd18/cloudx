@@ -54,6 +54,7 @@ def _create_token(
     domain_id: str | None = None,
     trust_id: str | None = None,
     trustee_id: str | None = None,
+    domain_admin: bool | None = None,
 ) -> str:
     """Create a JWT token.
 
@@ -65,6 +66,7 @@ def _create_token(
         role: role in the active project (defaults to user.role).
         project_id: None = user.project_id; "" = a token without a project (domain scope).
         domain_id: None = user.domain_id (or "default").
+        domain_admin: None = from the user row (and True for domain scope); False drops the user's domain-admin flag.
         trust_id, trustee_id: set on a token issued from a trust (sub is then the trustor).
     """
     jti = str(uuid.uuid4())
@@ -78,7 +80,7 @@ def _create_token(
         "roles":        (extra_roles if extra_roles else [role or user.role]),
         "scope_type":   scope_type,
         "domain_id":    domain_id or user.domain_id or "default",
-        "domain_admin": scope_type == "domain" or bool(user.is_domain_admin),
+        "domain_admin": scope_type == "domain" or bool(user.is_domain_admin if domain_admin is None else domain_admin),
         "exp":          utcnow() + timedelta(hours=TOKEN_EXPIRE_H),
         "iat":          utcnow(),
     }

@@ -6,7 +6,7 @@ from sqlalchemy import or_, select, update
 
 from ..config import TOKEN_EXPIRE_H
 from ..db import DB
-from ..deps import CurrentUser, forbid_trust_token, scope_domain
+from ..deps import CurrentUser
 from ..lookups import _get_project_by_ref, _get_user_by_ref
 from ..models import AuditLog, Project, Trust, User, utcnow
 from ..schemas import ROLES, TrustIn, TrustTokenIn
@@ -63,16 +63,17 @@ def _consume_use(db, trust_id: str) -> bool:
 @router.post("/v3/OS-TRUST/trusts", status_code=201)
 def create_trust(payload: TrustIn, current: CurrentUser, db: DB):
     """Delegate some of the caller's roles in one project to another user."""
-    forbid_trust_token(current)
-    is_admin = current.get("role") == "admin"
     trustor = db.get(User, current["sub"])
     if not trustor:
         raise HTTPException(status_code=401, detail="user not found")
+    # the same meaning of "admin" as when the trust is redeemed: the user's own role, not the token's role in a project
+    is_admin = trustor.role == "admin"
+    domain = None if is_admin else trustor.domain_id
 
     ref = payload.project_id or current.get("project_id")
     if not ref:
         raise HTTPException(status_code=400, detail="project_id required for a token without a project")
-    proj = _get_project_by_ref(db, ref, scope_domain(current))
+    proj = _get_project_by_ref(db, ref, domain)
     if not is_admin:
         _check_domain(db, trustor, proj)
         if proj.id not in _member_projects(db, trustor):
@@ -85,7 +86,7 @@ def create_trust(payload: TrustIn, current: CurrentUser, db: DB):
         if not _holds(db, trustor, proj.id, r):
             raise HTTPException(status_code=403, detail=f"you do not hold the {r} role in this project")
 
-    trustee = _get_user_by_ref(db, payload.trustee_user_id, scope_domain(current))
+    trustee = _get_user_by_ref(db, payload.trustee_user_id, domain)
     if trustee.id == trustor.id:
         raise HTTPException(status_code=400, detail="the trustee must be another user")
     if not trustee.enabled or (not is_admin and trustee.domain_id != trustor.domain_id):
@@ -148,7 +149,6 @@ def _refuse(detail: str):
 def login_with_trust(payload: TrustTokenIn, current: CurrentUser, db: DB):
     """The trustee exchanges a trust for a token that acts as the trustor, limited to the roles the trust lists
     and the trustor still holds."""
-    forbid_trust_token(current)
     t = db.get(Trust, payload.trust_id)
     if not t:
         raise _refuse("invalid trust")    # unknown and unusable look the same: no id oracle
@@ -183,6 +183,7 @@ def login_with_trust(payload: TrustTokenIn, current: CurrentUser, db: DB):
     token = _create_token(
         trustor, project_name=proj.name, extra_roles=granted,
         project_id=proj.id, trust_id=t.id, trustee_id=t.trustee_user_id,
+        domain_admin=False,   # the trustor's domain-admin right is not part of what a trust delegates
     )
     db.add(AuditLog(
         user_id=current["sub"], username=current.get("username"), project_id=proj.id,
