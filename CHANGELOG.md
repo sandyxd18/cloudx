@@ -4,6 +4,16 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## Unreleased
+
+### Fixed
+- `cloudx port delete` refuses a port that a server uses even when the port has no `device_id`. `server port add
+  --network` makes a port with none, and the compute API does not set one when it attaches it, so the check of 1.0.9-rc1
+  let through exactly the port a user adds to a running server: the lab deleted it, the logical port went from under the
+  server, and `server port remove` then answered 404 because the dead id was still in the server record. The command now
+  also reads the servers (`port_id` and `extra_port_ids`) and refuses a port that has a `device_owner` (a router interface,
+  for example). `--force` still deletes it.
+
 ## 1.0.9-rc1 (2026-11-03)
 
 Release candidate: it is installed on the lab before the final 1.0.9 is tagged. A `stop` that the system undid on its own,
