@@ -65,6 +65,7 @@ const NAV_ITEMS = [
     items: [
       { type: 'link', text: 'Networks',        href: '/networks' },
       { type: 'link', text: 'Routers',         href: '/routers' },
+      { type: 'link', text: 'Trunks',          href: '/trunks' },
       { type: 'link', text: 'Security groups', href: '/security-groups' },
       { type: 'link', text: 'Floating IPs',    href: '/floating-ips' },
       { type: 'link', text: 'Load Balancers',  href: '/load-balancers' },
@@ -153,6 +154,7 @@ const CRUMBS = {
   '/subnets/create':   [{ text: 'Networking', href: '/networks' }, { text: 'Networks', href: '/networks' }, { text: 'Create subnet', href: '/subnets/create' }],
   '/routers':          [{ text: 'Networking', href: '/networks' }, { text: 'Routers', href: '/routers' }],
   '/routers/create':   [{ text: 'Networking', href: '/networks' }, { text: 'Routers', href: '/routers' }, { text: 'Create router', href: '/routers/create' }],
+  '/trunks':           [{ text: 'Networking', href: '/networks' }, { text: 'Trunks', href: '/trunks' }],
   '/security-groups':        [{ text: 'Networking', href: '/networks' }, { text: 'Security groups', href: '/security-groups' }],
   '/security-groups/create': [{ text: 'Networking', href: '/networks' }, { text: 'Security groups', href: '/security-groups' }, { text: 'Create security group', href: '/security-groups/create' }],
   '/floating-ips':           [{ text: 'Networking', href: '/networks' }, { text: 'Floating IPs', href: '/floating-ips' }],
@@ -183,6 +185,7 @@ const SEARCH_TARGETS = [
   { value: 'Volume types', href: '/volume-types' },
   { value: 'Networks', href: '/networks' },
   { value: 'Routers', href: '/routers' },
+  { value: 'Trunks', href: '/trunks' },
   { value: 'Security groups', href: '/security-groups' },
   { value: 'Floating IPs', href: '/floating-ips' },
   { value: 'Topology', href: '/topology' },

@@ -156,6 +156,14 @@ export const api = {
   // Networking — Ports
   getPorts: () => request('GET', '/networking/ports'),
 
+  // Networking — Trunks
+  getTrunks: () => request('GET', '/networking/trunks'),
+  getTrunk: (ref) => request('GET', `/networking/trunks/${ref}`),
+  createTrunk: (b) => request('POST', '/networking/trunks', b),
+  deleteTrunk: (ref) => request('DELETE', `/networking/trunks/${ref}`),
+  addTrunkSubports: (ref, b) => request('PUT', `/networking/trunks/${ref}/add_subports`, b),
+  removeTrunkSubports: (ref, b) => request('PUT', `/networking/trunks/${ref}/remove_subports`, b),
+
   // Networking — Routers
   getRouters: () => request('GET', '/networking/routers'),
   getRouter: (id) => request('GET', `/networking/routers/${id}`),
