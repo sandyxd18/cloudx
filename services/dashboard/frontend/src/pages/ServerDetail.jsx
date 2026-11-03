@@ -184,7 +184,7 @@ export default function ServerDetail() {
   const isShutoff = server.status === 'SHUTOFF'
   const isPaused  = server.status === 'PAUSED'
   const isShelved = server.status === 'SHELVED_OFFLOADED'
-  const isVerify  = server.status === 'VERIFY_RESIZE' || server.status === 'RESIZE'
+  const isVerify  = server.status === 'VERIFY_RESIZE'
 
   const addresses = server.addresses || {}
   const allIPs = Object.values(addresses).flat()

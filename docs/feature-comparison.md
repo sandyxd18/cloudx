@@ -156,7 +156,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Suspend** (managed save to disk) | `POST /servers/{ref}/suspend` | ✅ |
 | **Unsuspend** (restore from managed save) | `POST /servers/{ref}/unsuspend` | ✅ |
 | **Resize** (live vCPU + RAM change up to the size the domain was created with; a larger flavor shuts the guest down and starts it again) | `POST /servers/{ref}/resize` | ✅ |
-| **Confirm / revert resize** (the server is ACTIVE right after a resize, there is no VERIFY_RESIZE wait; revert works until the resize is confirmed) | `POST /servers/{ref}/confirmResize\|revertResize` | ✅ |
+| **Confirm / revert resize** (a resized server waits in VERIFY_RESIZE until one of them; a second resize is refused meanwhile; `cloudx server confirm-resize`, `revert-resize`) | `POST /servers/{ref}/confirmResize\|revertResize` | ✅ |
 | **Rebuild** (replace the root disk from a new image) | `POST /servers/{ref}/rebuild` | ✅ |
 | **Rescue** (boot from a rescue image) | `POST /servers/{ref}/rescue` | ✅ |
 | **Unrescue** (return to the root disk) | `POST /servers/{ref}/unrescue` | ✅ |

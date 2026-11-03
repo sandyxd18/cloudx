@@ -89,7 +89,7 @@ def test_compute_legacy_database_is_brought_up_to_date(tmp_path):
         "status VARCHAR, backend VARCHAR)",
         "INSERT INTO compute_servers (id, name, flavor, status, backend) VALUES ('s1', 'vm1', 'tiny', 'ACTIVE', 'simulator')")
     upgrade("compute", url, ROOT)
-    assert columns(url, "compute_servers") >= {"flavor_name", "locked", "keypair_name", "bootable", "original_ram_mb"}
+    assert columns(url, "compute_servers") >= {"flavor_name", "locked", "keypair_name", "bootable", "original_ram_mb", "original_status"}
     assert scalar(url, "SELECT backend FROM compute_servers WHERE id = 's1'") == "libvirt"
     assert scalar(url, "SELECT flavor_name FROM compute_servers WHERE id = 's1'") == "tiny"
     assert scalar(url, "SELECT locked FROM compute_servers WHERE id = 's1'") in (0, False)

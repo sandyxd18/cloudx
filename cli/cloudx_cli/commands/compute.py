@@ -135,7 +135,26 @@ def server_unsuspend(ctx, ref):
 def server_resize(ctx, ref, flavor):
     _api("post", f"{DEFAULT_URLS['compute']}/servers/{ref}/resize",
          ctx.obj["profile"], json={"flavor": flavor})
-    click.echo(f"✓ Server {ref} resized to {flavor}")
+    click.echo(f"✓ Server {ref} is resizing to {flavor}. When it shows VERIFY_RESIZE, run "
+               f"`cloudx server confirm-resize {ref}` to keep the new size or `cloudx server revert-resize {ref}` to go back.")
+
+
+@server.command("confirm-resize")
+@click.argument("ref")
+@click.pass_context
+def server_confirm_resize(ctx, ref):
+    """Keep the new size of a server in VERIFY_RESIZE."""
+    _api("post", f"{DEFAULT_URLS['compute']}/servers/{ref}/confirmResize", ctx.obj["profile"])
+    click.echo(f"✓ Resize of {ref} confirmed")
+
+
+@server.command("revert-resize")
+@click.argument("ref")
+@click.pass_context
+def server_revert_resize(ctx, ref):
+    """Go back to the size before the resize (also after a resize that failed)."""
+    _api("post", f"{DEFAULT_URLS['compute']}/servers/{ref}/revertResize", ctx.obj["profile"])
+    click.echo(f"✓ Resize of {ref} is being reverted")
 
 
 @server.command("rebuild")

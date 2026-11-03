@@ -60,6 +60,7 @@ class Server(Base):
     original_flavor: Mapped[str | None] = mapped_column(String, nullable=True)   # flavor id before resize
     original_vcpus: Mapped[int | None] = mapped_column(Integer, nullable=True)
     original_ram_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    original_status: Mapped[str | None] = mapped_column(String, nullable=True)   # ACTIVE or SHUTOFF before the resize
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 

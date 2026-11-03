@@ -336,7 +336,9 @@ def _server_u(api, pid, old_p, new_p):
         api.call("compute", "PUT", f"/servers/{pid}/user-data", {"user_data": new_p.get("user_data", "")})
     if old_p.get("flavor") != new_p.get("flavor") and new_p.get("flavor"):
         api.call("compute", "POST", f"/servers/{pid}/resize", {"flavor": new_p["flavor"]})
-        _wait(api, "compute", f"/servers/{pid}", ("ACTIVE", "VERIFY_RESIZE"))
+        server = _wait(api, "compute", f"/servers/{pid}", ("ACTIVE", "VERIFY_RESIZE"))
+        if server.get("status") == "VERIFY_RESIZE":  # the template asked for this size: nobody else is going to confirm it
+            api.call("compute", "POST", f"/servers/{pid}/confirmResize")
     return pid, {}
 
 

@@ -796,7 +796,8 @@ def handle_unsuspend(args: dict) -> None:
     _simple_action("unsuspend_server", "ACTIVE", args)
 
 def handle_resize(args: dict) -> None:
-    _simple_action("resize_server", "ACTIVE", args)
+    # a resize waits for confirmResize or revertResize; the revert is a resize back and ends the matter
+    _simple_action("resize_server", args.get("_target_status", "ACTIVE") if args.get("_revert") else "VERIFY_RESIZE", args)
 
 
 def handle_rebuild(args: dict) -> None:

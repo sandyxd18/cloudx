@@ -107,11 +107,16 @@ def unsuspend_server(ref: str, current: CurrentUser, db: DB):
 @router.post("/servers/{ref}/resize")
 def resize_server(ref: str, payload: ServerResizeIn, current: CurrentUser, db: DB):
     server = require_unlocked_server(db, ref, current)
+    if server.status == "VERIFY_RESIZE":
+        raise HTTPException(status_code=409, detail="server has a resize to confirm or revert (confirmResize or revertResize) before it can be resized again")
+    if server.status not in ("ACTIVE", "SHUTOFF"):
+        raise HTTPException(status_code=409, detail=f"server must be ACTIVE or SHUTOFF to resize; current status is {server.status}")
     flavor = require_flavor(db, payload.flavor)
     # Snapshot original flavor for potential revert
     server.original_flavor = server.flavor
     server.original_vcpus = server.vcpus
     server.original_ram_mb = server.ram_mb
+    server.original_status = server.status  # a stopped server must end stopped, or auto-recovery starts it
     server.flavor = flavor.name  # servers.py stores the name here too
     server.flavor_name = flavor.name
     server.vcpus = flavor.vcpus
@@ -127,15 +132,17 @@ def resize_server(ref: str, payload: ServerResizeIn, current: CurrentUser, db: D
 
 @router.post("/servers/{ref}/confirmResize")
 def confirm_resize(ref: str, current: CurrentUser, db: DB):
-    """Confirm a completed resize, clearing the rollback snapshot."""
+    """Accept the new size: the worker leaves a resized server in VERIFY_RESIZE until this (or revertResize) is called.
+    A server that an older version left ACTIVE with its rollback snapshot can be confirmed too."""
     server = require_unlocked_server(db, ref, current)
-    if server.status not in ("VERIFY_RESIZE", "RESIZE", "ACTIVE"):
+    waiting = server.status == "VERIFY_RESIZE" or (server.status == "ACTIVE" and server.original_flavor)
+    if not waiting:
         raise HTTPException(status_code=409, detail=f"server is not in VERIFY_RESIZE status (current: {server.status})")
-    # Clear backup state
+    server.status = server.original_status or "ACTIVE"
     server.original_flavor = None
     server.original_vcpus = None
     server.original_ram_mb = None
-    server.status = "ACTIVE"
+    server.original_status = None
     db.commit()
     db.refresh(server)
     return obj_to_dict(server)
@@ -143,24 +150,28 @@ def confirm_resize(ref: str, current: CurrentUser, db: DB):
 
 @router.post("/servers/{ref}/revertResize")
 def revert_resize(ref: str, current: CurrentUser, db: DB):
-    """Revert a resize, restoring the original flavor."""
+    """Go back to the size before the resize: from VERIFY_RESIZE, from a resize that failed (ERROR), or from one that an
+    older version left ACTIVE. The worker does the change and sets ACTIVE."""
     server = require_unlocked_server(db, ref, current)
     if not server.original_flavor:
         raise HTTPException(status_code=409, detail="no resize snapshot found for this server")
+    if server.status not in ("VERIFY_RESIZE", "ACTIVE", "ERROR"):
+        raise HTTPException(status_code=409, detail=f"server must be in VERIFY_RESIZE status to revert a resize (current: {server.status})")
     # original_flavor is a name, or an id on a server resized before the name was stored
     original_flavor = get_flavor(db, server.original_flavor)
     server.flavor = server.original_flavor
     server.flavor_name = original_flavor.name if original_flavor else server.original_flavor
     server.vcpus = server.original_vcpus
     server.ram_mb = server.original_ram_mb
+    target_status = server.original_status or "ACTIVE"
     server.original_flavor = None
     server.original_vcpus = None
     server.original_ram_mb = None
+    server.original_status = None
     server.status = "RESIZE"
     db.commit()
-    # the worker puts the old size back and sets ACTIVE
-    clients.cast_to_worker("resize", {**server_worker_payload(server),
-        "new_vcpus": server.vcpus, "new_ram_mb": server.ram_mb})
+    clients.cast_to_worker("resize", {**server_worker_payload(server), "new_vcpus": server.vcpus,
+        "new_ram_mb": server.ram_mb, "_revert": True, "_target_status": target_status})
     db.refresh(server)
     return obj_to_dict(server)
 
