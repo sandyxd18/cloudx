@@ -1,9 +1,11 @@
 """Signed, short-lived tokens that let a browser open one server's VNC console through the websockify on its compute node.
 
 compute-api mints the token (issue_token); the compute node's websockify plugin checks it (verify_token) and learns the
-loopback VNC port. The key is the shared AUTH_SECRET_KEY, so `typ` keeps an ordinary auth-api session token from being
-accepted here.
+loopback VNC port. The key is derived from the shared AUTH_SECRET_KEY, so a console token (which lives in a plain-http
+URL and has no jti to revoke) is not accepted as a login token by any API, and a login token is not accepted here.
 """
+import hashlib
+import hmac
 import os
 import time
 
@@ -13,12 +15,16 @@ ALGORITHM = "HS256"
 TOKEN_TYPE = "console"
 
 
+KEY_PURPOSE = b"cloudx-console-token-v1"
+
+
 def _secret() -> str:
-    """The signing key; a missing or blank one must fail closed, since a token signed with "" would verify against it."""
+    """The signing key, derived from AUTH_SECRET_KEY; a missing or blank one must fail closed, since a token signed with
+    "" would verify against it."""
     secret = os.environ.get("AUTH_SECRET_KEY")
     if not secret:
         raise ValueError("AUTH_SECRET_KEY is not set")
-    return secret
+    return hmac.new(secret.encode(), KEY_PURPOSE, hashlib.sha256).hexdigest()
 
 
 def issue_token(server_id: str, host: str, vnc_port: int, ttl: int = 300) -> str:

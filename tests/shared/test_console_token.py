@@ -29,6 +29,10 @@ def test_wrong_host_rejected():
         console_token.verify_token(token, "cloudx-comp-02")
 
 
+def _raw_key():
+    return os.environ["AUTH_SECRET_KEY"]
+
+
 def test_wrong_type_rejected():
     # a normal auth-api session token, signed with the very same key
     token = jwt.encode({"sub": "alice", "exp": int(time.time()) + 300, "host": "cloudx-comp-01", "port": 5901},
@@ -51,7 +55,7 @@ def test_missing_or_non_int_port_rejected(port):
     claims = {"typ": "console", "sid": "s1", "host": "cloudx-comp-01", "exp": int(time.time()) + 300}
     if port is not None:
         claims["port"] = port
-    token = jwt.encode(claims, os.environ["AUTH_SECRET_KEY"], algorithm="HS256")
+    token = jwt.encode(claims, console_token._secret(), algorithm="HS256")
 
     with pytest.raises(ValueError):
         console_token.verify_token(token, "cloudx-comp-01")
@@ -81,3 +85,52 @@ def test_verify_without_a_secret_raises_value_error(no_secret):
 
     with pytest.raises(ValueError):
         console_token.verify_token(forged, "cloudx-comp-01")
+
+
+def test_a_token_signed_with_the_raw_secret_is_rejected_even_with_typ_console():
+    forged = jwt.encode({"typ": "console", "sid": "s1", "host": "cloudx-comp-01", "port": 5901,
+                         "exp": int(time.time()) + 300}, _raw_key(), algorithm="HS256")
+
+    with pytest.raises(ValueError):
+        console_token.verify_token(forged, "cloudx-comp-01")
+
+
+def test_a_login_token_is_rejected_by_verify_token():
+    from shared import auth_middleware
+
+    login = jwt.encode({"sub": "u-1", "username": "alice", "project_id": "p-1", "role": "admin", "typ": "console",
+                        "host": "cloudx-comp-01", "port": 5901, "exp": int(time.time()) + 300},
+                       auth_middleware.SECRET_KEY, algorithm=auth_middleware.ALGORITHM)
+
+    with pytest.raises(ValueError):
+        console_token.verify_token(login, "cloudx-comp-01")
+
+
+def test_a_console_token_is_not_a_login_token_for_the_shared_middleware():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from shared.auth_middleware import CurrentUser
+
+    app = FastAPI()
+
+    @app.get("/me")
+    def me(current: CurrentUser):
+        return current
+
+    token = console_token.issue_token("s1", "cloudx-comp-01", 5901)
+
+    res = TestClient(app).get("/me", headers={"X-Auth-Token": token})
+
+    assert res.status_code == 401
+
+
+def test_a_console_token_is_not_a_login_token_for_auth_api(monkeypatch, tmp_path):
+    from fastapi import HTTPException
+    from tests.stack import fresh_service
+
+    auth = fresh_service("auth", monkeypatch, tmp_path)
+    token = console_token.issue_token("s1", "cloudx-comp-01", 5901)
+
+    with pytest.raises(HTTPException) as exc:
+        auth.tokens._decode_token(token)
+    assert exc.value.status_code == 401
