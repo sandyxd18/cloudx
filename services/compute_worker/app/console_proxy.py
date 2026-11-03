@@ -10,6 +10,7 @@ from shared.config import load_service_config
 from shared.console_token import verify_token
 
 VNC_HOST = "127.0.0.1"  # libvirt binds every guest's VNC to loopback
+DEFAULT_COMPUTE_HOST = "cloudx-compute-01"  # keep equal to the fallback of COMPUTE_HOST in config.py: the token's host comes from there
 
 
 class ConsoleTokenPlugin:
@@ -18,7 +19,7 @@ class ConsoleTokenPlugin:
         load_service_config("compute-worker")  # this runs as its own systemd process: pick up AUTH_SECRET_KEY, COMPUTE_HOST
 
     def lookup(self, token):
-        host = os.environ.get("COMPUTE_HOST")
+        host = os.environ.get("COMPUTE_HOST", os.environ.get("NODE_NAME", DEFAULT_COMPUTE_HOST))  # same chain as the worker's config.py
         if not host:
             return None
         try:

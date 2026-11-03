@@ -1,0 +1,18 @@
+[Unit]
+Description=CloudX noVNC proxy (websockify) for the console of the servers on this compute node
+After=network.target
+# the apt package novnc provides the web client; without it there is nothing to serve, so skip quietly
+ConditionPathExists=/usr/share/novnc
+
+[Service]
+Type=simple
+User=root
+Group=root
+# console_proxy.py is a top-level module for websockify, and it imports the shared package
+Environment=PYTHONPATH=/opt/cloudx/services/compute_worker/app:/opt/cloudx/services
+ExecStart=/opt/cloudx/venv/bin/python -m websockify --web /usr/share/novnc --token-plugin console_proxy.ConsoleTokenPlugin 6080
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

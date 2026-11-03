@@ -23,9 +23,24 @@ def test_lookup_returns_none_for_invalid(plugin):
     assert plugin.lookup(console_token.issue_token("s1", "cloudx-comp-01", 5903, ttl=-1)) is None
 
 
-def test_lookup_returns_none_when_the_node_has_no_host_name(monkeypatch):
+def test_lookup_uses_the_same_node_name_as_the_worker(monkeypatch):
+    """The token's host is the worker's COMPUTE_HOST: COMPUTE_HOST, else NODE_NAME, else cloudx-compute-01 (config.py)."""
     monkeypatch.delenv("COMPUTE_HOST", raising=False)
-    token = console_token.issue_token("s1", "cloudx-comp-01", 5903)
+    monkeypatch.delenv("NODE_NAME", raising=False)
+    default_token = console_token.issue_token("s1", "cloudx-compute-01", 5903)
+    node_token = console_token.issue_token("s1", "edge-7", 5903)
+
+    assert ConsoleTokenPlugin(None).lookup(default_token) == ("127.0.0.1", 5903)
+    monkeypatch.setenv("NODE_NAME", "edge-7")
+    assert ConsoleTokenPlugin(None).lookup(node_token) == ("127.0.0.1", 5903)
+    assert ConsoleTokenPlugin(None).lookup(default_token) is None
+    monkeypatch.setenv("COMPUTE_HOST", "cloudx-comp-01")
+    assert ConsoleTokenPlugin(None).lookup(node_token) is None
+
+
+def test_lookup_returns_none_when_the_node_name_is_empty(monkeypatch):
+    monkeypatch.setenv("COMPUTE_HOST", "")
+    token = console_token.issue_token("s1", "", 5903)
 
     assert ConsoleTokenPlugin(None).lookup(token) is None
 
