@@ -67,6 +67,32 @@ def test_other_updates_leave_timestamp_alone(monkeypatch, tmp_path):
     assert _pending() == before
 
 
+def test_repeating_verify_resize_keeps_the_first_timestamp(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    conductor_main.handle_update_server({"server_id": "srv-1", "fields": {"status": "VERIFY_RESIZE"}})
+    with conductor_main.SessionLocal() as db:
+        db.execute(conductor_main.text("UPDATE compute_servers SET resize_pending_since = '2026-01-01 00:00:00'"))
+        db.commit()
+    before = _pending()
+    conductor_main.handle_update_server({"server_id": "srv-1", "fields": {"status": "VERIFY_RESIZE"}})
+    assert _pending() == before
+
+
+def test_verify_resize_without_a_timestamp_gets_one(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, status="VERIFY_RESIZE")
+    assert _pending() is None
+    conductor_main.handle_update_server({"server_id": "srv-1", "fields": {"status": "VERIFY_RESIZE"}})
+    assert _pending() is not None
+
+
+def test_verify_resize_to_error_clears_timestamp(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    conductor_main.handle_update_server({"server_id": "srv-1", "fields": {"status": "VERIFY_RESIZE"}})
+    assert _pending() is not None
+    conductor_main.handle_update_server({"server_id": "srv-1", "fields": {"status": "ERROR"}})
+    assert _pending() is None
+
+
 def test_migration_backfills_existing_verify_resize_rows(tmp_path):
     engine = sa.create_engine(f"sqlite:///{tmp_path / 'mig.sqlite'}")
     with engine.begin() as conn:

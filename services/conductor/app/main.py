@@ -167,7 +167,11 @@ def handle_update_server(args: dict) -> dict:
     # invariant: resize_pending_since is set exactly while status is VERIFY_RESIZE
     if "status" in safe_fields:
         if safe_fields["status"] == "VERIFY_RESIZE":
-            set_parts.append("resize_pending_since = :_now")
+            # an echo or retry of VERIFY_RESIZE -> VERIFY_RESIZE keeps the first timestamp (status here is the old value)
+            set_parts.append(
+                "resize_pending_since = CASE WHEN status = 'VERIFY_RESIZE' "
+                "THEN COALESCE(resize_pending_since, :_now) ELSE :_now END"
+            )
             params["_now"] = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S.%f")
         else:
             set_parts.append("resize_pending_since = NULL")
