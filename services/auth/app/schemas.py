@@ -95,6 +95,11 @@ class AppCredIn(BaseModel):
     expires_at: str | None = None  # ISO 8601 datetime string, optional
 
 
+class RotateIn(BaseModel):
+    """Rotate an application credential's secret; the old one stays valid for grace_seconds (0 = dies now)."""
+    grace_seconds: int = Field(0, ge=0, le=86400)
+
+
 class AppCredTokenIn(BaseModel):
     """Auth request using an application credential (name+secret pair)."""
     application_credential_id: str | None = None

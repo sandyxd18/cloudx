@@ -173,6 +173,9 @@ class ApplicationCredential(Base):
     expires_at:  Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     enabled:     Mapped[bool] = mapped_column(Boolean, default=True)
     created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # rotation: the secret that was replaced stays valid until previous_valid_until (grace period)
+    previous_secret_hash:  Mapped[str | None] = mapped_column(String, nullable=True)
+    previous_valid_until:  Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     __table_args__ = (UniqueConstraint("name", "user_id"),)
 
 
