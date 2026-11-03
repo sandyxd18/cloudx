@@ -27,7 +27,10 @@ def _domain_owns_port(domain: str, port: int) -> bool:
         conn = libvirt.open(os.environ.get("LIBVIRT_URI", "qemu:///system"))   # same variable and default as the worker's config.py
         root = ET.fromstring(conn.lookupByName(domain).XMLDesc(0))
         graphics = root.find("./devices/graphics[@type='vnc']")
-        return graphics is not None and graphics.attrib.get("port") == str(port)
+        if graphics is not None and graphics.attrib.get("port") == str(port):
+            return True
+        log.warning("console refused: domain %s no longer owns VNC port %s", domain, port)
+        return False
     except Exception as exc:  # best-effort: websockify cannot tolerate an exception from a plugin; any failure means no target
         log.warning("console refused: cannot confirm that domain %s owns port %s: %s", domain, port, exc)
         return False
@@ -39,22 +42,36 @@ def _domain_owns_port(domain: str, port: int) -> bool:
                 pass
 
 
+def _compute_host() -> str:
+    return os.environ.get("COMPUTE_HOST", os.environ.get("NODE_NAME", DEFAULT_COMPUTE_HOST))  # same chain as the worker's config.py
+
+
 class ConsoleTokenPlugin:
+    """Every refusal is logged (logger `console-proxy`, shown by websockify on stderr, so `journalctl -u
+    cloudx-novnc-proxy`) with its reason and never the token."""
+
     def __init__(self, src):
         self.src = src
         load_service_config("compute-worker")  # this runs as its own systemd process: pick up AUTH_SECRET_KEY, COMPUTE_HOST
+        if not os.environ.get("AUTH_SECRET_KEY"):
+            log.warning("AUTH_SECRET_KEY is not set: every console token will be refused")
+        if not _compute_host():
+            log.warning("COMPUTE_HOST is empty: every console token will be refused")
 
     def lookup(self, token):
-        host = os.environ.get("COMPUTE_HOST", os.environ.get("NODE_NAME", DEFAULT_COMPUTE_HOST))  # same chain as the worker's config.py
+        host = _compute_host()
         if not host:
+            log.warning("console refused: COMPUTE_HOST is empty")
             return None
         try:
             claims = verify_claims(token, host)
             domain = claims.get("dom")
             if not domain:
+                log.warning("console refused: the token names no libvirt domain")
                 return None
-            if not _domain_owns_port(domain, claims["port"]):
+            if not _domain_owns_port(domain, claims["port"]):    # logs its own reason
                 return None
             return VNC_HOST, claims["port"]
-        except Exception:  # best-effort: websockify cannot tolerate an exception from a plugin; any failure means no target
+        except Exception as exc:  # best-effort: websockify cannot tolerate an exception from a plugin; any failure means no target
+            log.warning("console refused: %s", str(exc).replace(token, "<token>"))    # never the token itself
             return None

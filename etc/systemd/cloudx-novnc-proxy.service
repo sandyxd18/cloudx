@@ -1,6 +1,8 @@
 [Unit]
 Description=CloudX noVNC proxy (websockify) for the console of the servers on this compute node
 After=network.target
+# restart and stop together with the worker, so the proxy never keeps an old auth_secret_key or old code; the worker's Wants= starts it
+PartOf=cloudx-compute-worker.service
 # the apt package novnc provides the web client; without it there is nothing to serve, so skip quietly
 ConditionPathExists=/usr/share/novnc
 

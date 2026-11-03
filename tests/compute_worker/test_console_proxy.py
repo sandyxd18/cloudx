@@ -1,7 +1,9 @@
 """websockify on a compute node asks this plugin where a console token leads: the loopback VNC port, or nothing.
 The token is also bound to a libvirt domain, which the plugin checks still owns that port."""
+import logging
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -168,3 +170,91 @@ def test_lookup_refuses_a_token_without_a_domain(plugin, libvirt):
 
     assert plugin.lookup(token) is None
     assert libvirt.opened == []     # rejected before libvirt is even asked
+
+
+# ── operators can see why a console was refused ──────────────────────────────
+@pytest.fixture
+def warnings(caplog):
+    caplog.set_level(logging.WARNING, logger="console-proxy")
+    return caplog
+
+
+def _messages(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == "console-proxy" and r.levelno == logging.WARNING]
+
+
+def test_a_refused_token_is_logged_with_the_reason_but_never_the_token(plugin, warnings):
+    token = console_token.issue_token("s1", "cloudx-comp-02", 5903, domain=DOM)   # meant for another node
+
+    assert plugin.lookup(token) is None
+
+    [message] = _messages(warnings)
+    assert "another host" in message
+    assert token not in warnings.text and token.split(".")[1] not in warnings.text
+
+
+def test_a_garbage_token_is_logged_without_being_echoed(plugin, warnings):
+    assert plugin.lookup("not-a-jwt-SECRET-LOOKING") is None
+
+    assert _messages(warnings) and "SECRET-LOOKING" not in warnings.text
+
+
+def test_a_token_without_a_domain_is_logged(plugin, warnings):
+    token = console_token.issue_token("s1", "cloudx-comp-01", 5903)
+
+    assert plugin.lookup(token) is None
+
+    assert any("domain" in m for m in _messages(warnings)) and token not in warnings.text
+
+
+def test_a_moved_port_is_logged_with_the_domain_and_not_the_token(plugin, libvirt, warnings):
+    token = console_token.issue_token("s1", "cloudx-comp-01", 5903, domain=DOM)
+    libvirt.domains[DOM] = 5904
+
+    assert plugin.lookup(token) is None
+
+    assert any(DOM in m and "5903" in m for m in _messages(warnings)) and token not in warnings.text
+
+
+def test_a_missing_secret_is_logged_when_the_plugin_starts(monkeypatch, libvirt, warnings):
+    monkeypatch.setenv("COMPUTE_HOST", "cloudx-comp-01")
+    monkeypatch.setenv("AUTH_SECRET_KEY", "")
+
+    ConsoleTokenPlugin(None)
+
+    assert any("AUTH_SECRET_KEY" in m for m in _messages(warnings))
+
+
+def test_an_empty_node_name_is_logged_when_the_plugin_starts(monkeypatch, libvirt, warnings):
+    monkeypatch.setenv("COMPUTE_HOST", "")
+
+    ConsoleTokenPlugin(None)
+
+    assert any("COMPUTE_HOST" in m for m in _messages(warnings))
+
+
+def test_a_healthy_start_logs_nothing(plugin, warnings):
+    assert _messages(warnings) == []
+
+
+def test_the_warnings_reach_stderr_under_websockifys_logging_setup(capsys, plugin):
+    """websockify puts a stderr handler on the root logger (INFO); the plugin's logger must propagate to it."""
+    root = logging.getLogger()
+    handler, level = logging.StreamHandler(), root.level
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    try:
+        plugin.lookup("garbage")
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(level)
+
+    assert "invalid console token" in capsys.readouterr().err
+
+
+def test_the_proxy_unit_restarts_and_stops_with_the_worker():
+    unit = (Path(__file__).resolve().parents[2] / "etc/systemd/cloudx-novnc-proxy.service").read_text()
+    section = unit.split("[Service]")[0]
+
+    assert "PartOf=cloudx-compute-worker.service" in section.splitlines()
