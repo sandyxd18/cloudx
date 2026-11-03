@@ -122,7 +122,11 @@ def require_auth(request: Request) -> dict:
         token = _exchange_access_key(request)
     if not token:
         raise HTTPException(status_code=401, detail="authentication required: provide X-Auth-Token or access key headers")
-    return check_reader(_decode_jwt(token), request)
+    claims = check_reader(_decode_jwt(token), request)
+    # Domain-scoped tokens carry no project; only services that handle that (billing) opt in.
+    if claims.get("scope_type") == "domain" and os.getenv("ACCEPT_DOMAIN_SCOPE", "").lower() not in ("1", "true", "yes"):
+        raise HTTPException(status_code=403, detail="project-scoped token required")
+    return claims
 
 
 def require_admin(current: dict = Depends(require_auth)) -> dict:

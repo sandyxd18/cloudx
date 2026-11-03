@@ -68,11 +68,19 @@ class GroupIn(BaseModel):
     description: str | None = None
 
 
+class ScopeIn(BaseModel):
+    """Token scope: exactly one of project, domain (id or name) or system."""
+    project: str | None = None
+    domain: str | None = None
+    system: bool = False
+
+
 class LoginIn(BaseModel):
     username: str
     password: str
     project: str | None = None
     domain: str | None = None  # id or name; only needed when the username exists in several domains
+    scope: ScopeIn | None = None
 
 
 class AccessKeyIn(BaseModel):

@@ -4,6 +4,7 @@ from shared.domain import can_see, visible_projects
 from shared.db import get_db_url
 from shared.config import load_service_config
 load_service_config("billing-api")
+os.environ.setdefault("ACCEPT_DOMAIN_SCOPE", "true")  # billing handles domain-scoped tokens (no project_id)
 
 """
 cloudx Billing API — Rating, Usage, Invoicing & PDF
@@ -312,6 +313,13 @@ def _ids(user: dict, project_id: str | None, domain_id: str | None) -> list[str]
     return ids
 
 
+def _domain_default(user: dict, domain_id: str | None, project_id: str | None) -> str | None:
+    """A domain-scoped token (no project) asks about its own domain unless the request names a domain or project."""
+    if domain_id is None and project_id is None and user.get("scope_type") == "domain":
+        return user.get("domain_id")
+    return domain_id
+
+
 def _scope(user: dict, project_id: str | None) -> str | None:
     """Admin may pick any project (or None = all); others are pinned to their own."""
     if user.get("role") == "admin":
@@ -447,6 +455,7 @@ def list_usage_records(
     offset: int = Query(0, ge=0),
 ):
     q = select(UsageRecord)
+    domain_id = _domain_default(user, domain_id, project_id)
     ids = _ids(user, project_id, domain_id)
     if ids is not None:
         q = q.where(UsageRecord.project_id.in_(ids))
@@ -475,6 +484,7 @@ def create_invoice(
     domain_id: str | None = None,
 ):
     pids = None
+    domain_id = _domain_default(user, domain_id, project_id)
     if domain_id:
         if user.get("role") != "admin" and not user.get("domain_admin"):
             raise HTTPException(status_code=403, detail="domain invoices need admin or domain admin")
@@ -562,6 +572,7 @@ def list_invoices(
     limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0),
 ):
     q = select(Invoice)
+    domain_id = _domain_default(user, domain_id, project_id)
     ids = _ids(user, project_id, domain_id)
     if ids is not None:
         # a domain's consolidated invoice is stored as project "domain:<id>"
@@ -643,6 +654,7 @@ def billing_summary(
     period_end: datetime | None = None,
     domain_id: str | None = None,
 ):
+    domain_id = _domain_default(user, domain_id, project_id)
     pids = visible_projects(user, domain_id) if domain_id else None
     pid = f"domain:{domain_id}" if domain_id else _scope(user, project_id) or user.get("project_id") or "admin"
     now = datetime.now(timezone.utc)

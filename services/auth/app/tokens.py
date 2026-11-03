@@ -49,6 +49,9 @@ def _create_token(
     extra_roles: list[str] | None = None,
     project_name: str | None = None,
     role: str | None = None,
+    *,
+    project_id: str | None = None,
+    domain_id: str | None = None,
 ) -> str:
     """Create a JWT token.
 
@@ -58,19 +61,21 @@ def _create_token(
         extra_roles: additional roles from an Application Credential (overrides user.role).
         project_name: active project name to include in payload.
         role: role in the active project (defaults to user.role).
+        project_id: None = user.project_id; "" = a token without a project (domain scope).
+        domain_id: None = user.domain_id (or "default").
     """
     jti = str(uuid.uuid4())
     payload = {
         "jti":          jti,
         "sub":          user.id,
         "username":     user.username,
-        "project_id":   user.project_id,
+        "project_id":   user.project_id if project_id is None else project_id,
         "project_name": project_name or "",
         "role":         (extra_roles[0] if extra_roles else (role or user.role)),
         "roles":        (extra_roles if extra_roles else [role or user.role]),
         "scope_type":   scope_type,
-        "domain_id":    user.domain_id or "default",
-        "domain_admin": bool(user.is_domain_admin),
+        "domain_id":    domain_id or user.domain_id or "default",
+        "domain_admin": scope_type == "domain" or bool(user.is_domain_admin),
         "exp":          utcnow() + timedelta(hours=TOKEN_EXPIRE_H),
         "iat":          utcnow(),
     }
