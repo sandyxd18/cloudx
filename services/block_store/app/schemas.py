@@ -41,6 +41,12 @@ class SnapshotIn(BaseModel):
     name: str
 
 
+class ImageUploadIn(BaseModel):
+    image_name: str
+    project_id: str | None = None   # owner of the image; the volume's project when left out
+    visibility: str = "private"
+
+
 class SnapshotScheduleIn(BaseModel):
     interval_seconds: int = Field(default=3600, ge=60)
     retention_count: int = Field(default=5, ge=1)

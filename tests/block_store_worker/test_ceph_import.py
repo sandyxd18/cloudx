@@ -43,3 +43,26 @@ def test_a_failed_conversion_is_an_error_not_a_raw_import_of_the_qcow2_file(monk
         ceph.create_from_source("vol-1", "/tmp/cirros.qcow2", 2)
 
     assert not any("import" in cmd for _, cmd in cmds), "importing the file as-is would store qcow2 bytes in a volume read as raw"
+
+
+def _resize_says(monkeypatch, cmds, message):
+    def output(cmd, **kw):
+        cmds.append(("output", list(cmd)))
+        if "resize" in cmd:
+            raise CommandError(list(cmd), 22, "", message)
+        return ""
+    monkeypatch.setattr(ceph, "output", output)
+
+
+def test_an_image_that_already_has_the_requested_size_is_not_an_error(monkeypatch, cmds):
+    # a snapshot image of an 8 GB root volume is exactly 8 GB; rbd refuses to "resize" to the size it has
+    _resize_says(monkeypatch, cmds, "rbd: new size is equal to original size")
+
+    assert ceph.create_from_source("vol-1", "/tmp/snap.qcow2", 8) == "rbd:volumes/vol-1"
+
+
+def test_any_other_resize_failure_is_still_an_error(monkeypatch, cmds):
+    _resize_says(monkeypatch, cmds, "rbd: error opening image: permission denied")
+
+    with pytest.raises(CommandError, match="permission denied"):
+        ceph.create_from_source("vol-1", "/tmp/snap.qcow2", 8)

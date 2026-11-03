@@ -214,7 +214,7 @@ def _reconcile_orphan_volumes(db: DB):
         db.rollback()
 
 
-def _do_create_snapshot(db: Session, volume_ref: str, snap_name: str) -> dict:
+def _do_create_snapshot(db: Session, volume_ref: str, snap_name: str, upload_image: dict | None = None) -> dict:
     if get_snapshot(db, snap_name):
         raise HTTPException(status_code=409, detail="snapshot already exists")
     source = require_volume(db, volume_ref)
@@ -237,13 +237,16 @@ def _do_create_snapshot(db: Session, volume_ref: str, snap_name: str) -> dict:
     db.commit()
     db.refresh(snap)
 
-    clients.cast_to_worker("create_snapshot", {
+    message = {
         "snapshot_id":  snapshot_id,
         "name":         snap_name,
         "volume_id":    source.id,
         "volume_path":  source.path,
         "backend":      source.backend,
         "cow_gb":       cow_gb,
-    })
+    }
+    if upload_image:  # the worker uploads the snapshot as an image, then drops it
+        message["_upload_image"] = upload_image
+    clients.cast_to_worker("create_snapshot", message)
 
     return obj_to_dict(snap)

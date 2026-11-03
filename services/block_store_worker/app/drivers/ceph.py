@@ -74,7 +74,11 @@ def create_from_source(image_name: str, source_path: str, size_gb: int) -> str:
     run(["qemu-img", "convert", "-O", "raw", source_path, target], timeout=None)  # needs qemu-utils on this node
 
     # Resize if needed (source might be smaller than requested size)
-    _rbd("resize", f"{p}/{image_name}", "--size", f"{size_gb * 1024}M", "--allow-shrink")
+    try:
+        _rbd("resize", f"{p}/{image_name}", "--size", f"{size_gb * 1024}M", "--allow-shrink")
+    except RuntimeError as exc:
+        if "new size is equal to original size" not in str(exc):  # the image already has the size asked for: nothing to do
+            raise
     return f"rbd:{p}/{image_name}"
 
 

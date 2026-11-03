@@ -6,7 +6,7 @@ from shared.internal import internal_headers
 from sqlalchemy import select
 
 from .. import clients
-from ..clients import _response_detail, get_server
+from ..clients import _response_detail, get_server, server_locked
 from ..config import compute_api_url
 from ..db import DB
 from ..lookups import next_target_device, require_volume
@@ -99,12 +99,25 @@ def get_volume_internal(ref: str, db: DB):
     }
 
 
+def _refuse_if_snapshots(db, volume) -> None:
+    if db.scalar(select(Snapshot.id).where(Snapshot.volume_id == volume.id).limit(1)):
+        # the backend cannot remove a volume that has snapshots, and the row would be gone, leaving the backend volume behind
+        raise HTTPException(status_code=409, detail="volume has snapshots, delete them first")
+
+
+def _refuse_if_locked(server_id: str, current: dict) -> None:
+    """Compute-api checks the lock too, but this route reaches it with the internal token, which acts as admin."""
+    if current.get("role") != "admin" and server_locked(server_id):
+        raise HTTPException(status_code=409, detail="server is locked; unlock it first")
+
+
 @router.delete("/internal/volumes/{ref}", status_code=202, dependencies=[InternalAuth])
 def delete_volume_internal(ref: str, db: DB):
     """No-auth endpoint for internal services (e.g. compute-worker) to delete root volumes."""
     volume = require_volume(db, ref)
     if volume.status == "in-use":
         raise HTTPException(status_code=409, detail="volume is in-use, detach first")
+    _refuse_if_snapshots(db, volume)  # the server goes, its root volume stays (available) until the snapshots are deleted
     volume.status = "deleting"
     db.commit()
     clients.cast_to_worker("delete_volume", {
@@ -133,9 +146,7 @@ def delete_volume(ref: str, current: UserOrInternal, db: DB):
     volume = require_volume(db, ref, current)
     if volume.status == "in-use":
         raise HTTPException(status_code=409, detail="detach volume before delete")
-    if db.scalar(select(Snapshot.id).where(Snapshot.volume_id == volume.id).limit(1)):
-        # the backend cannot remove a volume that has snapshots, and the row would be gone, leaving the backend volume behind
-        raise HTTPException(status_code=409, detail="volume has snapshots, delete them first")
+    _refuse_if_snapshots(db, volume)
     volume.status = "deleting"
     db.commit()
     # Cast to worker for backend cleanup, then conductor will delete the record
@@ -234,6 +245,7 @@ def attach_volume(ref: str, payload: AttachIn, current: CurrentUser, db: DB):
     if volume.status == "in-use":
         raise HTTPException(status_code=409, detail="volume is already attached")
     server = get_server(payload.server)
+    _refuse_if_locked(server["id"], current)
     if server.get("status") not in {"ACTIVE", "SHUTOFF"}:
         raise HTTPException(
             status_code=409,
@@ -277,6 +289,7 @@ def detach_volume(ref: str, current: CurrentUser, db: DB):
     volume = require_volume(db, ref, current)
     if volume.status != "in-use" or not volume.attached_to_server_id:
         raise HTTPException(status_code=409, detail="volume is not attached")
+    _refuse_if_locked(volume.attached_to_server_id, current)
     try:
         resp = requests.post(
             f"{compute_api_url()}/servers/{volume.attached_to_server_id}/volumes/detach",
