@@ -4,6 +4,17 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## 1.0.8 (2026-11-03)
+
+No code change since 1.0.8-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.8.md`.
+The release files of 1.0.8-rc1 (the checksums of the 48 `.deb` files matched `SHA256SUMS`) were installed on the lab (three
+controllers, two compute nodes, controllers first) over the test packages, and checked there: the unit list and states and a
+hash of `/etc/cloudx` were identical to before on every node, no unit failed, no traceback in the logs of the changed
+services, and `vm-default` kept running (the same QEMU process). A CirrOS server with two NICs, a Ceph and an LVM data
+volume went from `small` to `medium` and back (the domain kept 2 vCPUs and 2 GiB as its limits), was shelved and unshelved
+on the same node and on the other one with both NICs and all three disks back, was snapshotted to an image that a new
+server booted from, and was locked against a member user.
+
 ## 1.0.8-rc1 (2026-11-03)
 
 Release candidate: it is installed on the lab before the final 1.0.8 is tagged. Fixes for six findings of a lifecycle sweep
