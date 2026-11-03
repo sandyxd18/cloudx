@@ -4,6 +4,18 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## Unreleased
+
+### Added
+- `cloudx port delete REF`. A port that a server still uses (the port has a `device_id`) is refused with a pointer to
+  `cloudx server port remove`; `--force` deletes it anyway. Before, a port that `server port remove` had detached stayed
+  in the project until someone called the API by hand.
+
+### Changed
+- The lb-worker logs a failing poll of load-balancer-api once, then again every 5 minutes while it keeps failing (and
+  says when it works again), instead of a warning every 5 seconds. A compute node of a cloud that does not run
+  load-balancer-api logged the same line 720 times an hour. Every failure is still logged at debug level.
+
 ## 1.0.8 (2026-11-03)
 
 No code change since 1.0.8-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.8.md`.
