@@ -2,9 +2,9 @@ import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
+from jose import jwt
 from sqlalchemy import or_, select, update
 
-from ..config import TOKEN_EXPIRE_H
 from ..db import DB
 from ..deps import CurrentUser
 from ..lookups import _get_project_by_ref, _get_user_by_ref
@@ -184,11 +184,14 @@ def login_with_trust(payload: TrustTokenIn, current: CurrentUser, db: DB):
         trustor, project_name=proj.name, extra_roles=granted,
         project_id=proj.id, trust_id=t.id, trustee_id=t.trustee_user_id,
         domain_admin=False,   # the trustor's domain-admin right is not part of what a trust delegates
+        expires_at=t.expires_at,   # a token never outlives the trust it came from
     )
+    issued = jwt.get_unverified_claims(token)
+    expires_in = max(0, int(issued["exp"] - issued["iat"]))   # the real lifetime of this token, not the default
     db.add(AuditLog(
         user_id=current["sub"], username=current.get("username"), project_id=proj.id,
         action="trust.token", resource_type="trust", resource_id=t.id,
         details=json.dumps({"trustor_user_id": t.trustor_user_id, "trustee_user_id": t.trustee_user_id}),
     ))
     db.commit()
-    return {"token": token, "expires_in": TOKEN_EXPIRE_H * 3600, "method": "trust"}
+    return {"token": token, "expires_in": expires_in, "method": "trust"}

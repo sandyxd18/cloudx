@@ -27,7 +27,7 @@ browser console now needs the `novnc` package and port 6080 on every compute nod
   (migration `auth_0009`). A trustor delegates roles it holds in one project to another user; the trustee exchanges the
   trust for a token that acts as the trustor, which is read-only on auth-api. Each exchange is written to the audit log
   as `trust.token`. Revoking a trust does not revoke tokens already issued from it; they stay valid until they expire
-  (`AUTH_TOKEN_EXPIRE_HOURS`).
+  (`AUTH_TOKEN_EXPIRE_HOURS`), but never past the trust's own expiry (`expires_in` reports the real lifetime).
 - Dashboard pages for Trunks, QoS policies and Subnet pools under Networking.
 
 ### Changed

@@ -109,6 +109,8 @@ What a trust token can do:
 
 - On other services it works as the trustor within the delegated roles.
 - On `auth-api` it is read-only. Any call other than `GET`, `HEAD` or `OPTIONS` answers `403 trust tokens cannot modify identity`, except logout (`DELETE /auth/tokens/current`). A trust token therefore cannot create trusts, change users, roles or credentials, or exchange another trust.
+- compute's `PUT /os-quota-sets/{project}` forwards the caller's token to auth-api's `PUT /projects/{p}/quota`, so a trust token gets `403 trust tokens cannot modify identity` there.
+- A trust can be redeemed by a trustee whose token has the reader role or comes from an application credential, because `/auth/tokens*` is exempt from the reader check. The token that is issued carries only the trust's roles.
 
 Other calls:
 
@@ -118,4 +120,4 @@ curl -s $AUTH/v3/OS-TRUST/trusts/<id> -H "Authorization: Bearer $TOKEN"         
 curl -s -X DELETE $AUTH/v3/OS-TRUST/trusts/<id> -H "Authorization: Bearer $TOKEN" # trustor or admin; 204
 ```
 
-`DELETE` revokes the trust: it no longer shows in the list and cannot be exchanged. **Tokens already issued from the trust are not revoked.** They stay valid until they expire (`AUTH_TOKEN_EXPIRE_HOURS`, default 24). To bound that, give the trust a short life and a small `remaining_uses`.
+`DELETE` revokes the trust: it no longer shows in the list and cannot be exchanged. **Tokens already issued from the trust are not revoked.** They stay valid until they expire. A token issued from a trust expires no later than the trust does (and no later than `AUTH_TOKEN_EXPIRE_HOURS`, default 24, after it was issued), and `expires_in` in the answer is the real remaining lifetime. To bound the damage of a leaked token, give the trust a short life and a small `remaining_uses`.

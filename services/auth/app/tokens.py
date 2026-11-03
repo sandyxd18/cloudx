@@ -1,7 +1,7 @@
 import secrets
 import string
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import bcrypt
 from fastapi import HTTPException
@@ -55,6 +55,7 @@ def _create_token(
     trust_id: str | None = None,
     trustee_id: str | None = None,
     domain_admin: bool | None = None,
+    expires_at: datetime | None = None,
 ) -> str:
     """Create a JWT token.
 
@@ -68,8 +69,13 @@ def _create_token(
         domain_id: None = user.domain_id (or "default").
         domain_admin: None = from the user row (and True for domain scope); False drops the user's domain-admin flag.
         trust_id, trustee_id: set on a token issued from a trust (sub is then the trustor).
+        expires_at: naive UTC; the token never lives past it (the default lifetime still applies when that is shorter).
     """
     jti = str(uuid.uuid4())
+    now = utcnow()
+    exp = now + timedelta(hours=TOKEN_EXPIRE_H)
+    if expires_at is not None:
+        exp = min(exp, expires_at)
     payload = {
         "jti":          jti,
         "sub":          user.id,
@@ -81,8 +87,8 @@ def _create_token(
         "scope_type":   scope_type,
         "domain_id":    domain_id or user.domain_id or "default",
         "domain_admin": scope_type == "domain" or bool(user.is_domain_admin if domain_admin is None else domain_admin),
-        "exp":          utcnow() + timedelta(hours=TOKEN_EXPIRE_H),
-        "iat":          utcnow(),
+        "exp":          exp,
+        "iat":          now,
     }
     if trust_id:
         payload["trust_id"] = trust_id

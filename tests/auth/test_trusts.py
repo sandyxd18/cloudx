@@ -2,9 +2,10 @@
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from tests.stack import fresh_service
@@ -206,6 +207,47 @@ def test_expired_trust_is_401(auth):
     t = make_trust(auth).json()
     edit_trust(auth, t["id"], expires_at=auth.models.utcnow() - timedelta(minutes=1))
     assert redeem(auth, t["id"]).status_code == 401
+
+
+def test_token_from_a_short_trust_does_not_outlive_the_trust(auth):
+    t = make_trust(auth).json()
+    ends = auth.models.utcnow() + timedelta(seconds=300)
+    edit_trust(auth, t["id"], expires_at=ends)
+
+    r = redeem(auth, t["id"])
+
+    assert r.status_code == 201, r.text
+    exp = datetime.fromtimestamp(claims(auth, r)["exp"], tz=timezone.utc).replace(tzinfo=None)
+    assert exp <= ends
+    assert 0 < r.json()["expires_in"] <= 300
+
+
+def test_trust_without_expiry_gives_the_default_lifetime(auth):
+    t = make_trust(auth).json()
+    edit_trust(auth, t["id"], expires_at=None)
+
+    r = redeem(auth, t["id"])
+
+    assert r.json()["expires_in"] == auth.config.TOKEN_EXPIRE_H * 3600
+    assert claims(auth, r)["exp"] - claims(auth, r)["iat"] == auth.config.TOKEN_EXPIRE_H * 3600
+
+
+def test_trust_longer_than_the_default_lifetime_keeps_the_default(auth):
+    t = make_trust(auth).json()
+    edit_trust(auth, t["id"], expires_at=auth.models.utcnow() + timedelta(days=30))
+
+    assert redeem(auth, t["id"]).json()["expires_in"] == auth.config.TOKEN_EXPIRE_H * 3600
+
+
+def test_token_is_rejected_once_the_trust_expiry_has_passed(auth):
+    # the module clock is `tokens.utcnow`: a token minted for a trust that ended 5 s ago is already dead
+    ended = auth.models.utcnow() - timedelta(seconds=5)
+    token = auth.tokens._create_token(
+        auth.models.User(id="u-1", username="alice", project_id="p-1", role="member"), expires_at=ended)
+
+    with pytest.raises(HTTPException) as exc:
+        auth.tokens._decode_token(token)
+    assert exc.value.status_code == 401
 
 
 def test_revoked_trust_is_401(auth):
