@@ -6,6 +6,16 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Fixed
+- **`cloudx server stop` no longer gets undone.** The worker reported `SHUTOFF` as soon as it had asked the guest to power
+  off. If the power-state loop ran in the seconds before the guest was off, it saw a running domain under a `SHUTOFF`
+  record and set `ACTIVE`, and one pass later auto-recovery found the domain off under an `ACTIVE` record and started
+  it: the server the user had just stopped came back. On the lab, stopping five CirrOS servers at once left 7 of 15
+  running again 80 seconds later; with the fix, 0 of 15. The worker now waits until the domain is off, up to
+  `STOP_SHUTDOWN_WAIT` seconds (60, as in Nova), and destroys a guest that ignores the request. The status stays
+  `STOPPING` meanwhile. The same function ends a relocated `SHUTOFF` server in `SHUTOFF`, which used to leave a running
+  domain under that record when the guest ignored the first, early request.
+
 ### Added
 - `cloudx port delete REF`. A port that a server still uses (the port has a `device_id`) is refused with a pointer to
   `cloudx server port remove`; `--force` deletes it anyway. Before, a port that `server port remove` had detached stayed
