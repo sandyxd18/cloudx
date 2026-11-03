@@ -140,7 +140,7 @@ def test_with_no_override_the_calls_go_to_the_catalog_hosts(monkeypatch):
              "http://ct-host:3": [{"id": "c1", "kind": "container"}]}
     f = run(monkeypatch, stale)
     assert sorted(f.deleted) == ["http://ct-host:3/containers/c1", "http://db-host:2/instances/db1", "http://fs-host:1/shares/sh1"]
-    assert asked == ["file-store", "database", "container", "compute"]  # once per cycle, before anything is touched
+    assert asked == ["file-store", "database", "container", "compute"]  # once per cycle, before login or any request
 
 
 def test_the_override_wins_over_the_catalog(monkeypatch):
@@ -194,3 +194,19 @@ def test_compute_missing_from_catalog_does_not_break_the_cycle(monkeypatch, capl
     _catalog_only(monkeypatch, {"file-store": FILE_STORE, "database": DATABASE, "container": CONTAINER})
     f = run(monkeypatch, S, pending=["s1"])
     assert len(f.deleted) == 4 and f.confirmed == [] and "cannot resolve service 'compute'" in caplog.text
+
+
+def test_resize_sweep_runs_when_only_compute_resolves(monkeypatch, caplog):
+    _catalog_only(monkeypatch, {"compute": COMPUTE})
+    f = run(monkeypatch, S, pending=["s1"])
+    assert f.confirmed == ["s1"] and f.deleted == []
+
+
+def test_resize_sweep_is_skipped_without_an_admin_token(monkeypatch):
+    _catalog_only(monkeypatch, {"compute": COMPUTE})
+    f = Fake(S, pending=["s1"])
+    f.login_ok = False
+    monkeypatch.setattr(r.requests, "request", f.request)
+    monkeypatch.setattr(r, "RESIZE_CONFIRM_WINDOW", 3600)
+    r.cycle()
+    assert f.confirmed == [] and f.pending_asked == []

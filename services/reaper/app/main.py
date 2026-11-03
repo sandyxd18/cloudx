@@ -54,7 +54,8 @@ def resolve_services() -> dict[str, str]:
 
 def cycle() -> None:
     bases = resolve_services()  # once per pass, before anything is touched
-    if not bases:
+    compute = resolve_compute()  # the resize sweep does not depend on the services above
+    if not bases and not compute:
         return
     token = login()
     if not token:
@@ -81,13 +82,19 @@ def cycle() -> None:
                 log.warning("could not delete %s %s: %s", it["kind"], it["id"], exc)
     if "database" in bases:
         backups(token, bases["database"])
-    if RESIZE_CONFIRM_WINDOW > 0:
-        try:
-            compute = catalog.url("compute").rstrip("/")
-        except catalog.CatalogError as exc:
-            log.warning("compute: URL not resolved, resize sweep skipped this pass: %s", exc)
-        else:
-            resize_confirms(token, compute)
+    if compute:
+        resize_confirms(token, compute)
+
+
+def resolve_compute() -> str | None:
+    """Base URL of compute for the resize sweep, or None when the sweep is off or the catalog cannot name compute."""
+    if RESIZE_CONFIRM_WINDOW <= 0:
+        return None
+    try:
+        return catalog.url("compute").rstrip("/")
+    except catalog.CatalogError as exc:
+        log.warning("compute: URL not resolved, resize sweep skipped this pass: %s", exc)
+        return None
 
 
 def resize_confirms(token: str, base: str) -> None:
