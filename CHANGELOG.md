@@ -4,7 +4,17 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
-## Unreleased
+## 1.0.9-rc1 (2026-11-03)
+
+Release candidate: it is installed on the lab before the final 1.0.9 is tagged. A `stop` that the system undid on its own,
+a resize that waits for the user to confirm or revert it, `cloudx port delete`, and a quieter lb-worker, in the compute
+service, the compute worker, the CLI, the orchestration engine and the lb-worker. **One schema change** (run
+`cloudx-manage db sync`). The notes, with the upgrade steps and what was and was not tested, are in
+`docs/releases/v1.0.9.md`.
+The fixes were first built as test packages (named 1.0.9~rc0, rc0.1 and rc0.2, which are not this release) and installed on
+the lab (three controllers, two compute nodes), where they were checked with CirrOS servers: five servers stopped at once
+were running again after 80 seconds in 7 of 15 stops before the fix and in 0 of 15 after it; a resize waited in
+`VERIFY_RESIZE` and `confirm-resize` and `revert-resize` ended it, also for a stopped server, which stayed stopped.
 
 ### Fixed
 - **`cloudx server stop` no longer gets undone.** The worker reported `SHUTOFF` as soon as it had asked the guest to power
