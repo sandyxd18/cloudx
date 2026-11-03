@@ -1,5 +1,5 @@
 """Nova operator surface: instance actions, os-services, limits, cold migrate, evacuate."""
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 from fastapi import APIRouter, HTTPException, Request
@@ -12,7 +12,7 @@ from ..clients import response_detail
 from ..config import AUTH_API_URL, block_store_api_url, networking_api_url
 from ..db import DB
 from ..lookups import get_flavor, get_server, require_server
-from ..models import ComputeService, Flavor, Server, ServerAction
+from ..models import ComputeService, Flavor, Server, ServerAction, now
 from ..schemas import MoveIn, ServiceUpdateIn
 from ..service import (
     claim_host,
@@ -80,6 +80,15 @@ def internal_finish_action(server_id: str, payload: dict, db: DB):
 def internal_list_servers(db: DB):
     rows = db.scalars(select(Server).where(Server.status != "DELETED")).all()
     return {"servers": [{"id": s.id, "host": s.host, "libvirt_domain_name": s.libvirt_domain_name, "status": s.status} for s in rows]}
+
+
+@router.get("/internal/resize-pending", dependencies=[InternalAuth])
+def internal_resize_pending(seconds: int, db: DB):
+    """Servers that have sat in VERIFY_RESIZE for at least `seconds` (the reaper confirms them). The status filter is
+    needed because some paths write status without clearing the timestamp; NULL never matches the comparison."""
+    cutoff = now() - timedelta(seconds=seconds)
+    rows = db.scalars(select(Server).where(Server.status == "VERIFY_RESIZE", Server.resize_pending_since <= cutoff)).all()
+    return {"items": [{"id": s.id} for s in rows]}
 
 
 @router.get("/limits")
