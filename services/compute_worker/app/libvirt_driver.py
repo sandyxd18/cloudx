@@ -393,11 +393,17 @@ def hard_reboot(name: str) -> bool:
         conn.close()
 
 
+# How long a stop waits for the guest to power off before the domain is destroyed (Nova's default is 60 as well).
+STOP_SHUTDOWN_WAIT = int(os.getenv("STOP_SHUTDOWN_WAIT", "60"))
+
+
 def stop(name: str) -> None:
+    """Power the guest off and return when the domain is off. Returning earlier let the power-state loop see a running
+    domain under a SHUTOFF record, set ACTIVE, and have auto-recovery start the domain the user had just stopped."""
     conn, domain = lookup(name)
     try:
         if domain.isActive():
-            domain.shutdown()
+            _shut_down(domain, STOP_SHUTDOWN_WAIT)
     finally:
         conn.close()
 
@@ -641,14 +647,14 @@ def _redefine_with_limits(conn, domain, root: ET.Element, new_vcpus: int | None,
     return conn.defineXML(ET.tostring(root, encoding="unicode"))
 
 
-def _shut_down(domain) -> None:
-    """Ask the guest to power off and wait; destroy it when it does not answer."""
+def _shut_down(domain, wait: int) -> None:
+    """Ask the guest to power off and wait for it, up to `wait` seconds; destroy it when it does not answer."""
     domain.shutdown()
-    deadline = time.monotonic() + RESIZE_SHUTDOWN_WAIT
+    deadline = time.monotonic() + wait
     while domain.isActive() and time.monotonic() < deadline:
         time.sleep(1)
     if domain.isActive():
-        log.warning("guest ignored the shutdown for %ss, destroying it", RESIZE_SHUTDOWN_WAIT)
+        log.warning("guest ignored the shutdown for %ss, destroying it", wait)
         domain.destroy()
 
 
@@ -669,7 +675,7 @@ def resize(name: str, new_vcpus: int | None, new_ram_mb: int | None) -> None:
         if (new_vcpus or 0) > max_vcpus or (new_ram_mb or 0) * 1024 > max_kib:
             was_active = domain.isActive()
             if was_active:
-                _shut_down(domain)
+                _shut_down(domain, RESIZE_SHUTDOWN_WAIT)
             domain = _redefine_with_limits(conn, domain, root, new_vcpus, new_ram_mb)
             if was_active:
                 if domain.hasManagedSaveImage(0):
