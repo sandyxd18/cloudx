@@ -134,3 +134,18 @@ def test_a_console_token_is_not_a_login_token_for_auth_api(monkeypatch, tmp_path
     with pytest.raises(HTTPException) as exc:
         auth.tokens._decode_token(token)
     assert exc.value.status_code == 401
+
+
+def test_verify_claims_returns_the_port_and_the_domain():
+    token = console_token.issue_token("s1", "cloudx-comp-01", 5901, domain="instance-0001")
+
+    claims = console_token.verify_claims(token, "cloudx-comp-01")
+
+    assert (claims["port"], claims["dom"], claims["sid"]) == (5901, "instance-0001", "s1")
+
+
+def test_a_token_without_a_domain_has_no_dom_claim():
+    token = console_token.issue_token("s1", "cloudx-comp-01", 5901)
+
+    assert "dom" not in console_token.verify_claims(token, "cloudx-comp-01")
+    assert console_token.verify_token(token, "cloudx-comp-01") == 5901

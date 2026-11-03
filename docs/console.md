@@ -27,9 +27,11 @@ http://<console_proxy_host>:6080/vnc.html?autoconnect=1&path=websockify%3Ftoken=
 ```
 
 1. compute-api asks the compute worker of the server's node for the VNC port and for that node's name and proxy address.
-2. compute-api signs a token (JWT, HS256, key `auth_secret_key`) that says: console, this server, this node, this VNC port. It is valid for 300 seconds.
+2. compute-api signs a token (JWT, HS256, with a key derived from `auth_secret_key`, so a console token is never accepted as a login token and the other way round) that says: console, this server, this node, this VNC port and the libvirt domain that owns it. It is valid for 300 seconds.
 3. The browser opens the link on the compute node, and noVNC connects to the proxy with the token.
-4. The proxy checks the signature, the expiry and that the token names its own node (`COMPUTE_HOST`), then connects to `127.0.0.1:<port>`. A token for another node, an expired one or an ordinary login token is refused.
+4. The proxy checks the signature, the expiry and that the token names its own node (`COMPUTE_HOST`), then connects to `127.0.0.1:<port>`. A token for another node, an expired one or an ordinary login token is refused. It then asks libvirt whether the token's domain still has its VNC graphics on the token's port, and refuses the token if not.
+
+A console token is bound to the VM's libvirt domain and port. It stops working when the VM stops or is deleted, or when its VNC port changes (libvirt reuses a freed port for another VM, and the old link must not open that one), even within the 300 seconds. Reload the page for a new link.
 
 The token is checked when the connection is opened. A console page that stays open for more than 5 minutes before it connects has to be reloaded to get a new link.
 

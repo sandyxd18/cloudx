@@ -854,7 +854,8 @@ def handle_get_console_info(args: dict) -> dict:
     domain = args.get("libvirt_domain_name")
     if not domain:
         return {"error": "server has no libvirt domain"}
-    return {**libvirt_driver.vnc_info(domain), "host": COMPUTE_HOST, "proxy_host": CONSOLE_PROXY_HOST}
+    return {**libvirt_driver.vnc_info(domain), "host": COMPUTE_HOST, "proxy_host": CONSOLE_PROXY_HOST,
+            "domain": domain}   # the console token is bound to this libvirt domain and its port
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

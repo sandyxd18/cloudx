@@ -10,7 +10,8 @@ from tests.compute import test_catalog_failures
 
 api, _server = test_catalog_failures.api, test_catalog_failures._server
 
-VNC = {"status": "available", "listen": "127.0.0.1", "port": 5901, "host": "node-1", "proxy_host": "console.node-1.test"}
+VNC = {"status": "available", "listen": "127.0.0.1", "port": 5901, "host": "node-1", "proxy_host": "console.node-1.test",
+       "domain": "instance-0001"}
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +38,8 @@ def test_console_url_contains_a_token_for_the_servers_host_and_port(api, monkeyp
 
     parts = urlsplit(body["novnc_url"])
     assert (parts.scheme, parts.hostname, parts.port, parts.path) == ("http", "console.node-1.test", 6080, "/vnc.html")
-    assert console_token.verify_token(_token_of(body["novnc_url"]), "node-1") == 5901
+    claims = console_token.verify_claims(_token_of(body["novnc_url"]), "node-1")
+    assert (claims["port"], claims["dom"]) == (5901, "instance-0001")   # the token names the libvirt domain that owns the port
     assert body["vnc"]["port"] == 5901
 
 
@@ -45,6 +47,16 @@ def test_console_url_without_vnc_port_has_no_novnc_url(api, monkeypatch):
     svc, client, _, _ = api
     _server(svc, "ACTIVE")
     _worker_says(svc, monkeypatch, {"status": "auto-assigned", "port": None, "host": "node-1", "proxy_host": "node-1"})
+
+    r = client.get("/servers/srv1/console-url")
+
+    assert r.status_code == 200 and r.json()["novnc_url"] is None
+
+
+def test_console_url_without_a_domain_from_the_worker_has_no_novnc_url(api, monkeypatch):
+    svc, client, _, _ = api
+    _server(svc, "ACTIVE")
+    _worker_says(svc, monkeypatch, {k: v for k, v in VNC.items() if k != "domain"})
 
     r = client.get("/servers/srv1/console-url")
 
@@ -87,7 +99,7 @@ def test_remote_consoles_uses_the_same_url(api, monkeypatch):
 
     parts = urlsplit(url)
     assert (parts.scheme, parts.hostname, parts.port, parts.path) == ("http", "console.node-1.test", 6080, "/vnc.html")
-    assert console_token.verify_token(_token_of(url), "node-1") == 5901
+    assert console_token.verify_claims(_token_of(url), "node-1")["dom"] == "instance-0001"
 
 
 def test_remote_consoles_without_vnc_port_has_no_url(api, monkeypatch):

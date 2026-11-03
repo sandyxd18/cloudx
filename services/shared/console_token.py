@@ -27,13 +27,18 @@ def _secret() -> str:
     return hmac.new(secret.encode(), KEY_PURPOSE, hashlib.sha256).hexdigest()
 
 
-def issue_token(server_id: str, host: str, vnc_port: int, ttl: int = 300) -> str:
+def issue_token(server_id: str, host: str, vnc_port: int, ttl: int = 300, domain: str | None = None) -> str:
+    """`domain` is the libvirt domain name that owns `vnc_port`; the node's proxy refuses a token without it, so
+    compute-api always passes it."""
     claims = {"typ": TOKEN_TYPE, "sid": server_id, "host": host, "port": vnc_port, "exp": int(time.time()) + ttl}
+    if domain:
+        claims["dom"] = domain
     return jwt.encode(claims, _secret(), algorithm=ALGORITHM)
 
 
-def verify_token(token: str, host: str) -> int:
-    """Return the VNC port the token grants on `host`; ValueError if it is forged, expired or meant for anything else."""
+def verify_claims(token: str, host: str) -> dict:
+    """Return the claims of a console token for `host` (at least `port`; `dom` when it names a libvirt domain);
+    ValueError if it is forged, expired or meant for anything else."""
     try:
         claims = jwt.decode(token, _secret(), algorithms=[ALGORITHM], options={"require_exp": True})
     except JWTError as e:
@@ -45,4 +50,9 @@ def verify_token(token: str, host: str) -> int:
     port = claims.get("port")
     if not isinstance(port, int) or isinstance(port, bool):
         raise ValueError("console token has no port")
-    return port
+    return claims
+
+
+def verify_token(token: str, host: str) -> int:
+    """Return the VNC port the token grants on `host`; ValueError if it is forged, expired or meant for anything else."""
+    return verify_claims(token, host)["port"]

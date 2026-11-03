@@ -22,6 +22,7 @@ def test_console_info_names_the_node_and_its_proxy_address(monkeypatch):
 
     assert info["port"] == 5901
     assert (info["host"], info["proxy_host"]) == ("node-1", "203.0.113.5")
+    assert info["domain"] == "vm1"   # the libvirt domain the console token is bound to
 
 
 @pytest.fixture
