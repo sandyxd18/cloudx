@@ -30,6 +30,7 @@ log = logging.getLogger("lb-worker")
 HOST = os.getenv("NODE_NAME") or os.getenv("COMPUTE_HOST", "")
 ROOT = Path(os.getenv("LB_STATE_DIR", "/var/lib/cloudx/lb"))
 INTERVAL = int(os.getenv("LB_WORKER_INTERVAL", "5"))
+WARN_REPEAT_SECONDS = 300   # a tick that keeps failing is logged again this often
 
 _applied: dict[str, str] = {}   # lb id -> sha of the config haproxy is running
 _reported: dict[str, str] = {}  # member id -> last status sent
@@ -203,16 +204,42 @@ def tick() -> None:
         _reported.update(changed)
 
 
+class TickLoop:
+    """Runs tick() and logs a failure that goes on once, not every INTERVAL: a node of a cloud without
+    load-balancer-api would otherwise warn every 5 seconds for as long as it runs."""
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._failing_since: float | None = None
+        self._last_warned = 0.0
+
+    def step(self) -> None:
+        try:
+            tick()
+        except Exception as exc:  # best-effort: API restarting or briefly unreachable; retry next tick
+            now = self._clock()
+            if self._failing_since is None:
+                self._failing_since, self._last_warned = now, now
+                log.warning("tick failed: %s", exc)
+            elif now - self._last_warned >= WARN_REPEAT_SECONDS:
+                self._last_warned = now
+                log.warning("tick still failing for %ds: %s", now - self._failing_since, exc)
+            else:
+                log.debug("tick failed: %s", exc)
+        else:
+            if self._failing_since is not None:
+                log.info("tick works again after %ds", self._clock() - self._failing_since)
+                self._failing_since = None
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s  %(message)s")
     if not HOST:
         raise SystemExit("lb-worker: node_name is not set")
     ROOT.mkdir(parents=True, exist_ok=True)
+    loop = TickLoop()
     while True:
-        try:
-            tick()
-        except Exception as exc:  # best-effort: API restarting or briefly unreachable; retry next tick
-            log.warning("tick failed: %s", exc)
+        loop.step()
         time.sleep(INTERVAL)
 
 

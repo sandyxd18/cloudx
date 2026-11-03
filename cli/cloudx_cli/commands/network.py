@@ -206,6 +206,20 @@ def port_show(ctx, ref):
     _output(data, ctx.obj["fmt"])
 
 
+@port.command("delete")
+@click.argument("ref")
+@click.option("--force", is_flag=True, help="Delete a port that a server still uses")
+@click.pass_context
+def port_delete(ctx, ref, force):
+    """Delete a port. A port that a server uses is refused: detach it first with `cloudx server port remove`."""
+    data = _api("get", f"{DEFAULT_URLS['network']}/ports/{ref}", ctx.obj["profile"])
+    if data.get("device_id") and not force:
+        raise click.ClickException(
+            f"port {ref} is used by {data['device_id']}; detach it first with `cloudx server port remove`, or pass --force")
+    _api("delete", f"{DEFAULT_URLS['network']}/ports/{ref}", ctx.obj["profile"])
+    click.echo(f"✓ Port {ref} deleted")
+
+
 @port.command("set-security-group")
 @click.argument("ref")
 @click.option("--security-group", "sgs", multiple=True, required=True)
