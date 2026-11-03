@@ -38,7 +38,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -164,6 +164,13 @@ def handle_update_server(args: dict) -> dict:
     for key, value in safe_fields.items():
         set_parts.append(f"{key} = :_{key}")
         params[f"_{key}"] = value
+    # invariant: resize_pending_since is set exactly while status is VERIFY_RESIZE
+    if "status" in safe_fields:
+        if safe_fields["status"] == "VERIFY_RESIZE":
+            set_parts.append("resize_pending_since = :_now")
+            params["_now"] = datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S.%f")
+        else:
+            set_parts.append("resize_pending_since = NULL")
 
     sql = f"UPDATE compute_servers SET {', '.join(set_parts)} WHERE id = :_sid"
     prev = _row("compute_servers", server_id)

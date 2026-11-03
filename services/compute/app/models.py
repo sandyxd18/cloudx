@@ -61,6 +61,7 @@ class Server(Base):
     original_vcpus: Mapped[int | None] = mapped_column(Integer, nullable=True)
     original_ram_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
     original_status: Mapped[str | None] = mapped_column(String, nullable=True)   # ACTIVE or SHUTOFF before the resize
+    resize_pending_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)   # set while status is VERIFY_RESIZE
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
 
 
