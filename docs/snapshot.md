@@ -36,7 +36,17 @@ cloudx image show snap-vm1
 Server snapshot flow:
 
 ```text
-VM -> Root Volume Snapshot -> Image API (Image)
+VM -> Root Volume Snapshot -> block-store-worker (qemu-img, qcow2) -> Image API (Image)
 ```
+
+The command returns at once with the volume snapshot (`creating`) and the name of the image to come. The block-store-worker
+of the node that holds the root volume exports the snapshot, converts it to qcow2 and uploads it to image-api as a private
+image of the server's project, then removes the volume snapshot it made. Read the progress with `cloudx image list`: the
+image shows up as `ACTIVE` when the upload ends. A name that an image already has is refused with 409 before anything is
+snapshotted. If the export or the upload fails, no image appears and the volume snapshot stays in `error` with the reason
+(`cloudx snapshot list`); delete it with `cloudx snapshot delete`.
+
+The server keeps running while this happens. On LVM the snapshot has a copy-on-write area of 20% of the volume, so a guest
+that writes more than that while the export runs invalidates the snapshot and the upload fails; run it again.
 
 The resulting snapshot image can be reused to create new VMs.

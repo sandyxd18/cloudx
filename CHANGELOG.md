@@ -4,6 +4,61 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## Unreleased
+
+Found by a lifecycle sweep on the 1.0.7-rc1 lab: a server with two NICs and a Ceph and an LVM data volume went through every
+server action. The fixes below were built as 1.0.8~rc1 to rc4 test packages and installed on the lab (three controllers,
+two compute nodes), where they were checked with CirrOS servers:
+- Resize from `small` to `medium` (1 to 2 vCPUs, 1 to 2 GB) ended `ACTIVE` in 9 s with the larger size in the guest;
+  `revertResize` gave back the flavor name `small`.
+- Shelve and unshelve kept both NICs and all three disks, on the same node and on the other one (where the LVM volume came
+  in over iSCSI), with 4/4 pings on each network.
+- Server snapshots of a Ceph and of an LVM root volume ended as `ACTIVE` private images (12 s and about 2 min), the volume
+  snapshot was removed, and a server built from the Ceph image booted with a file that had been written in the original.
+- Deleting servers whose root volumes had snapshots left the volumes `available` with their snapshots, and nothing on Ceph
+  or LVM that the database did not know about.
+- A member user got 409 on stop, reboot, resize, pause, rebuild, password, shelve, delete and volume attach of a locked
+  server, could still read it, and an admin could still stop it.
+
+### Fixed
+- Resize to a flavor with more vCPUs or more memory than the server was created with no longer ends in `ERROR`. libvirt
+  refuses to hot-plug past the maximums the domain was defined with. Inside them the change stays live; beyond them the
+  worker redefines the domain with the new size and restarts it (ACPI shutdown first, destroy after 30 s without an
+  answer; `RESIZE_SHUTDOWN_WAIT` sets the wait).
+- `revertResize` puts the old flavor name back. Resize stored the flavor id where create stores the name, so the revert
+  could not find the old flavor and kept the new one's name. The revert also reported `ACTIVE` before the worker had
+  restored the size.
+- `shelve` offloads the server. It called a block-store route that does not exist and only logged the 404, so the VM was
+  stopped and called offloaded while its domain, taps and iSCSI sessions stayed. Now the worker removes them, the
+  placement allocation is released, and the ports and volumes stay on the record. `unshelve` builds the domain again on a
+  node placement picks, with the same ports and data volumes (the path evacuate uses). No image is made.
+- `cloudx server snapshot` works for servers that boot from a volume, which is every server. It asked image-api to import
+  the snapshot from a path, which image-api cannot read and the snapshot did not have yet (404 "source image path not
+  found"), and left a volume snapshot behind. Now block-store snapshots the root volume (`POST /volumes/{ref}/upload-image`)
+  and the block-store-worker that holds the volume exports it, converts it to qcow2, uploads it to image-api as a private
+  image of the server's project and removes the volume snapshot. The call answers 202 and the image appears when the upload
+  ends; a name that an image already has is refused with 409 first, and a failed upload leaves the volume snapshot in
+  `error` with the reason. image-api lets a service name the owner of an uploaded image (`project_id` form field, internal
+  token only). The Ceph export no longer fails with "File exists": `rbd export` will not write over the temporary file the
+  caller had made. `cloudx volume backup` of a Ceph volume calls the same function with the same kind of file; it was not
+  tried on the lab.
+- Deleting a server whose root volume has snapshots no longer loses track of them. The internal delete that the server
+  delete uses skipped the "volume has snapshots" check of `DELETE /volumes`, so the row went and the RBD image and its
+  snapshot stayed on Ceph (on LVM the snapshot record went to `error`). Now the server is deleted and the root volume stays
+  `available` until its snapshots are deleted.
+- Lock covers every action that changes a server, not only delete, shelve and unshelve: start, stop, reboot, pause,
+  resume, suspend, unsuspend, resize, confirm and revert resize, rebuild, rescue, unrescue, set password, adding and
+  removing a port, and attaching and detaching a volume (also through `/volumes/{ref}/attach`, which reaches compute-api
+  with the internal token). A member gets 409. Admins and services still bypass the lock, and snapshots and reads stay open.
+
+- A volume made from an image whose size is exactly the volume size no longer fails on Ceph with `rbd: new size is equal to
+  original size`. The image of a server snapshot is always that size, so a server could not be built from its own snapshot.
+
+### Changed
+- `POST /servers/{ref}/live-migrate` answers 501 and changes nothing. The worker read `server_id` where the API sends `id`,
+  so the request left the server in `MIGRATING` until a `start`. Live migration is planned; cold migration
+  (`POST /servers/{ref}/migrate`) and evacuate are the supported ways to move a server.
+
 ## 1.0.7 (2026-11-03)
 
 No code change since 1.0.7-rc1; the full list is in the rc1 section below and the notes are in `docs/releases/v1.0.7.md`.
