@@ -25,22 +25,21 @@ Work is split into one commit per part so each can be read and reverted alone.
 `confirmResize` and `revertResize` already exist (`services/compute/app/routers/server_actions.py`). Only the timeout is missing.
 
 - `services/reaper` gets a new sweep. It lists servers in `VERIFY_RESIZE` whose status has not changed for longer than `RESIZE_CONFIRM_WINDOW_SECONDS` (default `86400`; `0` disables) and calls the existing `POST /servers/{id}/confirmResize` with its admin token. No new confirm path.
-- Servers that an older version left `ACTIVE` with `original_flavor` set are accepted by `confirm_resize` today. The sweep includes them only if compute exposes them through the same list (see plan check).
-- The window needs a reliable "in VERIFY_RESIZE since" time. If `updated_at` also moves for unrelated reasons, add `resize_pending_since` (compute migration) set when the worker enters `VERIFY_RESIZE`. Plan check 1 decides.
+- `compute_servers` has no `updated_at`, so a new nullable column `resize_pending_since` is added (migration `compute_0005`). The conductor sets it when a server's status becomes `VERIFY_RESIZE` and clears it on any other status. The migration backfills existing `VERIFY_RESIZE` rows with the migration time, so they are confirmed one window after the upgrade.
+- compute-api gets `GET /internal/resize-pending?seconds=N` (internal auth, like the other services' `/internal/stale-errors`) returning the ids past the window. Rows with a NULL timestamp are never returned. Servers that an older version left `ACTIVE` with `original_flavor` set have no timestamp and are not swept.
 - Reaper runs every `REAPER_INTERVAL` (600 s), so confirmation happens up to one interval after the window. `REAPER_DRY_RUN` is honored (log only).
 - Tests: unit tests for the sweep (inside window untouched, past window confirmed, `0` skipped, dry-run, confirm failure retried next pass). One lab check: resize, wait past a short window, observe `ACTIVE`.
 
 ## Part 2: noVNC proxy
 
-Today `console-url` returns `NOVNC_BASE_URL` (default `http://localhost:6080/vnc.html`) and no package starts anything on 6080.
+Today `console-url` returns `NOVNC_BASE_URL` (default `http://localhost:6080/vnc.html`) and no package starts anything on 6080. VNC is bound to `127.0.0.1` on the node that runs the VM (`libvirt_driver.py`) and placement records no node addresses, so a proxy on the controller cannot reach VMs on other nodes. Decision: run the proxy on every compute node and keep VNC on loopback.
 
-- Package: a systemd unit runs `websockify` with the noVNC web assets on port 6080, added to `packaging/manifest.toml` and installed with compute-api on the controller.
-- Auth: compute-api creates a short-lived console token (TTL a few minutes, single server) when `console-url` is requested, writes it to a token file that websockify reads (`token=host:port`), and returns a URL carrying the token. Port 6080 without a valid token connects to nothing.
-- Token file lives in a directory only compute-api (writer) and websockify (reader) can access; expired entries are removed by compute-api on each write.
-- Remote hypervisors: the mapped target is the VNC address on the node that runs the VM, not localhost.
-- Dashboard: `Console.jsx` uses the URL returned by `console-url`; no other UI change.
-- Risk: the remote-node path and inter-node firewall can only be confirmed on the lab. Verification must include a VM on a non-controller node.
-- Tests: unit tests for token issue/expiry/file format and the `console-url` response; lab check with a VM on the controller and on a compute node.
+- Package: unit `novnc-proxy` (`kind = "unit"`, `bundle_with = "compute-worker"`) runs websockify with the noVNC web assets on port 6080 on every node with the compute role.
+- Token: compute-api issues a signed JWT (HS256, `auth_secret_key`, TTL 300 s) with claims `typ=console`, `sid` (server id), `host` (compute host name), `port` (VNC port). A websockify token plugin on the node checks signature, expiry, `typ`, and that `host` equals the node's own `COMPUTE_HOST`, then targets `127.0.0.1:<port>`. The `host` check stops a token for one node from opening a different VM's VNC port on another node. Nothing is synced between nodes. Port 6080 without a valid token connects to nothing.
+- Address: each compute node sets `console_proxy_host` in `compute-worker.conf` (the address the browser can reach; defaults to `COMPUTE_HOST`). The worker returns it from `get_console_info`; compute-api builds `http://<console_proxy_host>:6080/vnc.html?autoconnect=1&path=websockify%3Ftoken=<jwt>` for both `console-url` and `remote-consoles`.
+- Dashboard: `Console.jsx` uses the URL returned by the API; no other UI change.
+- Risk: the browser must reach port 6080 on the compute nodes, and the exact noVNC URL parameters are confirmed on the lab. Verification must include a VM on a non-controller node.
+- Tests: unit tests for token issue/verify (expiry, wrong host, wrong type, tampering), the plugin lookup, and the URL returned by both endpoints; lab check with VMs on the controller and on another compute node.
 
 ## Part 3: Dashboard pages
 
@@ -51,7 +50,7 @@ Today `console-url` returns `NOVNC_BASE_URL` (default `http://localhost:6080/vnc
 
 ## Part 4: Identity
 
-All in `services/auth` and `services/shared`, one migration `auth_0008`.
+All in `services/auth` and `services/shared`; two migrations (`auth_0008` rotation columns, `auth_0009` trusts table).
 
 ### 4a. Domain and system scoped tokens
 
@@ -65,7 +64,7 @@ All in `services/auth` and `services/shared`, one migration `auth_0008`.
 
 - `POST /v3/users/{user}/application_credentials/{cred}/rotate` with optional `grace_seconds` (default `0`). Returns the new secret once, like create. Same permission rule as the other credential routes (self or admin).
 - Migration adds `previous_secret_hash` and `previous_valid_until` to `auth_application_credentials`. Login checks the new secret, then the previous one while `previous_valid_until` is in the future.
-- CLI gets a `rotate` command. No dashboard page.
+- CLI gets `auth appcred rotate` (the CLI has no application credential commands today; only `rotate` is added). No dashboard page.
 - Tests: rotate returns a working secret, old secret fails at once with grace 0, old secret works until the grace ends, rotate by another non-admin user is 403.
 
 ### 4c. Trust
@@ -84,9 +83,9 @@ All in `services/auth` and `services/shared`, one migration `auth_0008`.
 - `CHANGELOG.md` entry. Version bump and release notes follow the existing release flow and are a separate chore PR, not part of this one.
 - Policy file PR is tracked as the next item after this one.
 
-## Plan-stage checks (facts to confirm before coding)
+## Plan-stage checks (resolved)
 
-1. Whether compute `updated_at` is reliable for "time in VERIFY_RESIZE"; otherwise add `resize_pending_since`.
-2. Whether `GET /servers` (admin, all projects) gives the reaper everything it needs, or an `/internal/` listing is needed as for the other reaper sweeps.
-3. Which services import `require_auth` from `shared` and which have their own dependency, to place `ACCEPT_DOMAIN_SCOPE` correctly.
-4. Where the websockify and noVNC assets come from for the `.deb` (distro packages vs. vendored), given `packaging/constraints.txt`.
+1. `updated_at` does not exist on servers: `resize_pending_since` is added (Part 1).
+2. The reaper needs a new compute endpoint `/internal/resize-pending`; no existing list gives it (Part 1).
+3. Billing uses `shared.auth_middleware.require_auth`; auth-api has its own dependency. Billing sets `ACCEPT_DOMAIN_SCOPE` in code; the shared middleware reads it at call time.
+4. websockify is installed from the pinned Python constraints into the CloudX venv (the plugin needs the venv's `jose`); the noVNC web assets come from the apt package `novnc` (`depends` of the unit).
