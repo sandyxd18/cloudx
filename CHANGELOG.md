@@ -4,7 +4,16 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
-## Unreleased
+## 1.0.9 (2026-11-03)
+
+One change since 1.0.9-rc1: `cloudx port delete` no longer deletes a port that a server uses when the port has no `device_id`
+(below). The rest is in the rc1 section and the notes are in `docs/releases/v1.0.9.md`. The release files of 1.0.9-rc1 (the
+checksums of the 48 `.deb` files matched `SHA256SUMS`) were installed on the lab (three controllers, two compute nodes,
+controllers first, `cloudx-manage db sync` after the first) over the test packages and checked there: the unit list and
+states and a hash of `/etc/cloudx` were identical to before on every node, no unit failed, no traceback in the logs, and
+`vm-default` kept running (the same QEMU process). A resize waited in `VERIFY_RESIZE` and `confirm-resize` and
+`revert-resize` ended it; stopping five servers at once left 0 of 10 running again after 80 seconds; a stopped server that
+was resized and confirmed stayed `SHUTOFF`.
 
 ### Fixed
 - `cloudx port delete` refuses a port that a server uses even when the port has no `device_id`. `server port add
