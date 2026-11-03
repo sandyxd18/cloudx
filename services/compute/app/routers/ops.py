@@ -14,7 +14,16 @@ from ..db import DB
 from ..lookups import get_flavor, get_server, require_server
 from ..models import ComputeService, Flavor, Server, ServerAction
 from ..schemas import MoveIn, ServiceUpdateIn
-from ..service import claim_host, compute_hosts, fallback_host, finish_action, project_limits, record_action, server_worker_payload
+from ..service import (
+    claim_host,
+    compute_hosts,
+    fallback_host,
+    finish_action,
+    project_limits,
+    record_action,
+    release_allocation,
+    server_worker_payload,
+)
 
 router = APIRouter()
 
@@ -60,7 +69,10 @@ def show_instance_action(ref: str, request_id: str, current: CurrentUser, db: DB
 
 @router.post("/internal/servers/{server_id}/actions/finish", dependencies=[InternalAuth])
 def internal_finish_action(server_id: str, payload: dict, db: DB):
-    finish_action(db, server_id, result=payload.get("result", "success"), message=payload.get("message"), action=payload.get("action"))
+    result, action = payload.get("result", "success"), payload.get("action")
+    finish_action(db, server_id, result=result, message=payload.get("message"), action=action)
+    if action == "shelve" and result == "success":  # an offloaded server holds no vCPU or memory on any node
+        release_allocation(server_id)
     return {"ok": True}
 
 
@@ -143,6 +155,34 @@ def _flavor_of(db, server) -> Flavor:
                                                     ram_mb=server.ram_mb or 512, disk_gb=server.disk_gb or 0)
 
 
+def place_and_build(db, server, status: str, target_status: str, host: str | None = None, avoid: tuple = ()) -> tuple[str, dict, dict]:
+    """Pick a node for a server whose domain is gone (or about to be), move the record there under `status` and return
+    (node, the old node's payload, the build_instance payload). The build carries every port and every attached data
+    volume, so the new domain has the NICs and disks the old one had."""
+    extra = [v for v in clients.block_get("/volumes").get("items", [])
+             if v.get("attached_to_server_id") == server.id and v["id"] != server.root_volume_id]
+    data_vols = [{"id": v["id"], "target_device": (v.get("target_device") or v.get("mountpoint") or "sdb").split("/")[-1]} for v in extra]
+    flavor = _flavor_of(db, server)
+    port = clients.api_get(f"{networking_api_url()}/ports/{server.port_id}")
+    ports = [port] + [clients.api_get(f"{networking_api_url()}/ports/{p}") for p in (server.extra_port_ids or "").split(",") if p]
+    root = clients.block_get(f"/volumes/{server.root_volume_id}")
+    block_store_url = block_store_api_url()
+    target = claim_host(db, server.id, server.project_id, flavor, host=host, avoid=avoid)
+    if target is None:
+        target = fallback_host(db, flavor, host=host, avoid=avoid)
+    if target is None:
+        raise HTTPException(status_code=409, detail="No valid host was found")
+    old_payload = server_worker_payload(server)
+    server.host, server.status = target, status
+    db.commit()
+    build = server_worker_payload(server, port, ports, root)
+    build["_root_volume_id"], build["_block_store_url"] = server.root_volume_id, block_store_url
+    build["_target_status"] = target_status
+    if data_vols:
+        build["_data_volumes"] = data_vols
+    return target, old_payload, build
+
+
 def _relocate(ref: str, host: str | None, current: dict, db, evacuate: bool) -> dict:
     server = require_server(db, ref, current)
     ok = {"ACTIVE", "SHUTOFF", "ERROR"} if evacuate else {"ACTIVE", "SHUTOFF"}
@@ -157,34 +197,14 @@ def _relocate(ref: str, host: str | None, current: dict, db, evacuate: bool) -> 
         svc = db.get(ComputeService, old)
         if not (svc and svc.forced_down):
             raise HTTPException(status_code=409, detail=f"host {old} must be forced down first (PUT /os-services/{old} forced_down=true)")
-    extra = [v for v in clients.block_get("/volumes").get("items", [])
-             if v.get("attached_to_server_id") == server.id and v["id"] != server.root_volume_id]
-    data_vols = [{"id": v["id"], "target_device": (v.get("target_device") or v.get("mountpoint") or "sdb").split("/")[-1]} for v in extra]
-    flavor = _flavor_of(db, server)
-    port = clients.api_get(f"{networking_api_url()}/ports/{server.port_id}")
-    ports = [port] + [clients.api_get(f"{networking_api_url()}/ports/{p}") for p in (server.extra_port_ids or "").split(",") if p]
-    root = clients.block_get(f"/volumes/{server.root_volume_id}")
-    block_store_url = block_store_api_url()
-    target = claim_host(db, server.id, server.project_id, flavor, host=host, avoid=(old,))
-    if target is None:
-        target = fallback_host(db, flavor, host=host, avoid=(old,))
-    if target is None:
-        raise HTTPException(status_code=409, detail="No valid host was found")
-    old_payload = server_worker_payload(server)
-    server.host, server.status = target, "REBUILD" if evacuate else "MIGRATING"
-    db.commit()
-    build = server_worker_payload(server, port, ports, root)
-    build["_root_volume_id"], build["_block_store_url"] = server.root_volume_id, block_store_url
-    build["_target_status"] = target_status
-    if data_vols:
-        build["_data_volumes"] = data_vols
+    target, old_payload, build = place_and_build(db, server, "REBUILD" if evacuate else "MIGRATING", target_status, host=host, avoid=(old,))
     record_action(db, server.id, "evacuate" if evacuate else "migrate", current)
     if evacuate:  # source is down: free the volume record here, nothing to tear down
         clients.release_server_volumes(server.id)
         clients.cast_to_worker("build_instance", build)
     else:  # source worker tears the domain down, then casts the build to the target (keeps the order)
         clients.cast_to_worker("relocate_out", {**old_payload, "_build": build, "_target_host": target,
-                                                "_root_volume_id": server.root_volume_id, "_block_store_url": block_store_url})
+                                                "_root_volume_id": server.root_volume_id, "_block_store_url": build["_block_store_url"]})
     return {"server_id": server.id, "from": old, "to": target, "status": server.status}
 
 

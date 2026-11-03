@@ -146,6 +146,7 @@ def test_a_plain_runtime_error_is_still_a_500(api, monkeypatch):
     def boom(method, payload):
         raise RuntimeError("boom")
 
+    monkeypatch.setattr(svc.clients, "block_get", lambda path: {"items": []})  # shelve lists the volumes before it casts
     monkeypatch.setattr(svc.clients, "cast_to_worker", boom)
     r = client.post("/servers/srv1/shelve")
     assert r.status_code == 500 and "boom" not in r.text
