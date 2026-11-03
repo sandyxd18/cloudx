@@ -23,5 +23,5 @@ class ConsoleTokenPlugin:
             return None
         try:
             return VNC_HOST, verify_token(token, host)
-        except ValueError:
+        except Exception:  # best-effort: websockify cannot tolerate an exception from a plugin; any failure means no target
             return None

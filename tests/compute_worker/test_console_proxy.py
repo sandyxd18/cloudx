@@ -28,3 +28,15 @@ def test_lookup_returns_none_when_the_node_has_no_host_name(monkeypatch):
     token = console_token.issue_token("s1", "cloudx-comp-01", 5903)
 
     assert ConsoleTokenPlugin(None).lookup(token) is None
+
+
+@pytest.mark.parametrize("secret", [None, ""])
+def test_lookup_without_a_secret_returns_none(monkeypatch, secret):
+    token = console_token.issue_token("s1", "cloudx-comp-01", 5903)
+    monkeypatch.setenv("COMPUTE_HOST", "cloudx-comp-01")
+    if secret is None:
+        monkeypatch.delenv("AUTH_SECRET_KEY")
+    else:
+        monkeypatch.setenv("AUTH_SECRET_KEY", secret)
+
+    assert ConsoleTokenPlugin(None).lookup(token) is None

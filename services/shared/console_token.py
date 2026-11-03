@@ -14,7 +14,11 @@ TOKEN_TYPE = "console"
 
 
 def _secret() -> str:
-    return os.environ["AUTH_SECRET_KEY"]
+    """The signing key; a missing or blank one must fail closed, since a token signed with "" would verify against it."""
+    secret = os.environ.get("AUTH_SECRET_KEY")
+    if not secret:
+        raise ValueError("AUTH_SECRET_KEY is not set")
+    return secret
 
 
 def issue_token(server_id: str, host: str, vnc_port: int, ttl: int = 300) -> str:

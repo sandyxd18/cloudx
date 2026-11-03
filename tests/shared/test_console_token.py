@@ -60,3 +60,24 @@ def test_missing_or_non_int_port_rejected(port):
 def test_garbage_rejected():
     with pytest.raises(ValueError):
         console_token.verify_token("not-a-jwt", "cloudx-comp-01")
+
+
+@pytest.fixture(params=["empty", "missing"])
+def no_secret(request, monkeypatch):
+    if request.param == "empty":
+        monkeypatch.setenv("AUTH_SECRET_KEY", "")
+    else:
+        monkeypatch.delenv("AUTH_SECRET_KEY")
+
+
+def test_issue_without_a_secret_refused(no_secret):
+    with pytest.raises(ValueError):
+        console_token.issue_token("s1", "cloudx-comp-01", 5901)
+
+
+def test_verify_without_a_secret_raises_value_error(no_secret):
+    forged = jwt.encode({"typ": "console", "sid": "s1", "host": "cloudx-comp-01", "port": 1,
+                         "exp": int(time.time()) + 300}, "", algorithm="HS256")
+
+    with pytest.raises(ValueError):
+        console_token.verify_token(forged, "cloudx-comp-01")
