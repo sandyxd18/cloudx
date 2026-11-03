@@ -34,8 +34,9 @@ browser console now needs the `novnc` package and port 6080 on every compute nod
 - **The browser console works through a proxy on the compute node.** `console-url` and `remote-consoles` return
   `http://<console_proxy_host>:6080/vnc.html?autoconnect=1&path=websockify%3Ftoken=<token>`. The new unit
   `cloudx-novnc-proxy` runs `websockify` and the noVNC client on port 6080 of every compute node; it ships in the
-  `cloudx-compute-worker` package, which now depends on `novnc`, and the worker's unit has `Wants=` on it. The guest's VNC
-  stays on 127.0.0.1. The token is a JWT signed with `auth_secret_key`, valid 300 seconds and good only for one VNC port on
+  `cloudx-compute-worker` package, which now depends on `novnc`, and the worker's unit has `Wants=` on it (on tarball
+  nodes the guide's example worker unit has the line and its start command enables the proxy). The guest's VNC stays on
+  127.0.0.1. The token is a JWT signed with `auth_secret_key`, valid 300 seconds and good only for one VNC port on
   that node (`COMPUTE_HOST`); it is checked when the connection opens. Before, the link pointed at `localhost:6080` and
   nothing in the packages started a proxy. To upgrade: let apt install `novnc` (tarball nodes: `apt install novnc`),
   open port 6080 to your users' browsers, and set `console_proxy_host` in
