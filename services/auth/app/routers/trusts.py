@@ -10,13 +10,10 @@ from ..deps import CurrentUser
 from ..lookups import _get_project_by_ref, _get_user_by_ref
 from ..models import AuditLog, Project, Trust, User, utcnow
 from ..schemas import ROLES, TrustIn, TrustTokenIn
-from ..tokens import _create_token, project_role
+from ..tokens import _create_token, role_held
 from .tokens import _check_domain, _member_projects
 
 router = APIRouter()
-
-_RANK = {"reader": 0, "member": 1, "admin": 2}
-
 
 def _trust_to_dict(t: Trust) -> dict:
     return {
@@ -29,11 +26,6 @@ def _trust_to_dict(t: Trust) -> dict:
         "remaining_uses":  t.remaining_uses,
         "created_at":      t.created_at.isoformat(),
     }
-
-
-def _holds(db, user: User, project_id: str, role: str) -> bool:
-    """A user holds a role in a project when their role there ranks at least as high."""
-    return _RANK.get(project_role(db, user, project_id), -1) >= _RANK[role]
 
 
 def _parse_expires_at(raw: str | None) -> datetime | None:
@@ -83,7 +75,7 @@ def create_trust(payload: TrustIn, current: CurrentUser, db: DB):
     if not roles or len(set(roles)) != len(roles) or any(r not in ROLES for r in roles):
         raise HTTPException(status_code=400, detail=f"roles must be a non-empty list without duplicates from: {', '.join(ROLES)}")
     for r in roles:
-        if not _holds(db, trustor, proj.id, r):
+        if not role_held(db, trustor, proj.id, r):
             raise HTTPException(status_code=403, detail=f"you do not hold the {r} role in this project")
 
     trustee = _get_user_by_ref(db, payload.trustee_user_id, domain)
@@ -172,7 +164,7 @@ def login_with_trust(payload: TrustTokenIn, current: CurrentUser, db: DB):
         raise _refuse(str(e.detail))
     if trustor.role != "admin" and proj.id not in _member_projects(db, trustor):
         raise _refuse("trustor is no longer a member of the project")
-    granted = [r for r in t.roles.split(",") if r in _RANK and _holds(db, trustor, proj.id, r)]
+    granted = [r for r in t.roles.split(",") if role_held(db, trustor, proj.id, r)]
     if not granted:
         raise _refuse("trustor no longer holds any of the trust roles")
 

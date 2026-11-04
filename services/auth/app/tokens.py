@@ -43,6 +43,15 @@ def project_role(db: Session, user: User, project_id: str) -> str:
     return a.role if a else user.role
 
 
+ROLE_RANK = {"reader": 0, "member": 1, "admin": 2}
+
+
+def role_held(db: Session, user: User, project_id: str, role: str) -> bool:
+    """A user holds a role in a project when their role there ranks at least as high; an unknown role is never held."""
+    wanted = ROLE_RANK.get(role)
+    return wanted is not None and ROLE_RANK.get(project_role(db, user, project_id), -1) >= wanted
+
+
 def _create_token(
     user: User,
     scope_type: str = "project",

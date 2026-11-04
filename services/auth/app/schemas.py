@@ -91,7 +91,7 @@ class AccessKeyIn(BaseModel):
 class AppCredIn(BaseModel):
     name: str
     description: str | None = None
-    roles: list[str] = ["member"]
+    roles: list[str] | None = None  # omitted: "member", or the user's own role when that is lower
     expires_at: str | None = None  # ISO 8601 datetime string, optional
 
 
