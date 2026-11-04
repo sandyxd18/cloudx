@@ -175,18 +175,25 @@ def test_sample_file_equals_defaults_output():
     assert SAMPLE.read_text(encoding="utf-8") == policy.defaults_yaml()
 
 
-def test_the_header_says_what_an_unquoted_bang_and_at_really_do():
-    # the header describes PyYAML's behavior; if PyYAML changes, or the header is edited, this must fail
-    assert yaml.safe_load("a: !") == {"a": None}
+def test_the_header_says_what_an_unquoted_bang_and_at_really_do(tmp_path):
+    # the header describes how PyYAML reads these forms and what the engine does with them; if either
+    # changes, or the header is edited, this must fail
+    assert yaml.safe_load("a: !") == {"a": None}  # PyYAML alone would read an unquoted ! as empty
+    assert yaml.safe_load("a: ! b") == {"a": "b"}  # ... and drop the tag of ! b
     with pytest.raises(yaml.YAMLError):
         yaml.safe_load("a: @")
+    for text in ("identity:user:list: !\n", "identity:user:list: ! role:member\n", "identity:user:list: @\n"):
+        assert policy.check_file(write(tmp_path, text)), text  # the engine refuses the whole file
+    for text in ('identity:user:list: "!"\n', 'identity:user:list: "@"\n'):
+        assert policy.check_file(write(tmp_path, text)) == []
     header = policy.defaults_yaml().split("# The built-in rules:")[0]
     flat = " ".join(line.lstrip("# ").strip() for line in header.splitlines())
-    assert '("!" and "@")' in flat
-    assert "An unquoted ! is read as empty" in flat
-    assert "KEEPS its default rule" in flat and "it is not closed" in flat
-    assert "An unquoted @ makes the whole file invalid YAML" in flat
-    assert "not valid YAML" not in flat
+    assert 'quote "!" and "@" (and any rule that starts with a YAML indicator character)' in flat
+    assert "An unquoted ! or @ (and any YAML tag, anchor or alias) makes the whole file invalid" in flat
+    assert "so the file is ignored: on the first load every default applies, on a reload the previous rules stay in force" in flat
+    assert '"cloudx-manage policy check" finds it' in flat
+    assert flat.index('quote "!" and "@"') < flat.index("makes the whole file invalid") < flat.index("policy check")
+    assert "KEEPS its default" not in flat and "read as empty" not in flat
 
 
 def test_the_sample_as_installed_is_a_no_op(tmp_path, monkeypatch, caplog):

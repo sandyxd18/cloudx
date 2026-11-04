@@ -542,3 +542,98 @@ def test_effective_does_not_mix_two_loads(pfile, monkeypatch):
     policy.effective()
 
     assert len(seen) == 1
+
+
+# ── file structure: tags, anchors, aliases and duplicate keys are file errors ──
+
+UNSAFE_FILES = [
+    pytest.param("identity:domain:create: ! role:member\n", 1, id="bang-then-rule"),
+    pytest.param("identity:user:delete: ! not role:member\n", 1, id="bang-then-not"),
+    pytest.param("identity:domain:create: !\n", 1, id="bare-bang"),
+    pytest.param('identity:domain:create: !!str "role:member"\n', 1, id="explicit-str-tag"),
+    pytest.param('x: &a "@"\nidentity:domain:create: *a\n', 1, id="anchor-and-alias"),
+    pytest.param("# a comment\n\nidentity:domain:create: !x role:member\n", 3, id="line-number"),
+    pytest.param("identity:domain:create: @\n", 1, id="bare-at-is-invalid-yaml"),
+]
+
+
+@pytest.mark.parametrize("text, line", UNSAFE_FILES)
+def test_a_tag_anchor_or_alias_makes_the_whole_file_invalid(pfile, caplog, text, line):
+    pfile.write(text)
+    assert policy.rules() == policy.DEFAULT_RULES
+    assert policy.authorize("identity:domain:create", ADMIN) is True
+    assert policy.authorize("identity:domain:create", MEMBER) is False
+    assert policy.authorize("identity:user:delete", MEMBER) is False
+    assert "file" not in policy.sources().values()
+    logged = messages(caplog, logging.ERROR)
+    assert len(logged) == 1
+    problems = policy.check_file(str(pfile.path))
+    assert problems == logged  # one validation path: the same line in the log and in `policy check`
+    assert f"line {line}" in problems[0]
+
+
+def test_the_tag_message_says_to_quote_the_rule(pfile):
+    pfile.write("a: 1\nidentity:domain:create: ! role:member\n")
+    assert policy.check_file(str(pfile.path)) == [
+        'policy file: line 2: tags, anchors and aliases are not allowed; '
+        'put the rule in double quotes ("!" or "@" included)'
+    ]
+
+
+def test_a_tagged_reload_keeps_the_previous_valid_override(pfile, clock, caplog):
+    pfile.write('identity:domain:create: "role:admin or role:member"\n')
+    assert policy.authorize("identity:domain:create", MEMBER) is True
+    pfile.write("identity:domain:create: ! role:member\n")
+    clock.advance(3)
+    assert policy.authorize("identity:domain:create", MEMBER) is True
+    assert policy.authorize("identity:domain:create", ADMIN) is True
+    assert policy.sources()["identity:domain:create"] == "file"
+    assert len(messages(caplog, logging.ERROR)) == 1
+
+
+def test_quoted_bang_and_at_still_work(pfile, caplog):
+    pfile.write('identity:domain:create: "!"\nidentity:user:list: "@"\n')
+    assert policy.authorize("identity:domain:create", ADMIN) is False
+    assert policy.authorize("identity:user:list", MEMBER) is True
+    assert policy.sources()["identity:domain:create"] == "file"
+    assert policy.check_file(str(pfile.path)) == []
+    assert no_logs(caplog)
+
+
+DUPLICATE_FILES = [
+    pytest.param('identity:domain:create: "!"\nidentity:domain:create: "role:admin"\n',
+                 "'identity:domain:create'", 2, 1, id="action"),
+    pytest.param('r: "role:admin"\nidentity:user:list: "rule:r"\nr: "role:member"\n',
+                 "'r'", 3, 1, id="named-rule"),
+    pytest.param('"identity:domain:create": "!"\nidentity:domain:create: "role:admin"\n',
+                 "'identity:domain:create'", 2, 1, id="differs-only-in-quoting"),
+    pytest.param('"a\\nb": "role:admin"\n"a\\nb": "role:member"\n', "'a\\nb'", 2, 1, id="key-with-newline"),
+]
+
+
+@pytest.mark.parametrize("text, name, line, first", DUPLICATE_FILES)
+def test_a_duplicate_entry_makes_the_whole_file_invalid(pfile, caplog, text, name, line, first):
+    pfile.write(text)
+    assert policy.rules() == policy.DEFAULT_RULES
+    assert policy.authorize("identity:domain:create", MEMBER) is False
+    assert "file" not in policy.sources().values()
+    logged = messages(caplog, logging.ERROR)
+    assert logged == [f"policy file: line {line}: duplicate entry {name} (first at line {first})"]
+    assert policy.check_file(str(pfile.path)) == logged
+    assert len(logged[0].splitlines()) == 1
+
+
+def test_a_duplicate_entry_on_reload_keeps_the_last_good_rules(pfile, clock, caplog):
+    pfile.write('identity:domain:create: "@"\n')
+    assert policy.authorize("identity:domain:create", MEMBER) is True
+    pfile.write('identity:domain:create: "!"\nidentity:domain:create: "role:admin"\n')
+    clock.advance(3)
+    assert policy.authorize("identity:domain:create", MEMBER) is True
+    assert len(messages(caplog, logging.ERROR)) == 1
+
+
+def test_a_merge_key_does_not_crash_the_loader(pfile):
+    pfile.write('<<: {identity:domain:create: "@"}\nidentity:domain:create: "role:admin"\n')
+    policy.rules()  # whatever it decides, it must not raise
+    assert policy.authorize("identity:domain:create", ADMIN) is True
+

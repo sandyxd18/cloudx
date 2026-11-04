@@ -1,10 +1,11 @@
 # CloudX policy file. Install it as /etc/cloudx/policy.yaml (mode 640, owner root, group cloudx).
 #
 # Everything below is commented out: the built-in rules apply. List only the actions you want to
-# change, as "action: rule" lines. Copy a line, remove the "# " and edit the rule. Quote every rule;
-# a rule that is just ! or @ must be quoted ("!" and "@"). An unquoted ! is read as empty: the entry is
-# ignored and the action KEEPS its default rule (it is not closed). An unquoted @ makes the whole file
-# invalid YAML, so the file is ignored.
+# change, as "action: rule" lines. Copy a line, remove the "# " and edit the rule. Quote every rule,
+# and quote "!" and "@" (and any rule that starts with a YAML indicator character). An unquoted ! or @
+# (and any YAML tag, anchor or alias) makes the whole file invalid, so the file is ignored: on the
+# first load every default applies, on a reload the previous rules stay in force.
+# "cloudx-manage policy check" finds it. A key that appears twice is invalid in the same way.
 #
 # A rule is a boolean expression:
 #

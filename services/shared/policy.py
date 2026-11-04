@@ -232,6 +232,48 @@ def _compile(data: dict, problems: list[str] | None = None) -> _Snapshot:
 
 # ── file handling ─────────────────────────────────────────────────────────────
 
+class _FileError(Exception):
+    """The file as a whole is unusable; the message is the line the engine logs (and `policy check` prints)."""
+
+
+class _StrictLoader(yaml.SafeLoader):
+    """SafeLoader that refuses what would silently change a rule, in the same pass that builds the data.
+
+    PyYAML drops a non-specific tag (`! role:member` loads as `role:member`, a bare `!` as null), so a rule
+    written without quotes can mean something else than it says; anchors and aliases can multiply a value
+    and are of no use in this file; a repeated key silently keeps its last value.
+    """
+
+    def compose_node(self, parent, index):
+        event = self.peek_event()  # ScalarEvent, SequenceStartEvent, MappingStartEvent or AliasEvent
+        if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None) is not None or getattr(event, "tag", None) is not None:
+            raise _FileError(
+                f"policy file: line {event.start_mark.line + 1}: tags, anchors and aliases are not allowed; "
+                'put the rule in double quotes ("!" or "@" included)'
+            )
+        return super().compose_node(parent, index)
+
+    def construct_mapping(self, node, deep=False):
+        first_line: dict = {}
+        for key_node, _ in node.value:
+            if not isinstance(key_node, yaml.ScalarNode):
+                continue  # not a usable name anyway; the base class reports it
+            key = self.construct_object(key_node, deep=True)
+            line = key_node.start_mark.line + 1
+            if key in first_line:
+                raise _FileError(f"policy file: line {line}: duplicate entry {key!r} (first at line {first_line[key]})")
+            first_line[key] = line
+        return super().construct_mapping(node, deep)
+
+
+def _parse(text: str):
+    loader = _StrictLoader(text)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
+
+
 def _stat(path: str) -> tuple | None:
     """What identifies the file's current state; None when there is no file.
 
@@ -261,7 +303,10 @@ def _load(path: str, problems: list[str] | None = None) -> _Snapshot | None:
         _emit(problems, logging.ERROR, "policy file %s cannot be read: %s", path, exc)
         return None
     try:
-        data = yaml.safe_load(text)
+        data = _parse(text)
+    except _FileError as exc:
+        _emit(problems, logging.ERROR, "%s", exc)
+        return None
     except Exception as exc:  # yaml.YAMLError, but also RecursionError and the like on hostile input
         _emit(problems, logging.ERROR, "policy file %s is not valid YAML: %s", path, exc)
         return None
@@ -366,10 +411,11 @@ _HEADER = """\
 # CloudX policy file. Install it as /etc/cloudx/policy.yaml (mode 640, owner root, group cloudx).
 #
 # Everything below is commented out: the built-in rules apply. List only the actions you want to
-# change, as "action: rule" lines. Copy a line, remove the "# " and edit the rule. Quote every rule;
-# a rule that is just ! or @ must be quoted ("!" and "@"). An unquoted ! is read as empty: the entry is
-# ignored and the action KEEPS its default rule (it is not closed). An unquoted @ makes the whole file
-# invalid YAML, so the file is ignored.
+# change, as "action: rule" lines. Copy a line, remove the "# " and edit the rule. Quote every rule,
+# and quote "!" and "@" (and any rule that starts with a YAML indicator character). An unquoted ! or @
+# (and any YAML tag, anchor or alias) makes the whole file invalid, so the file is ignored: on the
+# first load every default applies, on a reload the previous rules stay in force.
+# "cloudx-manage policy check" finds it. A key that appears twice is invalid in the same way.
 #
 # A rule is a boolean expression:
 #

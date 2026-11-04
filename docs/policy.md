@@ -45,29 +45,31 @@ A token that has no `role` or no `domain_admin` claim does not match; it never r
 
 ### Quote every rule
 
-YAML reads some bare words as something other than text, so quote every rule. `"!"` and `"@"` have to be quoted:
+YAML reads some bare words as something other than text, so quote every rule. `"!"` and `"@"` have to be quoted, and so does any rule that starts with a YAML indicator character:
 
 ```yaml
 identity:audit-log:list: "!"        # a string: the action is closed
 ```
 
-```yaml
-identity:audit-log:list: !          # YAML reads this as null, not as the text "!"
-```
-
-PyYAML loads the first line as `{'identity:audit-log:list': '!'}` and the second as `{'identity:audit-log:list': None}`. The engine takes the second one as a rule that is not a string: it logs an ERROR for that action and the **default rule stays in force**, so the action you meant to close is still open to admins. `cloudx-manage policy check` shows it:
-
-```
-policy file: rule for 'identity:audit-log:list' ignored, the default applies: the value None is not a string; put the rule in quotes, for example 'identity:audit-log:list: "role:admin"'
-```
-
-An unquoted `@` is worse, because `@` cannot start a YAML value at all:
+An unquoted `!` or `@` makes the whole file invalid, and so does any YAML tag, anchor or alias. The engine does not try to guess what you meant, because PyYAML would read some of these forms as a different rule: `! role:member` loses its `!` and means `role:member`, and a bare `!` is `null`. With any of them the file is ignored: a first load runs every built-in rule, a reload keeps the previous rules, and the engine logs one ERROR that names the line:
 
 ```yaml
-identity:user:list: @
+identity:audit-log:list: !          # a tag, not the text "!"
+identity:user:list: @               # '@' cannot start a YAML value
+identity:domain:create: ! role:member
 ```
 
-PyYAML stops with `found character '@' that cannot start any token`. The whole file is invalid YAML, so none of its rules apply: a first load runs the defaults, a reload keeps the last good rules, and the engine logs an ERROR either way.
+`cloudx-manage policy check` shows the first problem it finds; for the first line above:
+
+```
+policy file: line 1: tags, anchors and aliases are not allowed; put the rule in double quotes ("!" or "@" included)
+```
+
+For the second line PyYAML itself stops with `found character '@' that cannot start any token`. A key that appears twice is invalid in the same way, because YAML would keep only the last one and the first would look as if it were in force:
+
+```
+policy file: line 2: duplicate entry 'identity:domain:create' (first at line 1)
+```
 
 ### Named rules
 
@@ -155,11 +157,12 @@ The service never fails to start because of this file. Problems go to the logger
 | Problem | What applies | Logged |
 |---|---|---|
 | A rule does not parse (unknown word, missing name, unbalanced parenthesis, more than 200 tokens), refers to an unknown rule, is part of a cycle or is nested too deeply | the built-in rule of that action (a named rule is dropped, and so is every rule that uses it); the other entries still apply | ERROR |
-| A value is not a string (a number, `null`, a list, an unquoted `!`) | the built-in rule of that action | ERROR (it says to put the rule in quotes) |
+| A value is not a string (a number, `null`, a list) | the built-in rule of that action | ERROR (it says to put the rule in quotes) |
 | A key is not a string | that entry is ignored | ERROR |
 | An entry whose name is not an action and that no rule uses | nothing (a typo in an action name leaves the default in force) | WARNING |
 | The file cannot be read (permissions, not UTF-8) | the built-in rules on the first load; on a reload, the last good rules | ERROR |
-| The file is not valid YAML | as for an unreadable file | ERROR |
+| The file is not valid YAML (an unquoted `@`, for example) | as for an unreadable file | ERROR |
+| The file has a YAML tag, anchor or alias (an unquoted `!`, `! role:member`, `!!str`, `&a`, `*a`), or the same key twice | as for an unreadable file: the whole file is ignored | ERROR (it names the line) |
 | The file is valid YAML but not a mapping (a list, a plain string) | as for an unreadable file | ERROR |
 | The file is empty, or only comments | the built-in rules | nothing |
 | The file does not exist | the built-in rules | nothing |
