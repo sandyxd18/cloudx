@@ -1,0 +1,48 @@
+# CloudX policy file. Install it as /etc/cloudx/policy.yaml (mode 640, owner root, group cloudx).
+#
+# Everything below is commented out: the built-in rules apply. List only the actions you want to
+# change, as "action: rule" lines. Copy a line, remove the "# " and edit the rule. Quote every rule;
+# a rule that starts with ! or @ must be quoted ("!" and "@"), or the file is not valid YAML.
+#
+# A rule is a boolean expression:
+#
+#   role:NAME                      the token's role is NAME
+#   domain_admin:True              the token carries the domain-admin flag (False: it does not)
+#   rule:NAME                      the result of another rule of this file
+#   @                              always true
+#   !                              always false
+#   and, or, not, ( )              combine them; not binds tightest, then and, then or
+#
+# An entry whose name is not an action is a named rule that other rules can use as rule:NAME.
+# A named rule that nothing uses is reported as a probable typo.
+#
+# A bad rule is ignored and the action keeps its default; a bad file never stops a service. The
+# file is re-read when it changes, no restart needed. It must exist, identical, on every node that
+# runs the service. Check it before you deploy it:
+#
+#   cloudx-manage policy check FILE
+#
+# The built-in rules:
+#
+# identity:user:create: "role:admin or domain_admin:True"
+# identity:user:list: "role:admin or domain_admin:True"
+# identity:user:delete: "role:admin or domain_admin:True"
+# identity:domain:list: "role:admin or domain_admin:True"
+# identity:domain:show: "role:admin or domain_admin:True"
+# identity:domain:quota-show: "role:admin or domain_admin:True"
+# identity:project:create: "role:admin or domain_admin:True"
+# identity:project:update: "role:admin or domain_admin:True"
+# identity:project:delete: "role:admin or domain_admin:True"
+# identity:role-assignment:create: "role:admin or domain_admin:True"
+# identity:role-assignment:delete: "role:admin or domain_admin:True"
+# identity:domain:create: "role:admin"
+# identity:domain:update: "role:admin"
+# identity:domain:delete: "role:admin"
+# identity:domain:quota-set: "role:admin"
+# identity:domain:quota-clear: "role:admin"
+# identity:service:create: "role:admin"
+# identity:service:delete: "role:admin"
+# identity:endpoint:create: "role:admin"
+# identity:endpoint:delete: "role:admin"
+# identity:project:quota-set: "role:admin"
+# identity:audit-log:list: "role:admin"

@@ -3,6 +3,8 @@
     cloudx-manage db sync [service ...]                  apply database migrations (all services by default)
     cloudx-manage conf init [--path P] [--sample S]      create cloudx.conf from the sample and fill in missing secrets
     cloudx-manage catalog sync [--dry-run]               make the service catalog match the service URLs in the conf
+    cloudx-manage policy check [FILE]                    validate a policy file and list the rules that differ from the defaults
+    cloudx-manage policy defaults                        print the built-in policy as a commented YAML file
 
 `conf init` never changes a secret that already has a value: rotating auth_secret_key would invalidate every token.
 """
@@ -17,7 +19,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from . import migrate
+from . import migrate, policy
 from .config import load_service_config
 
 CONF_PATH = "/etc/cloudx/cloudx.conf"
@@ -108,6 +110,11 @@ def main(argv: list[str] | None = None) -> int:
     catalog_sync = catalog.add_parser("sync", help="register the conf's service URLs in the auth catalog")
     catalog_sync.add_argument("--dry-run", action="store_true", help="print the changes without writing them")
 
+    pol = groups.add_parser("policy", help="policy file commands").add_subparsers(dest="action", required=True)
+    pol_check = pol.add_parser("check", help="validate a policy file (exit 1 when it has problems)")
+    pol_check.add_argument("file", nargs="?", help="the file to check (default: the configured policy file)")
+    pol.add_parser("defaults", help="print the built-in policy as a commented YAML file")
+
     args = ap.parse_args(argv)
     if (args.group, args.action) == ("db", "sync"):
         migrate.main(args.services)  # exits non-zero by itself when a migration fails
@@ -125,7 +132,24 @@ def main(argv: list[str] | None = None) -> int:
             sys.exit(f"cannot sync the catalog: {(str(exc.orig or exc).strip().splitlines() or [''])[0]}")
         print("\n".join(changes) if changes else "catalog already up to date")
         return 0
+    if (args.group, args.action) == ("policy", "check"):
+        return check_policy(args.file or policy.POLICY_FILE())
+    if (args.group, args.action) == ("policy", "defaults"):
+        print(policy.defaults_yaml(), end="")
+        return 0
     return 2
+
+
+def check_policy(path: str) -> int:
+    problems = policy.check_file(path)
+    changed = policy.overrides(path)
+    for line in problems:
+        print(line)
+    for action, rule in changed.items():
+        print(f"differs from the default: {action}: {rule}")
+    if not problems and not changed:
+        print(f"{path}: no overrides" if os.path.exists(path) else f"{path}: not found, the defaults apply")
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":

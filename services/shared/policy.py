@@ -174,21 +174,33 @@ def _find_problems(exprs: dict[str, Expr], dropped: set[str]) -> dict[str, str]:
     return problems
 
 
-def _compile(data: dict) -> _Snapshot:
-    """Effective rules from a parsed file; logs every rule error and warning."""
+def _emit(problems: list[str] | None, level: int, fmt: str, *args, exc_info: bool = False) -> None:
+    """Report one problem: to the `cloudx-policy` logger, or, when `problems` is given, only to that list.
+
+    The list gets the line exactly as the logger would print it, so `check_file` and the engine cannot
+    drift apart; a check never logs.
+    """
+    if problems is None:
+        _log.log(level, fmt, *args, exc_info=exc_info, stacklevel=2)
+    else:
+        problems.append(fmt % args)
+
+
+def _compile(data: dict, problems: list[str] | None = None) -> _Snapshot:
+    """Effective rules from a parsed file; logs every rule error and warning (or appends them to `problems`)."""
     parsed: dict[str, tuple[str, Expr]] = {}  # file entries that parse
     dropped: set[str] = set()
 
     def reject(name: str, reason: str) -> None:
         dropped.add(name)
         if name in DEFAULT_RULES:
-            _log.error("policy file: rule for '%s' ignored, the default applies: %s", name, reason)
+            _emit(problems, logging.ERROR, "policy file: rule for '%s' ignored, the default applies: %s", name, reason)
         else:
-            _log.error("policy file: rule '%s' ignored: %s", name, reason)
+            _emit(problems, logging.ERROR, "policy file: rule '%s' ignored: %s", name, reason)
 
     for key, value in data.items():
         if not isinstance(key, str):
-            _log.error("policy file: entry %r ignored: names must be strings", key)
+            _emit(problems, logging.ERROR, "policy file: entry %r ignored: names must be strings", key)
         elif not isinstance(value, str):
             reject(key, f"the value {value!r} is not a string; put the rule in quotes, for example '{key}: \"role:admin\"'")
         else:
@@ -209,7 +221,7 @@ def _compile(data: dict) -> _Snapshot:
     used = set().union(*(references(expr) for expr in exprs.values()))
     for name in parsed:
         if name not in DEFAULT_RULES and name not in used:
-            _log.warning("policy file: '%s' is not an action and no rule uses it (typo?)", name)
+            _emit(problems, logging.WARNING, "policy file: '%s' is not an action and no rule uses it (typo?)", name)
 
     return _Snapshot(
         rules={action: parsed[action][0] if action in parsed else rule for action, rule in DEFAULT_RULES.items()},
@@ -235,30 +247,34 @@ def _stat(path: str) -> tuple | None:
     return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
 
 
-def _load(path: str) -> _Snapshot | None:
-    """The rules of the file, or None (after logging an ERROR) when the file as a whole is unusable."""
+def _load(path: str, problems: list[str] | None = None) -> _Snapshot | None:
+    """The rules of the file, or None (after logging an ERROR) when the file as a whole is unusable.
+
+    With `problems`, nothing is logged: each line that would have been is appended to the list instead.
+    """
     try:
         with open(path, encoding="utf-8") as handle:
             text = handle.read()
     except FileNotFoundError:
         return _DEFAULTS  # vanished between stat() and open()
     except (OSError, UnicodeError) as exc:
-        _log.error("policy file %s cannot be read: %s", path, exc)
+        _emit(problems, logging.ERROR, "policy file %s cannot be read: %s", path, exc)
         return None
     try:
         data = yaml.safe_load(text)
     except Exception as exc:  # yaml.YAMLError, but also RecursionError and the like on hostile input
-        _log.error("policy file %s is not valid YAML: %s", path, exc)
+        _emit(problems, logging.ERROR, "policy file %s is not valid YAML: %s", path, exc)
         return None
     if data is None:
         return _DEFAULTS
     if not isinstance(data, dict):
-        _log.error("policy file %s must be a mapping of action to rule, not a %s", path, type(data).__name__)
+        _emit(problems, logging.ERROR, "policy file %s must be a mapping of action to rule, not a %s", path, type(data).__name__)
         return None
     try:
-        return _compile(data)
-    except Exception:  # a service must never fail because of this file; the cause is logged with its traceback
-        _log.exception("policy file %s could not be applied", path)
+        return _compile(data, problems)
+    except Exception as exc:  # a service must never fail because of this file; the cause is logged with its traceback
+        _emit(problems, logging.ERROR, "policy file %s could not be applied%s", path,
+              "" if problems is None else f": {exc!r}", exc_info=True)
         return None
 
 
@@ -316,6 +332,69 @@ def authorize(action: str, token: dict) -> bool:
         return False if expr is None else evaluate(expr, token, resolve)
 
     return evaluate(exprs[action], token, resolve)
+
+
+# ── operator tools (cloudx-manage policy) ─────────────────────────────────────
+
+def check_file(path: str | None = None) -> list[str]:
+    """One line per problem the engine would log when loading `path` (default: the configured file).
+
+    A missing, empty or comment-only file has none. Pure: the live rules and the log are left alone.
+    """
+    problems: list[str] = []
+    _load(path or POLICY_FILE(), problems)
+    return problems
+
+
+def overrides(path: str | None = None) -> dict[str, str]:
+    """action -> rule text, for the actions whose rule in the file is in effect and differs from the default.
+
+    An action whose rule had an error keeps its default and is not listed.
+    """
+    snapshot = _load(path or POLICY_FILE(), [])
+    if snapshot is None:
+        return {}
+    return {action: rule for action, rule in snapshot.rules.items() if rule != DEFAULT_RULES[action]}
+
+
+def differing(path: str | None = None) -> list[str]:
+    """The actions whose rule in the file differs from the default."""
+    return list(overrides(path))
+
+
+_HEADER = """\
+# CloudX policy file. Install it as /etc/cloudx/policy.yaml (mode 640, owner root, group cloudx).
+#
+# Everything below is commented out: the built-in rules apply. List only the actions you want to
+# change, as "action: rule" lines. Copy a line, remove the "# " and edit the rule. Quote every rule;
+# a rule that starts with ! or @ must be quoted ("!" and "@"), or the file is not valid YAML.
+#
+# A rule is a boolean expression:
+#
+#   role:NAME                      the token's role is NAME
+#   domain_admin:True              the token carries the domain-admin flag (False: it does not)
+#   rule:NAME                      the result of another rule of this file
+#   @                              always true
+#   !                              always false
+#   and, or, not, ( )              combine them; not binds tightest, then and, then or
+#
+# An entry whose name is not an action is a named rule that other rules can use as rule:NAME.
+# A named rule that nothing uses is reported as a probable typo.
+#
+# A bad rule is ignored and the action keeps its default; a bad file never stops a service. The
+# file is re-read when it changes, no restart needed. It must exist, identical, on every node that
+# runs the service. Check it before you deploy it:
+#
+#   cloudx-manage policy check FILE
+#
+# The built-in rules:
+#
+"""
+
+
+def defaults_yaml() -> str:
+    """The built-in table as a commented YAML file: the header, then one `# action: "rule"` line per action."""
+    return _HEADER + "".join(f'# {action}: "{rule}"\n' for action, rule in DEFAULT_RULES.items())
 
 
 _required: set[str] = set()
