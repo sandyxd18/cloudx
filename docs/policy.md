@@ -51,7 +51,7 @@ YAML reads some bare words as something other than text, so quote every rule. `"
 identity:audit-log:list: "!"        # a string: the action is closed
 ```
 
-An unquoted `!` or `@` makes the whole file invalid, and so does any YAML tag, anchor or alias. The engine does not try to guess what you meant, because PyYAML would read some of these forms as a different rule: `! role:member` loses its `!` and means `role:member`, and a bare `!` is `null`. With any of them the file is ignored: a first load runs every built-in rule, a reload keeps the previous rules, and the engine logs one ERROR that names the line:
+An unquoted `!` or `@` makes the whole file invalid, and so does any YAML tag, anchor, alias or merge key (`<<`). The engine does not try to guess what you meant, because PyYAML would read some of these forms as a different rule: `! role:member` loses its `!` and means `role:member`, and a bare `!` is `null`. With any of them the file is ignored: a first load runs every built-in rule, a reload keeps the previous rules, and the engine logs one ERROR that names the line:
 
 ```yaml
 identity:audit-log:list: !          # a tag, not the text "!"
@@ -165,7 +165,7 @@ The service never fails to start because of this file. Problems go to the logger
 | The file cannot be read (permissions, not UTF-8) | the built-in rules on the first load; on a reload, the last good rules | ERROR |
 | The path is not a regular file (a directory, a named pipe), or the file is larger than 1 MiB | as for an unreadable file; the file is not opened (not parsed, for the size) | ERROR |
 | The file is not valid YAML (an unquoted `@`, for example) | as for an unreadable file | ERROR |
-| The file has a YAML tag, anchor or alias (an unquoted `!`, `! role:member`, `!!str`, `&a`, `*a`), or the same key twice | as for an unreadable file: the whole file is ignored | ERROR (it names the line) |
+| The file has a YAML tag, anchor or alias (an unquoted `!`, `! role:member`, `!!str`, `&a`, `*a`), a merge key (`<<`), or the same key twice | as for an unreadable file: the whole file is ignored | ERROR (it names the line) |
 | The file is valid YAML but not a mapping (a list, a plain string) | as for an unreadable file | ERROR |
 | The file is empty, or only comments | the built-in rules | nothing |
 | The file does not exist | the built-in rules | nothing |
