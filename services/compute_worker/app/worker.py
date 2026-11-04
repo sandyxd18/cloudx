@@ -4,6 +4,7 @@ from pathlib import Path
 
 import requests
 from shared import catalog
+from shared.internal import internal_headers
 
 from . import cloudinit, libvirt_driver, network_manager
 from .config import COMPUTE_HOST, INSTANCE_DIR, OVS_BRIDGE
@@ -15,7 +16,7 @@ log = logging.getLogger("compute-worker")
 
 
 def fetch_image(image_ref: str) -> dict:
-    response = requests.get(f"{catalog.url('image').rstrip('/')}/images/{image_ref}", timeout=15)
+    response = requests.get(f"{catalog.url('image').rstrip('/')}/images/{image_ref}", headers=internal_headers(), timeout=15)
     response.raise_for_status()
     return response.json()
 

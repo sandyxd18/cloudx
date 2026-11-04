@@ -149,13 +149,13 @@ def _image_api_url(args: dict) -> str:
 
 def download_image(image_ref: str, image_api_url: str) -> tuple[str, dict]:
     """Download an image to a tmp file. Returns (tmp_path, image_dict)."""
-    resp = requests.get(f"{image_api_url}/images/{image_ref}", timeout=15)
+    resp = requests.get(f"{image_api_url}/images/{image_ref}", headers=internal_headers(), timeout=15)
     resp.raise_for_status()
     image = resp.json()
     tmp = tempfile.NamedTemporaryFile(prefix=".img-", delete=False)
     try:
         with requests.get(f"{image_api_url}/images/{image['id']}/download",
-                          timeout=300, stream=True) as dl:
+                          headers=internal_headers(), timeout=300, stream=True) as dl:
             dl.raise_for_status()
             for chunk in dl.iter_content(chunk_size=4 * 1024 * 1024):
                 if chunk:

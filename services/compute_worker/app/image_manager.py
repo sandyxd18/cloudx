@@ -2,6 +2,7 @@ from pathlib import Path
 
 import requests
 from shared import catalog
+from shared.internal import internal_headers
 
 from .config import IMAGE_CACHE_DIR
 from .utils import ensure_dir, run
@@ -14,7 +15,7 @@ def cached_image_path(image: dict) -> Path:
 
 def fetch_image_meta(image_ref: str) -> dict:
     """Fetch image metadata from image-api by id or name."""
-    response = requests.get(f"{catalog.url('image').rstrip('/')}/images/{image_ref}", timeout=15)
+    response = requests.get(f"{catalog.url('image').rstrip('/')}/images/{image_ref}", headers=internal_headers(), timeout=15)
     response.raise_for_status()
     return response.json()
 
@@ -27,7 +28,7 @@ def download_image(image: dict) -> Path:
         return target
     url = f"{catalog.url('image').rstrip('/')}/images/{image['id']}/download"
     tmp = target.with_suffix(target.suffix + ".part")
-    with requests.get(url, stream=True, timeout=60) as response:
+    with requests.get(url, headers=internal_headers(), stream=True, timeout=60) as response:
         response.raise_for_status()
         with tmp.open("wb") as handle:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
