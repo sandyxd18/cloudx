@@ -21,6 +21,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
   See `docs/policy.md`. Only auth-api uses it for now, and ownership and visibility rules stay in code.
 
 ### Changed
+- **Bulk usage and metric calls need an admin or the internal token.** `POST /billing/usage-records/batch`,
+  `POST /billing/cleanup`, `POST /telemetry/metrics/batch` and `DELETE /telemetry/metrics/cleanup` have accepted any
+  signed-in user since 0.7.18, when they were opened to the billing and telemetry workers; they now answer `403` to anyone
+  who is not an admin. The workers call them with the internal token and are not affected.
 - **A denied request on the converted auth-api routes answers `403` with `Policy does not allow <action>`** instead of
   `admin role required` or `admin or domain admin required`. Who is allowed does not change unless a policy file says so.
 - **`POST /policy/enforce` checks the real rules.** It answers `400` for an unknown or non-string `action` (it answered

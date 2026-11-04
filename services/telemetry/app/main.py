@@ -29,7 +29,7 @@ from sqlalchemy import Boolean, DateTime, Float, Integer, String, ForeignKey, cr
 from sqlalchemy.dialects.postgresql import array_agg as pg_array_agg, aggregate_order_by
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
-from shared.auth_middleware import AdminUser, CurrentUser, UserOrInternal
+from shared.auth_middleware import AdminOrInternal, AdminUser, CurrentUser, UserOrInternal
 from shared.metrics import check_metrics_token
 from shared.schema import require_schema
 
@@ -245,7 +245,7 @@ def create_metric(user: AdminUser, data: MetricIn, db: DB):
 
 
 @app.post("/telemetry/metrics/batch", status_code=status.HTTP_201_CREATED)
-def create_metrics_batch(user: UserOrInternal, data: list[MetricIn], db: DB):
+def create_metrics_batch(user: AdminOrInternal, data: list[MetricIn], db: DB):
     metrics = [TelemetryMetric(**m.model_dump()) for m in data]
     db.add_all(metrics)
     db.commit()
@@ -402,7 +402,7 @@ def prometheus_metrics(request: Request, db: DB):
 
 
 @app.delete("/telemetry/metrics/cleanup", status_code=status.HTTP_204_NO_CONTENT)
-def cleanup_old_metrics(user: UserOrInternal, db: DB):
+def cleanup_old_metrics(user: AdminOrInternal, db: DB):
     rollup_and_prune(db)
     return None
 
