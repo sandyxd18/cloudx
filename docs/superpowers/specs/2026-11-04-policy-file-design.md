@@ -32,7 +32,7 @@ A rule is a boolean expression:
 | `!` | always false |
 | `and`, `or`, `not`, `( )` | combination; `not` binds tightest, then `and`, then `or` |
 
-Nothing else is accepted (no `project_id:%(project_id)s`, no `is_admin`, no `http:` checks). A rule that uses anything else is a rule error (see below). A `rule:` reference to an unknown name or a reference cycle is a rule error. References nest at most 10 deep.
+Nothing else is accepted (no `project_id:%(project_id)s`, no `is_admin`, no `http:` checks). A rule that uses anything else is a rule error (see below). In the YAML file a rule that starts with `!` or `@`, or that contains `: `, must be quoted (`"!"`, `"@"`); unquoted, YAML itself reads them as a tag, a reserved indicator or a mapping, which is a file error or a rule error as described below. A `rule:` reference to an unknown name or a reference cycle is a rule error. References nest at most 10 deep.
 
 The evaluation context is the decoded token. A token for the internal service call (`X-Internal-Token`) is the payload that `require_user_or_internal` already builds (`role: "admin"`), so internal calls follow the rule of `role:admin`.
 
@@ -41,7 +41,7 @@ The evaluation context is the decoded token. A token for the internal service ca
 - The file is read when the engine is first used and again when its `mtime` changes; the `mtime` is checked at most once every 2 seconds.
 - A rule error: that single action keeps its built-in rule, and an ERROR is logged with the action name and the reason. Other actions of the file still apply.
 - A file that cannot be read or is not valid YAML, or whose top level is not a mapping: every action keeps its built-in rule and an ERROR is logged. The last good rules are kept when a reload fails.
-- An action in the file that is not in the table: ignored, with a WARNING (a typo must not pass silently).
+- An entry in the file whose name is not an action of the table is a named rule: other rules may use it with `rule:NAME`. If no rule refers to it, a WARNING says it is neither an action nor a used rule (a mistyped action must not pass silently).
 - No file: the built-in table, no log noise.
 - A service never fails to start because of the policy file.
 
@@ -78,7 +78,7 @@ Checked and left in code, because they decide what data a caller gets and not wh
 - Parser and evaluator: every element of the table above, precedence, parentheses, `rule:` references and cycles, malformed input (empty rule, dangling operator, unknown atom, unbalanced parenthesis).
 - Parity: for every action of the table and every identity in {system admin, domain admin (role `member`, `domain_admin` true), member, reader, internal}, the engine's decision with the built-in rules equals the decision of the legacy gate, which the test spells out independently as two small functions (`admin only`, `admin or domain admin`).
 - Routes: each converted route answers 403 for a `member` token and not 403 for an `admin` token, on the real auth-api app. Request bodies may be invalid; a dependency that raises is answered before body validation.
-- File effects, on the real app: a rule `role:member` for `identity:user:create` lets a member create a user (201); `!` for `identity:domain:create` makes an admin get 403; a rule error keeps that action's built-in rule and logs; an unknown action logs a WARNING; an unreadable file keeps the built-ins; a changed `mtime` is picked up without restart; no file changes nothing.
+- File effects, on the real app: a rule `role:member` for `identity:user:create` lets a member create a user (201); `!` for `identity:domain:create` makes an admin get 403; a rule error keeps that action's built-in rule and logs; an entry that is neither an action nor referenced logs a WARNING; a named rule can be referenced with `rule:NAME`; an unreadable file keeps the built-ins; a changed `mtime` is picked up without restart; no file changes nothing.
 - `policy check` and `policy defaults`: output and exit status; the sample file equals the output of `policy defaults` (no drift).
 
 ### Documentation and packaging
