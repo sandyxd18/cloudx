@@ -9,7 +9,8 @@ api, _server, _status = test_catalog_failures.api, test_catalog_failures._server
 
 MEMBER = {"role": "member", "project_id": "p1", "sub": "u2", "username": "bob"}
 
-# (method, path, body) of every call that changes a server
+# (method, path, body) of every call a member makes that changes a server (volume attach and detach are internal
+# routes, covered in test_volume_attach_internal.py)
 ACTIONS = [
     ("POST", "/servers/srv1/start", None),
     ("POST", "/servers/srv1/stop", None),
@@ -27,8 +28,6 @@ ACTIONS = [
     ("POST", "/servers/srv1/password", {"password": "x"}),
     ("POST", "/servers/srv1/ports", {"port": "p9"}),
     ("DELETE", "/servers/srv1/ports/p9", None),
-    ("POST", "/servers/srv1/volumes/attach", {"volume_id": "v1", "path": "/dev/x"}),
-    ("POST", "/servers/srv1/volumes/detach", {"volume_id": "v1", "path": "/dev/x"}),
     ("POST", "/servers/srv1/shelve", None),
     ("POST", "/servers/srv1/unshelve", None),
     ("DELETE", "/servers/srv1", None),
