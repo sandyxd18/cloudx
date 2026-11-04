@@ -83,9 +83,25 @@ USER = {"project_id": "proj-1", "role": "admin"}
 def test_image_volume_hands_the_worker_the_catalog_image_url(block, casts, monkeypatch):
     monkeypatch.delenv("IMAGE_API_URL", raising=False)
     monkeypatch.setattr(catalog, "url", lambda service, interface="internal": f"http://catalog-{service}:8002/")
+    looked_up = []
+
+    class Image:
+        status_code = 200
+
+        def json(self):
+            return {"id": "img1"}
+
+    def get(url, **kw):  # the caller's right to read the image is checked at image-api; auth-api is out of reach
+        if "catalog-image" not in url:
+            raise requests.ConnectionError(url)
+        looked_up.append(url)
+        return Image()
+
+    monkeypatch.setattr(requests, "get", get)
     db = block.SessionLocal()
     block.create_volume(block.VolumeIn(name="v1", size_gb=1, image="img1"), USER, db)
     db.close()
+    assert looked_up == ["http://catalog-image:8002/images/img1"]
     assert casts[-1]["_image_api_url"] == "http://catalog-image:8002"
 
 

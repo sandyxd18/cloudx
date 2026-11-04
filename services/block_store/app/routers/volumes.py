@@ -21,6 +21,7 @@ from ..service import (
     _create_volume_record,
     _list_volumes_query,
     _reconcile_orphan_volumes,
+    resolve_readable_image,
 )
 
 router = APIRouter()
@@ -55,10 +56,13 @@ def create_volume(payload: VolumeIn, current: UserOrInternal, db: DB):
                 status_code=413,
                 detail=f"Volume GB quota exceeded: {used_gb + size}/{quota.gigabytes} GB would be used",
             )
+    image_ref = payload.image or payload.image_id
+    if image_ref:  # the caller must be allowed to read the image; nothing is created before image-api has said so
+        image_ref = resolve_readable_image(image_ref, current)
     internal = VolumeInternalIn(
         name=payload.name,
         size_gb=size,
-        image_ref=payload.image or payload.image_id,
+        image_ref=image_ref,
         snapshot_id=payload.snapshot,
         source_volume_id=payload.source_volume,
         bootable=payload.bootable,
