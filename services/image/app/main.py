@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, Text, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
+from shared.auth_middleware import CurrentUser, InternalAuth, OptionalUserOrInternal, UserOrInternal
 from shared.schema import require_schema
 
 # Import shared modules
@@ -393,6 +393,50 @@ def require_owned_image(db: Session, ref: str, current: dict):
     return image
 
 
+def can_read_image(db: Session, current: dict | None, image) -> bool:
+    """A public image is read by anyone, signed in or not. Any other is read by the owner (or an admin of the owner's
+    domain, or a system admin), and by a project the owner shared it with once that project accepted."""
+    if image.visibility == "public":
+        return True
+    if current is None:
+        return False
+    if owns(current, image.project_id):
+        return True
+    project_id = current.get("project_id")  # a system-scoped token has none
+    if not project_id:
+        return False
+    member = db.get(ImageMember, (image.id, project_id))
+    return member is not None and member.status == "accepted"
+
+
+def find_readable_image(db: Session, ref: str, current: dict | None):
+    """The image `ref` names (id first, then name) that the caller may read, else None. Among images of one name:
+    the caller's own project first, then public, then the rest, each by creation time."""
+    image = db.get(Image, ref)
+    if image is not None:
+        return image if can_read_image(db, current, image) else None
+    named = db.scalars(select(Image).where(Image.name == ref).order_by(Image.created_at)).all()
+    readable = [i for i in named if can_read_image(db, current, i)]
+    project_id = current.get("project_id") if current else None
+
+    def rank(i) -> int:
+        if project_id and i.project_id == project_id:
+            return 0
+        return 1 if i.visibility == "public" else 2
+
+    return min(readable, key=rank) if readable else None  # min keeps the first of equals: created_at order
+
+
+def require_readable_image(db: Session, ref: str, current: dict | None):
+    """The image, if the caller may read it; else the same 404 as for a missing image."""
+    image = find_readable_image(db, ref, current)
+    if image is None:
+        if current is None and get_image(db, ref) is not None:
+            log.warning("anonymous read of a non-public image refused: %r", ref)  # %r: ref is user input
+        raise HTTPException(status_code=404, detail=f"image '{ref}' not found")
+    return image
+
+
 # what the image service itself (or an admin) sets; an owner edits the rest
 SYSTEM_IMAGE_FIELDS = frozenset({"status", "size", "checksum", "object_name", "filename", "storage_backend"})
 
@@ -542,14 +586,15 @@ def list_images(
         return cached
 
     q = select(Image)
-    if visibility:
-        q = q.where(Image.visibility == visibility)
-    elif current.get("role") != "admin":
-        # Non-admin sees: public images + own private images
+    if current.get("role") != "admin":
+        # Non-admin sees: public images + own private images, whatever `visibility` asks for. A system-scoped token
+        # has no project: [None] matches nothing, so an image without an owner stays out of a non-admin's list.
         q = q.where(
             (Image.visibility == "public") |
-            (Image.project_id.in_(visible_projects(current) or [current["project_id"]]))
+            (Image.project_id.in_(visible_projects(current) or [current.get("project_id")]))
         )
+    if visibility:
+        q = q.where(Image.visibility == visibility)
     if status:
         q = q.where(Image.status == status)
     if name:
@@ -576,18 +621,14 @@ def list_images(
 
 
 @app.get("/images/{ref}")
-def show_image(ref: str, db: DB):
-    cached = _cache_get(ref)
-    if cached is not None:
-        return cached
-    result = obj_to_dict(require_image(db, ref))
-    _cache_set(ref, result)
-    return result
+def show_image(ref: str, current: OptionalUserOrInternal, db: DB):
+    # no per-ref cache here: a cached body is the same for every caller, and the rule depends on who asks
+    return obj_to_dict(require_readable_image(db, ref, current))
 
 
 @app.get("/images/{ref}/download")
-def download_image(ref: str, db: DB):
-    image = require_image(db, ref)
+def download_image(ref: str, current: OptionalUserOrInternal, db: DB):
+    image = require_readable_image(db, ref, current)
     if image.storage_backend == "minio":
         backend = MinioStorageBackend()
         try:
@@ -656,15 +697,15 @@ def sign_image(ref: str, current: CurrentUser, db: DB):
 
 
 @app.get("/images/{ref}/verify")
-def verify_image(ref: str, _: CurrentUser, db: DB):
+def verify_image(ref: str, current: CurrentUser, db: DB):
     """
     Verify image integrity by recalculating SHA256 and comparing to stored signature.
 
     If the image has no signature, verifies the stored checksum against the file.
-    This endpoint is also called internally by compute worker before VM boot.
+    Signed-in only (a user token; the internal token is not accepted here), and the caller must be able to read the image.
     """
     import hashlib as _hashlib
-    image = require_image(db, ref)
+    image = require_readable_image(db, ref, current)
     if not image.signature:
         return {
             "id": image.id,
@@ -723,8 +764,8 @@ def reactivate_image(ref: str, current: CurrentUser, db: DB):
 
 
 @app.post("/images/{ref}/prefetch")
-def prefetch_image(ref: str, _: CurrentUser, db: DB):
-    image = require_image(db, ref)
+def prefetch_image(ref: str, current: CurrentUser, db: DB):
+    image = require_readable_image(db, ref, current)
     try:
         rpc = _get_rpc()
         if rpc:
@@ -760,8 +801,8 @@ def update_image(ref: str, payload: dict, current: UserOrInternal, db: DB):
 # ── Image Tags ─────────────────────────────────────────────────────────────────
 
 @app.get("/images/{ref}/tags")
-def list_image_tags(ref: str, db: DB):
-    image = require_image(db, ref)
+def list_image_tags(ref: str, current: OptionalUserOrInternal, db: DB):
+    image = require_readable_image(db, ref, current)
     tags = db.scalars(select(ImageTag).where(ImageTag.image_id == image.id)).all()
     return {"tags": [t.tag for t in tags]}
 
@@ -796,8 +837,8 @@ class ImageMemberStatusIn(BaseModel):
 
 
 @app.get("/images/{ref}/members")
-def list_image_members(ref: str, _: CurrentUser, db: DB):
-    image = require_image(db, ref)
+def list_image_members(ref: str, current: CurrentUser, db: DB):
+    image = require_readable_image(db, ref, current)
     members = db.scalars(select(ImageMember).where(ImageMember.image_id == image.id)).all()
     return {"members": [
         {"image_id": m.image_id, "member_id": m.member_id, "status": m.status, "created_at": m.created_at.isoformat()}

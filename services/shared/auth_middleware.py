@@ -135,13 +135,18 @@ def require_admin(current: dict = Depends(require_auth)) -> dict:
     return current
 
 
+def _internal_token_matches(request: Request, token: str) -> bool:
+    """Constant-time compare of X-Internal-Token with `token`, on bytes: a non-ASCII header is a mismatch, not a TypeError."""
+    return hmac.compare_digest(request.headers.get("X-Internal-Token", "").encode(), token.encode())
+
+
 def require_internal(request: Request) -> None:
     """Service-to-service routes (/internal/*): `X-Internal-Token: $INTERNAL_TOKEN`, or an admin JWT.
 
     ponytail: with INTERNAL_TOKEN unset the routes stay open (legacy installs); the installer generates one.
     """
     token = os.getenv("INTERNAL_TOKEN", "")
-    if not token or hmac.compare_digest(request.headers.get("X-Internal-Token", ""), token):
+    if not token or _internal_token_matches(request, token):
         return
     require_admin(require_auth(request))
 
@@ -149,7 +154,7 @@ def require_internal(request: Request) -> None:
 def require_user_or_internal(request: Request) -> dict:
     """User JWT, or a service holding INTERNAL_TOKEN (acts as admin). Unlike require_internal, never open."""
     token = os.getenv("INTERNAL_TOKEN", "")
-    if token and hmac.compare_digest(request.headers.get("X-Internal-Token", ""), token):
+    if token and _internal_token_matches(request, token):
         return {
             "sub": "internal",
             "username": "admin",
@@ -179,9 +184,18 @@ def optional_auth(request: Request) -> dict | None:
         return None
 
 
+def optional_user_or_internal(request: Request) -> dict | None:
+    """The caller's claims (user JWT, or the synthetic admin for INTERNAL_TOKEN), or None. Never raises 401."""
+    try:
+        return require_user_or_internal(request)
+    except HTTPException:
+        return None
+
+
 CurrentUser  = Annotated[dict, Depends(require_auth)]
 AdminUser    = Annotated[dict, Depends(require_admin)]
 OptionalAuth = Annotated[dict | None, Depends(optional_auth)]
+OptionalUserOrInternal = Annotated[dict | None, Depends(optional_user_or_internal)]
 UserOrInternal = Annotated[dict, Depends(require_user_or_internal)]
 AdminOrInternal = Annotated[dict, Depends(require_admin_or_internal)]
 InternalAuth = Depends(require_internal)  # `dependencies=[InternalAuth]` on /internal routes
