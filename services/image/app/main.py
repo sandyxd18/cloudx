@@ -621,12 +621,8 @@ def list_images(
 
 @app.get("/images/{ref}")
 def show_image(ref: str, current: OptionalUserOrInternal, db: DB):
-    cached = _cache_get(ref)
-    if cached is not None:
-        return cached
-    result = obj_to_dict(require_readable_image(db, ref, current))
-    _cache_set(ref, result)
-    return result
+    # no per-ref cache here: a cached body is the same for every caller, and the rule depends on who asks
+    return obj_to_dict(require_readable_image(db, ref, current))
 
 
 @app.get("/images/{ref}/download")
