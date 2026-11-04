@@ -3,6 +3,7 @@ import os
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
+from shared import policy
 from shared.auth_middleware import READ_ONLY_METHODS, check_reader
 
 from .db import DB
@@ -66,6 +67,12 @@ def scope_domain(current: dict) -> str | None:
 
 def in_scope(current: dict, domain_id: str) -> bool:
     return scope_domain(current) in (None, domain_id)
+
+def gate(action: str):
+    """Route dependency: the central policy must allow `action`. The token is checked by _require_token
+    (revocation, reader rule, trust confinement) and, being cached per request, only once."""
+    return Depends(policy.require(action, _require_token))
+
 
 CurrentUser = Annotated[dict, Depends(_require_token)]
 AdminUser   = Annotated[dict, Depends(_require_admin)]

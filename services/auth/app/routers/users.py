@@ -3,7 +3,7 @@ from sqlalchemy import select
 
 from ..config import ADMIN_USERNAME
 from ..db import DB
-from ..deps import CurrentUser, DomainAdminUser, scope_domain
+from ..deps import CurrentUser, gate, scope_domain
 from ..lookups import _get_user_by_ref, _scoped_project, _scoped_user
 from ..models import User
 from ..schemas import UserIn, UserUpdate
@@ -14,8 +14,8 @@ router = APIRouter()
 
 
 # ── Users ──────────────────────────────────────────────────────────────────────
-@router.post("/users", status_code=201)
-def create_user(payload: UserIn, current: DomainAdminUser, db: DB):
+@router.post("/users", status_code=201, dependencies=[gate("identity:user:create")])
+def create_user(payload: UserIn, current: CurrentUser, db: DB):
     scope = scope_domain(current)
     if scope is not None and (payload.role == "admin" or payload.is_domain_admin):
         raise HTTPException(status_code=403, detail="a domain admin cannot create admin users")
@@ -39,9 +39,9 @@ def create_user(payload: UserIn, current: DomainAdminUser, db: DB):
     return _user_to_dict(u)
 
 
-@router.get("/users")
+@router.get("/users", dependencies=[gate("identity:user:list")])
 def list_users(
-    current: DomainAdminUser, db: DB,
+    current: CurrentUser, db: DB,
     limit: int = Query(default=100, ge=1, le=1000),
     marker: str | None = None,
 ):
@@ -85,8 +85,8 @@ def update_user(ref: str, payload: UserUpdate, current: CurrentUser, db: DB):
     return _user_to_dict(u)
 
 
-@router.delete("/users/{ref}", status_code=204)
-def delete_user(ref: str, current: DomainAdminUser, db: DB):
+@router.delete("/users/{ref}", status_code=204, dependencies=[gate("identity:user:delete")])
+def delete_user(ref: str, current: CurrentUser, db: DB):
     u = _scoped_user(db, ref, current)
     if u.username == ADMIN_USERNAME:
         raise HTTPException(status_code=400, detail="cannot delete admin user")
