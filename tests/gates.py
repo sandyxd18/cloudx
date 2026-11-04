@@ -1,7 +1,6 @@
 """Helpers that pin which policy action gates which route of a service app."""
 import re
 
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 
@@ -16,12 +15,25 @@ def _action_of(dependant) -> str | None:
     return None
 
 
+def _api_routes(routes):
+    """Every HTTP route with its full path, also under include_router().
+
+    Recent FastAPI keeps an included router as one `_IncludedRouter` and builds the routes (prefix and
+    include-level dependencies applied) on demand, as `effective_candidates()`; older FastAPI copies
+    them into `app.routes` as APIRoute. Both are walked, and both kinds of object offer path, methods
+    and dependant.
+    """
+    for route in routes:
+        if hasattr(route, "effective_candidates"):
+            yield from _api_routes(route.effective_candidates())
+        elif getattr(route, "dependant", None) is not None and getattr(route, "methods", None):
+            yield route
+
+
 def route_actions(app) -> dict[tuple[str, str], str]:
     """(METHOD, path) -> action, for every route that has a policy.require() dependency anywhere in its tree."""
     found: dict[tuple[str, str], str] = {}
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
+    for route in _api_routes(app.routes):
         action = _action_of(route.dependant)
         if action is None:
             continue

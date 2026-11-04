@@ -1,7 +1,9 @@
 import json
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import AdminUser, CurrentUser
+from fastapi import APIRouter, Depends, HTTPException
+from shared import policy
+from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -36,7 +38,7 @@ def _aggregate_to_dict(db: Session, agg: Aggregate) -> dict:
 
 
 @router.post("/os-aggregates", status_code=201)
-def create_aggregate(payload: AggregateIn, _: AdminUser, db: DB):
+def create_aggregate(payload: AggregateIn, _: Annotated[dict, Depends(policy.require("compute:aggregate:create"))], db: DB):
     """Create a host aggregate (admin only)."""
     if db.scalar(select(Aggregate).where(Aggregate.name == payload.name)):
         raise HTTPException(status_code=409, detail="aggregate already exists")
@@ -64,7 +66,7 @@ def show_aggregate(agg_ref: str, _: CurrentUser, db: DB):
 
 
 @router.put("/os-aggregates/{agg_ref}")
-def update_aggregate(agg_ref: str, payload: AggregateUpdateIn, _: AdminUser, db: DB):
+def update_aggregate(agg_ref: str, payload: AggregateUpdateIn, _: Annotated[dict, Depends(policy.require("compute:aggregate:update"))], db: DB):
     """Update aggregate name or availability zone (admin only)."""
     agg = db.get(Aggregate, agg_ref) or db.scalar(select(Aggregate).where(Aggregate.name == agg_ref))
     if not agg:
@@ -79,7 +81,7 @@ def update_aggregate(agg_ref: str, payload: AggregateUpdateIn, _: AdminUser, db:
 
 
 @router.delete("/os-aggregates/{agg_ref}", status_code=204)
-def delete_aggregate(agg_ref: str, _: AdminUser, db: DB):
+def delete_aggregate(agg_ref: str, _: Annotated[dict, Depends(policy.require("compute:aggregate:delete"))], db: DB):
     """Delete a host aggregate (admin only)."""
     agg = db.get(Aggregate, agg_ref) or db.scalar(select(Aggregate).where(Aggregate.name == agg_ref))
     if not agg:
@@ -90,7 +92,7 @@ def delete_aggregate(agg_ref: str, _: AdminUser, db: DB):
 
 
 @router.post("/os-aggregates/{agg_ref}/action")
-def aggregate_action(agg_ref: str, payload: dict, _: AdminUser, db: DB):
+def aggregate_action(agg_ref: str, payload: dict, _: Annotated[dict, Depends(policy.require("compute:aggregate:action"))], db: DB):
     """
     Perform an action on an aggregate.
     Supported actions:
