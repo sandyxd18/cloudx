@@ -50,10 +50,26 @@ def login(payload: LoginIn, db: DB):
         raise HTTPException(status_code=403, detail="user disabled")
     _check_domain(db, user)
 
+    scope = payload.scope
+    wanted_project = payload.project
+    if scope is not None:
+        if sum([bool(scope.project), bool(scope.domain), scope.system]) != 1:
+            raise HTTPException(status_code=400, detail="scope needs exactly one of project, domain, system")
+        if scope.project:
+            if payload.project and payload.project != scope.project:
+                raise HTTPException(status_code=400, detail="project and scope.project differ")
+            wanted_project = scope.project
+        elif payload.project:
+            raise HTTPException(status_code=400, detail="project cannot be combined with domain or system scope")
+        elif scope.domain:
+            return _domain_scoped_login(db, user, scope.domain)
+        elif user.role != "admin":
+            raise HTTPException(status_code=403, detail="system scope requires the admin role")
+
     target_project_id = user.project_id
-    if payload.project:
-        req_proj = db.get(Project, payload.project) or db.scalar(
-            select(Project).where(Project.name == payload.project).order_by(Project.domain_id != user.domain_id).limit(1)
+    if wanted_project:
+        req_proj = db.get(Project, wanted_project) or db.scalar(
+            select(Project).where(Project.name == wanted_project).order_by(Project.domain_id != user.domain_id).limit(1)
         )  # own domain first, so a cross-domain name still gives the 403 from _check_domain
         if not req_proj or not req_proj.enabled:
             raise HTTPException(status_code=404, detail="project not found or disabled")
@@ -69,14 +85,41 @@ def login(payload: LoginIn, db: DB):
 
     orig_project = user.project_id
     user.project_id = target_project_id
-    token = _create_token(user, project_name=proj.name, role=project_role(db, user, proj.id))
+    system = scope is not None and scope.system
+    if system:
+        token = _create_token(user, scope_type="system", project_name=proj.name, role="admin")
+    else:
+        token = _create_token(user, project_name=proj.name, role=project_role(db, user, proj.id))
     user.project_id = orig_project
 
-    return {
+    out = {
         "token": token,
         "expires_in": TOKEN_EXPIRE_H * 3600,
         "user":    _user_to_dict(user),
         "project": _project_to_dict(proj),
+        "catalog": _build_catalog(db),
+    }
+    if system:
+        out["scope"] = {"type": "system", "domain_id": user.domain_id or "default"}
+    return out
+
+
+def _domain_scoped_login(db, user: User, ref: str) -> dict:
+    """Token for a whole domain: its own domain for a domain admin, any domain for an admin. No project."""
+    dom = db.get(Domain, ref) or db.scalar(select(Domain).where(Domain.name == ref))
+    if user.role != "admin" and not (user.is_domain_admin and dom is not None and dom.id == user.domain_id):
+        # same answer for unknown and foreign domains, so a domain admin cannot probe other domains
+        raise HTTPException(status_code=403, detail="domain scope requires domain admin of that domain")
+    if dom is None:
+        raise HTTPException(status_code=404, detail="domain not found")
+    if not dom.enabled:
+        raise HTTPException(status_code=403, detail="domain disabled")
+    token = _create_token(user, scope_type="domain", project_id="", domain_id=dom.id)
+    return {
+        "token": token,
+        "expires_in": TOKEN_EXPIRE_H * 3600,
+        "user": _user_to_dict(user),
+        "scope": {"type": "domain", "domain_id": dom.id},
         "catalog": _build_catalog(db),
     }
 

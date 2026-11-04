@@ -22,6 +22,9 @@ import SubnetCreatePage from './pages/SubnetCreate.jsx'
 import RoutersPage from './pages/Routers.jsx'
 import RouterCreatePage from './pages/RouterCreate.jsx'
 import RouterDetailPage from './pages/RouterDetail.jsx'
+import TrunksPage from './pages/Trunks.jsx'
+import QosPoliciesPage from './pages/QosPolicies.jsx'
+import SubnetPoolsPage from './pages/SubnetPools.jsx'
 import FloatingIPsPage from './pages/FloatingIPs.jsx'
 import FloatingIPAllocatePage from './pages/FloatingIPAllocate.jsx'
 import FloatingIPAssociatePage from './pages/FloatingIPAssociate.jsx'
@@ -206,6 +209,9 @@ function AppRoutes() {
           <Route path="routers" element={<RoutersPage />} />
           <Route path="routers/create" element={<RouterCreatePage />} />
           <Route path="routers/:id" element={<RouterDetailPage />} />
+          <Route path="trunks" element={<TrunksPage />} />
+          <Route path="qos" element={<QosPoliciesPage />} />
+          <Route path="subnet-pools" element={<SubnetPoolsPage />} />
           <Route path="floating-ips" element={<FloatingIPsPage />} />
           <Route path="floating-ips/allocate" element={<FloatingIPAllocatePage />} />
           <Route path="floating-ips/associate" element={<FloatingIPAssociatePage />} />

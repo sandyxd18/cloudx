@@ -31,8 +31,10 @@ done
 
 # Tags that describe how CloudX is packaged on purpose, not mistakes:
 #   dir-or-file-in-opt, wrong-path-for-interpreter, package-installs-python-pycache-dir, embedded-library,
-#   shared-library-is-executable, unstripped-binary-or-object, missing-dependency-on-libc
+#   shared-library-is-executable, unstripped-binary-or-object, missing-dependency-on-libc,
+#   library-not-linked-against-libc
 #       the Python environments live in /opt/cloudx/venv and /opt/cloudx/cli/venv and arrive as pip built them
+#       (numpy's lapack_lite extension, which websockify pulls in, is a library that does not link libc)
 #   no-changelog, extended-description-is-empty
 #       the changelog is CHANGELOG.md in the repo and each package has a one-line description
 #   depends-on-essential-package-without-using-version
@@ -40,6 +42,7 @@ done
 # Anything else at error level fails the check; warnings are printed and ignored.
 SUPPRESSED="dir-or-file-in-opt,wrong-path-for-interpreter,package-installs-python-pycache-dir,embedded-library"
 SUPPRESSED+=",shared-library-is-executable,unstripped-binary-or-object,missing-dependency-on-libc"
+SUPPRESSED+=",library-not-linked-against-libc"
 SUPPRESSED+=",no-changelog,extended-description-is-empty,depends-on-essential-package-without-using-version"
 lintian --fail-on error --tag-display-limit 0 --suppress-tags "${SUPPRESSED}" "${debs[@]}" || failed=1
 

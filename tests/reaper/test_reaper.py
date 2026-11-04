@@ -3,6 +3,7 @@ import services.reaper.app.main as r
 from shared import catalog
 
 FILE_STORE, DATABASE, CONTAINER = "http://127.0.0.1:8017", "http://127.0.0.1:8019", "http://127.0.0.1:8018"
+COMPUTE = "http://127.0.0.1:8003"
 
 
 @pytest.fixture(autouse=True)
@@ -10,13 +11,15 @@ def _peers(monkeypatch):
     monkeypatch.setenv("FILE_STORE_API_URL", FILE_STORE)
     monkeypatch.setenv("DATABASE_API_URL", DATABASE + "/")
     monkeypatch.setenv("CONTAINER_API_URL", CONTAINER)
+    monkeypatch.setenv("COMPUTE_API_URL", COMPUTE)
 
 
 class Fake:
-    """Stands in for requests: records DELETEs, serves stale-errors per service."""
+    """Stands in for requests: records DELETEs, serves stale-errors per service, serves the resize list and records confirms."""
 
-    def __init__(self, stale, fail=()):
+    def __init__(self, stale, fail=(), pending=(), conflict=()):
         self.stale, self.fail, self.deleted, self.login_ok = stale, set(fail), [], True
+        self.pending, self.conflict, self.confirmed, self.confirm_headers, self.pending_asked = list(pending), set(conflict), [], [], []
 
     def request(self, method, url, **kw):
         class R:
@@ -31,6 +34,16 @@ class Fake:
             return R(201, {"token": "T"}) if self.login_ok else R(401)
         if "/internal/stale-errors" in url:
             return R(200, {"items": self.stale.get(url.split("/internal")[0], [])})
+        if url == f"{COMPUTE}/internal/resize-pending":
+            self.pending_asked.append(kw.get("params"))
+            return R(200, {"items": [{"id": i} for i in self.pending]})
+        if method == "POST" and url.startswith(f"{COMPUTE}/servers/") and url.endswith("/confirmResize"):
+            sid = url.split("/")[-2]
+            self.confirm_headers.append(kw.get("headers"))
+            if sid in self.conflict:
+                return R(409)
+            self.confirmed.append(sid)
+            return R(200)
         if method == "DELETE":
             if any(url.endswith(f) for f in self.fail):
                 return R(500)
@@ -39,10 +52,11 @@ class Fake:
         raise AssertionError(url)
 
 
-def run(monkeypatch, stale, dry=False, fail=()):
-    f = Fake(stale, fail)
+def run(monkeypatch, stale, dry=False, fail=(), pending=(), conflict=()):
+    f = Fake(stale, fail, pending, conflict)
     monkeypatch.setattr(r.requests, "request", f.request)
     monkeypatch.setattr(r, "DRY_RUN", dry)
+    monkeypatch.setattr(r, "RESIZE_CONFIRM_WINDOW", 3600)
     r.cycle()
     return f
 
@@ -121,12 +135,12 @@ def _catalog_only(monkeypatch, hosts, asked=None):
 
 def test_with_no_override_the_calls_go_to_the_catalog_hosts(monkeypatch):
     asked = []
-    _catalog_only(monkeypatch, {"file-store": "http://fs-host:1/", "database": "http://db-host:2", "container": "http://ct-host:3"}, asked)
+    _catalog_only(monkeypatch, {"file-store": "http://fs-host:1/", "database": "http://db-host:2", "container": "http://ct-host:3", "compute": "http://cp-host:4"}, asked)
     stale = {"http://fs-host:1": [{"id": "sh1", "kind": "share"}], "http://db-host:2": [{"id": "db1", "kind": "database"}],
              "http://ct-host:3": [{"id": "c1", "kind": "container"}]}
     f = run(monkeypatch, stale)
     assert sorted(f.deleted) == ["http://ct-host:3/containers/c1", "http://db-host:2/instances/db1", "http://fs-host:1/shares/sh1"]
-    assert asked == ["file-store", "database", "container"]  # once per cycle, before anything is touched
+    assert asked == ["file-store", "database", "container", "compute"]  # once per cycle, before login or any request
 
 
 def test_the_override_wins_over_the_catalog(monkeypatch):
@@ -146,5 +160,53 @@ def test_cycle_survives_a_catalog_that_is_down_and_recovers(monkeypatch, caplog)
     _catalog_only(monkeypatch, {})
     f = run(monkeypatch, S)
     assert f.deleted == [] and "cannot resolve service" in caplog.text
-    monkeypatch.setattr(catalog, "url", lambda service, interface="internal": {"file-store": FILE_STORE, "database": DATABASE, "container": CONTAINER}[service])
+    monkeypatch.setattr(catalog, "url", lambda service, interface="internal": {"file-store": FILE_STORE, "database": DATABASE, "container": CONTAINER, "compute": COMPUTE}[service])
     assert len(run(monkeypatch, S).deleted) == 4
+
+
+def test_confirms_servers_past_the_window(monkeypatch):
+    f = run(monkeypatch, {}, pending=["s1", "s2"])
+    assert f.confirmed == ["s1", "s2"]
+    assert f.pending_asked == [{"seconds": 3600}]
+    assert all(h == {"X-Auth-Token": "T"} for h in f.confirm_headers)
+
+
+def test_window_zero_disables_the_sweep(monkeypatch):
+    f = Fake({}, pending=["s1"])
+    monkeypatch.setattr(r.requests, "request", f.request)
+    monkeypatch.setattr(r, "RESIZE_CONFIRM_WINDOW", 0)
+    r.cycle()
+    assert f.confirmed == [] and f.pending_asked == []
+
+
+def test_dry_run_only_logs(monkeypatch, caplog):
+    with caplog.at_level("INFO", logger="reaper"):
+        f = run(monkeypatch, {}, dry=True, pending=["s1"])
+    assert f.confirmed == [] and "dry-run: would confirm resize s1" in caplog.text
+
+
+def test_confirm_409_is_skipped_and_the_rest_continue(monkeypatch, caplog):
+    f = run(monkeypatch, {}, pending=["s1", "s2"], conflict=["s1"])
+    assert f.confirmed == ["s2"] and "could not confirm resize s1" in caplog.text
+
+
+def test_compute_missing_from_catalog_does_not_break_the_cycle(monkeypatch, caplog):
+    _catalog_only(monkeypatch, {"file-store": FILE_STORE, "database": DATABASE, "container": CONTAINER})
+    f = run(monkeypatch, S, pending=["s1"])
+    assert len(f.deleted) == 4 and f.confirmed == [] and "cannot resolve service 'compute'" in caplog.text
+
+
+def test_resize_sweep_runs_when_only_compute_resolves(monkeypatch, caplog):
+    _catalog_only(monkeypatch, {"compute": COMPUTE})
+    f = run(monkeypatch, S, pending=["s1"])
+    assert f.confirmed == ["s1"] and f.deleted == []
+
+
+def test_resize_sweep_is_skipped_without_an_admin_token(monkeypatch):
+    _catalog_only(monkeypatch, {"compute": COMPUTE})
+    f = Fake(S, pending=["s1"])
+    f.login_ok = False
+    monkeypatch.setattr(r.requests, "request", f.request)
+    monkeypatch.setattr(r, "RESIZE_CONFIRM_WINDOW", 3600)
+    r.cycle()
+    assert f.confirmed == [] and f.pending_asked == []

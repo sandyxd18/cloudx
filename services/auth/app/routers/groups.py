@@ -23,6 +23,8 @@ def _group(db, ref: str, current: dict) -> Group:
 @router.post("/groups", status_code=201)
 def create_group(payload: GroupIn, current: CurrentUser, db: DB):
     proj_id = current["project_id"]
+    if not proj_id:
+        raise HTTPException(status_code=403, detail="project-scoped token required")
     if db.scalar(select(Group).where(Group.name == payload.name, Group.project_id == proj_id)):
         raise HTTPException(status_code=409, detail="group already exists in project")
     g = Group(project_id=proj_id, **payload.model_dump())

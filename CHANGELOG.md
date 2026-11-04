@@ -4,6 +4,47 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## Unreleased
+
+**Three schema changes** (`compute_0005`, `auth_0008`, `auth_0009`): run `cloudx-manage db sync` after the upgrade. The
+browser console now needs the `novnc` package and port 6080 on every compute node (see Changed).
+
+### Added
+- **Resizes are confirmed automatically.** `cloudx-reaper` confirms a server that has waited in `VERIFY_RESIZE` longer
+  than `RESIZE_CONFIRM_WINDOW_SECONDS` (default 86400; `0` turns it off), through the public `confirmResize`. The reaper
+  runs every `REAPER_INTERVAL` seconds (600), so the confirmation comes up to one interval after the window;
+  `REAPER_DRY_RUN` only logs. compute-api has `GET /internal/resize-pending?seconds=N` for it, and the server record has
+  a new column `resize_pending_since` (migration `compute_0005`). Servers already in `VERIFY_RESIZE` at the upgrade get
+  a full window from the upgrade. A server that an older version left `ACTIVE` with a rollback snapshot is not swept.
+- **Domain and system scoped tokens.** `POST /auth/tokens` takes `scope` with one of `{"project": ...}`,
+  `{"domain": ...}` or `{"system": true}`. A domain token (domain admin of that domain, or admin) has no project; only
+  auth-api and billing accept it, every other service answers 403 `project-scoped token required`. A system token needs
+  the admin role. See `docs/identity.md`.
+- **Application credential rotation:** `POST /v3/users/{user}/application_credentials/{cred}/rotate` with an optional
+  `grace_seconds` (0 to 86400), during which the replaced secret still works, and `cloudx auth appcred rotate USER CRED
+  [--grace-seconds N]` (migration `auth_0008`).
+- **Trusts:** `POST|GET /v3/OS-TRUST/trusts`, `GET|DELETE /v3/OS-TRUST/trusts/{id}` and `POST /auth/tokens/trust`
+  (migration `auth_0009`). A trustor delegates roles it holds in one project to another user; the trustee exchanges the
+  trust for a token that acts as the trustor, which is read-only on auth-api. Each exchange is written to the audit log
+  as `trust.token`. Revoking a trust does not revoke tokens already issued from it; they stay valid until they expire
+  (`AUTH_TOKEN_EXPIRE_HOURS`), but never past the trust's own expiry (`expires_in` reports the real lifetime).
+- Dashboard pages for Trunks, QoS policies and Subnet pools under Networking.
+
+### Changed
+- **The browser console works through a proxy on the compute node.** `console-url` and `remote-consoles` return
+  `http://<console_proxy_host>:6080/vnc.html?autoconnect=1&path=websockify%3Ftoken=<token>`. The new unit
+  `cloudx-novnc-proxy` runs `websockify` and the noVNC client on port 6080 of every compute node; it ships in the
+  `cloudx-compute-worker` package, which now depends on `novnc`, and the worker's unit has `Wants=` on it (on tarball
+  nodes the guide's example worker unit has the line and its start command enables the proxy); the proxy unit has
+  `PartOf=cloudx-compute-worker.service`, so it restarts and stops with the worker. The guest's VNC stays on
+  127.0.0.1. The token is a JWT signed with a key derived from `auth_secret_key`, valid 300 seconds and good only for
+  one VNC port of one libvirt domain on that node (`COMPUTE_HOST`); the proxy checks with libvirt that the domain still
+  owns the port, and it is checked when the connection opens. The proxy logs every refusal with its reason. Before, the link pointed at `localhost:6080` and
+  nothing in the packages started a proxy. To upgrade: let apt install `novnc` (tarball nodes: `apt install novnc`),
+  open port 6080 to your users' browsers, and set `console_proxy_host` in
+  `/etc/cloudx/compute-worker/compute-worker.conf` to an address the browsers can reach (default: the node name).
+  `NOVNC_BASE_URL` is no longer read. See `docs/console.md`.
+
 ## 1.0.9 (2026-11-03)
 
 One change since 1.0.9-rc1: `cloudx port delete` no longer deletes a port that a server uses when the port has no `device_id`

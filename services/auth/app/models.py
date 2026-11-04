@@ -173,6 +173,9 @@ class ApplicationCredential(Base):
     expires_at:  Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     enabled:     Mapped[bool] = mapped_column(Boolean, default=True)
     created_at:  Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # rotation: the secret that was replaced stays valid until previous_valid_until (grace period)
+    previous_secret_hash:  Mapped[str | None] = mapped_column(String, nullable=True)
+    previous_valid_until:  Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     __table_args__ = (UniqueConstraint("name", "user_id"),)
 
 
@@ -196,3 +199,17 @@ class RoleAssignment(Base):
     project_id: Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id", ondelete="CASCADE"), primary_key=True)
     role:       Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class Trust(Base):
+    """A trustor delegates some of their roles in one project to a trustee, who redeems it for a token."""
+    __tablename__ = "auth_trusts"
+    id:              Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    trustor_user_id: Mapped[str] = mapped_column(String, ForeignKey("auth_users.id", ondelete="CASCADE"), index=True)
+    trustee_user_id: Mapped[str] = mapped_column(String, ForeignKey("auth_users.id", ondelete="CASCADE"), index=True)
+    project_id:      Mapped[str] = mapped_column(String, ForeignKey("auth_projects.id", ondelete="CASCADE"))
+    roles:           Mapped[str] = mapped_column(String)                    # csv, in order; the first is the primary role
+    expires_at:      Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    remaining_uses:  Mapped[int | None] = mapped_column(Integer, nullable=True)   # None = unlimited
+    revoked:         Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    created_at:      Mapped[datetime] = mapped_column(DateTime, default=utcnow)

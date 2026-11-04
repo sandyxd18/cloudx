@@ -143,6 +143,7 @@ def confirm_resize(ref: str, current: CurrentUser, db: DB):
     server.original_vcpus = None
     server.original_ram_mb = None
     server.original_status = None
+    server.resize_pending_since = None
     db.commit()
     db.refresh(server)
     return obj_to_dict(server)
@@ -168,6 +169,7 @@ def revert_resize(ref: str, current: CurrentUser, db: DB):
     server.original_vcpus = None
     server.original_ram_mb = None
     server.original_status = None
+    server.resize_pending_since = None
     server.status = "RESIZE"
     db.commit()
     clients.cast_to_worker("resize", {**server_worker_payload(server), "new_vcpus": server.vcpus,

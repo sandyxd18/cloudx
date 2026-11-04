@@ -3,11 +3,17 @@ import os
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
-from shared.auth_middleware import check_reader
+from shared.auth_middleware import READ_ONLY_METHODS, check_reader
 
 from .db import DB
 from .models import RevokedToken
 from .tokens import _decode_token
+
+
+def _trust_token_may(request: Request) -> bool:
+    """A token issued from a trust acts as the trustor on other services, but on auth-api it may only read and
+    log out: anything else (users, roles, credentials, tokens, trusts) could outlive or widen the delegation."""
+    return request.method in READ_ONLY_METHODS or (request.method == "DELETE" and request.url.path == "/auth/tokens/current")
 
 
 def _require_token(request: Request, db: DB) -> dict:
@@ -21,7 +27,10 @@ def _require_token(request: Request, db: DB) -> dict:
     revoked = db.get(RevokedToken, jti)
     if revoked:
         raise HTTPException(status_code=401, detail="token has been revoked")
-    return check_reader(payload, request)
+    check_reader(payload, request)
+    if payload.get("trust_id") and not _trust_token_may(request):
+        raise HTTPException(status_code=403, detail="trust tokens cannot modify identity")
+    return payload
 
 
 def _require_admin(payload: dict = Depends(_require_token)) -> dict:

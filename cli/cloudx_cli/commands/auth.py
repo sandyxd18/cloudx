@@ -328,6 +328,31 @@ def group_delete(ctx, ref):
     click.echo(f"✓ Group {ref} deleted")
 
 
+# Application credential subcommands
+@auth.group("appcred")
+def auth_appcred():
+    """Manage application credentials"""
+
+
+@auth_appcred.command("rotate")
+@click.argument("user")
+@click.argument("cred")
+@click.option("--grace-seconds", type=click.IntRange(0, 86400), default=0, show_default=True,
+              help="Keep the old secret working for this long (0 = it stops working now)")
+@click.pass_context
+def appcred_rotate(ctx, user, cred, grace_seconds):
+    """Issue a new secret for an application credential. The secret is shown ONCE."""
+    data = _api("post", f"{DEFAULT_URLS['auth']}/v3/users/{user}/application_credentials/{cred}/rotate",
+                ctx.obj["profile"], json={"grace_seconds": grace_seconds})
+    click.echo(f"\n✓ Application credential {cred} rotated. Save the secret now — it will not be shown again!\n")
+    click.echo(f"  Application Credential ID: {data['id']}")
+    click.echo(f"  Secret:                    {data['secret']}\n")
+    if grace_seconds:
+        click.echo(f"The previous secret keeps working for {grace_seconds} seconds.")
+    else:
+        click.echo("The previous secret no longer works.")
+
+
 # Access key subcommands
 @auth.group("access-key")
 def auth_access_key():

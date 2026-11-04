@@ -57,6 +57,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Feature | Endpoint | Status |
 |---|---|:---:|
 | Login (username + password + project) | `POST /auth/tokens` | ✅ |
+| **Scoped login**: `scope` is `{"project": ...}`, `{"domain": ...}` (domain admin of that domain, or admin) or `{"system": true}` (admin); a domain-scoped token has no project and only auth-api and billing accept it, the other services answer 403 | `POST /auth/tokens` | ✅ |
 | Token validation | `GET /auth/tokens/validate` | ✅ |
 | Logout | `DELETE /auth/tokens/current` | ✅ |
 | Switch the project of a session | `POST /session/switch-project` | ✅ |
@@ -115,6 +116,14 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Token from an access key | `POST /auth/tokens/access-key` | ✅ |
 | Create / list / show / delete application credential | `/v3/users/{user}/application_credentials` | ✅ |
 | Token from an application credential | `POST /auth/tokens/application-credential` | ✅ |
+| **Rotate** an application credential: new secret shown once; the previous secret keeps working for `grace_seconds` (0 to 86400, default 0) | `POST /v3/users/{user}/application_credentials/{cred}/rotate` | ✅ |
+
+#### Trusts
+| Feature | Endpoint | Status |
+|---|---|:---:|
+| Create / list a trust (a trustor delegates roles it holds in one project to another user, with an optional expiry and use count) | `POST\|GET /v3/OS-TRUST/trusts` | ✅ |
+| Show / revoke a trust | `GET\|DELETE /v3/OS-TRUST/trusts/{id}` | ✅ |
+| The trustee exchanges a trust for a token that acts as the trustor, with the delegated roles; read-only on auth-api; each exchange is written to the audit log | `POST /auth/tokens/trust` | ✅ |
 
 #### Policy & Audit
 | Feature | Endpoint | Status |
@@ -126,12 +135,11 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 ### ❌ Missing Features (vs. the real Identity service)
 | Feature | Notes |
 |---|---|
-| **Scoped tokens** (domain/system scope) | Login issues project-scoped tokens only |
+| **Domain scope outside auth-api and billing** | Domain-scoped tokens are refused (403) by every other service |
+| **Trust revocation of issued tokens** | Revoking a trust stops new exchanges; tokens already issued from it stay valid until they expire (`AUTH_TOKEN_EXPIRE_HOURS`) |
 | **Federation / SAML / OAuth2** | No SSO |
-| **Application credential rotation** | Create and delete only |
 | **Multi-factor authentication** | None |
 | **Fernet token** | JWT only |
-| **Trust** (delegated token) | None |
 | **Policy files (oslo.policy)** | A central rule map, not oslo.policy files |
 
 **Estimated Identity similarity: ~75%**
@@ -157,6 +165,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Unsuspend** (restore from managed save) | `POST /servers/{ref}/unsuspend` | ✅ |
 | **Resize** (live vCPU + RAM change up to the size the domain was created with; a larger flavor shuts the guest down and starts it again) | `POST /servers/{ref}/resize` | ✅ |
 | **Confirm / revert resize** (a resized server waits in VERIFY_RESIZE until one of them; a second resize is refused meanwhile; `cloudx server confirm-resize`, `revert-resize`) | `POST /servers/{ref}/confirmResize\|revertResize` | ✅ |
+| **Resize auto-confirm** (the `reaper` confirms a server that has waited in VERIFY_RESIZE longer than `RESIZE_CONFIRM_WINDOW_SECONDS`, default 86400, `0` turns it off; it runs every `REAPER_INTERVAL` seconds, so the confirm can come one interval late) | `POST /servers/{ref}/confirmResize` | ✅ |
 | **Rebuild** (replace the root disk from a new image) | `POST /servers/{ref}/rebuild` | ✅ |
 | **Rescue** (boot from a rescue image) | `POST /servers/{ref}/rescue` | ✅ |
 | **Unrescue** (return to the root disk) | `POST /servers/{ref}/unrescue` | ✅ |
@@ -179,7 +188,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Feature | Endpoint | Status |
 |---|---|:---:|
 | Serial console (virsh console) | `GET /servers/{ref}/console` | ✅ |
-| Console URL (VNC info + noVNC link) | `GET /servers/{ref}/console-url` | ✅ |
+| Console URL (VNC info + a noVNC link with a 5-minute token to the `websockify` on the server's compute node, port 6080; `console_proxy_host` sets the address; see docs/console.md) | `GET /servers/{ref}/console-url` | ✅ |
 | Remote console request | `POST /servers/{ref}/remote-consoles` | ✅ |
 | Console log (PTY output) | `GET /servers/{ref}/logs` | ✅ |
 | Server metrics | `GET /servers/{ref}/metrics` | ✅ |
@@ -257,7 +266,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Feature | Notes |
 |---|---|
 | **Separate ephemeral disk** | Volume-first, no ephemeral disk (flavors carry `ephemeral_gb` but it is not used) |
-| **noVNC proxy** | `console-url` returns a noVNC link (`NOVNC_BASE_URL`, default `localhost:6080`); no package or unit in this repo starts a proxy on that port |
+| **One console proxy address** | Each compute node runs its own proxy (`cloudx-novnc-proxy`, port 6080, plain http, no TLS), so browsers must reach every compute node; the link is not routed through a central proxy |
 | **vfat config drive format** | ISO9660 only |
 | **Trusted image certificates** | None |
 | **Trigger crash dump** | None |
@@ -675,7 +684,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Actions dropdown: pause/resume/suspend/rescue/shelve/lock/resize confirm-revert | ✅ |
 | Launch instance modal (flavor/image/network/keypair select) | ✅ |
 | Instance detail tabs: Details / Networking / Storage / Console | ✅ |
-| **noVNC console** embedded (modal + detail tab + full page); needs a proxy on `NOVNC_BASE_URL` | ✅ |
+| **noVNC console** embedded (modal + detail tab + full page); loaded from port 6080 of the server's compute node | ✅ |
 | Live console log with 2-second auto-refresh | ✅ |
 | Flavors, Key Pairs, Server Groups CRUD | ✅ |
 | Hypervisors | ✅ |
@@ -699,6 +708,9 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | VPC peering, VPN gateways, BGP peers | ✅ |
 | Load balancers (create, detail) | ✅ |
 | DNS zones and records | ✅ |
+| Trunks (create with VLAN-tagged sub-ports, add and remove sub-ports, delete) | ✅ |
+| QoS policies (create, add a bandwidth rule, delete) | ✅ |
+| Subnet pools (create with prefixes and prefix lengths, delete) | ✅ |
 
 #### Platform Pages
 | Feature | Status |
@@ -722,8 +734,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 ### ❌ Missing Features (vs. the real CloudX Dashboard)
 | Feature | Notes |
 |---|---|
-| **Built-in noVNC proxy** | The console pages expect a proxy at `NOVNC_BASE_URL`; nothing in the packages starts one |
-| **Trunks, QoS policies, subnet pools** | API and CLI only, no dedicated page |
+| **Console over one address or TLS** | The console pages load the noVNC client over plain http from port 6080 of each compute node; there is no TLS and no single address |
 
 **Estimated CloudX Dashboard similarity: ~90%**
 

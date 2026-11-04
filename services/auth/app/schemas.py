@@ -68,11 +68,19 @@ class GroupIn(BaseModel):
     description: str | None = None
 
 
+class ScopeIn(BaseModel):
+    """Token scope: exactly one of project, domain (id or name) or system."""
+    project: str | None = None
+    domain: str | None = None
+    system: bool = False
+
+
 class LoginIn(BaseModel):
     username: str
     password: str
     project: str | None = None
     domain: str | None = None  # id or name; only needed when the username exists in several domains
+    scope: ScopeIn | None = None
 
 
 class AccessKeyIn(BaseModel):
@@ -87,11 +95,29 @@ class AppCredIn(BaseModel):
     expires_at: str | None = None  # ISO 8601 datetime string, optional
 
 
+class RotateIn(BaseModel):
+    """Rotate an application credential's secret; the old one stays valid for grace_seconds (0 = dies now)."""
+    grace_seconds: int = Field(0, ge=0, le=86400)
+
+
 class AppCredTokenIn(BaseModel):
     """Auth request using an application credential (name+secret pair)."""
     application_credential_id: str | None = None
     application_credential_name: str | None = None
     application_credential_secret: str
+
+
+class TrustIn(BaseModel):
+    """Delegate `roles` in `project_id` (default: the caller's token project) to the trustee."""
+    trustee_user_id: str                      # id or username
+    project_id: str | None = None
+    roles: list[str]
+    expires_at: str | None = None             # ISO 8601
+    remaining_uses: int | None = Field(None, ge=1)    # None = unlimited
+
+
+class TrustTokenIn(BaseModel):
+    trust_id: str
 
 
 class SwitchProjectIn(BaseModel):

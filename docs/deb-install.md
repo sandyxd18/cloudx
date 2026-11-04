@@ -305,6 +305,13 @@ The provider network and floating IPs are created after that (`../SETUP.md` sect
 
    The script defines the libvirt secret from the keyring (reusing an existing UUID), then writes `ceph_user` and `ceph_secret_uuid` to `/etc/cloudx/compute-worker/compute-worker.conf`. It is safe to run again. The Ceph client and keyring are not installed by the packages.
 
+6. Browser console. `cloudx-compute-worker` ships the unit `cloudx-novnc-proxy` (websockify on port 6080, with the noVNC client) and depends on the `novnc` apt package, so `apt install cloudx-compute` already pulls it in. The worker's unit has `Wants=cloudx-novnc-proxy.service`: the proxy starts with the worker, and the package itself does not enable it. Two things are yours to set up:
+
+   - Open port 6080/tcp on this node to the browsers of your users. The console link points at the node, so every compute node must be reachable.
+   - Put an address a browser can reach in `/etc/cloudx/compute-worker/compute-worker.conf`, `[DEFAULT]`: `console_proxy_host = <ip or name>`. Without it the link uses the node name (`compute_host`). Restart `cloudx-compute-worker` afterwards.
+
+   Check with `systemctl is-active cloudx-novnc-proxy`. If `/usr/share/novnc` is missing the unit is skipped without an error. How the link and its 5-minute token work is in [console.md](console.md).
+
 ### 4.3 Storage node
 
 ```bash

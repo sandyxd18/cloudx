@@ -423,6 +423,7 @@ Configure the service unit `/etc/systemd/system/cloudx-compute-worker.service`:
 [Unit]
 Description=CloudX Compute Worker Service
 After=network.target libvirtd.service ovs-vswitchd.service
+Wants=cloudx-novnc-proxy.service
 
 [Service]
 Environment=PYTHONPATH=/opt/cloudx/services
@@ -455,8 +456,21 @@ Environment=AUTH_API_URL=http://192.168.10.10:8005
 Start the worker daemons:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now cloudx-compute-worker.service cloudx-metadata-proxy.service
+sudo systemctl enable --now cloudx-compute-worker.service cloudx-metadata-proxy.service cloudx-novnc-proxy.service
 ```
+
+Browser console: the unit `cloudx-novnc-proxy.service` is copied with the other units. The worker unit above has `Wants=cloudx-novnc-proxy.service` and the command above enables the proxy; if you wrote your own worker unit without that line, enable the proxy yourself, or nothing listens on port 6080. Its `websockify` comes from `requirements.txt` (`pip install -r`), but the noVNC client does not: install it with `sudo apt install novnc`. Without `/usr/share/novnc` the unit is skipped without an error and nothing listens on port 6080. Then:
+
+- Open port 6080/tcp on this node to your users' browsers.
+- The proxy must see the same `COMPUTE_HOST` as the worker and the cluster's `auth_secret_key`; the key is in `/etc/cloudx/cloudx.conf`, so copy that file from the controller to this node if it is not here yet. This section sets `COMPUTE_HOST` as an `Environment=` line of the worker unit, and the proxy does not read that unit. Give the proxy the same value with a drop-in (`sudo systemctl edit cloudx-novnc-proxy`):
+  ```ini
+  [Service]
+  Environment=COMPUTE_HOST=cloudx-compute-01
+  ```
+  The simpler alternative is `compute_host = cloudx-compute-01` under `[DEFAULT]` in `/etc/cloudx/compute-worker/compute-worker.conf`, which the worker and the proxy both read (and then the `Environment=COMPUTE_HOST` line can go). A proxy whose name does not match the worker's refuses every console token.
+- Optional: `console_proxy_host = <address a browser can reach>` in the same conf (default: the `COMPUTE_HOST` name).
+
+The whole console flow is in [console.md](console.md).
 
 ---
 

@@ -27,6 +27,7 @@ DELETE = {"share": "/shares/", "share-network": "/share-networks/", "database": 
 AUTH_URL = os.getenv("AUTH_API_URL", "http://127.0.0.1:8005").rstrip("/")
 MAX_AGE_HOURS = float(os.getenv("REAPER_MAX_AGE_HOURS", "24"))
 INTERVAL = int(os.getenv("REAPER_INTERVAL", "600"))
+RESIZE_CONFIRM_WINDOW = int(os.getenv("RESIZE_CONFIRM_WINDOW_SECONDS", "86400"))  # 0 disables the resize sweep
 DRY_RUN = os.getenv("REAPER_DRY_RUN", "false").lower() in ("1", "true", "yes")
 
 
@@ -53,7 +54,8 @@ def resolve_services() -> dict[str, str]:
 
 def cycle() -> None:
     bases = resolve_services()  # once per pass, before anything is touched
-    if not bases:
+    compute = resolve_compute()  # the resize sweep does not depend on the services above
+    if not bases and not compute:
         return
     token = login()
     if not token:
@@ -80,6 +82,41 @@ def cycle() -> None:
                 log.warning("could not delete %s %s: %s", it["kind"], it["id"], exc)
     if "database" in bases:
         backups(token, bases["database"])
+    if compute:
+        resize_confirms(token, compute)
+
+
+def resolve_compute() -> str | None:
+    """Base URL of compute for the resize sweep, or None when the sweep is off or the catalog cannot name compute."""
+    if RESIZE_CONFIRM_WINDOW <= 0:
+        return None
+    try:
+        return catalog.url("compute").rstrip("/")
+    except catalog.CatalogError as exc:
+        log.warning("compute: URL not resolved, resize sweep skipped this pass: %s", exc)
+        return None
+
+
+def resize_confirms(token: str, base: str) -> None:
+    """Confirm servers left in VERIFY_RESIZE longer than RESIZE_CONFIRM_WINDOW, through the public confirmResize."""
+    try:
+        r = requests.request("GET", f"{base}/internal/resize-pending", params={"seconds": RESIZE_CONFIRM_WINDOW},
+                             headers=internal_headers(), timeout=10)
+        r.raise_for_status()
+        items = r.json()["items"]
+    except Exception as exc:  # best-effort: skip the sweep, try again next pass
+        log.warning("compute: could not list pending resizes: %s", exc)
+        return
+    for it in items:
+        if DRY_RUN:
+            log.info("dry-run: would confirm resize %s", it["id"])
+            continue
+        try:
+            requests.request("POST", f"{base}/servers/{it['id']}/confirmResize", headers={"X-Auth-Token": token},
+                             timeout=30).raise_for_status()
+            log.info("confirmed resize %s (in VERIFY_RESIZE for over %ss)", it["id"], RESIZE_CONFIRM_WINDOW)
+        except Exception as exc:  # best-effort: e.g. 409 because the owner acted first; the rest still run
+            log.warning("could not confirm resize %s: %s", it["id"], exc)
 
 
 def backups(token: str, base: str) -> None:
@@ -110,7 +147,8 @@ def backups(token: str, base: str) -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
-    log.info("reaper started: max age %sh, every %ss, dry-run=%s", MAX_AGE_HOURS, INTERVAL, DRY_RUN)
+    log.info("reaper started: max age %sh, every %ss, resize confirm window %ss, dry-run=%s",
+             MAX_AGE_HOURS, INTERVAL, RESIZE_CONFIRM_WINDOW, DRY_RUN)
     while True:
         cycle()
         time.sleep(INTERVAL)

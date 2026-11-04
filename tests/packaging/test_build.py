@@ -152,6 +152,16 @@ def test_bind_units_ship_verbatim_in_dns_worker(debs, tmp_path):
     assert "cloudx-named" not in postinst
 
 
+def test_compute_worker_bundles_the_novnc_proxy_unit(debs, tmp_path):
+    deb = debs["cloudx-compute-worker"]
+    dpkg_deb("-x", str(deb), str(tmp_path))
+    proxy = tmp_path / "lib/systemd/system/cloudx-novnc-proxy.service"
+    assert proxy.read_text() == (ROOT / "etc/systemd/cloudx-novnc-proxy.service").read_text()
+    assert "novnc" in dpkg_deb("--field", str(deb), "Depends").strip().split(", ")
+    worker = (tmp_path / "lib/systemd/system/cloudx-compute-worker.service").read_text()
+    assert "cloudx-novnc-proxy.service" in next(l for l in worker.splitlines() if l.startswith("Wants="))
+
+
 def test_conffiles_are_declared(debs, tmp_path):
     conffiles = control_member(debs["cloudx-image-api"], "conffiles", tmp_path).splitlines()
     assert "/etc/cloudx/image-api/image-api.conf" in conffiles

@@ -300,6 +300,13 @@ catalog = "network"
 roles = ["controller"]
 
 [[unit]]
+name = "novnc-proxy"
+kind = "unit"
+bundle_with = "compute-worker"
+roles = []
+depends = ["novnc"]
+
+[[unit]]
 name = "object-store-api"
 kind = "api"
 dir = "object_store"
