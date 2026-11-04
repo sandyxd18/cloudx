@@ -7,10 +7,13 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ## Unreleased
 
 ### Fixed
-- **Volume and snapshot references are checked against the caller's project.** Booting from a volume, cloning a volume
-  or a snapshot, and attaching volumes through compute now require the volume to belong to the caller (or the caller to
-  be an admin or a service); the owner of an image made from a volume is the volume's project unless an admin says
-  otherwise. **Upgrade soon.**
+- **Volume and snapshot references are checked against the caller's project.** Booting from a volume, and cloning a
+  volume or a snapshot, now require the volume or snapshot to belong to the caller (or the caller to be an admin or a
+  service). Attaching a volume through `POST /volumes/{ref}/attach` also checks the target server's project. Compute's
+  `POST /servers/{ref}/volumes/attach` and `/detach` now accept only an admin or the internal token, whoever owns the
+  volume; users attach and detach through block-store's `POST /volumes/{ref}/attach` and `/detach`. The owner of an
+  image made from a volume is the volume's project unless an admin or a service names another one; a domain admin no
+  longer names it. **Upgrade soon.**
 
 ## 1.0.10-rc3 (2026-11-04)
 

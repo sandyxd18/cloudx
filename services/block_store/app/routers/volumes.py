@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from shared import policy
 from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
 from shared.catalog import CatalogError
+from shared.domain import can_see
 from shared.internal import internal_headers
 from sqlalchemy import select
 
@@ -254,6 +255,8 @@ def attach_volume(ref: str, payload: AttachIn, current: CurrentUser, db: DB):
     if volume.status == "in-use":
         raise HTTPException(status_code=409, detail="volume is already attached")
     server = get_server(payload.server)
+    if server.get("project_id") and not can_see(current, server["project_id"]):  # the server's project, not only the volume's
+        raise HTTPException(status_code=404, detail=f"server '{payload.server}' not found")
     _refuse_if_locked(server["id"], current)
     if server.get("status") not in {"ACTIVE", "SHUTOFF"}:
         raise HTTPException(

@@ -182,6 +182,14 @@ def test_an_admin_may_name_the_image_owner(env):
     assert uploaded_image(env)["project_id"] == "p2"
 
 
+def test_a_domain_admin_cannot_name_the_image_owner(env):
+    env.as_(DOMAIN_ADMIN)
+
+    assert upload(env, project_id="p2").status_code == 202
+
+    assert uploaded_image(env)["project_id"] == "p1"
+
+
 def test_the_internal_caller_may_name_the_image_owner(env):
     r = env.client.post("/volumes/src/upload-image", json={"image_name": "img", "project_id": "p2"}, headers=INTERNAL)
 
