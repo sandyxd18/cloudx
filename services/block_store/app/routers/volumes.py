@@ -68,7 +68,7 @@ def create_volume(payload: VolumeIn, current: UserOrInternal, db: DB):
         bootable=payload.bootable,
         volume_type=payload.volume_type,
     )
-    return _create_volume_record(db, internal, project_id=project_id, multiattach=payload.multiattach)
+    return _create_volume_record(db, internal, project_id=project_id, multiattach=payload.multiattach, current=current)
 
 
 @router.post("/internal/volumes", status_code=201, dependencies=[InternalAuth])

@@ -27,7 +27,8 @@ def upload_volume_image(ref: str, payload: ImageUploadIn, current: UserOrInterna
     the block-store-worker that owns the volume; the image appears when it ends, and a failure leaves the snapshot in
     `error` with the reason. Returns the snapshot."""
     volume = require_volume(db, ref, current)
-    image = {"name": payload.image_name, "project_id": payload.project_id or volume.project_id,
+    owner = payload.project_id if current.get("role") == "admin" else None  # only an admin or a service names the owner
+    image = {"name": payload.image_name, "project_id": owner or volume.project_id,
              "visibility": payload.visibility, "disk_format": "qcow2"}
     return _do_create_snapshot(db, ref, f"{payload.image_name}-root", upload_image=image)
 

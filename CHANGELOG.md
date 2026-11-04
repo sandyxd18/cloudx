@@ -6,6 +6,12 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Fixed
+- **Volume and snapshot references are checked against the caller's project.** Booting from a volume, cloning a volume
+  or a snapshot, and attaching volumes through compute now require the volume to belong to the caller (or the caller to
+  be an admin or a service); the owner of an image made from a volume is the volume's project unless an admin says
+  otherwise. **Upgrade soon.**
+
 ## 1.0.10-rc3 (2026-11-04)
 
 Release candidate, after 1.0.10-rc2 and not yet run on the lab: the same features, plus two image access fixes. Reading

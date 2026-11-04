@@ -93,7 +93,10 @@ def pick_lvm_host(db: Session, hosts: list[str] | None = None) -> str | None:
     return min(hosts, key=lambda h: used.get(h, 0))  # min() keeps the first host on ties
 
 
-def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: str | None = None, multiattach: bool = False) -> dict:
+def _create_volume_record(
+    db: Session, payload: VolumeInternalIn, project_id: str | None = None, multiattach: bool = False,
+    current: dict | None = None,
+) -> dict:
     if get_volume(db, payload.name):
         raise HTTPException(status_code=409, detail="volume already exists")
 
@@ -131,7 +134,7 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
         except CatalogError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
     elif snapshot_ref:
-        snap = require_snapshot(db, snapshot_ref)
+        snap = require_snapshot(db, snapshot_ref, current)
         if snap.status != "available" or not snap.path:
             raise HTTPException(status_code=409, detail=f"snapshot is not available (status={snap.status})")
         if payload.size_gb < snap.size_gb:
@@ -143,7 +146,7 @@ def _create_volume_record(db: Session, payload: VolumeInternalIn, project_id: st
         source = db.get(Volume, snap.volume_id)
         host = source.host if source else None
     elif source_vol_ref:
-        src = require_volume(db, source_vol_ref)
+        src = require_volume(db, source_vol_ref, current)
         if src.status != "available" or not src.path:
             raise HTTPException(status_code=409, detail=f"source volume must be available to clone (status={src.status})")
         if payload.size_gb < src.size_gb:
