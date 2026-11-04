@@ -16,6 +16,8 @@ class RuleError(ValueError):
 
 _TOKEN = re.compile(r"\(|\)|[^\s()]+")
 _OPERATORS = {"and", "or", "not"}
+# Bounds parser nesting and the depth of any tree that references()/evaluate() walk, so none can hit RecursionError.
+MAX_TOKENS = 200
 
 
 def _tokenize(text: str) -> list[str]:
@@ -41,6 +43,8 @@ def parse(text: str) -> Expr:
     tokens = _tokenize(text)
     if not tokens:
         raise RuleError("empty rule")
+    if len(tokens) > MAX_TOKENS:
+        raise RuleError("rule too long")
     pos = 0
 
     def peek() -> str | None:

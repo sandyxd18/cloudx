@@ -5,7 +5,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "services"))
 
-from shared.policy_rules import RuleError, evaluate, parse, references  # noqa: E402
+from shared.policy_rules import MAX_TOKENS, RuleError, evaluate, parse, references  # noqa: E402
 
 
 def no_rules(name):
@@ -132,3 +132,33 @@ def test_rule_error_messages_say_what_is_wrong():
     for text, message in cases.items():
         with pytest.raises(RuleError, match=message):
             parse(text)
+
+
+def test_rule_error_is_a_value_error():
+    assert issubclass(RuleError, ValueError)
+
+
+@pytest.mark.parametrize("text", [
+    "(" * 300 + "@" + ")" * 300,
+    "(" * 300,
+    "not " * 1000 + "@",
+    " and ".join(["@"] * 1000),
+])
+def test_oversized_rules_raise_rule_error_not_recursion_error(text):
+    with pytest.raises(RuleError, match="rule too long"):
+        parse(text)
+
+
+def test_rule_of_exactly_max_tokens_still_works():
+    assert MAX_TOKENS == 200
+    chain = "not @" + " or @" * 99  # 200 tokens, left-nested chain
+    assert len(chain.split()) == MAX_TOKENS
+    expr = parse(chain)
+    assert references(expr) == set()
+    assert evaluate(expr, {}, no_rules) is True
+    nots = "not " * 199 + "@"  # 200 tokens, deepest unary nesting
+    assert check(nots, {}) is False
+    nested = "(" * 99 + "@" + ")" * 99  # 199 tokens, deepest parenthesis nesting
+    assert check(nested, {}) is True
+    with pytest.raises(RuleError, match="rule too long"):
+        parse(chain + " or @")
