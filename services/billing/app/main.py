@@ -320,6 +320,11 @@ def _domain_default(user: dict, domain_id: str | None, project_id: str | None) -
     return domain_id
 
 
+def _may_use_domain(user: dict, domain_id: str) -> bool:
+    """A domain's consolidated invoice ("domain:<id>") belongs to the system admin and that domain's own admin."""
+    return user.get("role") == "admin" or (bool(user.get("domain_admin")) and domain_id == user.get("domain_id", "default"))
+
+
 def _scope(user: dict, project_id: str | None) -> str | None:
     """Admin may pick any project (or None = all); others are pinned to their own."""
     if user.get("role") == "admin":
@@ -486,8 +491,8 @@ def create_invoice(
     pids = None
     domain_id = _domain_default(user, domain_id, project_id)
     if domain_id:
-        if user.get("role") != "admin" and not user.get("domain_admin"):
-            raise HTTPException(status_code=403, detail="domain invoices need admin or domain admin")
+        if not _may_use_domain(user, domain_id):
+            raise HTTPException(status_code=403, detail="domain invoices need the admin or the admin of that domain")
         pids = visible_projects(user, domain_id)
     pid = f"domain:{domain_id}" if domain_id else _scope(user, project_id) or user.get("project_id") or "admin"
     now = datetime.now(timezone.utc)
@@ -576,7 +581,7 @@ def list_invoices(
     ids = _ids(user, project_id, domain_id)
     if ids is not None:
         # a domain's consolidated invoice is stored as project "domain:<id>"
-        q = q.where(Invoice.project_id.in_(ids + [f"domain:{domain_id}"] if domain_id else ids))
+        q = q.where(Invoice.project_id.in_(ids + [f"domain:{domain_id}"] if domain_id and _may_use_domain(user, domain_id) else ids))
     if status:
         q = q.where(Invoice.status == status)
     q = q.order_by(Invoice.created_at.desc(), Invoice.id.desc()).limit(limit).offset(offset)
