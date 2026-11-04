@@ -41,7 +41,7 @@ Only the actions you list change. An action that is not in the file keeps its bu
 
 A rule longer than 200 tokens (words and parentheses) is an error. An empty rule, an unknown word (`is_admin`), a missing name (`role:`) or an unbalanced parenthesis is an error too; the failure table below says what happens then.
 
-A token that has no `role` or no `domain_admin` claim does not match; it never raises an error.
+A missing claim is treated as absent: `role:x` is false, `domain_admin:True` is false and `domain_admin:False` is true, so `not role:x` is true. A missing claim never raises an error.
 
 ### Quote every rule
 
@@ -150,6 +150,8 @@ If the file disappears, the next check goes back to the built-in rules. If it is
 
 Run `cloudx-manage policy check` before you save the file where the service reads it.
 
+Every worker process of every node keeps its own clock and checks the file on its own (at most every 2 seconds), so after an edit workers and nodes can disagree for about two seconds, and each worker process logs a file error once.
+
 ## When the file is wrong
 
 The service never fails to start because of this file. Problems go to the logger `cloudx-policy` (ERROR or WARNING, so in `journalctl -u cloudx-auth-api` for a systemd unit). Each process logs them once for each change of the file: a broken file is not logged again at every check.
@@ -216,9 +218,15 @@ $ cloudx-manage policy defaults | tail -3
 
 Run `check` on every node after you change the file there.
 
+`check` reads the file with the permissions of whoever runs it. Run as root it cannot see a permission problem of the service user (`cloudx`, the user of the `auth-api` unit): a file that root can read but `cloudx` cannot would be reported as fine, while the service logs `cannot be read`. Check as the service user:
+
+```
+sudo -u cloudx cloudx-manage policy check
+```
+
 ## The API
 
-`GET /policy` (any valid token) returns the effective rule of each of the 22 actions and where it comes from:
+`GET /policy` returns the effective rule of each of the 22 actions and where it comes from:
 
 ```json
 {"policy": {"identity:user:create": "role:admin or domain_admin:True", "...": "..."},
@@ -227,7 +235,7 @@ Run `check` on every node after you change the file there.
 
 `sources` is `"file"` for an action whose rule comes from the file (even when the text equals the built-in rule) and `"default"` otherwise. Named rules are not listed.
 
-`POST /policy/enforce` (any valid token) says whether the caller's own token may perform an action:
+`POST /policy/enforce` says whether the caller's own token may perform an action. It takes a valid token like every `auth-api` route, and as a `POST` it is also subject to the checks above: a token with the `reader` role gets `403 reader role is read-only`, and a token issued from a trust is refused (`403 trust tokens cannot modify identity`). `GET /policy` has no such limit: any valid token, including a reader's and a trust's, can read it.
 
 ```json
 {"action": "identity:user:create"}
@@ -244,5 +252,7 @@ It answers `400 {"detail": "'action' is required"}` when `action` is missing or 
 - It applies to `auth-api` only. The other services keep their own checks, and their actions are not in the table; a later change brings them in.
 - It decides whether the caller may call the route. What the handler then returns stays in code and is not in the file: which rows a list shows, "owner or admin" checks, scoping to the caller's domain. There is no per-project policy and no rule that looks at the owner of a resource.
 - A rule can open an action to callers for whom the handler has no further scoping. Read the handler before you loosen a rule. For example, `GET /audit-logs` does not filter by caller, so `identity:audit-log:list: "role:member"` lets every member read the audit log of every project; and `GET /users` is scoped by the caller's domain, not by the caller, so opening `identity:user:list` to members shows each member every user of their domain.
-- You can lock yourself out. `"!"`, or a typo in a role name (`role:admn`), closes an action for everyone, admins included, and the change is live within seconds. Keep a session open while you edit, and run `cloudx-manage policy check` first.
+
+  The 11 admin-only actions are worse: their handlers have no domain scoping at all, because they were written for the system admin. Opening one to domain admins lets them act on every domain. For example, `identity:project:quota-set: "role:admin or domain_admin:True"` lets a domain admin change the quota of a project in any domain, and the same goes for `identity:domain:update`, `identity:domain:quota-set` and `identity:domain:quota-clear`, which then work on any domain, and for the catalog and audit-log actions, which are global.
+- You can lock yourself out. `"!"`, or a typo in a role name (`role:admn`), closes an action for everyone, admins included, and the change is live within seconds. Keep a root shell open on the node while you edit, and run `cloudx-manage policy check` first: an API session cannot undo a lock-out, because the policy cannot be changed through the API, so only a shell on the node can edit the file back.
 - The policy cannot be changed through the API; edit the file.
