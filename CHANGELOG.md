@@ -6,6 +6,15 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+## 1.0.10-rc3 (2026-11-04)
+
+Release candidate, after 1.0.10-rc2 and not yet run on the lab: the same features, plus two image access fixes. Reading
+a non-public image needs the right to read it (a public image stays readable without signing in), and booting from,
+rebuilding or rescuing with, and creating a volume from an image need it too. **Upgrade soon.** Upgrade the compute
+and block-store workers before or soon after the node that runs `image-api`: until a node's workers are new, a boot from
+a private image on it answers `404`. No schema change beyond rc1's three. The notes, with the upgrade steps and what was
+and was not tested, are in `docs/releases/v1.0.10.md`.
+
 ### Fixed
 - **Reading a non-public image needs a login and the right to read it.** On `image-api`, `GET /images/{image}`, its
   `download`, `tags`, `verify`, `members` and `prefetch` now answer only to the image's owner, an admin of the owner's
