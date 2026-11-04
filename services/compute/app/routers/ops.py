@@ -1,9 +1,11 @@
 """Nova operator surface: instance actions, os-services, limits, cold migrate, evacuate."""
 from datetime import datetime, timedelta
+from typing import Annotated
 
 import requests
-from fastapi import APIRouter, HTTPException, Request
-from shared.auth_middleware import AdminOrInternal, AdminUser, CurrentUser, InternalAuth, UserOrInternal
+from fastapi import APIRouter, Depends, HTTPException, Request
+from shared import policy
+from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal, require_user_or_internal
 from shared.internal import internal_headers
 from sqlalchemy import select
 
@@ -125,7 +127,7 @@ def get_quota_set(project: str, current: CurrentUser):
 
 
 @router.put("/os-quota-sets/{project}")
-def update_quota_set(project: str, payload: dict, request: Request, _: AdminUser):
+def update_quota_set(project: str, payload: dict, request: Request, _: Annotated[dict, Depends(policy.require("compute:quota:set"))]):
     body = payload.get("quota_set", payload)
     unknown = set(body) - set(QUOTA_MAP) - {"force"}
     if unknown:
@@ -146,7 +148,7 @@ def list_services(_: UserOrInternal, db: DB):
 
 
 @router.put("/os-services/{host}")
-def update_service(host: str, payload: ServiceUpdateIn, _: AdminOrInternal, db: DB):
+def update_service(host: str, payload: ServiceUpdateIn, _: Annotated[dict, Depends(policy.require("compute:service:update", authenticate=require_user_or_internal))], db: DB):
     row = db.get(ComputeService, host) or ComputeService(host=host, disabled=False, forced_down=False)
     db.add(row)
     for k, v in payload.model_dump(exclude_unset=True).items():
@@ -218,10 +220,10 @@ def _relocate(ref: str, host: str | None, current: dict, db, evacuate: bool) -> 
 
 
 @router.post("/servers/{ref}/migrate", status_code=202)
-def migrate(ref: str, current: AdminUser, db: DB, payload: MoveIn | None = None):
+def migrate(ref: str, current: Annotated[dict, Depends(policy.require("compute:server:migrate"))], db: DB, payload: MoveIn | None = None):
     return _relocate(ref, payload.host if payload else None, current, db, False)
 
 
 @router.post("/servers/{ref}/evacuate", status_code=202)
-def evacuate(ref: str, current: AdminOrInternal, db: DB, payload: MoveIn | None = None):
+def evacuate(ref: str, current: Annotated[dict, Depends(policy.require("compute:server:evacuate", authenticate=require_user_or_internal))], db: DB, payload: MoveIn | None = None):
     return _relocate(ref, payload.host if payload else None, current, db, True)

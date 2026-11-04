@@ -1,5 +1,8 @@
-from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import AdminUser, CurrentUser
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+from shared import policy
+from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -51,7 +54,9 @@ def get_quota(project_id: str, current: CurrentUser, db: DB, usage: bool = False
 
 
 @router.put("/os-quota-sets/{project_id}")
-def update_quota(project_id: str, payload: QuotaIn, _: AdminUser, db: DB):
+def update_quota(
+    project_id: str, payload: QuotaIn, _: Annotated[dict, Depends(policy.require("block-store:quota:set"))], db: DB
+):
     """Set quota limits for a project (admin only)."""
     quota = db.get(VolumeQuota, project_id)
     if not quota:
@@ -69,7 +74,7 @@ def update_quota(project_id: str, payload: QuotaIn, _: AdminUser, db: DB):
 
 
 @router.delete("/os-quota-sets/{project_id}", status_code=204)
-def delete_quota(project_id: str, _: AdminUser, db: DB):
+def delete_quota(project_id: str, _: Annotated[dict, Depends(policy.require("block-store:quota:clear"))], db: DB):
     """Reset quota to defaults by deleting the override row."""
     quota = db.get(VolumeQuota, project_id)
     if quota:

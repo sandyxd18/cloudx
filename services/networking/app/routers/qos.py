@@ -1,6 +1,9 @@
 
-from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import AdminUser, CurrentUser
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+from shared import policy as policy_rules  # `policy` is a local name in this module
+from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 
 from .. import ovn_cli
@@ -64,7 +67,11 @@ def show_qos_policy(policy_id: str, current: CurrentUser, db: DB):
     return _qos_to_dict(policy, rules)
 
 @router.delete("/qos/policies/{policy_id}", status_code=204)
-def delete_qos_policy(policy_id: str, _: AdminUser, db: DB):
+def delete_qos_policy(
+    policy_id: str,
+    _: Annotated[dict, Depends(policy_rules.require("networking:qos-policy:delete"))],
+    db: DB,
+):
     policy = db.get(QosPolicy, policy_id)
     if not policy:
         raise HTTPException(status_code=404, detail="QoS policy not found")

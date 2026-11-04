@@ -29,7 +29,8 @@ from sqlalchemy import Boolean, DateTime, Float, Integer, String, ForeignKey, cr
 from sqlalchemy.dialects.postgresql import array_agg as pg_array_agg, aggregate_order_by
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
-from shared.auth_middleware import AdminOrInternal, AdminUser, CurrentUser, UserOrInternal
+from shared import policy
+from shared.auth_middleware import AdminOrInternal, CurrentUser, UserOrInternal
 from shared.metrics import check_metrics_token
 from shared.schema import require_schema
 
@@ -236,7 +237,11 @@ def _scope_ids(user: dict, project_id: str | None) -> list[str] | None:
 # ── API Endpoints ─────────────────────────────────────────────────────────────
 
 @app.post("/telemetry/metrics", response_model=MetricOut, status_code=status.HTTP_201_CREATED)
-def create_metric(user: AdminUser, data: MetricIn, db: DB):
+def create_metric(
+    user: Annotated[dict, Depends(policy.require("telemetry:metric:create"))],
+    data: MetricIn,
+    db: DB,
+):
     metric = TelemetryMetric(**data.model_dump())
     db.add(metric)
     db.commit()
@@ -650,7 +655,7 @@ def delete_alarm(alarm_id: str, user: CurrentUser, db: DB):
 
 
 @app.post("/telemetry/alarms/evaluate")
-def evaluate_now(user: AdminUser, db: DB):
+def evaluate_now(user: Annotated[dict, Depends(policy.require("telemetry:alarm:evaluate"))], db: DB):
     return {"changed": evaluate_alarms(db)}
 
 

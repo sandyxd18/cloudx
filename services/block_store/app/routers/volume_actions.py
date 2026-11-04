@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from shared import policy
 from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 
@@ -60,8 +61,7 @@ def volume_action(ref: str, payload: dict, current: CurrentUser, db: DB):
 
     # ── os-force_delete ────────────────────────────────────────────────────
     elif "os-force_delete" in payload:
-        if current.get("role") != "admin":
-            raise HTTPException(status_code=403, detail="admin role required for force_delete")
+        policy.check("block-store:volume:force-delete", current)
         volume.status = "deleting"
         db.commit()
         clients.cast_to_worker("delete_volume", {
@@ -74,8 +74,7 @@ def volume_action(ref: str, payload: dict, current: CurrentUser, db: DB):
 
     # ── os-reset_status ────────────────────────────────────────────────────
     elif "os-reset_status" in payload:
-        if current.get("role") != "admin":
-            raise HTTPException(status_code=403, detail="admin role required for reset_status")
+        policy.check("block-store:volume:reset-status", current)
         new_status = payload["os-reset_status"].get("status", "available")
         valid_statuses = {"available", "in-use", "error", "creating", "deleting", "extending"}
         if new_status not in valid_statuses:

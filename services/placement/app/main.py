@@ -20,7 +20,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth
+from shared import policy
+from shared.auth_middleware import CurrentUser, InternalAuth
 from shared.schema import require_schema
 from shared.cors import cors_origins
 from fastapi import Depends, FastAPI, HTTPException
@@ -374,7 +375,11 @@ def list_rps_internal(
 
 
 @app.post("/resource_providers", status_code=201)
-def create_rp(payload: RPIn, _: AdminUser, db: DB):
+def create_rp(
+    payload: RPIn,
+    _: Annotated[dict, Depends(policy.require("placement:resource-provider:create"))],
+    db: DB,
+):
     return create_rp_internal(payload, db)
 
 
@@ -482,7 +487,11 @@ def list_compute_nodes(_: CurrentUser, db: DB):
 
 
 @app.delete("/resource_providers/{rp_uuid}", status_code=204)
-def delete_rp(rp_uuid: str, _: AdminUser, db: DB):
+def delete_rp(
+    rp_uuid: str,
+    _: Annotated[dict, Depends(policy.require("placement:resource-provider:delete"))],
+    db: DB,
+):
     rp = _get_rp(db, rp_uuid)
     # like OpenStack placement: a provider that still serves instances or has child providers cannot be deleted
     if db.scalar(select(Allocation.id).where(Allocation.resource_provider_id == rp.uuid).limit(1)):
@@ -498,7 +507,12 @@ def delete_rp(rp_uuid: str, _: AdminUser, db: DB):
 
 # ── Inventories ────────────────────────────────────────────────────────────────
 @app.put("/resource_providers/{rp_uuid}/inventories")
-def set_inventories(rp_uuid: str, payload: InventoriesIn, _: AdminUser, db: DB):
+def set_inventories(
+    rp_uuid: str,
+    payload: InventoriesIn,
+    _: Annotated[dict, Depends(policy.require("placement:inventory:set"))],
+    db: DB,
+):
     rp = _get_rp(db, rp_uuid)
     # Delete existing inventories
     existing = db.scalars(select(Inventory).where(Inventory.resource_provider_id == rp.uuid)).all()
@@ -694,7 +708,11 @@ def set_aggregates(rp_uuid: str, payload: dict, _: CurrentUser, db: DB):
 
 # ── Allocations ───────────────────────────────────────────────────────────────
 @app.post("/allocations", status_code=201)
-def create_allocations(payload: AllocationIn, _: AdminUser, db: DB):
+def create_allocations(
+    payload: AllocationIn,
+    _: Annotated[dict, Depends(policy.require("placement:allocation:create"))],
+    db: DB,
+):
     """Claim resources for a consumer (server)."""
     # Delete any existing allocations for this consumer
     existing = db.scalars(
@@ -793,7 +811,11 @@ def get_allocations(consumer_uuid: str, _: CurrentUser, db: DB):
 
 
 @app.delete("/allocations/{consumer_uuid}", status_code=204)
-def delete_allocations(consumer_uuid: str, _: AdminUser, db: DB):
+def delete_allocations(
+    consumer_uuid: str,
+    _: Annotated[dict, Depends(policy.require("placement:allocation:delete"))],
+    db: DB,
+):
     """Release all resources for a consumer (server deleted)."""
     allocations = db.scalars(
         select(Allocation).where(Allocation.consumer_uuid == consumer_uuid)

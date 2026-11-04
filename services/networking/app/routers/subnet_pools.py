@@ -1,5 +1,8 @@
-from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import AdminUser, CurrentUser
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+from shared import policy
+from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 
 from ..db import DB
@@ -57,7 +60,11 @@ def show_subnet_pool(pool_id: str, current: CurrentUser, db: DB):
     return _pool_to_dict(pool)
 
 @router.delete("/subnetpools/{pool_id}", status_code=204)
-def delete_subnet_pool(pool_id: str, _: AdminUser, db: DB):
+def delete_subnet_pool(
+    pool_id: str,
+    _: Annotated[dict, Depends(policy.require("networking:subnet-pool:delete"))],
+    db: DB,
+):
     pool = db.get(SubnetPool, pool_id)
     if not pool:
         raise HTTPException(status_code=404, detail="subnet pool not found")

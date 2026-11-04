@@ -1,7 +1,9 @@
 import json
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import AdminUser, CurrentUser
+from fastapi import APIRouter, Depends, HTTPException
+from shared import policy
+from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 
 from ..db import DB
@@ -20,7 +22,7 @@ def _flavor(f: Flavor) -> dict:
 
 
 @router.post("/flavors", status_code=201)
-def create_flavor(payload: FlavorIn, _: AdminUser, db: DB):
+def create_flavor(payload: FlavorIn, _: Annotated[dict, Depends(policy.require("compute:flavor:create"))], db: DB):
     if get_flavor(db, payload.name):
         raise HTTPException(status_code=409, detail="flavor already exists")
     flavor = Flavor(**{**payload.model_dump(), "extra_specs": json.dumps(payload.extra_specs)})
@@ -46,7 +48,7 @@ def get_extra_specs(ref: str, _: CurrentUser, db: DB):
 
 
 @router.post("/flavors/{ref}/os-extra_specs")
-def set_extra_specs(ref: str, payload: dict, _: AdminUser, db: DB):
+def set_extra_specs(ref: str, payload: dict, _: Annotated[dict, Depends(policy.require("compute:flavor-extra-spec:set"))], db: DB):
     flavor = require_flavor(db, ref)
     specs = payload.get("extra_specs")
     if not isinstance(specs, dict):
@@ -58,7 +60,7 @@ def set_extra_specs(ref: str, payload: dict, _: AdminUser, db: DB):
 
 
 @router.delete("/flavors/{ref}/os-extra_specs/{key}", status_code=204)
-def delete_extra_spec(ref: str, key: str, _: AdminUser, db: DB):
+def delete_extra_spec(ref: str, key: str, _: Annotated[dict, Depends(policy.require("compute:flavor-extra-spec:delete"))], db: DB):
     flavor = require_flavor(db, ref)
     specs = json.loads(flavor.extra_specs or "{}")
     if key not in specs:
@@ -68,7 +70,7 @@ def delete_extra_spec(ref: str, key: str, _: AdminUser, db: DB):
     db.commit()
 
 @router.delete("/flavors/{ref}")
-def delete_flavor(ref: str, _: AdminUser, db: DB):
+def delete_flavor(ref: str, _: Annotated[dict, Depends(policy.require("compute:flavor:delete"))], db: DB):
     flavor = require_flavor(db, ref)
     db.delete(flavor)
     db.commit()

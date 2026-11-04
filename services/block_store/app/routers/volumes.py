@@ -1,6 +1,9 @@
+from typing import Annotated
+
 import requests
-from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth, UserOrInternal
+from fastapi import APIRouter, Depends, HTTPException
+from shared import policy
+from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
 from shared.catalog import CatalogError
 from shared.internal import internal_headers
 from sqlalchemy import select
@@ -228,7 +231,9 @@ def detach_server_volumes(server_id: str, db: DB):
 
 
 @router.post("/volumes/{ref}/force-detach")
-def force_detach_volume(ref: str, _: AdminUser, db: DB):
+def force_detach_volume(
+    ref: str, _: Annotated[dict, Depends(policy.require("block-store:volume:force-detach"))], db: DB
+):
     volume = require_volume(db, ref)
     volume.attached_to_server_id = None
     volume.target_device = None

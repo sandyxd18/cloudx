@@ -26,7 +26,8 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, create_engine, tex
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
-from shared.auth_middleware import CurrentUser, AdminUser, OptionalAuth
+from shared import policy
+from shared.auth_middleware import CurrentUser, OptionalAuth
 from shared.schema import require_schema
 from shared.request_id_middleware import RequestIDMiddleware
 from shared.cors import cors_origins
@@ -249,7 +250,11 @@ def _object_to_dict(o: ObjectMeta) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.post("/admin/bucket-types", status_code=201)
-def create_bucket_type(payload: BucketTypeIn, _: AdminUser, db: DB):
+def create_bucket_type(
+    payload: BucketTypeIn,
+    _: Annotated[dict, Depends(policy.require("object-store:bucket-type:create"))],
+    db: DB,
+):
     if db.query(BucketType).filter_by(name=payload.name).first():
         raise HTTPException(status_code=409, detail="bucket type already exists")
     bt = BucketType(
@@ -290,7 +295,11 @@ def show_bucket_type(ref: str, current: CurrentUser, db: DB):
 
 
 @app.delete("/admin/bucket-types/{ref}", status_code=204)
-def delete_bucket_type(ref: str, _: AdminUser, db: DB):
+def delete_bucket_type(
+    ref: str,
+    _: Annotated[dict, Depends(policy.require("object-store:bucket-type:delete"))],
+    db: DB,
+):
     bt = db.query(BucketType).filter_by(id=ref).first()
     if not bt:
         raise HTTPException(status_code=404, detail="bucket type not found")

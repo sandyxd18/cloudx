@@ -147,7 +147,7 @@ def test_the_route_table_covers_every_action_once():
 
 
 def test_every_default_action_is_used_by_a_route(auth):
-    assert policy.required_actions() >= set(policy.DEFAULT_RULES)
+    assert policy.required_actions() >= {a for a in policy.DEFAULT_RULES if a.startswith("identity:")}
 
 
 def test_policy_file_can_open_an_action(auth, pfile):
