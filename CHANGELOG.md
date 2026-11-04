@@ -30,6 +30,13 @@ browser console now needs the `novnc` package and port 6080 on every compute nod
   (`AUTH_TOKEN_EXPIRE_HOURS`), but never past the trust's own expiry (`expires_in` reports the real lifetime).
 - Dashboard pages for Trunks, QoS policies and Subnet pools under Networking.
 
+### Fixed
+- **An application credential carries only roles its user holds.** `roles` are now checked when the credential is
+  created (400 for an invalid list, 403 for a role the user does not hold) and again at every login, where the token gets
+  the credential's roles that the user still holds (401 when none is left). Credentials created by an earlier version are
+  trimmed the same way at login; no migration is needed. Upgrade soon: a credential could be created with more roles than
+  its user had.
+
 ### Changed
 - **The browser console works through a proxy on the compute node.** `console-url` and `remote-consoles` return
   `http://<console_proxy_host>:6080/vnc.html?autoconnect=1&path=websockify%3Ftoken=<token>`. The new unit

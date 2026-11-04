@@ -37,6 +37,12 @@ Errors:
 
 A domain-scoped token has no project, so a service that works per project cannot use it. `auth-api` and `billing-api` accept it; every other service answers `403 project-scoped token required`. On `auth-api`, `POST /groups` and `POST /access-keys` also refuse it. (A service opts in with `ACCEPT_DOMAIN_SCOPE=true` in its environment; `billing-api` sets it itself.)
 
+## Roles of an application credential
+
+The `roles` of an application credential must be a non-empty list without duplicates from `admin`, `member` and `reader` (400 otherwise), and the credential's user must hold every one of them in their project (403 otherwise; `admin` covers `member` and `reader`). When an admin creates a credential for another user, the roles are checked against that user, not against the admin. If `roles` is left out, the credential gets `["member"]`, or the user's own role when they do not hold `member`.
+
+The check is made again at every login: the token carries only the credential's roles that the user still holds at that moment, and the login answers 401 when none is left. A credential therefore loses power when its user is demoted, and credentials created by an older version with roles the user never held give no more than the user has.
+
 ## Rotating an application credential
 
 ```bash

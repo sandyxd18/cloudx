@@ -9,8 +9,8 @@ from ..db import DB
 from ..deps import CurrentUser, scope_domain
 from ..lookups import _get_user_by_ref
 from ..models import ApplicationCredential, User, utcnow
-from ..schemas import AppCredIn, AppCredTokenIn, RotateIn
-from ..tokens import _create_token, _hash_password, _verify_password
+from ..schemas import ROLES, AppCredIn, AppCredTokenIn, RotateIn
+from ..tokens import _create_token, _hash_password, _verify_password, project_role, role_held
 
 router = APIRouter()
 
@@ -34,6 +34,18 @@ def _appcred_to_dict(ac: "ApplicationCredential", secret: str | None = None) -> 
     return d
 
 
+
+def _credential_roles(db, user: User, requested: list[str] | None) -> list[str]:
+    """Roles for a new credential: a default when none were asked for, otherwise exactly the roles the user holds."""
+    if requested is None:
+        return ["member"] if role_held(db, user, user.project_id, "member") else [project_role(db, user, user.project_id)]
+    if not requested or len(set(requested)) != len(requested) or any(r not in ROLES for r in requested):
+        raise HTTPException(status_code=400, detail=f"roles must be a non-empty list of distinct values from: {', '.join(ROLES)}")
+    if not all(role_held(db, user, user.project_id, r) for r in requested):
+        raise HTTPException(status_code=403, detail="a credential cannot carry a role its user does not hold")
+    return requested
+
+
 @router.post("/v3/users/{user_ref}/application_credentials", status_code=201)
 def create_app_credential(user_ref: str, payload: AppCredIn, current: CurrentUser, db: DB):
     """Create an application credential for a user."""
@@ -46,6 +58,7 @@ def create_app_credential(user_ref: str, payload: AppCredIn, current: CurrentUse
         ApplicationCredential.user_id == u.id,
     )):
         raise HTTPException(status_code=409, detail="application credential name already exists for this user")
+    roles = _credential_roles(db, u, payload.roles)
     # Generate a random secret
     secret_plain = secrets.token_urlsafe(32)
     expires_dt: datetime | None = None
@@ -59,7 +72,7 @@ def create_app_credential(user_ref: str, payload: AppCredIn, current: CurrentUse
         description=payload.description,
         user_id=u.id,
         project_id=u.project_id,
-        roles=",".join(payload.roles) if payload.roles else "member",
+        roles=",".join(roles),
         secret_hash=_hash_password(secret_plain),
         expires_at=expires_dt,
     )
@@ -173,6 +186,9 @@ def login_with_app_credential(payload: AppCredTokenIn, db: DB):
     user = db.get(User, ac.user_id)
     if not user or not user.enabled:
         raise HTTPException(status_code=403, detail="user disabled")
-    roles = ac.roles.split(",") if ac.roles else ["member"]
+    # the credential never grants more than its user holds right now (older rows may carry roles that were never checked)
+    roles = [r for r in (ac.roles.split(",") if ac.roles else ["member"]) if role_held(db, user, user.project_id, r)]
+    if not roles:
+        raise HTTPException(status_code=401, detail="the application credential has no role its user still holds")
     token = _create_token(user, scope_type="project", extra_roles=roles)
     return {"token": token, "expires_in": TOKEN_EXPIRE_H * 3600, "method": "application_credential"}
