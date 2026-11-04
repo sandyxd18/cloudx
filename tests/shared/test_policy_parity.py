@@ -57,8 +57,8 @@ def no_policy_file(tmp_path, monkeypatch):
     policy.reset()
 
 
-def test_the_two_groups_cover_exactly_the_default_actions():
-    assert ADMIN_OR_DOMAIN_ADMIN | ADMIN_ONLY == set(policy.DEFAULT_RULES)
+def test_the_two_groups_cover_exactly_the_identity_actions():
+    assert ADMIN_OR_DOMAIN_ADMIN | ADMIN_ONLY == {a for a in policy.DEFAULT_RULES if a.startswith("identity:")}
     assert ADMIN_OR_DOMAIN_ADMIN & ADMIN_ONLY == set()
 
 

@@ -20,7 +20,8 @@ import os
 import stat
 import threading
 import time
-from typing import Callable, NamedTuple
+from types import MappingProxyType
+from typing import Callable, Mapping, NamedTuple
 
 import yaml
 from fastapi import Depends, HTTPException
@@ -32,7 +33,54 @@ _log = logging.getLogger("cloudx-policy")
 _ADMIN_OR_DOMAIN_ADMIN = "role:admin or domain_admin:True"
 _ADMIN = "role:admin"
 
-DEFAULT_RULES: dict[str, str] = {
+_NEW_ADMIN_ACTIONS = (
+    # compute
+    "compute:flavor:create",
+    "compute:flavor:delete",
+    "compute:flavor-extra-spec:set",
+    "compute:flavor-extra-spec:delete",
+    "compute:aggregate:create",
+    "compute:aggregate:update",
+    "compute:aggregate:delete",
+    "compute:aggregate:action",
+    "compute:quota:set",
+    "compute:service:update",
+    "compute:server:migrate",
+    "compute:server:evacuate",
+    # block-store
+    "block-store:volume-type:create",
+    "block-store:volume-type:update",
+    "block-store:volume-type:delete",
+    "block-store:quota:set",
+    "block-store:quota:clear",
+    "block-store:volume:force-detach",
+    "block-store:volume:force-delete",
+    "block-store:volume:reset-status",
+    # placement
+    "placement:resource-provider:create",
+    "placement:resource-provider:delete",
+    "placement:inventory:set",
+    "placement:allocation:create",
+    "placement:allocation:delete",
+    # billing
+    "billing:rating-sheet:create",
+    "billing:rating-sheet:update",
+    "billing:usage-record:create",
+    # networking
+    "networking:qos-policy:delete",
+    "networking:subnet-pool:delete",
+    # object-store
+    "object-store:bucket-type:create",
+    "object-store:bucket-type:delete",
+    # telemetry
+    "telemetry:metric:create",
+    "telemetry:alarm:evaluate",
+    # ha
+    "ha:host:reset",
+)
+
+# Read-only: no caller can add or change an action at runtime.
+DEFAULT_RULES: Mapping[str, str] = MappingProxyType({
     **{
         action: _ADMIN_OR_DOMAIN_ADMIN
         for action in (
@@ -65,7 +113,8 @@ DEFAULT_RULES: dict[str, str] = {
             "identity:audit-log:list",
         )
     },
-}
+    **{action: _ADMIN for action in _NEW_ADMIN_ACTIONS},
+})
 
 CHECK_INTERVAL = 2.0  # seconds between two stat() calls of the policy file
 MAX_REFERENCE_DEPTH = 10  # rule:NAME hops in a row
@@ -467,6 +516,15 @@ def defaults_yaml() -> str:
     return _HEADER + "".join(f'# {action}: "{rule}"\n' for action, rule in DEFAULT_RULES.items())
 
 
+def check(action: str, token: dict) -> None:
+    """For a gate that cannot be a route dependency: 403 "Policy does not allow <action>" unless the policy allows it.
+
+    KeyError for an action that does not exist, like authorize().
+    """
+    if not authorize(action, token):
+        raise HTTPException(status_code=403, detail=f"Policy does not allow {action}")
+
+
 _required: set[str] = set()
 
 
@@ -485,10 +543,10 @@ def require(action: str, authenticate: Callable | None = None) -> Callable:
     _required.add(action)
 
     def dependency(token: dict = Depends(authenticate)) -> dict:
-        if not authorize(action, token):
-            raise HTTPException(status_code=403, detail=f"Policy does not allow {action}")
+        check(action, token)
         return token
 
+    dependency.action = action  # lets a test read which action gates a route without calling it
     return dependency
 
 

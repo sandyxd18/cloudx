@@ -8,7 +8,7 @@ from shared import manage, policy
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / "etc" / "cloudx" / "policy.yaml.sample"
-ACTION_LINE = re.compile(r'^# (identity:[a-z-]+:[a-z-]+: ".*")$')
+ACTION_LINE = re.compile(r'^# ([a-z-]+:[a-z-]+:[a-z-]+: ".*")$')
 
 
 @pytest.fixture(autouse=True)
@@ -147,7 +147,7 @@ def test_defaults_prints_every_action_commented(capsys):
     assert status == 0
     commented = [line for line in lines if ACTION_LINE.match(line)]
     assert commented == [f'# {action}: "{rule}"' for action, rule in policy.DEFAULT_RULES.items()]
-    assert len(commented) == 22
+    assert len(commented) == 57
 
 
 def test_defaults_output_is_policy_defaults_yaml_without_an_extra_newline(capsys):

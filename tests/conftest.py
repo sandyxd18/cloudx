@@ -52,6 +52,26 @@ def _reset_catalog_client():
     reset()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_policy(monkeypatch, tmp_path):
+    """Policy state is process-global: a real /etc/cloudx/policy.yaml or a rule cache left by an earlier test
+    must not change the next one. Points CLOUDX_POLICY_FILE at a path that does not exist and resets
+    whichever copies of the engine are loaded (`shared.policy`, `services.shared.policy`), importing nothing.
+    """
+    import sys
+
+    def reset():
+        for name in ("shared.policy", "services.shared.policy"):
+            module = sys.modules.get(name)
+            if module is not None:
+                module.reset()
+
+    monkeypatch.setenv("CLOUDX_POLICY_FILE", str(tmp_path / "absent-policy.yaml"))
+    reset()
+    yield
+    reset()
+
+
 @pytest.fixture
 def networking(monkeypatch, tmp_path):
     """networking-api freshly imported on a sqlite DB (see tests/stack.py)."""
