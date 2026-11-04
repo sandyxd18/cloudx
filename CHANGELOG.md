@@ -31,6 +31,12 @@ browser console now needs the `novnc` package and port 6080 on every compute nod
 - Dashboard pages for Trunks, QoS policies and Subnet pools under Networking.
 
 ### Fixed
+- **An application credential is reached through its own user only.** `GET` and `DELETE
+  /v3/users/{user}/application_credentials/{cred}` looked a credential up by id without checking its owner, so a user
+  could show or delete another user's credential through their own user reference; they now answer 404, as rotate
+  already did. A login by `application_credential_name` alone now tries every enabled credential of that name (at most
+  5) and accepts the one whose secret fits, instead of failing when another user's credential of the same name is found
+  first.
 - **An application credential carries only roles its user holds.** `roles` are now checked when the credential is
   created (400 for an invalid list, 403 for a role the user does not hold) and again at every login, where the token gets
   the credential's roles that the user still holds (401 when none is left). Credentials created by an earlier version are
