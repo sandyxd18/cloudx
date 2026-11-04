@@ -16,6 +16,9 @@ SINGLE_MODULE_SERVICES = ("placement", "billing", "telemetry", "object_store", "
 
 
 def _import_every_service(monkeypatch, tmp_path):
+    # start from an empty registry (put back afterwards): require() calls made by other tests must not count
+    monkeypatch.setattr(policy, "_required", set())
+    monkeypatch.setenv("ACCEPT_DOMAIN_SCOPE", "true")  # billing sets it at import; this way it is undone afterwards
     monkeypatch.setenv("VOLUME_STORE_PATH", str(tmp_path / "volumes"))
     monkeypatch.setenv("REVOCATION_CHECK", "false")
     monkeypatch.setenv("INTERNAL_TOKEN", "service-token")
