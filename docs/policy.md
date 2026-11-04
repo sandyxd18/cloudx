@@ -123,7 +123,7 @@ A denied request answers `403` with `{"detail": "Policy does not allow <action>"
 
 Every one of them has the built-in rule `role:admin`, the exact check the route had before (`role` claim equal to `admin`; `domain_admin` was never looked at). A domain admin who is not an admin gets `403` on all of them until a rule says otherwise, for example `role:admin or domain_admin:True`. The internal token (`X-Internal-Token`, used by the HA monitor) counts as a token with `role: admin` on the two routes that accept it, `compute:service:update` and `compute:server:evacuate`.
 
-The same checks run before the policy on every service and a rule cannot change them: an invalid or missing token is `401`, a token with the `reader` role gets `403 reader role is read-only` on `POST`, `PUT`, `PATCH` and `DELETE` (so no rule can open one of these actions to a reader), and a domain-scoped token is refused with `403 project-scoped token required` by every service except `auth-api` and billing.
+The same checks run before the policy on every service and a rule cannot change them: an invalid or missing token is `401`, a token with the `reader` role gets `403 reader role is read-only` on `POST`, `PUT`, `PATCH` and `DELETE` (so no rule can open one of these actions to a reader), and a domain-scoped token is refused with `403 project-scoped token required` by every service except `auth-api` and billing, unless that service's environment sets `ACCEPT_DOMAIN_SCOPE=true`. Where it is refused, a domain admin can use `domain_admin:True` in a rule only with a project-scoped token.
 
 #### compute
 
@@ -157,7 +157,7 @@ The same checks run before the policy on every service and a rule cannot change 
 | `block-store:volume:force-delete` | `POST /volumes/{ref}/action` with `os-force_delete` | `role:admin` |
 | `block-store:volume:reset-status` | `POST /volumes/{ref}/action` with `os-reset_status` | `role:admin` |
 
-The last two are sub-actions of one route; its other sub-actions (`os-migrate_volume`, `os-extend_volume`, `revert`, `os-retype`) are not in the file and keep their checks in code. The two are decided after the volume is found, so a member who asks for another project's volume still gets `404`, and `403 Policy does not allow block-store:volume:force-delete` (or `...:reset-status`) on a volume of their own.
+The last two are sub-actions of one route; its other sub-actions (`os-migrate_volume`, `os-extend_volume`, `revert`, `os-retype`) are not in the file and keep whatever checks they had (ownership, volume state). The two are decided after the volume is found, so a member who asks for another project's volume still gets `404`, and `403 Policy does not allow block-store:volume:force-delete` (or `...:reset-status`) on a volume of their own.
 
 #### placement
 
@@ -236,7 +236,7 @@ Let members delete QoS policies of networking (admins still can):
 networking:qos-policy:delete: "role:admin or role:member"
 ```
 
-The file is the same for every service: a node that runs `networking-api` needs it, an `auth-api` node does not read this line. Without the line a member gets `403 Policy does not allow networking:qos-policy:delete`; the networking tests check that a rule of `role:member` for this action turns that into `204`.
+The file is the same for every service: a node that runs `networking-api` needs it, an `auth-api` node reads the line (`GET /policy` reports it) but enforces nothing on it. Without the line a member gets `403 Policy does not allow networking:qos-policy:delete`; the networking tests check that a rule of `role:member` for this action turns that into `204`.
 
 The first three examples were run together against `auth-api`: a domain admin got `403 Policy does not allow identity:project:delete` on `DELETE /projects/{ref}`, an admin got 403 on `GET /audit-logs`, and `GET /users` answered 200 to an admin and to a domain admin and 403 to a member.
 
@@ -368,6 +368,6 @@ It answers `400 {"detail": "'action' is required"}` when `action` is missing or 
 The rules are what they say: `"!"` closes an action for the internal token as well, and no rule is refused for being unwise. `cloudx-manage policy check` lists every rule that differs from the default. Four cases are worth knowing before you edit:
 
 - **HA recovery uses the internal token.** The HA monitor calls `PUT /os-services/{host}` (`compute:service:update`, to mark a dead host `forced_down`) and then `POST /servers/{ref}/evacuate` (`compute:server:evacuate`) with the internal token. The token is turned into claims with `role: admin` and evaluated by the same rule as a user's token. A rule of `"!"`, or one without `role:admin` (`role:operator`, `role:member`), makes both calls answer `403`, and a failed host is no longer fenced or evacuated. Keep `role:admin` in these two rules, for example `"role:admin or role:operator"`.
-- **`compute:quota:set` needs `identity:project:quota-set` too.** `PUT /os-quota-sets/{project}` on compute checks its own action, then forwards the caller's `Authorization` header to `auth-api` `PUT /projects/{project}/quota`, which is `identity:project:quota-set`. Both rules have to allow the caller. If you open one and not the other, the call answers `403` from whichever door is closed; when compute allows and `auth-api` refuses, compute passes the `auth-api` answer on.
+- **`compute:quota:set` needs `identity:project:quota-set` too.** `PUT /os-quota-sets/{project}` on compute checks its own action, then forwards the caller's `Authorization` header to `auth-api` `PUT /projects/{ref}/quota`, which is `identity:project:quota-set`. Both rules have to allow the caller. If you open one and not the other, the call answers `403` from whichever door is closed; when compute allows and `auth-api` refuses, compute passes the `auth-api` answer on.
 - **Placement has a second door.** Placement's `/internal/...` routes (`InternalAuth`, called by compute-api and the compute worker with the internal token) write the same resource providers, inventories and allocations as the public routes of `placement:*`. The file governs the public routes only. Closing `placement:inventory:set` does not stop anything from setting inventories through `PUT /internal/resource_providers/{name}/inventories`, and the internal routes keep working whatever the file says.
 - **The file has to be the same on every node.** A node that lacks the file, or has an older copy, answers by the built-in rules while the others answer by the file. `GET /policy` shows what the `auth-api` node it reaches has loaded; it says nothing about the other nodes.
