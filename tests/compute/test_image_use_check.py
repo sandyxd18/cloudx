@@ -296,3 +296,17 @@ def test_api_get_sends_the_claims_header_only_when_a_caller_is_given(monkeypatch
     assert sent[1] == {"Content-Type": "application/json", **on_behalf_headers(OTHER)}
     assert json.loads(sent[1]["X-Caller-Claims"])["project_id"] == "p2"
     assert sent[2] == {"Content-Type": "application/json", **internal_headers()}, "the internal caller sends no claims"
+
+
+def test_create_server_with_claims_too_large_for_the_header_is_400_and_creates_nothing(env):
+    env.make_image("x", "public")
+    env.as_({**OTHER, "roles": [f"role-{i:04d}" for i in range(400)]})
+
+    r = create(env, "x")
+
+    assert r.status_code == 400 and r.json() == {"detail": "caller identity is too large to send to image-api"}
+    seen = env.seen
+    assert len(seen["claims"]) == 1 and seen["released"] == seen["claims"], "the placement claim is released"
+    assert seen["image_calls"] == []
+    assert server_rows(env) == 0
+    assert seen["block_posts"] == [] and seen["ports"] == [] and seen["casts"] == []

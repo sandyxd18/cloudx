@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 import requests
 from fastapi import HTTPException
 from shared.auth_middleware import CurrentUser
@@ -57,7 +59,11 @@ def resolve_readable_image(ref: str, current: dict) -> str:
     belongs to somebody else. A catalog or connection failure, or image-api refusing this service, is a 502.
     """
     try:
-        response = requests.get(f"{image_api_url()}/images/{ref}", headers=on_behalf_headers(current), timeout=8)
+        headers = on_behalf_headers(current)
+    except ValueError as exc:  # the claims do not fit in the header: image-api would read the call as anonymous
+        raise HTTPException(status_code=400, detail="caller identity is too large to send to image-api") from exc
+    try:  # quoted: a ref with / ? # must not address another image-api route
+        response = requests.get(f"{image_api_url()}/images/{quote(ref, safe='')}", headers=headers, timeout=8)
     except (CatalogError, requests.RequestException) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if response.status_code >= 400:
@@ -65,7 +71,13 @@ def resolve_readable_image(ref: str, current: dict) -> str:
         if response.status_code in (401, 403) or response.status_code >= 500:  # not the caller's doing
             raise HTTPException(status_code=502, detail=f"image-api answered {response.status_code}: {detail}")
         raise HTTPException(status_code=response.status_code, detail=detail)
-    return response.json()["id"]
+    try:
+        image_id = response.json()["id"]
+    except (ValueError, KeyError, TypeError):
+        image_id = None
+    if not isinstance(image_id, str) or not image_id:
+        raise HTTPException(status_code=502, detail=f"image-api answered an image without an id for '{ref}'")
+    return image_id
 
 
 def pick_lvm_host(db: Session, hosts: list[str] | None = None) -> str | None:

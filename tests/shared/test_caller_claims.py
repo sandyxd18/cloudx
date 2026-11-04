@@ -108,6 +108,20 @@ def test_sender_raises_when_the_claims_exceed_2048_bytes():
         on_behalf_headers({**MEMBER, "roles": [f"role-{i:04d}" for i in range(400)]})
 
 
+@pytest.mark.parametrize("bad", [{}, {"role": None}, {"role": ""}, {"role": 1}, {"role": ["admin"]}, {"sub": "u1"}],
+                         ids=["absent", "null", "empty", "int", "list", "only-sub"])
+def test_sender_raises_when_the_role_is_not_a_non_empty_string(bad):
+    with pytest.raises(ValueError):
+        on_behalf_headers({"project_id": "p1", **bad})
+
+
+def test_sender_raises_valueerror_for_claims_json_cannot_serialise():
+    with pytest.raises(ValueError):
+        on_behalf_headers({**MEMBER, "username": object()})
+    with pytest.raises(ValueError):
+        on_behalf_headers({**MEMBER, "roles": [{1, 2}]})
+
+
 def test_sender_accepts_claims_just_under_the_limit():
     base = len(json.dumps({"role": "member", "roles": [""]}, separators=(",", ":")))
     pad = "x" * (2048 - base)
@@ -128,8 +142,13 @@ def test_round_trip_of_the_sender():
 
 def test_optional_string_claims_may_be_absent_or_null():
     assert who(claims_headers({"role": "member"})) == {"role": "member"}
-    assert who(claims_headers({"role": "member", "project_id": None, "domain_id": None})) == \
-        {"role": "member", "project_id": None, "domain_id": None}
+    assert who(claims_headers({"role": "member", "project_id": None, "domain_id": None})) == {"role": "member"}
+
+
+def test_a_null_optional_key_reads_like_an_absent_one():
+    nulls = {"role": "member", "sub": None, "username": None, "project_id": None, "domain_id": None, "scope_type": None}
+    assert who(claims_headers(nulls)) == who(claims_headers({"role": "member"})) == {"role": "member"}
+    assert "domain_id" not in who(claims_headers({"role": "member", "domain_id": None}))
 
 
 def test_valid_token_and_no_header_give_the_synthetic_admin():
@@ -168,7 +187,7 @@ INVALID = {
     "roles of non-str": json.dumps({"role": "member", "roles": ["member", 3]}),
     "roles null": json.dumps({"role": "member", "roles": None}),
     "roles object": json.dumps({"role": "member", "roles": {"admin": True}}),
-    "deeply nested": "[" * 5000 + "]" * 5000,
+    "deeply nested": "[" * 1024 + "]" * 1024,  # exactly 2048 bytes: within the limit, so it reaches the parser
 }
 
 

@@ -196,7 +196,8 @@ def _caller_from_claims_header(raw: str) -> dict | None:
 
     Strict on purpose: the claims become the identity image-api authorises. Only the kept keys survive; `role` is a
     required non-empty str, `roles` a list of str, `domain_admin` a real bool (not "true", not 1), the other keys str.
-    The 2048-byte limit is on the raw value and the JSON must be UTF-8 and an object.
+    The 2048-byte limit is on the raw value and the JSON must be UTF-8 and an object. A null optional key is dropped,
+    so it reads like an absent one (visible_projects falls back to "default" for an absent domain_id).
     """
     try:
         data = raw.encode("latin-1")  # Starlette decodes header bytes as latin-1: this gives the wire bytes back
@@ -216,7 +217,7 @@ def _caller_from_claims_header(raw: str) -> dict | None:
         return None
     if "domain_admin" in out and not isinstance(out["domain_admin"], bool):
         return None
-    return out
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def optional_user_or_internal(request: Request) -> dict | None:
@@ -225,7 +226,8 @@ def optional_user_or_internal(request: Request) -> dict | None:
     A holder of the internal token may state its caller's identity in X-Caller-Claims (see shared.internal.
     on_behalf_headers): present and valid, those claims are the identity; present and invalid, anonymous, never the
     synthetic admin. The header is read only when INTERNAL_TOKEN is set and X-Internal-Token matches it; otherwise it
-    is ignored and the JWT path decides.
+    is ignored and the JWT path decides. The claims are trusted as given: the sender must have authenticated `current`
+    through require_auth first, and the receiver does not repeat check_reader, the domain-scope or the revocation checks.
     """
     token = os.getenv("INTERNAL_TOKEN", "")
     if token and _internal_token_matches(request, token):

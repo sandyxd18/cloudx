@@ -71,12 +71,13 @@ def env(monkeypatch, tmp_path):
     svc = fresh_service("block_store", monkeypatch, tmp_path)
     who = {}
     svc.app.dependency_overrides[require_auth] = lambda: who
-    seen = {"image_calls": [], "casts": []}
+    seen = {"image_calls": [], "image_urls": [], "casts": []}
     peer = {"image": None}  # set by a test to make image-api misbehave: an exception to raise, or a Reply to return
 
     def fake_get(url, headers=None, timeout=None, **kw):
         if url.startswith(IMAGE_URL):
             seen["image_calls"].append(headers)
+            seen["image_urls"].append(url)
             if isinstance(peer["image"], Exception):
                 raise peer["image"]
             if peer["image"] is not None:
@@ -282,3 +283,64 @@ def test_another_client_error_from_image_api_is_passed_through(env):
 
     assert r.status_code == 400 and r.json() == {"detail": "bad reference"}
     assert volume_rows(env) == 0
+
+
+def test_a_ref_with_a_slash_never_addresses_another_image_api_route(env):
+    env.make_image("x", "public")
+    env.as_(OTHER)
+
+    r = create(env, "x/download")
+
+    assert r.status_code in (404, 502), r.text
+    assert volume_rows(env) == 0 and env.seen["casts"] == []
+    assert "x%2Fdownload" in env.seen["image_urls"][0]
+
+
+@pytest.mark.parametrize("body", [{"name": "x"}, {"id": 5}, {"id": ""}, ["x"], None], ids=["no id", "id int", "id empty", "list", "null"])
+def test_an_image_answer_without_a_usable_id_is_502(env, body):
+    env.peer["image"] = Reply(200, body)
+    env.as_(OTHER)
+
+    r = create(env, "x")
+
+    assert r.status_code == 502 and "without an id" in r.json()["detail"]
+    assert volume_rows(env) == 0 and env.seen["casts"] == []
+
+
+def test_an_image_answer_that_is_not_json_is_502(env):
+    class Html(Reply):
+        def json(self):
+            raise ValueError("not json")
+
+    env.peer["image"] = Html(200, "<html>")
+    env.as_(OTHER)
+
+    r = create(env, "x")
+
+    assert r.status_code == 502 and volume_rows(env) == 0 and env.seen["casts"] == []
+
+
+def test_claims_too_large_for_the_header_are_400_and_create_nothing(env):
+    env.make_image("x", "public")
+    env.as_({**OTHER, "roles": [f"role-{i:04d}" for i in range(400)]})
+
+    r = create(env, "x")
+
+    assert r.status_code == 400 and r.json() == {"detail": "caller identity is too large to send to image-api"}
+    assert env.seen["image_calls"] == [] and volume_rows(env) == 0 and env.seen["casts"] == []
+
+
+def test_with_internal_token_unset_image_api_reads_the_call_as_anonymous(env, monkeypatch):
+    public = env.make_image("pub", "public")
+    env.make_image("mine", "private")  # owned by OWNER's project
+    monkeypatch.delenv("INTERNAL_TOKEN")
+    env.as_(OWNER)
+
+    ok = create(env, "pub", name="v1")
+    refused = create(env, "mine", name="v2")
+
+    assert ok.status_code == 201, ok.text
+    assert ok.json()["image_id"] == public["id"]
+    assert refused.status_code == 404 and refused.json() == {"detail": "image 'mine' not found"}
+    assert all("X-Internal-Token" not in h and "X-Caller-Claims" not in h for h in env.seen["image_calls"])
+    assert volume_rows(env) == 1 and len(env.seen["casts"]) == 1
