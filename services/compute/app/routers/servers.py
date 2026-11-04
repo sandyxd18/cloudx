@@ -66,12 +66,12 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
             raise HTTPException(status_code=404, detail="server group not found")
     networking_url, block_store_url = networking_api_url(), block_store_api_url()
     image_url = image_api_url() if payload.image else None
-    network = clients.api_get(f"{networking_url}/networks/{payload.network}")
+    network = clients.api_get(f"{networking_url}/networks/{quote(payload.network, safe='')}")
     # IPv6 is opt-in on a dual-stack network. Look the subnets up now, before a root volume is created from the image.
     ipv6_fixed_ips: dict[str, list[dict]] = {}
     if payload.ipv6:
         for network_ref in dict.fromkeys([payload.network, *payload.networks]):
-            net = network if network_ref == payload.network else clients.api_get(f"{networking_url}/networks/{network_ref}")
+            net = network if network_ref == payload.network else clients.api_get(f"{networking_url}/networks/{quote(network_ref, safe='')}")
             ipv6_fixed_ips[net["id"]] = ipv6_fixed_ips_of(networking_url, net)
     server_id = new_id()
     root_volume = None
@@ -111,10 +111,10 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
             boot_source = "image"
             auto_root_volume = True
         else:
-            root_volume = clients.block_get(f"/volumes/{payload.boot_volume}")
+            root_volume = clients.block_get(f"/volumes/{quote(payload.boot_volume, safe='')}")
             # block-store answers compute as an admin, so the caller's right to the volume is checked here, before
             # anything about the volume (bootable, status) is reported.
-            if root_volume.get("project_id") and not can_see(current, root_volume["project_id"]):
+            if "project_id" not in root_volume or (root_volume["project_id"] and not can_see(current, root_volume["project_id"])):
                 raise HTTPException(status_code=404, detail=f"volume '{payload.boot_volume}' not found")
             if not root_volume.get("bootable"):
                 raise HTTPException(status_code=400, detail="boot volume must be bootable=true")
@@ -130,7 +130,7 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
                 seen_networks.append(item)
         ports = []
         for index, network_ref in enumerate(seen_networks):
-            net = network if index == 0 else clients.api_get(f"{networking_url}/networks/{network_ref}")
+            net = network if index == 0 else clients.api_get(f"{networking_url}/networks/{quote(network_ref, safe='')}")
             port = clients.api_post(
                 f"{networking_url}/ports",
                 {

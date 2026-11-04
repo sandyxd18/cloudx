@@ -322,7 +322,7 @@ def create_server_snapshot(ref: str, payload: ServerSnapshotIn, current: Current
     except CatalogError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     try:
-        clients.api_get(f"{image_url}/images/{payload.name}")
+        clients.api_get(f"{image_url}/images/{quote(payload.name, safe='')}")
     except HTTPException as exc:
         if exc.status_code != 404:
             raise
@@ -338,7 +338,7 @@ def add_server_port(ref: str, payload: ServerPortIn, current: CurrentUser, db: D
     server = require_unlocked_server(db, ref, current)
     if server.status != "ACTIVE":
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE to add a port; current status is {server.status}")
-    port = clients.api_get(f"{networking_api_url()}/ports/{payload.port}")
+    port = clients.api_get(f"{networking_api_url()}/ports/{quote(payload.port, safe='')}")
     if port["id"] in [server.port_id, *comma_list(server.extra_port_ids)]:
         raise HTTPException(status_code=409, detail="port is already attached to server metadata")
     # Update DB immediately, cast hotplug to worker
@@ -353,7 +353,7 @@ def add_server_port(ref: str, payload: ServerPortIn, current: CurrentUser, db: D
 def remove_server_port(ref: str, port_ref: str, current: CurrentUser, db: DB):
     server = require_unlocked_server(db, ref, current)
     extra = comma_list(server.extra_port_ids)
-    port = clients.api_get(f"{networking_api_url()}/ports/{port_ref}")
+    port = clients.api_get(f"{networking_api_url()}/ports/{quote(port_ref, safe='')}")
     if port["id"] not in extra:
         raise HTTPException(status_code=404, detail="port is not an attached secondary port")
     server.extra_port_ids = format_comma_list([item for item in extra if item != port["id"]])

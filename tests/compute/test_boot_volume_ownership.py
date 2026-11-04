@@ -167,14 +167,51 @@ def test_create_server_accepts_the_volume_of_the_callers_project_domain_or_an_ad
     assert env.seen["released"] == [], "a server that is built keeps its placement claim"
 
 
-def test_a_volume_without_an_owner_is_visible_to_everyone(env):
-    env.drop_project_id()
+@pytest.mark.parametrize("owner", ["", None], ids=["empty", "none"])
+def test_a_volume_without_an_owner_is_visible_to_everyone(env, owner):
+    env.set_volume(project_id=owner)
     env.as_(OTHER)
 
     r = create(env)
 
     assert r.status_code == 201, r.text
     assert env.seen["casts"] == ["build_instance"]
+
+
+def test_an_answer_that_does_not_say_who_owns_the_volume_is_refused(env):
+    env.drop_project_id()
+    env.as_(OTHER)
+
+    r = create(env)
+
+    assert r.status_code == 404 and r.json() == {"detail": "volume 'vol1' not found"}
+    assert_nothing_was_created(env)
+
+
+@pytest.mark.parametrize("ref, segment", [
+    ("../internal/volumes/vol1", "..%2Finternal%2Fvolumes%2Fvol1"),
+    ("a/b", "a%2Fb"),
+    ("x?y#z", "x%3Fy%23z"),
+])
+def test_the_volume_reference_is_one_encoded_path_segment(env, ref, segment):
+    env.drop_project_id()  # what a different block-store route would answer with
+    env.as_(OTHER)
+
+    r = env.client.post("/servers", json={"name": "vm1", "flavor": "small", "network": "net1", "boot_volume": ref})
+
+    assert env.seen["block_gets"] == [f"/volumes/{segment}"]
+    assert r.status_code == 404 and r.json() == {"detail": f"volume '{ref}' not found"}
+    assert_nothing_was_created(env)
+
+
+@pytest.mark.parametrize("ref", ["vol1", "0b6f6a62-5a8e-4d3c-9d58-123456789abc", "my-data"])
+def test_a_plain_id_or_name_still_resolves(env, ref):
+    env.as_(OWNER)
+
+    r = env.client.post("/servers", json={"name": "vm1", "flavor": "small", "network": "net1", "boot_volume": ref})
+
+    assert r.status_code == 201, r.text
+    assert env.seen["block_gets"] == [f"/volumes/{ref}"]
 
 
 def test_the_owner_still_gets_400_for_a_volume_that_is_not_bootable(env):
