@@ -4,7 +4,7 @@ cloudx central policy engine
 One rule per action (`DEFAULT_RULES`), optionally overridden by a YAML file (`CLOUDX_POLICY_FILE`,
 default /etc/cloudx/policy.yaml). Rules are written in the language of shared.policy_rules.
 
-The file is read on first use and re-read when its mtime changes (checked at most every 2 seconds), so
+The file is read on first use and re-read when it changes (mtime, ctime, size or inode) (checked at most every 2 seconds), so
 an edit needs no restart. A bad file or a bad rule never stops a service: the affected rule keeps its
 default (or, for a file that cannot be read at all, the last good rules), and one ERROR line per
 (re)load of a changed file goes to the `cloudx-policy` logger.
@@ -95,7 +95,7 @@ _DEFAULTS = _Snapshot(
 class _Cache(NamedTuple):
     snapshot: _Snapshot
     path: str
-    mtime: int | None  # None: no file
+    stamp: tuple | None  # _stat() of the file when it was last (re)loaded; None: no file
     checked: float  # _monotonic() of the last stat()
 
 
@@ -104,7 +104,7 @@ _lock = threading.Lock()
 
 
 def reset() -> None:
-    """Forget the loaded rules, the remembered mtime and the clock (tests)."""
+    """Forget the loaded rules, the remembered file stamp and the clock (tests)."""
     global _cache
     with _lock:
         _cache = None
@@ -220,14 +220,19 @@ def _compile(data: dict) -> _Snapshot:
 
 # ── file handling ─────────────────────────────────────────────────────────────
 
-def _stat(path: str) -> int | None:
-    """mtime in ns; None when there is no file; -1 for a file that exists but cannot be examined."""
+def _stat(path: str) -> tuple | None:
+    """What identifies the file's current state; None when there is no file.
+
+    ctime moves on chmod/chown (a permission fix must be noticed) and on every write; the inode catches
+    an atomic replace that kept the old mtime (install -p, rsync -t); the size catches a truncation.
+    """
     try:
-        return os.stat(path).st_mtime_ns
+        st = os.stat(path)
     except (FileNotFoundError, NotADirectoryError):
         return None
     except OSError:
-        return -1
+        return ("unexaminable",)  # differs from every real stamp, so load() reports the cause
+    return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
 
 
 def _load(path: str) -> _Snapshot | None:
@@ -270,15 +275,15 @@ def _current() -> _Snapshot:
         same_file = cache is not None and cache.path == path
         if same_file and now - cache.checked < CHECK_INTERVAL:
             return cache.snapshot
-        mtime = _stat(path)
-        if same_file and mtime == cache.mtime:
+        stamp = _stat(path)
+        if same_file and stamp == cache.stamp:
             _cache = cache._replace(checked=now)
             return cache.snapshot
-        snapshot = _DEFAULTS if mtime is None else _load(path)
+        snapshot = _DEFAULTS if stamp is None else _load(path)
         if snapshot is None:  # unusable file: keep the last good rules (the defaults on a first load)
             snapshot = cache.snapshot if same_file else _DEFAULTS
-        # the mtime is remembered even after a failure, so a broken file is not re-parsed and re-logged
-        _cache = _Cache(snapshot, path, mtime, now)
+        # the stamp is remembered even after a failure, so a broken file is not re-parsed and re-logged
+        _cache = _Cache(snapshot, path, stamp, now)
         return snapshot
 
 

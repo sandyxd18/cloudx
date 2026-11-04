@@ -423,6 +423,36 @@ def test_unchanged_mtime_is_not_reparsed_or_relogged(pfile, clock, caplog):
     assert len(messages(caplog, logging.WARNING)) == 1
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read a mode-0 file")
+def test_a_permission_fix_is_noticed_although_the_mtime_did_not_change(pfile, clock, caplog):
+    pfile.write("identity:domain:create: 'role:admin or domain_admin:True'\n")
+    mtime = os.stat(pfile.path).st_mtime_ns
+    os.chmod(pfile.path, 0)
+    assert policy.rules() == policy.DEFAULT_RULES
+    assert len(messages(caplog, logging.ERROR)) == 1
+    os.chmod(pfile.path, 0o644)
+    os.utime(pfile.path, ns=(mtime, mtime))  # chmod leaves mtime alone; make sure of it
+    clock.advance(3)
+    assert policy.sources()["identity:domain:create"] == "file"
+    assert policy.authorize("identity:domain:create", DOMAIN_ADMIN) is True
+    assert len(messages(caplog, logging.ERROR)) == 1
+
+
+def test_an_atomic_replace_with_the_same_mtime_and_size_is_noticed(pfile, clock, tmp_path):
+    pfile.write("identity:domain:create: 'role:admin'\n")
+    assert policy.authorize("identity:domain:create", DOMAIN_ADMIN) is False
+    before = os.stat(pfile.path)
+    replacement = tmp_path / "policy.yaml.new"
+    text = "identity:domain:create: '@'"
+    replacement.write_text(text.ljust(before.st_size - 1) + "\n", encoding="utf-8")  # same length, other content
+    assert replacement.stat().st_size == before.st_size
+    os.utime(replacement, ns=(before.st_mtime_ns, before.st_mtime_ns))
+    os.replace(replacement, pfile.path)
+    assert os.stat(pfile.path).st_mtime_ns == before.st_mtime_ns
+    clock.advance(3)
+    assert policy.rules()["identity:domain:create"] == "@"
+
+
 def test_file_appearing_later_is_picked_up(pfile, clock):
     assert policy.rules() == policy.DEFAULT_RULES
     pfile.write("identity:domain:create: '@'\n")
