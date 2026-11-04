@@ -28,7 +28,7 @@ def api(monkeypatch, tmp_path):
     casts = []
     monkeypatch.setattr(svc.clients, "cast_to_worker", lambda method, payload: casts.append((method, payload)))
 
-    def api_get(url):
+    def api_get(url, **kw):
         if "/ports/" in url:
             return PORTS[url.rsplit("/", 1)[1]]
         return {"id": "img2", "name": "img2"}
@@ -90,7 +90,7 @@ def test_an_unreachable_networking_api_is_502_and_changes_nothing(api, monkeypat
     svc, client, casts = api
     _server(svc, extra_port_ids="port2")
 
-    def down(url):
+    def down(url, **kw):
         if "/ports/" in url:
             raise HTTPException(status_code=502, detail="networking-api is unreachable")
         return {"id": "img2", "name": "img2"}

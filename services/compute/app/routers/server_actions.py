@@ -189,7 +189,7 @@ def ports_of(server) -> tuple[dict, list[dict]]:
 @router.post("/servers/{ref}/rebuild")
 def rebuild_server(ref: str, payload: ServerRebuildIn, current: CurrentUser, db: DB):
     server = require_unlocked_server(db, ref, current)
-    image = clients.api_get(f"{image_api_url()}/images/{payload.image}")
+    image = clients.api_get(f"{image_api_url()}/images/{payload.image}", caller=current)
     port, ports = ports_of(server)
     server.image_id = image["id"]
     server.status = "REBUILD"
@@ -204,7 +204,7 @@ def rescue_server(ref: str, payload: ServerRescueIn, current: CurrentUser, db: D
     server = require_unlocked_server(db, ref, current)
     rescue_image_id = server.image_id
     if payload.image:
-        rescue_img = clients.api_get(f"{image_api_url()}/images/{payload.image}")
+        rescue_img = clients.api_get(f"{image_api_url()}/images/{payload.image}", caller=current)
         rescue_image_id = rescue_img["id"]
     port, ports = ports_of(server)
     server.status = "RESCUE"

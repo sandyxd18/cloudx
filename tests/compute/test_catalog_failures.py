@@ -119,7 +119,7 @@ def test_create_resolves_its_peers_before_claiming_anything(api, monkeypatch):
     claims = []
     servers = importlib.import_module("services.compute.app.routers.servers")
     monkeypatch.setattr(servers, "claim_host", lambda *a, **k: claims.append(a) or "node-1")
-    monkeypatch.setattr(svc.clients, "api_get", lambda url: {"id": "net1"})
+    monkeypatch.setattr(svc.clients, "api_get", lambda url, **kw: {"id": "net1"})
     r = client.post("/servers", json={"name": "new", "flavor": "small", "network": "net1", "image": "img1"})
     assert r.status_code == 502 and "'volume'" in r.json()["detail"]
     assert claims == []

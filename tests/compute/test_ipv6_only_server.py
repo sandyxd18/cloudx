@@ -10,7 +10,7 @@ def test_a_server_on_an_ipv6_only_port_shows_its_ipv6_address(monkeypatch, tmp_p
     compute.bootstrap_flavors()
     casts = []
 
-    def fake_get(url):
+    def fake_get(url, **kw):
         if "/images/" in url:
             return {"id": "image-id", "name": "cirros"}
         return {"id": "network-id", "name": "v6only"}
