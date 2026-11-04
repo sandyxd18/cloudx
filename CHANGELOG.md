@@ -14,11 +14,21 @@ schema between releases, so read the upgrade steps before moving a running cloud
   parentheses (at most 200 tokens). The built-in rules are the old checks, so a cloud without the file behaves as
   before. The file is re-read within 2 seconds of a change, no restart; a bad rule or a bad file never stops a service
   (the action keeps its default, an unreadable file keeps the last good rules) and is logged once per change by the
-  `cloudx-policy` logger. It has to exist on every node that runs auth-api. `cloudx-manage policy check [FILE]`
+  `cloudx-policy` logger. It has to exist on every node that runs an API service. `cloudx-manage policy check [FILE]`
   validates a file and lists the rules that differ from the defaults; `cloudx-manage policy defaults` prints the built-in
   rules. `cloudx-common` installs a sample with every line commented out as `/usr/share/cloudx/policy.yaml.sample`
   (`etc/cloudx/policy.yaml.sample` in the repository and the tarball); no package creates `/etc/cloudx/policy.yaml`.
-  See `docs/policy.md`. Only auth-api uses it for now, and ownership and visibility rules stay in code.
+  See `docs/policy.md`. Ownership and visibility rules stay in code.
+- **The policy file covers the admin-only actions of every service.** 35 more actions follow `/etc/cloudx/policy.yaml`,
+  57 in all: 12 of compute (flavors and extra specs, aggregates, quota, service update, migrate, evacuate), 8 of
+  block-store (volume types, quota, force-detach, and the `os-force_delete` and `os-reset_status` volume actions),
+  5 of placement, 3 of billing, 2 each of telemetry, networking and object-store, and `ha:host:reset`. Each has the
+  built-in rule `role:admin`, the check the route had, so a cloud without the file behaves as before. The file now has to
+  exist, identical, on every node that runs any API service, not only auth-api nodes. `GET /policy` and
+  `POST /policy/enforce` answer for all 57 actions, and `cloudx-manage policy defaults` and the sample list them.
+  Ownership, visibility and state checks, `/internal/...` routes and the four bulk billing and telemetry routes stay in
+  code. A rule of `"!"`, or one without `role:admin`, on `compute:service:update` or `compute:server:evacuate` stops HA
+  recovery, and `compute:quota:set` also needs `identity:project:quota-set` to allow; see `docs/policy.md`.
 
 ### Changed
 - **Bulk usage and metric calls need an admin or the internal token.** `POST /billing/usage-records/batch`,
@@ -27,9 +37,13 @@ schema between releases, so read the upgrade steps before moving a running cloud
   who is not an admin. The workers call them with the internal token and are not affected.
 - **A denied request on the converted auth-api routes answers `403` with `Policy does not allow <action>`** instead of
   `admin role required` or `admin or domain admin required`. Who is allowed does not change unless a policy file says so.
+- **A denied request on the 35 newly converted routes answers `403` with `Policy does not allow <action>`** instead of
+  `admin role required`. This covers the admin-only routes of compute, block-store, placement, billing, telemetry,
+  networking, object-store and ha, and the `os-force_delete` and `os-reset_status` volume actions of block-store. Who is
+  allowed does not change unless a policy file says so.
 - **`POST /policy/enforce` checks the real rules.** It answers `400` for an unknown or non-string `action` (it answered
   `allowed: true`), and the 17 action names of the old table, which no route ever enforced, are gone. `GET /policy` now
-  lists the 22 actions and has a new `sources` map (`default` or `file` for each action).
+  lists every action of the table (57, see the entry above) and has a new `sources` map (`default` or `file` for each action).
 
 ### Fixed
 - **Changing an image needs its owner.** `PATCH`, `DELETE`, `deactivate`, `reactivate`, adding or removing a tag, and

@@ -128,8 +128,8 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 #### Policy & Audit
 | Feature | Endpoint | Status |
 |---|---|:---:|
-| The effective rule of each of the 22 `auth-api` actions that a policy file can change, and whether it comes from the file or the built-in default | `GET /policy` | ✅ |
-| Check whether the caller's token may perform one of those actions | `POST /policy/enforce` | ✅ |
+| The effective rule of each of the 57 actions that a policy file can change (22 of `auth-api`, 35 admin-only actions of the other services), and whether it comes from the file or the built-in default | `GET /policy` | ✅ |
+| Check whether the caller's token may perform one of those actions (the rule is evaluated against the token; the other service is not called) | `POST /policy/enforce` | ✅ |
 | Audit log | `GET\|POST /audit-logs` | ✅ |
 
 ### ❌ Missing Features (vs. the real Identity service)
@@ -140,7 +140,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Federation / SAML / OAuth2** | No SSO |
 | **Multi-factor authentication** | None |
 | **Fernet token** | JWT only |
-| **Policy files (oslo.policy)** | Partly: `/etc/cloudx/policy.yaml` (its own rule language, not oslo.policy syntax) overrides the rule of 22 `auth-api` actions, reloads without a restart and is checked with `cloudx-manage policy check` (`docs/policy.md`). The other services have no policy file, and ownership and visibility rules stay in code |
+| **Policy files (oslo.policy)** | Partly: `/etc/cloudx/policy.yaml` (its own rule language, not oslo.policy syntax) overrides the rule of 57 actions (22 of `auth-api` and the 35 admin-only actions of compute, block-store, placement, billing, telemetry, networking, object-store and ha), reloads without a restart and is checked with `cloudx-manage policy check` (`docs/policy.md`). The file has to be the same on every node that runs an API service. Ownership, visibility and state checks, internal routes and the bulk billing and telemetry routes stay in code; there is no per-project policy |
 
 **Estimated Identity similarity: ~75%**
 

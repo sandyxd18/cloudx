@@ -38,7 +38,7 @@ Kept as history. New installs use the packages above.
 | `feature-comparison.md`, `roadmap-openstack-parity.md` | Feature comparison with OpenStack and the roadmap |
 
 ## Identity
-`identity.md` (token scopes, application credential rotation, trusts), `policy.md` (the policy file for `auth-api`)
+`identity.md` (token scopes, application credential rotation, trusts), `policy.md` (the policy file: the admin-only actions of every service)
 
 ## Compute
 `real-vm.md`, `libvirt.md`, `flavor.md`, `keypair.md`, `console.md`, `cloud-init.md`, `placement-lite.md`,
