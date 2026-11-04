@@ -36,6 +36,9 @@ browser console now needs the `novnc` package and port 6080 on every compute nod
   the credential's roles that the user still holds (401 when none is left). Credentials created by an earlier version are
   trimmed the same way at login; no migration is needed. Upgrade soon: a credential could be created with more roles than
   its user had.
+- **A domain's consolidated invoice is limited to the system admin and that domain's own admin.** `GET
+  /billing/invoices?domain_id=<id>` no longer returns the invoices of a domain the caller does not administer, and a
+  domain admin gets 403 when creating an invoice for another domain.
 
 ### Changed
 - **The browser console works through a proxy on the compute node.** `console-url` and `remote-consoles` return
