@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from ..config import ADMIN_PROJECT
 from ..db import DB
-from ..deps import AdminUser, CurrentUser, DomainAdminUser, UserOrInternal, scope_domain
+from ..deps import CurrentUser, UserOrInternal, gate, scope_domain
 from ..lookups import _get_project_by_ref, _scoped_project
 from ..models import Domain, Group, GroupMember, Project, DomainQuota, ProjectQuota, User, utcnow
 from ..schemas import ProjectIn, ProjectUpdate, QuotaUpdate
@@ -15,8 +15,8 @@ router = APIRouter()
 
 
 # ── Projects ───────────────────────────────────────────────────────────────────
-@router.post("/projects", status_code=201)
-def create_project(payload: ProjectIn, current: DomainAdminUser, db: DB):
+@router.post("/projects", status_code=201, dependencies=[gate("identity:project:create")])
+def create_project(payload: ProjectIn, current: CurrentUser, db: DB):
     scope = scope_domain(current)
     if scope is None:
         domain_id = payload.domain_id or "default"
@@ -89,8 +89,8 @@ def show_project(ref: str, current: CurrentUser, db: DB):
     return _project_to_dict(p)
 
 
-@router.put("/projects/{ref}")
-def update_project(ref: str, payload: ProjectUpdate, current: DomainAdminUser, db: DB):
+@router.put("/projects/{ref}", dependencies=[gate("identity:project:update")])
+def update_project(ref: str, payload: ProjectUpdate, current: CurrentUser, db: DB):
     p = _scoped_project(db, ref, current)
     for k, v in payload.model_dump(exclude_none=True).items():
         setattr(p, k, v)
@@ -99,8 +99,8 @@ def update_project(ref: str, payload: ProjectUpdate, current: DomainAdminUser, d
     return _project_to_dict(p)
 
 
-@router.delete("/projects/{ref}", status_code=204)
-def delete_project(ref: str, current: DomainAdminUser, db: DB):
+@router.delete("/projects/{ref}", status_code=204, dependencies=[gate("identity:project:delete")])
+def delete_project(ref: str, current: CurrentUser, db: DB):
     p = _scoped_project(db, ref, current)
     if p.name == ADMIN_PROJECT:
         raise HTTPException(status_code=400, detail="cannot delete admin project")
@@ -152,8 +152,8 @@ def get_project_quota(ref: str, _: UserOrInternal, db: DB):
     return {**_quota_dict(p.id, q), "domain": domain_caps(db, p.domain_id)}
 
 
-@router.put("/projects/{ref}/quota")
-def update_project_quota(ref: str, payload: QuotaUpdate, _: AdminUser, db: DB):
+@router.put("/projects/{ref}/quota", dependencies=[gate("identity:project:quota-set")])
+def update_project_quota(ref: str, payload: QuotaUpdate, db: DB):
     p = _get_project_by_ref(db, ref)
     q = _get_or_create_quota(db, p.id)
     for k, v in payload.model_dump(exclude_none=True).items():

@@ -18,6 +18,7 @@ SERVICES = "opt/cloudx/services"
 UNIT_DIR = "lib/systemd/system"
 TMPFILES = "/usr/lib/tmpfiles.d/cloudx.conf"
 CONF_SAMPLE = "/usr/share/cloudx/cloudx.conf.sample"
+POLICY_SAMPLE = "/usr/share/cloudx/policy.yaml.sample"
 EXCLUDE_ANYWHERE = {"__pycache__", "tests", "node_modules", ".pytest_cache"}
 EXCLUDE_TOP = {"migrations", "frontend"}
 META_RECOMMENDS = {
@@ -227,6 +228,7 @@ def _stage_common(staging: Path, version: str, work_dir: Path, with_venv: bool) 
         _build_venv(staging, work_dir)
     (staging / "etc/cloudx").mkdir(parents=True)
     _write(staging / CONF_SAMPLE.lstrip("/"), (ROOT / "etc/cloudx/cloudx.conf.sample").read_text())
+    _write(staging / POLICY_SAMPLE.lstrip("/"), (ROOT / "etc/cloudx/policy.yaml.sample").read_text())
     _write(staging / "usr/share/cloudx/manifest.toml", (ROOT / "packaging/manifest.toml").read_text())
     _write(staging / TMPFILES.lstrip("/"), "d /run/cloudx 0755 cloudx cloudx -\n")
     (staging / "usr/bin").mkdir(parents=True)

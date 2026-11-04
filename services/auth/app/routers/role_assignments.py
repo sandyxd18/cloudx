@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
 from ..db import DB
-from ..deps import CurrentUser, DomainAdminUser, scope_domain
+from ..deps import CurrentUser, gate, scope_domain
 from ..lookups import _scoped_project, _scoped_user
 from ..models import RoleAssignment, User
 from ..schemas import ROLES
@@ -14,8 +14,8 @@ def _out(a: RoleAssignment) -> dict:
     return {"user_id": a.user_id, "project_id": a.project_id, "role": a.role}
 
 
-@router.put("/projects/{project}/users/{user}/roles/{role}", status_code=204)
-def assign_role(project: str, user: str, role: str, current: DomainAdminUser, db: DB):
+@router.put("/projects/{project}/users/{user}/roles/{role}", status_code=204, dependencies=[gate("identity:role-assignment:create")])
+def assign_role(project: str, user: str, role: str, current: CurrentUser, db: DB):
     if role not in ROLES:
         raise HTTPException(status_code=400, detail=f"role must be one of: {', '.join(ROLES)}")
     if role == "admin" and scope_domain(current) is not None:
@@ -27,8 +27,8 @@ def assign_role(project: str, user: str, role: str, current: DomainAdminUser, db
     db.commit()
 
 
-@router.delete("/projects/{project}/users/{user}/roles/{role}", status_code=204)
-def unassign_role(project: str, user: str, role: str, current: DomainAdminUser, db: DB):
+@router.delete("/projects/{project}/users/{user}/roles/{role}", status_code=204, dependencies=[gate("identity:role-assignment:delete")])
+def unassign_role(project: str, user: str, role: str, current: CurrentUser, db: DB):
     p, u = _scoped_project(db, project, current), _scoped_user(db, user, current)
     a = db.get(RoleAssignment, (u.id, p.id))
     if not a or a.role != role:

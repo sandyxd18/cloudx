@@ -1,18 +1,18 @@
 from fastapi import APIRouter, HTTPException
-from shared.policy import enforce as policy_enforce
-from shared.policy import list_rules as policy_list_rules
+from shared import policy
 
 from ..deps import CurrentUser
 
 router = APIRouter()
 
 
-# ── Central Policy (oslo.policy) ───────────────────────────────────────────────
+# ── Central Policy (shared.policy) ─────────────────────────────────────────────
 
 @router.get("/policy")
 def get_policy(_: CurrentUser):
-    """Return the central RBAC policy map for all CloudX services."""
-    return {"policy": policy_list_rules()}
+    """The effective rule of every action and where it comes from ("default" or "file")."""
+    rules, sources = policy.effective()
+    return {"policy": rules, "sources": sources}
 
 
 @router.post("/policy/enforce")
@@ -21,6 +21,11 @@ def check_policy(body: dict, current: CurrentUser):
     action = body.get("action", "")
     if not action:
         raise HTTPException(status_code=400, detail="'action' is required")
-    target_project = body.get("target_project_id")
-    result = policy_enforce(action, current, target_project, raise_on_deny=False)
-    return {"action": action, "allowed": result, "role": current.get("role")}
+    # body["target_project_id"] is still accepted but ignored: rules do not look at a target
+    try:
+        if not isinstance(action, str):
+            raise KeyError(action)
+        allowed = policy.authorize(action, current)
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"unknown action {action!r}") from None
+    return {"action": action, "allowed": allowed, "role": current.get("role")}

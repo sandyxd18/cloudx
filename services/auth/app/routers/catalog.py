@@ -3,7 +3,7 @@ from shared.auth_middleware import InternalAuth
 from sqlalchemy import select
 
 from ..db import DB
-from ..deps import AdminUser, CurrentUser
+from ..deps import CurrentUser, gate
 from ..models import ServiceCatalogEntry, ServiceEndpoint
 from ..schemas import EndpointIn, ServiceIn
 from ..tokens import _build_catalog
@@ -27,8 +27,8 @@ def _ep_to_dict(ep: ServiceEndpoint) -> dict:
     }
 
 
-@router.post("/v3/services", status_code=201)
-def create_service(payload: ServiceIn, _: AdminUser, db: DB):
+@router.post("/v3/services", status_code=201, dependencies=[gate("identity:service:create")])
+def create_service(payload: ServiceIn, db: DB):
     if db.scalar(select(ServiceCatalogEntry).where(ServiceCatalogEntry.name == payload.name)):
         raise HTTPException(status_code=409, detail="service already exists")
     svc = ServiceCatalogEntry(**payload.model_dump())
@@ -44,8 +44,8 @@ def list_services(_: CurrentUser, db: DB):
     return {"items": [_svc_to_dict(s) for s in svcs]}
 
 
-@router.delete("/v3/services/{service_id}", status_code=204)
-def delete_service(service_id: str, _: AdminUser, db: DB):
+@router.delete("/v3/services/{service_id}", status_code=204, dependencies=[gate("identity:service:delete")])
+def delete_service(service_id: str, db: DB):
     svc = db.get(ServiceCatalogEntry, service_id)
     if not svc:
         raise HTTPException(status_code=404, detail="service not found")
@@ -53,8 +53,8 @@ def delete_service(service_id: str, _: AdminUser, db: DB):
     db.commit()
 
 
-@router.post("/v3/endpoints", status_code=201)
-def create_endpoint(payload: EndpointIn, _: AdminUser, db: DB):
+@router.post("/v3/endpoints", status_code=201, dependencies=[gate("identity:endpoint:create")])
+def create_endpoint(payload: EndpointIn, db: DB):
     svc = db.get(ServiceCatalogEntry, payload.service_id)
     if not svc:
         raise HTTPException(status_code=404, detail="service not found")
@@ -73,8 +73,8 @@ def list_endpoints(_: CurrentUser, db: DB, service_id: str | None = None):
     return {"items": [_ep_to_dict(ep) for ep in db.scalars(q).all()]}
 
 
-@router.delete("/v3/endpoints/{endpoint_id}", status_code=204)
-def delete_endpoint(endpoint_id: str, _: AdminUser, db: DB):
+@router.delete("/v3/endpoints/{endpoint_id}", status_code=204, dependencies=[gate("identity:endpoint:delete")])
+def delete_endpoint(endpoint_id: str, db: DB):
     ep = db.get(ServiceEndpoint, endpoint_id)
     if not ep:
         raise HTTPException(status_code=404, detail="endpoint not found")
