@@ -4,10 +4,16 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
-## Unreleased
+## 1.0.10-rc1 (2026-11-04)
 
-**Three schema changes** (`compute_0005`, `auth_0008`, `auth_0009`): run `cloudx-manage db sync` after the upgrade. The
-browser console now needs the `novnc` package and port 6080 on every compute node (see Changed).
+Release candidate: it is installed on the lab before the final 1.0.10 is tagged. A resize that is confirmed
+automatically, a browser console served by a noVNC proxy on every compute node, domain and system scoped tokens,
+application credential rotation and trusts, three dashboard pages, and three access checks (application credential roles,
+application credential lookup, a domain's consolidated invoice), in the compute service, the reaper, the compute worker,
+auth, billing, the dashboard and the packaging. **Three schema changes** (`compute_0005`, `auth_0008`, `auth_0009`; run
+`cloudx-manage db sync`). The browser console now needs the `novnc` package and port 6080 on every compute node (see
+Changed). The notes, with the upgrade steps and what was and was not tested, are in `docs/releases/v1.0.10.md`. None of it
+has been run on the lab yet.
 
 ### Added
 - **Resizes are confirmed automatically.** `cloudx-reaper` confirms a server that has waited in `VERIFY_RESIZE` longer
