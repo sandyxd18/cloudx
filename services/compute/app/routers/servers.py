@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from fastapi import APIRouter, HTTPException, Query
 from shared.domain import visible_projects
 from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
@@ -85,7 +87,7 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
         if host is None:
             host = fallback_host(db, flavor, group=sg, az=payload.availability_zone)
         if payload.image:
-            image = clients.api_get(f"{image_url}/images/{payload.image}")
+            image = clients.api_get(f"{image_url}/images/{quote(payload.image, safe='')}", caller=current)
             image_id = image["id"]
             # EC2-style block device mapping: the root volume size is chosen
             # entirely by the user (default 8 GiB) — flavors are instance-type

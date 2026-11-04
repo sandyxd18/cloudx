@@ -22,7 +22,7 @@ def cloud(monkeypatch, tmp_path: Path):
     compute.bootstrap_flavors()
     seen = {"ports": [], "volumes": []}
 
-    def fake_get(url):
+    def fake_get(url, **kw):
         if "/images/" in url:
             return {"id": "image-id", "name": "cirros"}
         if "/subnets/" in url:

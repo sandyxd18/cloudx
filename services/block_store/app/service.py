@@ -1,8 +1,10 @@
+from urllib.parse import quote
+
 import requests
 from fastapi import HTTPException
 from shared.auth_middleware import CurrentUser
 from shared.catalog import CatalogError
-from shared.internal import internal_headers
+from shared.internal import internal_headers, on_behalf_headers
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -48,6 +50,34 @@ def _check_auth_volume_quota(project_id: str, size: int, db: Session):
         raise
     except Exception as exc:
         log.warning("Auth project volume quota check skipped: %s", exc)
+
+
+def resolve_readable_image(ref: str, current: dict) -> str:
+    """Id of the image `ref`, looked up as the caller: image-api answers 404 for an image `current` may not read.
+
+    The internal token states who is asking (X-Caller-Claims), so the same 404 covers a missing image and one that
+    belongs to somebody else. A catalog or connection failure, or image-api refusing this service, is a 502.
+    """
+    try:
+        headers = on_behalf_headers(current)
+    except ValueError as exc:  # the claims do not fit in the header: image-api would read the call as anonymous
+        raise HTTPException(status_code=400, detail="caller identity cannot be sent to image-api") from exc
+    try:  # quoted: a ref with / ? # must not address another image-api route
+        response = requests.get(f"{image_api_url()}/images/{quote(ref, safe='')}", headers=headers, timeout=8)
+    except (CatalogError, requests.RequestException) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if response.status_code >= 400:
+        detail = clients._response_detail(response)
+        if response.status_code in (401, 403) or response.status_code >= 500:  # not the caller's doing
+            raise HTTPException(status_code=502, detail=f"image-api answered {response.status_code}: {detail}")
+        raise HTTPException(status_code=response.status_code, detail=detail)
+    try:
+        image_id = response.json()["id"]
+    except (ValueError, KeyError, TypeError):
+        image_id = None
+    if not isinstance(image_id, str) or not image_id:
+        raise HTTPException(status_code=502, detail=f"image-api answered an image without an id for '{ref}'")
+    return image_id
 
 
 def pick_lvm_host(db: Session, hosts: list[str] | None = None) -> str | None:

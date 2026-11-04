@@ -20,6 +20,7 @@ Authentication methods (checked in order):
 
 import hmac
 import inspect
+import json
 import logging
 import os
 import time
@@ -28,6 +29,9 @@ from typing import Annotated
 import requests
 from fastapi import Depends, HTTPException, Request
 from jose import JWTError, jwt
+
+from shared.internal import CALLER_CLAIMS_HEADER, CALLER_CLAIMS_KEYS, CALLER_CLAIMS_MAX_BYTES
+
 log = logging.getLogger("cloudx-auth")
 
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000")
@@ -184,8 +188,54 @@ def optional_auth(request: Request) -> dict | None:
         return None
 
 
+_CLAIM_STR_KEYS = ("sub", "username", "project_id", "domain_id", "scope_type")  # str, or absent/None
+
+
+def _caller_from_claims_header(raw: str) -> dict | None:
+    """Validate an X-Caller-Claims value (as Starlette decodes it, latin-1): the caller's claims, or None when invalid.
+
+    Strict on purpose: the claims become the identity image-api authorises. Only the kept keys survive; `role` is a
+    required non-empty str, `roles` a list of str, `domain_admin` a real bool (not "true", not 1), the other keys str.
+    The 2048-byte limit is on the raw value and the JSON must be UTF-8 and an object. A null optional key is dropped,
+    so it reads like an absent one (visible_projects falls back to "default" for an absent domain_id).
+    """
+    try:
+        data = raw.encode("latin-1")  # Starlette decodes header bytes as latin-1: this gives the wire bytes back
+        if len(data) > CALLER_CLAIMS_MAX_BYTES:
+            return None
+        claims = json.loads(data.decode("utf-8"))  # strict UTF-8
+    except (UnicodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(claims, dict):
+        return None
+    out = {k: claims[k] for k in CALLER_CLAIMS_KEYS if k in claims}
+    if not isinstance(out.get("role"), str) or not out["role"]:
+        return None
+    if any(out.get(k) is not None and not isinstance(out[k], str) for k in _CLAIM_STR_KEYS):
+        return None
+    if "roles" in out and not (isinstance(out["roles"], list) and all(isinstance(r, str) for r in out["roles"])):
+        return None
+    if "domain_admin" in out and not isinstance(out["domain_admin"], bool):
+        return None
+    if out.get("domain_admin") and not out.get("domain_id"):  # a domain admin of no domain: fail closed, as a JWT does
+        return None
+    return {k: v for k, v in out.items() if v is not None}
+
+
 def optional_user_or_internal(request: Request) -> dict | None:
-    """The caller's claims (user JWT, or the synthetic admin for INTERNAL_TOKEN), or None. Never raises 401."""
+    """The caller's claims (user JWT, or the synthetic admin for INTERNAL_TOKEN), or None. Never raises 401.
+
+    A holder of the internal token may state its caller's identity in X-Caller-Claims (see shared.internal.
+    on_behalf_headers): present and valid, those claims are the identity; present and invalid, anonymous, never the
+    synthetic admin. The header is read only when INTERNAL_TOKEN is set and X-Internal-Token matches it; otherwise it
+    is ignored and the JWT path decides. The claims are trusted as given: the sender must have authenticated `current`
+    through require_auth first, and the receiver does not repeat check_reader, the domain-scope or the revocation checks.
+    """
+    token = os.getenv("INTERNAL_TOKEN", "")
+    if token and _internal_token_matches(request, token):
+        values = request.headers.getlist(CALLER_CLAIMS_HEADER)
+        if values:
+            return _caller_from_claims_header(values[0]) if len(values) == 1 else None
     try:
         return require_user_or_internal(request)
     except HTTPException:

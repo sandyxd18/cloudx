@@ -13,7 +13,7 @@ def test_compute_server_create_flow_mocked_worker(monkeypatch, tmp_path: Path):
     compute_main = fresh_service("compute", monkeypatch, tmp_path)
     compute_main.bootstrap_flavors()
 
-    def fake_get(url: str):
+    def fake_get(url: str, **kw):
         if "/images/" in url:
             return {"id": "image-id", "name": "cirros"}
         if "/networks/" in url:
