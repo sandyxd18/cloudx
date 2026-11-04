@@ -1,7 +1,7 @@
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query
-from shared.domain import visible_projects
+from shared.domain import can_see, visible_projects
 from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
 from sqlalchemy import select
 
@@ -112,6 +112,10 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
             auto_root_volume = True
         else:
             root_volume = clients.block_get(f"/volumes/{payload.boot_volume}")
+            # block-store answers compute as an admin, so the caller's right to the volume is checked here, before
+            # anything about the volume (bootable, status) is reported.
+            if root_volume.get("project_id") and not can_see(current, root_volume["project_id"]):
+                raise HTTPException(status_code=404, detail=f"volume '{payload.boot_volume}' not found")
             if not root_volume.get("bootable"):
                 raise HTTPException(status_code=400, detail="boot volume must be bootable=true")
             if root_volume.get("status") != "available":
