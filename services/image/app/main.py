@@ -20,7 +20,7 @@ from botocore.client import Config
 from botocore.exceptions import ClientError
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, Text, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -145,6 +145,10 @@ class ImageTask(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class InvalidObjectName(ValueError):
+    """An object name that would leave the image store."""
+
+
 class StorageBackend(ABC):
     name: str
 
@@ -173,7 +177,10 @@ class FileStorageBackend(StorageBackend):
         self.root.mkdir(parents=True, exist_ok=True)
 
     def path_for(self, object_name: str) -> Path:
-        return self.root / object_name
+        path = (self.root / object_name).resolve()  # follows symlinks; an absolute name replaces the root
+        if not path.is_relative_to(self.root.resolve()):
+            raise InvalidObjectName(object_name)
+        return path
 
     def save_image(self, file, object_name: str) -> tuple[int, str]:
         target = self.path_for(object_name)
@@ -276,6 +283,11 @@ def get_db():
 DB = Annotated[Session, Depends(get_db)]
 app = FastAPI(title="cloudx image-api", version="1.0.0")
 
+
+@app.exception_handler(InvalidObjectName)
+def _invalid_object_name(request, exc):
+    return JSONResponse(status_code=400, content={"detail": "invalid image object name"})
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins(),
@@ -370,6 +382,19 @@ def require_image(db: Session, ref: str):
     if not image:
         raise HTTPException(status_code=404, detail=f"image '{ref}' not found")
     return image
+
+
+def require_owned_image(db: Session, ref: str, current: dict):
+    """The image, if the caller may change it: its owner, an admin of the owner's domain, or a system admin
+    (the internal token counts as one). An image without an owner is for system admins only."""
+    image = require_image(db, ref)
+    if not owns(current, image.project_id):
+        raise HTTPException(status_code=403, detail="not authorized to modify this image")
+    return image
+
+
+# what the image service itself (or an admin) sets; an owner edits the rest
+SYSTEM_IMAGE_FIELDS = frozenset({"status", "size", "checksum", "object_name", "filename", "storage_backend"})
 
 
 @app.get("/health")
@@ -587,8 +612,8 @@ def download_image(ref: str, db: DB):
 
 
 @app.delete("/images/{ref}")
-def delete_image(ref: str, _: UserOrInternal, db: DB):
-    image = require_image(db, ref)
+def delete_image(ref: str, current: UserOrInternal, db: DB):
+    image = require_owned_image(db, ref, current)
     if image.protected:
         raise HTTPException(status_code=403, detail="image is protected; clear 'protected' first")
     if image.storage_backend == "minio":
@@ -682,16 +707,16 @@ def verify_image(ref: str, _: CurrentUser, db: DB):
 
 
 @app.post("/images/{ref}/deactivate")
-def deactivate_image(ref: str, _: CurrentUser, db: DB):
-    image = require_image(db, ref)
+def deactivate_image(ref: str, current: CurrentUser, db: DB):
+    image = require_owned_image(db, ref, current)
     image.status = "deactivated"
     db.commit()
     return obj_to_dict(image)
 
 
 @app.post("/images/{ref}/reactivate")
-def reactivate_image(ref: str, _: CurrentUser, db: DB):
-    image = require_image(db, ref)
+def reactivate_image(ref: str, current: CurrentUser, db: DB):
+    image = require_owned_image(db, ref, current)
     image.status = "ACTIVE"
     db.commit()
     return obj_to_dict(image)
@@ -710,9 +735,13 @@ def prefetch_image(ref: str, _: CurrentUser, db: DB):
 
 
 @app.patch("/images/{ref}")
-def update_image(ref: str, payload: dict, _: UserOrInternal, db: DB):
+def update_image(ref: str, payload: dict, current: UserOrInternal, db: DB):
     """Partially update image attributes (visibility, name, status, etc.). Also called by image-worker."""
-    image = require_image(db, ref)
+    image = require_owned_image(db, ref, current)
+    if current.get("role") != "admin":
+        system = sorted(SYSTEM_IMAGE_FIELDS & payload.keys())
+        if system:
+            raise HTTPException(status_code=403, detail=f"only an administrator may change: {', '.join(system)}")
     allowed = {"visibility", "name", "disk_format", "container_format", "min_ram_mb", "protected",
                "status", "size", "checksum", "object_name", "filename", "storage_backend"}
     for key, value in payload.items():
@@ -738,8 +767,8 @@ def list_image_tags(ref: str, db: DB):
 
 
 @app.put("/images/{ref}/tags/{tag}")
-def add_image_tag(ref: str, tag: str, _: CurrentUser, db: DB):
-    image = require_image(db, ref)
+def add_image_tag(ref: str, tag: str, current: CurrentUser, db: DB):
+    image = require_owned_image(db, ref, current)
     existing = db.get(ImageTag, (image.id, tag))
     if not existing:
         db.add(ImageTag(image_id=image.id, tag=tag))
@@ -748,8 +777,8 @@ def add_image_tag(ref: str, tag: str, _: CurrentUser, db: DB):
 
 
 @app.delete("/images/{ref}/tags/{tag}", status_code=204)
-def delete_image_tag(ref: str, tag: str, _: CurrentUser, db: DB):
-    image = require_image(db, ref)
+def delete_image_tag(ref: str, tag: str, current: CurrentUser, db: DB):
+    image = require_owned_image(db, ref, current)
     row = db.get(ImageTag, (image.id, tag))
     if row:
         db.delete(row)
@@ -777,8 +806,8 @@ def list_image_members(ref: str, _: CurrentUser, db: DB):
 
 
 @app.post("/images/{ref}/members", status_code=201)
-def share_image(ref: str, payload: ImageMemberIn, _: CurrentUser, db: DB):
-    image = require_image(db, ref)
+def share_image(ref: str, payload: ImageMemberIn, current: CurrentUser, db: DB):
+    image = require_owned_image(db, ref, current)
     existing = db.get(ImageMember, (image.id, payload.member))
     if not existing:
         existing = ImageMember(image_id=image.id, member_id=payload.member, status="pending")
@@ -804,8 +833,8 @@ def update_image_member_status(ref: str, member_id: str, payload: ImageMemberSta
 
 
 @app.delete("/images/{ref}/members/{member_id}", status_code=204)
-def remove_image_member(ref: str, member_id: str, _: CurrentUser, db: DB):
-    image = require_image(db, ref)
+def remove_image_member(ref: str, member_id: str, current: CurrentUser, db: DB):
+    image = require_owned_image(db, ref, current)
     member = db.get(ImageMember, (image.id, member_id))
     if member:
         db.delete(member)
