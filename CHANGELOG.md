@@ -4,6 +4,29 @@ All notable changes to CloudX. Each release from 0.7.0 on has full notes, includ
 `docs/releases/<tag>.md`; this file is the short version. Versions before 1.0.0 may change configuration and database
 schema between releases, so read the upgrade steps before moving a running cloud.
 
+## Unreleased
+
+### Added
+- **A policy file for auth-api.** `/etc/cloudx/policy.yaml` (mode 640, owner root, group cloudx; `CLOUDX_POLICY_FILE`
+  names another path) overrides the rule of any of 22 `auth-api` actions: the domain, user, project and role assignment
+  actions, the service and endpoint catalog, project and domain quotas, and the audit log. A rule is a boolean expression
+  of `role:NAME`, `domain_admin:True|False`, `rule:NAME` (a named rule of the same file), `@`, `!`, `and`, `or`, `not` and
+  parentheses (at most 200 tokens). The built-in rules are the old checks, so a cloud without the file behaves as
+  before. The file is re-read within 2 seconds of a change, no restart; a bad rule or a bad file never stops a service
+  (the action keeps its default, an unreadable file keeps the last good rules) and is logged once per change by the
+  `cloudx-policy` logger. It has to exist on every node that runs auth-api. `cloudx-manage policy check [FILE]`
+  validates a file and lists the rules that differ from the defaults; `cloudx-manage policy defaults` prints the built-in
+  rules. `cloudx-common` installs a sample with every line commented out as `/usr/share/cloudx/policy.yaml.sample`
+  (`etc/cloudx/policy.yaml.sample` in the repository and the tarball); no package creates `/etc/cloudx/policy.yaml`.
+  See `docs/policy.md`. Only auth-api uses it for now, and ownership and visibility rules stay in code.
+
+### Changed
+- **A denied request on the converted auth-api routes answers `403` with `Policy does not allow <action>`** instead of
+  `admin role required` or `admin or domain admin required`. Who is allowed does not change unless a policy file says so.
+- **`POST /policy/enforce` checks the real rules.** It answers `400` for an unknown or non-string `action` (it answered
+  `allowed: true`), and the 17 action names of the old table, which no route ever enforced, are gone. `GET /policy` now
+  lists the 22 actions and has a new `sources` map (`default` or `file` for each action).
+
 ## 1.0.10-rc1 (2026-11-04)
 
 Release candidate: it is installed on the lab before the final 1.0.10 is tagged. A resize that is confirmed

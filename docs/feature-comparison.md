@@ -128,8 +128,8 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 #### Policy & Audit
 | Feature | Endpoint | Status |
 |---|---|:---:|
-| Central RBAC policy map for all services | `GET /policy` | ✅ |
-| Check an action against the policy | `POST /policy/enforce` | ✅ |
+| The effective rule of each of the 22 `auth-api` actions that a policy file can change, and whether it comes from the file or the built-in default | `GET /policy` | ✅ |
+| Check whether the caller's token may perform one of those actions | `POST /policy/enforce` | ✅ |
 | Audit log | `GET\|POST /audit-logs` | ✅ |
 
 ### ❌ Missing Features (vs. the real Identity service)
@@ -140,7 +140,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Federation / SAML / OAuth2** | No SSO |
 | **Multi-factor authentication** | None |
 | **Fernet token** | JWT only |
-| **Policy files (oslo.policy)** | A central rule map, not oslo.policy files |
+| **Policy files (oslo.policy)** | Partly: `/etc/cloudx/policy.yaml` (its own rule language, not oslo.policy syntax) overrides the rule of 22 `auth-api` actions, reloads without a restart and is checked with `cloudx-manage policy check` (`docs/policy.md`). The other services have no policy file, and ownership and visibility rules stay in code |
 
 **Estimated Identity similarity: ~75%**
 

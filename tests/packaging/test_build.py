@@ -199,6 +199,12 @@ def test_every_package_ships_a_machine_readable_mit_copyright_file(debs, tmp_pat
         assert all(f" {line}".rstrip() in text for line in body.splitlines() if line.strip()), pkg
 
 
+def test_no_package_creates_the_policy_file(debs):
+    # /etc/cloudx/policy.yaml belongs to the operator: only the sample is shipped, and no package may create or overwrite it
+    for pkg, deb in debs.items():
+        assert "/etc/cloudx/policy.yaml" not in contents(deb), pkg
+
+
 def test_no_file_is_owned_by_two_packages(debs):
     owners = Counter()
     for deb in debs.values():
@@ -216,6 +222,7 @@ def test_common_package_contents(debs, tmp_path):
     assert links["/usr/bin/cloudx-manage"] == "/opt/cloudx/venv/bin/cloudx-manage"
     assert links["/usr/bin/cloudx-db-migrate"] == "/opt/cloudx/venv/bin/cloudx-db-migrate"
     assert "/usr/share/cloudx/cloudx.conf.sample" in files
+    assert "/usr/share/cloudx/policy.yaml.sample" in files
     assert "/usr/share/cloudx/manifest.toml" in files
     assert not any(p.startswith("/opt/cloudx/venv") for p in files)
     dpkg_deb("-x", str(debs["cloudx-common"]), str(tmp_path / "x"))
