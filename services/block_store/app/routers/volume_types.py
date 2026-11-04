@@ -1,5 +1,8 @@
-from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import AdminUser, CurrentUser
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+from shared import policy
+from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 
 from ..db import DB
@@ -16,7 +19,9 @@ def _vt_to_dict(vt: VolumeType) -> dict:
 
 
 @router.post("/volume-types", status_code=201)
-def create_volume_type(payload: VolumeTypeIn, _: AdminUser, db: DB):
+def create_volume_type(
+    payload: VolumeTypeIn, _: Annotated[dict, Depends(policy.require("block-store:volume-type:create"))], db: DB
+):
     if payload.disk_type not in DISK_TYPES:
         raise HTTPException(
             status_code=400,
@@ -47,7 +52,12 @@ def show_volume_type(ref: str, _: CurrentUser, db: DB):
 
 
 @router.patch("/volume-types/{ref}")
-def update_volume_type(ref: str, payload: VolumeTypeUpdateIn, _: AdminUser, db: DB):
+def update_volume_type(
+    ref: str,
+    payload: VolumeTypeUpdateIn,
+    _: Annotated[dict, Depends(policy.require("block-store:volume-type:update"))],
+    db: DB,
+):
     vt = db.get(VolumeType, ref) or db.scalar(select(VolumeType).where(VolumeType.name == ref))
     if not vt:
         raise HTTPException(status_code=404, detail=f"volume type '{ref}' not found")
@@ -59,7 +69,9 @@ def update_volume_type(ref: str, payload: VolumeTypeUpdateIn, _: AdminUser, db: 
 
 
 @router.delete("/volume-types/{ref}")
-def delete_volume_type(ref: str, _: AdminUser, db: DB):
+def delete_volume_type(
+    ref: str, _: Annotated[dict, Depends(policy.require("block-store:volume-type:delete"))], db: DB
+):
     vt = db.get(VolumeType, ref) or db.scalar(select(VolumeType).where(VolumeType.name == ref))
     if not vt:
         raise HTTPException(status_code=404, detail=f"volume type '{ref}' not found")
