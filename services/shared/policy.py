@@ -19,10 +19,10 @@ import logging
 import os
 import threading
 import time
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 import yaml
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException
 
 from .policy_rules import Expr, RuleError, evaluate, parse, references
 
@@ -310,6 +310,36 @@ def authorize(action: str, token: dict) -> bool:
         return False if expr is None else evaluate(expr, token, resolve)
 
     return evaluate(exprs[action], token, resolve)
+
+
+_required: set[str] = set()
+
+
+def require(action: str, authenticate: Callable | None = None) -> Callable:
+    """FastAPI dependency that lets a request through only when the policy allows `action`.
+
+    `authenticate` is the dependency that yields the token payload (default: shared.auth_middleware.
+    require_auth). It runs first, so its 401 is never turned into a 403. The dependency returns the payload.
+    KeyError at once (not at request time) for an action that does not exist.
+    """
+    if action not in DEFAULT_RULES:
+        raise KeyError(action)
+    if authenticate is None:
+        # lazy: auth_middleware reads AUTH_SECRET_KEY at import, and this module must import without it
+        from .auth_middleware import require_auth as authenticate
+    _required.add(action)
+
+    def dependency(token: dict = Depends(authenticate)) -> dict:
+        if not authorize(action, token):
+            raise HTTPException(status_code=403, detail=f"Policy does not allow {action}")
+        return token
+
+    return dependency
+
+
+def required_actions() -> set[str]:
+    """Every action passed to require() in this process (a copy)."""
+    return set(_required)
 
 
 # ── temporary wrappers for services/auth/app/routers/policy.py; Task 5 removes them ──
