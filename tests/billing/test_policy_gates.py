@@ -8,7 +8,6 @@ import pytest
 from fastapi.testclient import TestClient
 from jose import jwt
 
-from shared import policy
 from shared.auth_middleware import require_auth
 from tests.gates import assert_gated, route_actions
 
@@ -24,40 +23,6 @@ RECORD = {"project_id": "p1", "resource_type": "instance", "quantity": "1", "uni
 BATCH = [{"project_id": "p1", "resource_type": "instance", "quantity": "1",
           "period_start": "2026-01-01T00:00:00Z", "period_end": "2026-01-02T00:00:00Z"}]
 INTERNAL = {"X-Internal-Token": "service-token"}
-
-
-class Clock:
-    def __init__(self):
-        self.now = 1000.0
-
-    def __call__(self):
-        return self.now
-
-    def advance(self, seconds):
-        self.now += seconds
-
-
-@pytest.fixture
-def pfile(tmp_path, monkeypatch):
-    """A policy file that does not exist yet; every write gets a distinct mtime so tests never sleep."""
-    path = tmp_path / "policy.yaml"
-    monkeypatch.setenv("CLOUDX_POLICY_FILE", str(path))
-    clock = Clock()
-    monkeypatch.setattr(policy, "_monotonic", clock)
-    policy.reset()
-
-    class PolicyFile:
-        tick = 0
-
-        def write(self, text):
-            path.write_text(text, encoding="utf-8")
-            self.tick += 1
-            stamp = 10**18 + self.tick * 10**9
-            os.utime(path, ns=(stamp, stamp))
-            clock.advance(policy.CHECK_INTERVAL + 1)
-
-    yield PolicyFile()
-    policy.reset()
 
 
 @pytest.fixture

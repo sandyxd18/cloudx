@@ -1,11 +1,9 @@
 """The 2 admin-only routes of telemetry are gated by the central policy; the bulk routes are not."""
 import importlib
-import os
 
 import pytest
 from fastapi.testclient import TestClient
 
-from shared import policy
 from shared.auth_middleware import require_auth
 from tests.gates import assert_gated, route_actions
 
@@ -17,40 +15,6 @@ ROUTES = [(method, path, action) for (method, path), action in EXPECTED.items()]
 METRIC = {"instance_id": "i1", "project_id": "p1", "metric_type": "cpu_percent", "value": 1.0}
 BATCH = [METRIC]
 INTERNAL = {"X-Internal-Token": "service-token"}
-
-
-class Clock:
-    def __init__(self):
-        self.now = 1000.0
-
-    def __call__(self):
-        return self.now
-
-    def advance(self, seconds):
-        self.now += seconds
-
-
-@pytest.fixture
-def pfile(tmp_path, monkeypatch):
-    """A policy file that does not exist yet; every write gets a distinct mtime so tests never sleep."""
-    path = tmp_path / "policy.yaml"
-    monkeypatch.setenv("CLOUDX_POLICY_FILE", str(path))
-    clock = Clock()
-    monkeypatch.setattr(policy, "_monotonic", clock)
-    policy.reset()
-
-    class PolicyFile:
-        tick = 0
-
-        def write(self, text):
-            path.write_text(text, encoding="utf-8")
-            self.tick += 1
-            stamp = 10**18 + self.tick * 10**9
-            os.utime(path, ns=(stamp, stamp))
-            clock.advance(policy.CHECK_INTERVAL + 1)
-
-    yield PolicyFile()
-    policy.reset()
 
 
 @pytest.fixture
