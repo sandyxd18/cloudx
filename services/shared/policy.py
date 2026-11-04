@@ -244,7 +244,8 @@ class _StrictLoader(yaml.SafeLoader):
 
     PyYAML drops a non-specific tag (`! role:member` loads as `role:member`, a bare `!` as null), so a rule
     written without quotes can mean something else than it says; anchors and aliases can multiply a value
-    and are of no use in this file; a repeated key silently keeps its last value.
+    and are of no use in this file; a repeated key silently keeps its last value; a merge key (`<<`) pulls in
+    entries that the visible lines do not show.
     """
 
     def compose_node(self, parent, index):
@@ -261,6 +262,11 @@ class _StrictLoader(yaml.SafeLoader):
         for key_node, _ in node.value:
             if not isinstance(key_node, yaml.ScalarNode):
                 continue  # not a usable name anyway; the base class reports it
+            if key_node.tag == "tag:yaml.org,2002:merge":  # an unquoted `<<`; a quoted "<<" is an ordinary name
+                raise _FileError(
+                    f"policy file: line {key_node.start_mark.line + 1}: merge keys (<<) are not allowed; "
+                    "write every entry out"
+                )
             key = self.construct_object(key_node, deep=True)
             line = key_node.start_mark.line + 1
             if key in first_line:

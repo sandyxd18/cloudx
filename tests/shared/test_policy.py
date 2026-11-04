@@ -632,10 +632,37 @@ def test_a_duplicate_entry_on_reload_keeps_the_last_good_rules(pfile, clock, cap
     assert len(messages(caplog, logging.ERROR)) == 1
 
 
-def test_a_merge_key_does_not_crash_the_loader(pfile):
-    pfile.write('<<: {identity:domain:create: "@"}\nidentity:domain:create: "role:admin"\n')
-    policy.rules()  # whatever it decides, it must not raise
+@pytest.mark.parametrize("text, line", [
+    ('<<: {identity:domain:create: "@"}\nidentity:domain:create: "role:admin"\n', 1),
+    ('identity:domain:create: "role:admin"\n<<: {identity:user:list: "@"}\n', 2),
+    ('<<: [{identity:user:list: "@"}]\n', 1),
+    ('# a comment\n<<: {}\n', 2),
+])
+def test_a_merge_key_is_refused_as_a_file_error(pfile, caplog, text, line):
+    pfile.write(text)
+
+    assert policy.authorize("identity:user:list", MEMBER) is False  # the defaults apply
+    assert policy.authorize("identity:domain:create", MEMBER) is False
     assert policy.authorize("identity:domain:create", ADMIN) is True
+    assert set(policy.sources().values()) == {"default"}
+    expected = f"policy file: line {line}: merge keys (<<) are not allowed; write every entry out"
+    assert messages(caplog, logging.ERROR) == [expected]
+    assert policy.check_file(str(pfile.path)) == [expected]
+
+
+def test_a_merge_key_on_reload_keeps_the_last_good_rules(pfile, clock, caplog):
+    pfile.write('identity:domain:create: "@"\n')
+    assert policy.authorize("identity:domain:create", MEMBER) is True
+    pfile.write('<<: {identity:domain:create: "!"}\nidentity:domain:create: "role:admin"\n')
+    clock.advance(3)
+    assert policy.authorize("identity:domain:create", MEMBER) is True  # the previous valid override stays
+    assert len(messages(caplog, logging.ERROR)) == 1
+
+
+def test_a_quoted_merge_marker_is_an_ordinary_name(pfile):
+    pfile.write('"<<": "@"\nidentity:user:list: "rule:<<"\n')
+    assert policy.check_file(str(pfile.path)) == []
+    assert policy.authorize("identity:user:list", MEMBER) is True  # a named rule called "<<", used by an action
 
 
 # ── evaluation, log lines and file types ───────────────────────────────────────
