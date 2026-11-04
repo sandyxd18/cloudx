@@ -6,6 +6,13 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+## 1.0.10-rc2 (2026-11-04)
+
+Release candidate, after 1.0.10-rc1 and not yet run on the lab: the same features, plus a policy file for the
+admin-only actions of every service (57 actions), and two access fixes: who may change an image (**upgrade soon**) and
+who may call the four bulk billing and telemetry routes. No schema change beyond rc1's three. The notes, with the
+upgrade steps and what was and was not tested, are in `docs/releases/v1.0.10.md`.
+
 ### Added
 - **A policy file for auth-api.** `/etc/cloudx/policy.yaml` (mode 640, owner root, group cloudx; `CLOUDX_POLICY_FILE`
   names another path) overrides the rule of any of 22 `auth-api` actions: the domain, user, project and role assignment
