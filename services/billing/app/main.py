@@ -30,7 +30,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
-from shared.auth_middleware import AdminOrInternal, AdminUser, CurrentUser, UserOrInternal
+from shared import policy
+from shared.auth_middleware import AdminOrInternal, CurrentUser, UserOrInternal
 from shared.schema import require_schema
 from shared.cors import cors_origins
 
@@ -348,7 +349,11 @@ def _next_invoice_number(db: Session) -> str:
 # ── Rating Sheets ─────────────────────────────────────────────────────────────
 
 @app.post("/billing/rating-sheets", response_model=RatingSheetOut, status_code=status.HTTP_201_CREATED)
-def create_rating_sheet(user: AdminUser, data: RatingSheetIn, db: DB):
+def create_rating_sheet(
+    user: Annotated[dict, Depends(policy.require("billing:rating-sheet:create"))],
+    data: RatingSheetIn,
+    db: DB,
+):
     rs = RatingSheet(**data.model_dump())
     db.add(rs)
     db.commit()
@@ -378,7 +383,12 @@ def get_rating_sheet(user: CurrentUser, sheet_id: int, db: DB):
 
 
 @app.patch("/billing/rating-sheets/{sheet_id}", response_model=RatingSheetOut)
-def update_rating_sheet(user: AdminUser, sheet_id: int, data: RatingSheetPatch, db: DB):
+def update_rating_sheet(
+    user: Annotated[dict, Depends(policy.require("billing:rating-sheet:update"))],
+    sheet_id: int,
+    data: RatingSheetPatch,
+    db: DB,
+):
     rs = db.get(RatingSheet, sheet_id)
     if not rs:
         raise HTTPException(status_code=404, detail="Rating sheet not found")
@@ -392,7 +402,11 @@ def update_rating_sheet(user: AdminUser, sheet_id: int, data: RatingSheetPatch, 
 # ── Usage Records ─────────────────────────────────────────────────────────────
 
 @app.post("/billing/usage-records", response_model=UsageRecordOut, status_code=status.HTTP_201_CREATED)
-def create_usage_record(user: AdminUser, data: UsageRecordIn, db: DB):
+def create_usage_record(
+    user: Annotated[dict, Depends(policy.require("billing:usage-record:create"))],
+    data: UsageRecordIn,
+    db: DB,
+):
     total = data.quantity * data.rate_per_unit
     rec = UsageRecord(**data.model_dump(), total_cost=total)
     db.add(rec)
