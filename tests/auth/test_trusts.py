@@ -209,17 +209,20 @@ def test_expired_trust_is_401(auth):
     assert redeem(auth, t["id"]).status_code == 401
 
 
-def test_token_from_a_short_trust_does_not_outlive_the_trust(auth):
+def test_token_from_a_short_trust_does_not_outlive_the_trust(auth, monkeypatch):
     t = make_trust(auth).json()
-    ends = auth.models.utcnow() + timedelta(seconds=300)
+    start = auth.models.utcnow()
+    monkeypatch.setattr(auth.tokens, "utcnow", lambda: start)  # the token's clock is fixed: the test does not read the wall clock twice
+    ends = start + timedelta(seconds=300)
     edit_trust(auth, t["id"], expires_at=ends)
 
     r = redeem(auth, t["id"])
 
     assert r.status_code == 201, r.text
-    exp = datetime.fromtimestamp(claims(auth, r)["exp"], tz=timezone.utc).replace(tzinfo=None)
+    token = claims(auth, r)
+    exp = datetime.fromtimestamp(token["exp"], tz=timezone.utc).replace(tzinfo=None)
     assert exp <= ends
-    assert 0 < r.json()["expires_in"] <= 300
+    assert token["exp"] - token["iat"] == 300 and r.json()["expires_in"] == 300
 
 
 def test_trust_without_expiry_gives_the_default_lifetime(auth):
