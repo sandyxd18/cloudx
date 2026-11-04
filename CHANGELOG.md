@@ -6,6 +6,17 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Fixed
+- **Reading a non-public image needs a login and the right to read it.** On `image-api`, `GET /images/{image}`, its
+  `download`, `tags`, `verify`, `members` and `prefetch` now answer only to the image's owner, an admin of the owner's
+  domain, a system admin, the internal token, and a project the image was shared with that accepted it (a pending or
+  rejected share grants nothing). Anyone else gets `404 image '<image>' not found`, the same answer as for a missing
+  image. A public image is still readable, and downloadable, without signing in. When two images share a name, a name
+  resolves to one the caller may read, their own project's first. The compute and block-store workers now send the
+  internal token when they read an image, so a worker that is not upgraded gets `404` for a non-public image until its
+  node is upgraded, and `image-api` logs a WARNING (`anonymous read of a non-public image refused: <image>`) for each
+  such request. Upgrade soon.
+
 ## 1.0.10-rc2 (2026-11-04)
 
 Release candidate, after 1.0.10-rc1 and not yet run on the lab: the same features, plus a policy file for the
