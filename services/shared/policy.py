@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import threading
 import time
 from typing import Callable, NamedTuple
@@ -69,6 +70,7 @@ DEFAULT_RULES: dict[str, str] = {
 CHECK_INTERVAL = 2.0  # seconds between two stat() calls of the policy file
 MAX_REFERENCE_DEPTH = 10  # rule:NAME hops in a row
 MAX_EVAL_DEPTH = 500  # evaluator frames, summed over those hops; keeps evaluate() far from the recursion limit
+MAX_FILE_BYTES = 1024 * 1024  # a larger policy file is refused without being parsed
 
 _monotonic = time.monotonic  # tests patch this name
 
@@ -194,15 +196,16 @@ def _compile(data: dict, problems: list[str] | None = None) -> _Snapshot:
     def reject(name: str, reason: str) -> None:
         dropped.add(name)
         if name in DEFAULT_RULES:
-            _emit(problems, logging.ERROR, "policy file: rule for '%s' ignored, the default applies: %s", name, reason)
+            _emit(problems, logging.ERROR, "policy file: rule for %r ignored, the default applies: %s", name, reason)
         else:
-            _emit(problems, logging.ERROR, "policy file: rule '%s' ignored: %s", name, reason)
+            _emit(problems, logging.ERROR, "policy file: rule %r ignored: %s", name, reason)
 
     for key, value in data.items():
         if not isinstance(key, str):
             _emit(problems, logging.ERROR, "policy file: entry %r ignored: names must be strings", key)
         elif not isinstance(value, str):
-            reject(key, f"the value {value!r} is not a string; put the rule in quotes, for example '{key}: \"role:admin\"'")
+            # never echo the value: it can be arbitrarily large
+            reject(key, f"the value is of type {type(value).__name__}, not a string; put the rule in double quotes, for example \"role:admin\"")
         else:
             try:
                 parsed[key] = (value, parse(value))
@@ -221,7 +224,7 @@ def _compile(data: dict, problems: list[str] | None = None) -> _Snapshot:
     used = set().union(*(references(expr) for expr in exprs.values()))
     for name in parsed:
         if name not in DEFAULT_RULES and name not in used:
-            _emit(problems, logging.WARNING, "policy file: '%s' is not an action and no rule uses it (typo?)", name)
+            _emit(problems, logging.WARNING, "policy file: %r is not an action and no rule uses it (typo?)", name)
 
     return _Snapshot(
         rules={action: parsed[action][0] if action in parsed else rule for action, rule in DEFAULT_RULES.items()},
@@ -295,6 +298,14 @@ def _load(path: str, problems: list[str] | None = None) -> _Snapshot | None:
     With `problems`, nothing is logged: each line that would have been is appended to the list instead.
     """
     try:
+        st = os.stat(path)
+        if not stat.S_ISREG(st.st_mode):  # decided before open(): opening a FIFO blocks until a writer comes
+            _emit(problems, logging.ERROR, "policy file %s is not a regular file", path)
+            return None
+        if st.st_size > MAX_FILE_BYTES:
+            _emit(problems, logging.ERROR, "policy file %s is too large (%d bytes, the limit is %d)",
+                  path, st.st_size, MAX_FILE_BYTES)
+            return None
         with open(path, encoding="utf-8") as handle:
             text = handle.read()
     except FileNotFoundError:
@@ -372,9 +383,14 @@ def authorize(action: str, token: dict) -> bool:
         raise KeyError(action)
     exprs = _current().exprs
 
+    memo: dict[str, bool] = {}  # the token is fixed during this call, so a rule has one answer; keeps the work
+    # linear in the number of rules however often they refer to each other
+
     def resolve(name: str) -> bool:
-        expr = exprs.get(name)
-        return False if expr is None else evaluate(expr, token, resolve)
+        if name not in memo:
+            expr = exprs.get(name)
+            memo[name] = False if expr is None else evaluate(expr, token, resolve)
+        return memo[name]
 
     return evaluate(exprs[action], token, resolve)
 

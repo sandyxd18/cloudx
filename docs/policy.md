@@ -157,10 +157,11 @@ The service never fails to start because of this file. Problems go to the logger
 | Problem | What applies | Logged |
 |---|---|---|
 | A rule does not parse (unknown word, missing name, unbalanced parenthesis, more than 200 tokens), refers to an unknown rule, is part of a cycle or is nested too deeply | the built-in rule of that action (a named rule is dropped, and so is every rule that uses it); the other entries still apply | ERROR |
-| A value is not a string (a number, `null`, a list) | the built-in rule of that action | ERROR (it says to put the rule in quotes) |
+| A value is not a string (a number, `null`, a list) | the built-in rule of that action | ERROR (it names the type of the value, never the value, and says to put the rule in quotes) |
 | A key is not a string | that entry is ignored | ERROR |
 | An entry whose name is not an action and that no rule uses | nothing (a typo in an action name leaves the default in force) | WARNING |
 | The file cannot be read (permissions, not UTF-8) | the built-in rules on the first load; on a reload, the last good rules | ERROR |
+| The path is not a regular file (a directory, a named pipe), or the file is larger than 1 MiB | as for an unreadable file; the file is not opened (not parsed, for the size) | ERROR |
 | The file is not valid YAML (an unquoted `@`, for example) | as for an unreadable file | ERROR |
 | The file has a YAML tag, anchor or alias (an unquoted `!`, `! role:member`, `!!str`, `&a`, `*a`), or the same key twice | as for an unreadable file: the whole file is ignored | ERROR (it names the line) |
 | The file is valid YAML but not a mapping (a list, a plain string) | as for an unreadable file | ERROR |
@@ -187,7 +188,7 @@ A file with mistakes (an unknown word, a misspelled action, a number as a rule, 
 ```
 $ cloudx-manage policy check bad.yaml
 policy file: rule for 'identity:user:create' ignored, the default applies: unknown atom 'is_admin'
-policy file: rule for 'identity:domain:list' ignored, the default applies: the value 5 is not a string; put the rule in quotes, for example 'identity:domain:list: "role:admin"'
+policy file: rule for 'identity:domain:list' ignored, the default applies: the value is of type int, not a string; put the rule in double quotes, for example "role:admin"
 policy file: 'identity:user:lst' is not an action and no rule uses it (typo?)
 differs from the default: identity:project:delete: role:admin
 differs from the default: identity:audit-log:list: !

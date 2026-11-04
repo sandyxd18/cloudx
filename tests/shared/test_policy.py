@@ -637,3 +637,92 @@ def test_a_merge_key_does_not_crash_the_loader(pfile):
     policy.rules()  # whatever it decides, it must not raise
     assert policy.authorize("identity:domain:create", ADMIN) is True
 
+
+# ── evaluation, log lines and file types ───────────────────────────────────────
+
+def test_evaluation_is_linear_in_the_number_of_rules(pfile, monkeypatch):
+    lines = ['r0: "role:nobody"']
+    for i in range(1, 7):
+        lines.append(f'r{i}: "' + " or ".join([f"rule:r{i - 1}"] * 20) + '"')
+    lines.append('identity:user:list: "rule:r6 or role:admin"')
+    pfile.write("\n".join(lines) + "\n")
+    assert policy.check_file(str(pfile.path)) == []
+    calls = []
+    real = policy.evaluate
+
+    def counting(expr, token, resolve):
+        calls.append(expr)
+        return real(expr, token, resolve)
+
+    monkeypatch.setattr(policy, "evaluate", counting)
+    assert policy.authorize("identity:user:list", MEMBER) is False
+    assert len(calls) == 1 + 7  # the action itself, then each of r0..r6 once
+
+
+def test_a_non_string_value_is_never_echoed(pfile, caplog):
+    pfile.write("identity:user:list: [" + ",".join(["1"] * 100000) + "]\n")
+    assert policy.rules() == policy.DEFAULT_RULES
+    logged = messages(caplog, logging.ERROR)
+    assert len(logged) == 1 and len(logged[0]) < 300
+    assert "list" in logged[0] and "not a string" in logged[0]
+    assert policy.check_file(str(pfile.path)) == logged
+
+
+def test_a_name_with_a_newline_cannot_forge_a_log_line(pfile, caplog):
+    pfile.write('"evil\\nERROR forged": [1]\n"typo\\nWARNING forged": "role:admin"\n')
+    policy.rules()
+    for line in policy.check_file(str(pfile.path)):
+        assert "\n" not in line
+    assert all("\n" not in m for m in messages(caplog, logging.ERROR) + messages(caplog, logging.WARNING))
+    assert any("evil\\nERROR forged" in m for m in messages(caplog, logging.ERROR))
+    assert any("typo\\nWARNING forged" in m for m in messages(caplog, logging.WARNING))
+
+
+def test_a_directory_at_the_path_is_a_file_error(pfile, caplog):
+    pfile.path.mkdir()
+    assert policy.rules() == policy.DEFAULT_RULES
+    logged = messages(caplog, logging.ERROR)
+    assert len(logged) == 1 and "not a regular file" in logged[0]
+    assert policy.check_file(str(pfile.path)) == logged
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes here")
+def test_a_fifo_at_the_path_is_refused_without_blocking(pfile, caplog):
+    import threading
+
+    os.mkfifo(pfile.path)
+    result = []
+    worker = threading.Thread(target=lambda: result.append(policy.rules()), daemon=True)
+    worker.start()
+    worker.join(5)
+    if worker.is_alive():  # a regression would block in open(); release it so the suite carries on
+        fd = os.open(pfile.path, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+        worker.join(5)
+        pytest.fail("loading a FIFO blocked")
+    assert result == [policy.DEFAULT_RULES]
+    logged = messages(caplog, logging.ERROR)
+    assert len(logged) == 1 and "not a regular file" in logged[0]
+    assert policy.check_file(str(pfile.path)) == logged
+
+
+def test_a_file_over_1_mib_is_refused_without_parsing(pfile, caplog, monkeypatch):
+    assert policy.MAX_FILE_BYTES == 1024 * 1024
+    pfile.write("#" * (policy.MAX_FILE_BYTES + 1))
+
+    def no_parse(*args, **kwargs):
+        raise AssertionError("the file must not be parsed")
+
+    monkeypatch.setattr(policy, "_StrictLoader", no_parse)
+    assert policy.rules() == policy.DEFAULT_RULES
+    logged = messages(caplog, logging.ERROR)
+    assert len(logged) == 1 and "too large" in logged[0] and str(policy.MAX_FILE_BYTES + 1) in logged[0]
+    assert policy.check_file(str(pfile.path)) == logged
+
+
+def test_a_file_of_exactly_1_mib_is_read(pfile, caplog):
+    head = 'identity:user:list: "role:admin"\n'
+    pfile.write(head + "#" * (policy.MAX_FILE_BYTES - len(head)))
+    assert pfile.path.stat().st_size == policy.MAX_FILE_BYTES
+    assert policy.sources()["identity:user:list"] == "file"
+    assert no_logs(caplog)
