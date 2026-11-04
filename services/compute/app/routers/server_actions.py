@@ -2,7 +2,7 @@ from urllib.parse import quote
 
 import requests
 from fastapi import APIRouter, HTTPException
-from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
+from shared.auth_middleware import AdminOrInternal, CurrentUser, UserOrInternal
 from shared.catalog import CatalogError
 from shared.internal import internal_headers
 
@@ -363,22 +363,20 @@ def remove_server_port(ref: str, port_ref: str, current: CurrentUser, db: DB):
     return {"status": "detaching", "server_id": server.id, "port_id": port["id"]}
 
 
-# Service-to-service: block-store calls these after it has checked the volume, its project and the server lock.
-INTERNAL_CALLER = {"sub": "internal", "role": "admin", "project_id": "admin"}
-
-
-@router.post("/servers/{ref}/volumes/attach", dependencies=[InternalAuth])
-def attach_volume(ref: str, payload: VolumeAttachIn, db: DB):
-    server = require_unlocked_server(db, ref, INTERNAL_CALLER)
+# Service-to-service (an admin or the internal token, never open): block-store calls these after it has checked the
+# volume, its project and the server lock.
+@router.post("/servers/{ref}/volumes/attach")
+def attach_volume(ref: str, payload: VolumeAttachIn, current: AdminOrInternal, db: DB):
+    server = require_unlocked_server(db, ref, current)
     if server.status != "ACTIVE":
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE to attach volume; current status is {server.status}")
     clients.cast_to_worker("attach_volume", {**server_worker_payload(server), "volume": payload.model_dump()})
     return {"status": "attaching", "server_id": server.id, "volume_id": payload.volume_id}
 
 
-@router.post("/servers/{ref}/volumes/detach", dependencies=[InternalAuth])
-def detach_volume(ref: str, payload: VolumeAttachIn, db: DB):
-    server = require_unlocked_server(db, ref, INTERNAL_CALLER)
+@router.post("/servers/{ref}/volumes/detach")
+def detach_volume(ref: str, payload: VolumeAttachIn, current: AdminOrInternal, db: DB):
+    server = require_unlocked_server(db, ref, current)
     if server.status not in {"ACTIVE", "SHUTOFF"}:
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE or SHUTOFF to detach volume; current status is {server.status}")
     clients.cast_to_worker("detach_volume", {**server_worker_payload(server), "volume": payload.model_dump()})

@@ -240,8 +240,8 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 |---|---|:---:|
 | Attach a port to a server (multi-NIC) | `POST /servers/{ref}/ports` | ✅ |
 | Detach a port from a server | `DELETE /servers/{ref}/ports/{port_ref}` | ✅ |
-| Attach a volume (LVM/Ceph) to a server | `POST /servers/{ref}/volumes/attach` | ✅ |
-| Detach a volume from a server | `POST /servers/{ref}/volumes/detach` | ✅ |
+| Attach a volume (LVM/Ceph) to a server | `POST /volumes/{ref}/attach` (block-store; compute's `POST /servers/{ref}/volumes/attach` is service-to-service: internal token or admin) | ✅ |
+| Detach a volume from a server | `POST /volumes/{ref}/detach` (block-store; compute's `POST /servers/{ref}/volumes/detach` is service-to-service: internal token or admin) | ✅ |
 
 #### Host
 | Feature | Endpoint | Status |

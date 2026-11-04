@@ -59,6 +59,40 @@ def test_a_member_is_refused(compute, action, _status, _state):
 
 
 @pytest.mark.parametrize("action,_status,_state", ROUTES)
+def test_a_member_is_refused_when_no_internal_token_is_configured(compute, monkeypatch, action, _status, _state):
+    """The routes do not depend on INTERNAL_TOKEN being set: without one, only an admin token is accepted."""
+    _, client, casts = compute
+    monkeypatch.delenv("INTERNAL_TOKEN")
+
+    r = client.post(f"/servers/srv1/volumes/{action}", json=BODY, headers=jwt_headers("member", "p1"))
+
+    assert r.status_code in (401, 403), r.text
+    assert casts == []
+
+
+@pytest.mark.parametrize("action,_status,_state", ROUTES)
+def test_a_request_without_credentials_is_refused_when_no_internal_token_is_configured(compute, monkeypatch, action, _status, _state):
+    _, client, casts = compute
+    monkeypatch.delenv("INTERNAL_TOKEN")
+
+    r = client.post(f"/servers/srv1/volumes/{action}", json=BODY)
+
+    assert r.status_code in (401, 403), r.text
+    assert casts == []
+
+
+@pytest.mark.parametrize("action,_status,_state", ROUTES)
+def test_an_admin_token_works_when_no_internal_token_is_configured(compute, monkeypatch, action, _status, _state):
+    _, client, casts = compute
+    monkeypatch.delenv("INTERNAL_TOKEN")
+
+    r = client.post(f"/servers/srv1/volumes/{action}", json=BODY, headers=jwt_headers("admin", "admin"))
+
+    assert r.status_code == 200, r.text
+    assert len(casts) == 1
+
+
+@pytest.mark.parametrize("action,_status,_state", ROUTES)
 def test_a_request_without_credentials_is_refused(compute, action, _status, _state):
     _, client, casts = compute
 
