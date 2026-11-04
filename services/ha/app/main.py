@@ -17,7 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import DateTime, Integer, String, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from shared.auth_middleware import AdminUser, CurrentUser, InternalAuth
+from shared import policy
+from shared.auth_middleware import CurrentUser, InternalAuth
 from shared.cors import cors_origins
 from shared.domain import can_see, owns, visible_projects
 from shared.request_id_middleware import RequestIDMiddleware
@@ -182,7 +183,7 @@ def list_hosts(current: CurrentUser, db: DB):
                        "has_iqn": bool(h.initiator_iqn)} for h in db.scalars(select(Host).order_by(Host.host))]}
 
 @app.post("/hosts/{host}/reset")
-def reset_host(host: str, _: AdminUser, db: DB):
+def reset_host(host: str, _: Annotated[dict, Depends(policy.require("ha:host:reset"))], db: DB):
     h = db.get(Host, host)
     if not h:
         raise HTTPException(404, "Host not found")
