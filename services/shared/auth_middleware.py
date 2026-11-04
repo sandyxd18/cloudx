@@ -179,9 +179,18 @@ def optional_auth(request: Request) -> dict | None:
         return None
 
 
+def optional_user_or_internal(request: Request) -> dict | None:
+    """The caller's claims (user JWT, or the synthetic admin for INTERNAL_TOKEN), or None. Never raises 401."""
+    try:
+        return require_user_or_internal(request)
+    except HTTPException:
+        return None
+
+
 CurrentUser  = Annotated[dict, Depends(require_auth)]
 AdminUser    = Annotated[dict, Depends(require_admin)]
 OptionalAuth = Annotated[dict | None, Depends(optional_auth)]
+OptionalUserOrInternal = Annotated[dict | None, Depends(optional_user_or_internal)]
 UserOrInternal = Annotated[dict, Depends(require_user_or_internal)]
 AdminOrInternal = Annotated[dict, Depends(require_admin_or_internal)]
 InternalAuth = Depends(require_internal)  # `dependencies=[InternalAuth]` on /internal routes
