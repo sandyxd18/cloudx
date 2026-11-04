@@ -217,6 +217,8 @@ def _caller_from_claims_header(raw: str) -> dict | None:
         return None
     if "domain_admin" in out and not isinstance(out["domain_admin"], bool):
         return None
+    if out.get("domain_admin") and not out.get("domain_id"):  # a domain admin of no domain: fail closed, as a JWT does
+        return None
     return {k: v for k, v in out.items() if v is not None}
 
 

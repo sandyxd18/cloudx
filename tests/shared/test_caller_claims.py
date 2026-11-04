@@ -151,6 +151,30 @@ def test_a_null_optional_key_reads_like_an_absent_one():
     assert "domain_id" not in who(claims_headers({"role": "member", "domain_id": None}))
 
 
+@pytest.mark.parametrize("domain", [{}, {"domain_id": None}, {"domain_id": ""}], ids=["absent", "null", "empty"])
+def test_a_domain_admin_without_a_domain_id_is_anonymous(domain):
+    assert who(claims_headers({"role": "member", "domain_admin": True, **domain})) is None
+
+
+def test_a_domain_admin_with_a_domain_id_and_a_non_admin_without_one_are_read():
+    assert who(claims_headers({"role": "member", "domain_admin": True, "domain_id": "d1"})) == \
+        {"role": "member", "domain_admin": True, "domain_id": "d1"}
+    assert who(claims_headers({"role": "member", "domain_admin": False})) == {"role": "member", "domain_admin": False}
+    assert who(claims_headers({"role": "member"})) == {"role": "member"}
+
+
+@pytest.mark.parametrize("domain", [{}, {"domain_id": None}, {"domain_id": ""}, {"domain_id": 3}],
+                         ids=["absent", "null", "empty", "int"])
+def test_sender_raises_for_a_domain_admin_without_a_domain_id(domain):
+    with pytest.raises(ValueError):
+        on_behalf_headers({**MEMBER, "domain_admin": True, **domain})
+
+
+def test_sender_accepts_a_non_admin_without_a_domain_id():
+    on_behalf_headers({**MEMBER, "domain_admin": False})
+    on_behalf_headers(MEMBER)
+
+
 def test_valid_token_and_no_header_give_the_synthetic_admin():
     got = who({"X-Internal-Token": "tok"})
     assert got["sub"] == "internal" and got["role"] == "admin"

@@ -19,7 +19,7 @@ def api_get(url: str, caller: dict | None = None):
     try:
         headers = on_behalf_headers(caller) if caller is not None else internal_headers()
     except ValueError as exc:  # the claims do not fit in the header: the peer would read the call as anonymous
-        raise HTTPException(status_code=400, detail="caller identity is too large to send to image-api") from exc
+        raise HTTPException(status_code=400, detail="caller identity cannot be sent to image-api") from exc
     try:
         response = requests.get(url, headers={"Content-Type": "application/json", **headers}, timeout=8)
     except requests.RequestException as exc:

@@ -326,7 +326,7 @@ def test_claims_too_large_for_the_header_are_400_and_create_nothing(env):
 
     r = create(env, "x")
 
-    assert r.status_code == 400 and r.json() == {"detail": "caller identity is too large to send to image-api"}
+    assert r.status_code == 400 and r.json() == {"detail": "caller identity cannot be sent to image-api"}
     assert env.seen["image_calls"] == [] and volume_rows(env) == 0 and env.seen["casts"] == []
 
 

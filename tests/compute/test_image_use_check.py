@@ -74,12 +74,13 @@ def env(monkeypatch, tmp_path):
     svc = fresh_service("compute", monkeypatch, tmp_path)
     who = {}
     svc.app.dependency_overrides[require_auth] = lambda: who
-    seen = {"image_calls": [], "claims": [], "released": [], "casts": [], "block_posts": [], "block_deletes": [],
+    seen = {"image_calls": [], "image_urls": [], "claims": [], "released": [], "casts": [], "block_posts": [], "block_deletes": [],
             "ports": [], "api_deletes": []}
 
     def fake_get(url, headers=None, timeout=None, **kw):
         if url.startswith(IMAGE_URL):
             seen["image_calls"].append(headers)
+            seen["image_urls"].append(url)
             return image_client.get(url[len(IMAGE_URL):], headers=headers)
         if "/networks/" in url:
             return Reply(200, {"id": "net1", "name": "private-net"})
@@ -304,9 +305,40 @@ def test_create_server_with_claims_too_large_for_the_header_is_400_and_creates_n
 
     r = create(env, "x")
 
-    assert r.status_code == 400 and r.json() == {"detail": "caller identity is too large to send to image-api"}
+    assert r.status_code == 400 and r.json() == {"detail": "caller identity cannot be sent to image-api"}
     seen = env.seen
     assert len(seen["claims"]) == 1 and seen["released"] == seen["claims"], "the placement claim is released"
     assert seen["image_calls"] == []
     assert server_rows(env) == 0
     assert seen["block_posts"] == [] and seen["ports"] == [] and seen["casts"] == []
+
+
+@pytest.mark.parametrize("action", ["create", "rebuild", "rescue"])
+@pytest.mark.parametrize("ref, segment", [
+    ("../images?name=x", "..%2Fimages%3Fname%3Dx"),
+    ("a/b", "a%2Fb"),
+    ("x?y#z", "x%3Fy%23z"),
+    ("plain-name", "plain-name"),
+    ("0b6f6a62-5a8e-4d3c-9d58-123456789abc", "0b6f6a62-5a8e-4d3c-9d58-123456789abc"),
+])
+def test_the_image_reference_is_one_encoded_path_segment(env, action, ref, segment):
+    env.as_(OTHER)
+    if action == "create":
+        create(env, ref)
+    else:
+        add_server(env, "p2")
+        env.client.post(f"/servers/srv1/{action}", json={"image": ref})
+
+    assert env.seen["image_urls"][0] == f"{IMAGE_URL}/images/{segment}"
+
+
+def test_a_plain_name_and_an_id_still_resolve(env):
+    image = env.make_image("x", "public")
+    env.as_(OTHER)
+
+    assert create(env, "x").status_code == 201
+    assert env.seen["image_urls"][0] == f"{IMAGE_URL}/images/x"
+    env.seen["image_urls"].clear()
+    r = env.client.post("/servers", json={"name": "vm2", "flavor": "small", "network": "net1", "image": image["id"]})
+    assert r.status_code == 201, r.text
+    assert env.seen["image_urls"][0] == f"{IMAGE_URL}/images/{image['id']}"

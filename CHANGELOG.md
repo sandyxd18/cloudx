@@ -19,11 +19,12 @@ schema between releases, so read the upgrade steps before moving a running cloud
   task imports are private by default) fails with `404` on that node; public images keep working. `image-api` logs
   `anonymous read of a non-public image refused: <ref>` for each refused read. Upgrade soon.
 - **Booting from, rebuilding or rescuing with, and creating a volume from an image need the right to read it.** The
-  image must be public, owned by the caller's project, or shared with it and accepted; otherwise the request fails
-  with `404 image '<image>' not found` before anything is created. `compute` and `block-store` now tell `image-api`
-  who is asking, with an `X-Caller-Claims` header sent together with the internal token, and `image-api` judges the
-  read as that user. Any upgrade order is safe: the check applies once `image-api`, `compute` and `block-store` are
-  all new. With `INTERNAL_TOKEN` unset those services read public images only. Upgrade soon.
+  image must be public, owned by the caller's project or its domain's admin, a system admin, or shared with it and
+  accepted; otherwise the request fails with `404 image '<image>' not found` before anything is created. `compute`
+  and `block-store` now tell `image-api` who is asking, with an `X-Caller-Claims` header sent together with the
+  internal token, and `image-api` judges the read as that user. Any upgrade order is safe: the check applies once
+  `image-api`, `compute` and `block-store` are all new. With `INTERNAL_TOKEN` unset those services read public images
+  only. Upgrade soon.
 
 ## 1.0.10-rc2 (2026-11-04)
 
