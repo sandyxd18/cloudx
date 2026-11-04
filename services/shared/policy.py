@@ -367,7 +367,9 @@ _HEADER = """\
 #
 # Everything below is commented out: the built-in rules apply. List only the actions you want to
 # change, as "action: rule" lines. Copy a line, remove the "# " and edit the rule. Quote every rule;
-# a rule that starts with ! or @ must be quoted ("!" and "@"), or the file is not valid YAML.
+# a rule that is just ! or @ must be quoted ("!" and "@"). An unquoted ! is read as empty: the entry is
+# ignored and the action KEEPS its default rule (it is not closed). An unquoted @ makes the whole file
+# invalid YAML, so the file is ignored.
 #
 # A rule is a boolean expression:
 #

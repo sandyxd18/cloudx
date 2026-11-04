@@ -175,6 +175,20 @@ def test_sample_file_equals_defaults_output():
     assert SAMPLE.read_text(encoding="utf-8") == policy.defaults_yaml()
 
 
+def test_the_header_says_what_an_unquoted_bang_and_at_really_do():
+    # the header describes PyYAML's behavior; if PyYAML changes, or the header is edited, this must fail
+    assert yaml.safe_load("a: !") == {"a": None}
+    with pytest.raises(yaml.YAMLError):
+        yaml.safe_load("a: @")
+    header = policy.defaults_yaml().split("# The built-in rules:")[0]
+    flat = " ".join(line.lstrip("# ").strip() for line in header.splitlines())
+    assert '("!" and "@")' in flat
+    assert "An unquoted ! is read as empty" in flat
+    assert "KEEPS its default rule" in flat and "it is not closed" in flat
+    assert "An unquoted @ makes the whole file invalid YAML" in flat
+    assert "not valid YAML" not in flat
+
+
 def test_the_sample_as_installed_is_a_no_op(tmp_path, monkeypatch, caplog):
     text = SAMPLE.read_text(encoding="utf-8")
     assert all(not line.strip() or line.lstrip().startswith("#") for line in text.splitlines())
