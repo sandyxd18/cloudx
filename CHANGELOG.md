@@ -27,6 +27,15 @@ schema between releases, so read the upgrade steps before moving a running cloud
   `allowed: true`), and the 17 action names of the old table, which no route ever enforced, are gone. `GET /policy` now
   lists the 22 actions and has a new `sources` map (`default` or `file` for each action).
 
+### Fixed
+- **Changing an image needs its owner.** `PATCH`, `DELETE`, `deactivate`, `reactivate`, adding or removing a tag, and
+  sharing or unsharing with a project on `image-api` now require the image's owner, an admin of the owner's domain, or a
+  system admin (the internal token counts as one, so `image-worker` is unchanged); anyone else gets `403 not authorized to
+  modify this image`. An image without an owner can be changed by a system admin only. `PATCH` accepts `status`, `size`,
+  `checksum`, `object_name`, `filename` and `storage_backend` from an admin or the internal token only; an owner still
+  edits `name`, `visibility`, `protected`, `min_ram_mb`, the formats and `properties`. The file store serves only files
+  inside its folder (`400 invalid image object name` otherwise). Upgrade soon.
+
 ## 1.0.10-rc1 (2026-11-04)
 
 Release candidate: it is installed on the lab before the final 1.0.10 is tagged. A resize that is confirmed
