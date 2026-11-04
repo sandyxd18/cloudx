@@ -34,11 +34,12 @@ PR 2 (separate spec, after this one is merged) makes compute and block-store che
 | `GET /images/{ref}` | anonymous | `OptionalUserOrInternal`, rule above |
 | `GET /images/{ref}/download` | anonymous | same |
 | `GET /images/{ref}/tags` | anonymous | same |
-| `GET /images/{ref}/verify` | any signed-in user | same rule (signed in or not no longer matters for public) |
-| `GET /images/{ref}/members` | any signed-in user | same rule |
+| `GET /images/{ref}/verify` | any signed-in user | still signed in (the internal token is not accepted there), and the rule |
+| `GET /images/{ref}/members` | any signed-in user | still signed in, and the rule |
 | `POST /images/{ref}/prefetch` | any signed-in user | signed in, and the rule |
+| `GET /images` (list) | `?visibility=X` replaced the project filter, so any signed-in user listed every non-public image's metadata | the project filter always applies to non-admins, and `visibility` narrows on top of it (added after the final review found the leak) |
 
-Not changed: `GET /images` (its filter is the list rule), `POST /images/import-path` and `PATCH /v2/tasks/{id}` (internal), `GET /v2/tasks`, every write route (#112), `/health`.
+Not changed: `POST /images/import-path` and `PATCH /v2/tasks/{id}` (internal), `GET /v2/tasks`, every write route (#112), `/health`.
 
 ## The dependency
 
@@ -50,7 +51,7 @@ Not changed: `GET /images` (its filter is the list rule), `POST /images/import-p
 
 ## Upgrade
 
-A new image-api with an old worker: the worker reads public images as before; a non-public image answers 404 (and image-api logs the WARNING) until that node's worker is upgraded. A new worker with an old image-api: the extra header is ignored. So no order breaks a running cloud; the release notes say that private images on a node wait for its worker. A cloud without `INTERNAL_TOKEN` set on the workers and on image-api cannot read non-public images from the workers; the `.deb` packages generate `internal_token` on first install (`docs/deb-install.md` section 4) and `/etc/cloudx/cloudx.conf` is the same file on every node.
+A new image-api with an old worker: the worker reads public images as before; a non-public image answers 404 (and image-api logs the WARNING) until that node's worker is upgraded. A new worker with an old image-api: the extra header is ignored. Every boot from an image builds its root volume in `block_store_worker`, and server snapshots, volume uploads and task imports are private by default, so with image-api upgraded first, booting from, rebuilding or rescuing with, or making a volume from such an image fails with 404 on a node whose workers are old. The order that removes the window is **compute and block-store nodes first, the node that runs image-api last**; the CHANGELOG and the release notes say so. The packages of an all-in-one node are upgraded together and are not affected. A cloud without `INTERNAL_TOKEN` set on the workers and on image-api cannot read non-public images from the workers; the `.deb` packages generate `internal_token` on first install (`docs/deb-install.md` section 4) and `/etc/cloudx/cloudx.conf` is the same file on every node.
 
 ## Tests
 
@@ -76,4 +77,5 @@ Compute and block-store checks on use (PR 2). Making the default `visibility` of
 
 - Public images remain anonymous and the form upload defaults to `public`: an owner who leaves the default exposes the file. Recorded, not changed here.
 - `members` of a public image lists project ids to anyone who can read the image.
+- `POST /images` and the server snapshot still answer `409` for a name that exists in any project (names are globally unique), which discloses that a private image of that name exists. Unchanged here.
 - Until PR 2, a member can still boot from another project's private image through compute.
