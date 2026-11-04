@@ -3,7 +3,7 @@ from sqlalchemy import select
 
 from ..db import DB
 from shared.auth_middleware import InternalAuth
-from ..deps import AdminUser, DomainAdminUser, scope_domain
+from ..deps import CurrentUser, gate, scope_domain
 from ..models import Domain, DomainQuota, Project, User, utcnow
 from ..schemas import DomainIn, DomainQuotaUpdate, DomainUpdate
 from .projects import QUOTA_FIELDS, domain_caps
@@ -21,8 +21,8 @@ def _domain_to_dict(d: Domain) -> dict:
     }
 
 
-@router.post("/v3/domains", status_code=201)
-def create_domain(payload: DomainIn, _: AdminUser, db: DB):
+@router.post("/v3/domains", status_code=201, dependencies=[gate("identity:domain:create")])
+def create_domain(payload: DomainIn, db: DB):
     """Create a new domain (admin only)."""
     if db.scalar(select(Domain).where(Domain.name == payload.name)):
         raise HTTPException(status_code=409, detail="domain already exists")
@@ -33,8 +33,8 @@ def create_domain(payload: DomainIn, _: AdminUser, db: DB):
     return _domain_to_dict(domain)
 
 
-@router.get("/v3/domains")
-def list_domains(current: DomainAdminUser, db: DB):
+@router.get("/v3/domains", dependencies=[gate("identity:domain:list")])
+def list_domains(current: CurrentUser, db: DB):
     """List all domains (a domain admin sees only its own)."""
     q = select(Domain).order_by(Domain.name)
     if scope_domain(current) is not None:
@@ -43,8 +43,8 @@ def list_domains(current: DomainAdminUser, db: DB):
     return {"domains": [_domain_to_dict(d) for d in domains]}
 
 
-@router.get("/v3/domains/{domain_id}")
-def show_domain(domain_id: str, current: DomainAdminUser, db: DB):
+@router.get("/v3/domains/{domain_id}", dependencies=[gate("identity:domain:show")])
+def show_domain(domain_id: str, current: CurrentUser, db: DB):
     """Get a specific domain by ID or name."""
     domain = db.get(Domain, domain_id)
     if not domain:
@@ -54,8 +54,8 @@ def show_domain(domain_id: str, current: DomainAdminUser, db: DB):
     return _domain_to_dict(domain)
 
 
-@router.patch("/v3/domains/{domain_id}")
-def update_domain(domain_id: str, payload: DomainUpdate, _: AdminUser, db: DB):
+@router.patch("/v3/domains/{domain_id}", dependencies=[gate("identity:domain:update")])
+def update_domain(domain_id: str, payload: DomainUpdate, db: DB):
     """Update domain properties (admin only)."""
     domain = db.get(Domain, domain_id)
     if not domain:
@@ -69,8 +69,8 @@ def update_domain(domain_id: str, payload: DomainUpdate, _: AdminUser, db: DB):
     return _domain_to_dict(domain)
 
 
-@router.delete("/v3/domains/{domain_id}", status_code=204)
-def delete_domain(domain_id: str, _: AdminUser, db: DB):
+@router.delete("/v3/domains/{domain_id}", status_code=204, dependencies=[gate("identity:domain:delete")])
+def delete_domain(domain_id: str, db: DB):
     """Delete a domain (admin only). Cannot delete the default domain."""
     if domain_id == "default":
         raise HTTPException(status_code=403, detail="cannot delete the default domain")
@@ -89,16 +89,16 @@ def _quota_view(db, domain_id: str) -> dict:
     return {"domain_id": domain_id, **{f: caps["caps"].get(f) for f in QUOTA_FIELDS}}
 
 
-@router.get("/v3/domains/{domain_id}/quota")
-def get_domain_quota(domain_id: str, current: DomainAdminUser, db: DB):
+@router.get("/v3/domains/{domain_id}/quota", dependencies=[gate("identity:domain:quota-show")])
+def get_domain_quota(domain_id: str, current: CurrentUser, db: DB):
     """Aggregate caps (null = unlimited). A domain admin reads its own domain only."""
     if not db.get(Domain, domain_id) or scope_domain(current) not in (None, domain_id):
         raise HTTPException(status_code=404, detail="domain not found")
     return _quota_view(db, domain_id)
 
 
-@router.put("/v3/domains/{domain_id}/quota")
-def set_domain_quota(domain_id: str, payload: DomainQuotaUpdate, _: AdminUser, db: DB):
+@router.put("/v3/domains/{domain_id}/quota", dependencies=[gate("identity:domain:quota-set")])
+def set_domain_quota(domain_id: str, payload: DomainQuotaUpdate, db: DB):
     """Cap the sum over all projects of the domain; DELETE lifts every cap."""
     if not db.get(Domain, domain_id):
         raise HTTPException(status_code=404, detail="domain not found")
@@ -111,8 +111,8 @@ def set_domain_quota(domain_id: str, payload: DomainQuotaUpdate, _: AdminUser, d
     return _quota_view(db, domain_id)
 
 
-@router.delete("/v3/domains/{domain_id}/quota", status_code=204)
-def clear_domain_quota(domain_id: str, _: AdminUser, db: DB):
+@router.delete("/v3/domains/{domain_id}/quota", status_code=204, dependencies=[gate("identity:domain:quota-clear")])
+def clear_domain_quota(domain_id: str, db: DB):
     dq = db.get(DomainQuota, domain_id)
     if dq:
         db.delete(dq)

@@ -515,14 +515,30 @@ def test_module_imports_without_environment_setup():
     subprocess.run([sys.executable, "-I", "-c", code], env=env, check=True)
 
 
-# Temporary wrappers; Task 5 removes them together with these tests.
-def test_legacy_enforce_wrapper(pfile):
-    from fastapi import HTTPException
+def test_effective_returns_rules_and_sources_of_one_snapshot(pfile):
+    pfile.write('identity:domain:create: "role:member"\n')
 
-    assert policy.enforce("identity:domain:create", ADMIN) is True
-    assert policy.enforce("identity:domain:create", MEMBER, raise_on_deny=False) is False
-    with pytest.raises(HTTPException) as exc:
-        policy.enforce("identity:domain:create", MEMBER)
-    assert exc.value.status_code == 403
-    assert policy.enforce("some:unknown:action", MEMBER) is True
-    assert policy.list_rules() == policy.rules()
+    rules, sources = policy.effective()
+
+    assert rules == policy.rules()
+    assert sources == policy.sources()
+    assert rules["identity:domain:create"] == "role:member"
+    assert sources["identity:domain:create"] == "file"
+    rules["identity:domain:create"] = "!"  # a copy: the caller cannot change the engine
+    assert policy.rules()["identity:domain:create"] == "role:member"
+
+
+def test_effective_does_not_mix_two_loads(pfile, monkeypatch):
+    pfile.write('identity:domain:create: "role:member"\n')
+    seen = []
+    real = policy._current
+
+    def counting():
+        seen.append(1)
+        return real()
+
+    monkeypatch.setattr(policy, "_current", counting)
+
+    policy.effective()
+
+    assert len(seen) == 1

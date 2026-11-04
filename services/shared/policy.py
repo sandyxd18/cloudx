@@ -289,6 +289,12 @@ def _current() -> _Snapshot:
 
 # ── public API ────────────────────────────────────────────────────────────────
 
+def effective() -> tuple[dict[str, str], dict[str, str]]:
+    """(rules, sources) of one snapshot, so a caller never sees the two from different loads."""
+    snapshot = _current()
+    return dict(snapshot.rules), dict(snapshot.sources)
+
+
 def rules() -> dict[str, str]:
     """Effective rule text for each of the actions."""
     return dict(_current().rules)
@@ -341,20 +347,3 @@ def required_actions() -> set[str]:
     """Every action passed to require() in this process (a copy)."""
     return set(_required)
 
-
-# ── temporary wrappers for services/auth/app/routers/policy.py; Task 5 removes them ──
-
-def enforce(
-    action: str,
-    token_payload: dict,
-    target_project_id: str | None = None,
-    raise_on_deny: bool = True,
-) -> bool:
-    allowed = authorize(action, token_payload) if action in DEFAULT_RULES else True
-    if not allowed and raise_on_deny:
-        raise HTTPException(status_code=403, detail=f"Policy violation: not authorized for '{action}'")
-    return allowed
-
-
-def list_rules() -> dict[str, str]:
-    return rules()

@@ -21,8 +21,29 @@ ROUTES = [
     ("PUT", "/projects/nobody/quota", "identity:project:quota-set"),
     ("PUT", "/projects/nobody/users/nobody/roles/member", "identity:role-assignment:create"),
     ("DELETE", "/projects/nobody/users/nobody/roles/member", "identity:role-assignment:delete"),
+    ("GET", "/v3/domains", "identity:domain:list"),
+    ("GET", "/v3/domains/nobody", "identity:domain:show"),
+    ("GET", "/v3/domains/nobody/quota", "identity:domain:quota-show"),
+    ("POST", "/v3/domains", "identity:domain:create"),
+    ("PATCH", "/v3/domains/nobody", "identity:domain:update"),
+    ("DELETE", "/v3/domains/nobody", "identity:domain:delete"),
+    ("PUT", "/v3/domains/nobody/quota", "identity:domain:quota-set"),
+    ("DELETE", "/v3/domains/nobody/quota", "identity:domain:quota-clear"),
+    ("POST", "/v3/services", "identity:service:create"),
+    ("DELETE", "/v3/services/nobody", "identity:service:delete"),
+    ("POST", "/v3/endpoints", "identity:endpoint:create"),
+    ("DELETE", "/v3/endpoints/nobody", "identity:endpoint:delete"),
+    ("GET", "/audit-logs", "identity:audit-log:list"),
 ]
-DOMAIN_ADMIN_ROUTES = [r for r in ROUTES if r[2] != "identity:project:quota-set"]
+# spelled out, not taken from DEFAULT_RULES: these are the actions a domain admin could use through the old gates
+DOMAIN_ADMIN_ACTIONS = {
+    "identity:user:create", "identity:user:list", "identity:user:delete",
+    "identity:domain:list", "identity:domain:show", "identity:domain:quota-show",
+    "identity:project:create", "identity:project:update", "identity:project:delete",
+    "identity:role-assignment:create", "identity:role-assignment:delete",
+}
+DOMAIN_ADMIN_ROUTES = [r for r in ROUTES if r[2] in DOMAIN_ADMIN_ACTIONS]
+ADMIN_ONLY_ROUTES = [r for r in ROUTES if r[2] not in DOMAIN_ADMIN_ACTIONS]
 
 
 class Clock:
@@ -112,11 +133,21 @@ def test_domain_admin_matches_the_old_gate(auth, method, path, action):
     assert r.status_code != 403, r.text
 
 
-def test_domain_admin_is_denied_the_project_quota(auth):
-    r = call(auth, "PUT", "/projects/p1/quota", "da")
+@pytest.mark.parametrize("method,path,action", ADMIN_ONLY_ROUTES)
+def test_domain_admin_is_denied_the_admin_only_actions(auth, method, path, action):
+    r = call(auth, method, path, "da")
 
-    assert r.status_code == 403
-    assert r.json() == {"detail": "Policy does not allow identity:project:quota-set"}
+    assert r.status_code == 403, r.text
+    assert r.json() == {"detail": f"Policy does not allow {action}"}
+
+
+def test_the_route_table_covers_every_action_once():
+    assert len(ROUTES) == len({a for _, _, a in ROUTES}) == 22
+    assert len(DOMAIN_ADMIN_ROUTES) == 11 and len(ADMIN_ONLY_ROUTES) == 11
+
+
+def test_every_default_action_is_used_by_a_route(auth):
+    assert policy.required_actions() >= set(policy.DEFAULT_RULES)
 
 
 def test_policy_file_can_open_an_action(auth, pfile):

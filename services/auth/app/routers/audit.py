@@ -2,7 +2,7 @@ from fastapi import APIRouter
 from sqlalchemy import select
 
 from ..db import DB
-from ..deps import AdminUser, CurrentUser
+from ..deps import CurrentUser, gate
 from ..models import AuditLog
 from ..schemas import AuditLogIn
 
@@ -37,9 +37,8 @@ def create_audit_log(payload: AuditLogIn, current: CurrentUser, db: DB):
     }
 
 
-@router.get("/audit-logs")
+@router.get("/audit-logs", dependencies=[gate("identity:audit-log:list")])
 def list_audit_logs(
-    current: AdminUser,
     db: DB,
     project_id: str | None = None,
     resource_type: str | None = None,
