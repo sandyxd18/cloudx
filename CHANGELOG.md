@@ -11,11 +11,13 @@ schema between releases, so read the upgrade steps before moving a running cloud
   `download`, `tags`, `verify`, `members` and `prefetch` now answer only to the image's owner, an admin of the owner's
   domain, a system admin, the internal token, and a project the image was shared with that accepted it (a pending or
   rejected share grants nothing). Anyone else gets `404 image '<image>' not found`, the same answer as for a missing
-  image. A public image is still readable, and downloadable, without signing in. When two images share a name, a name
-  resolves to one the caller may read, their own project's first. The compute and block-store workers now send the
-  internal token when they read an image, so a worker that is not upgraded gets `404` for a non-public image until its
-  node is upgraded, and `image-api` logs a WARNING (`anonymous read of a non-public image refused: <image>`) for each
-  such request. Upgrade soon.
+  image. A public image is still readable, and downloadable, without signing in. `verify`, `members` and `prefetch`
+  still need a login (the internal token is not accepted there, and nothing calls them with it). `GET /images` with a
+  `visibility` filter now also applies the project filter. The compute and block-store workers now send the internal token when they read an image. Upgrade the
+  compute and block-store nodes before the node that runs `image-api`. Until a node's workers are upgraded, booting
+  from, rebuilding or rescuing with, or creating a volume from a private image (server snapshots, volume uploads and
+  task imports are private by default) fails with `404` on that node; public images keep working. `image-api` logs
+  `anonymous read of a non-public image refused: <ref>` for each refused read. Upgrade soon.
 
 ## 1.0.10-rc2 (2026-11-04)
 

@@ -95,3 +95,26 @@ def test_without_internal_token_configured_a_header_does_not_open_anything(monke
         r = TestClient(make_app()).get("/who", headers={"X-Internal-Token": value})
         assert r.status_code == 200
         assert r.json() == {"who": None}
+
+
+def test_a_revoked_token_is_anonymous_not_401(monkeypatch):
+    monkeypatch.delenv("INTERNAL_TOKEN", raising=False)
+    monkeypatch.setenv("REVOCATION_CHECK", "true")
+    am._ok_jti.clear()
+    claims = {"sub": "u", "username": "u", "project_id": "p1", "role": "member", "roles": ["member"],
+              "scope_type": "project", "jti": "revoked-jti", "exp": datetime.now(timezone.utc) + timedelta(hours=1)}
+    token = jwt.encode(claims, am.SECRET_KEY, algorithm=am.ALGORITHM)
+    asked = []
+
+    def revoked(url, **kwargs):
+        asked.append(url)
+        return type("R", (), {"status_code": 401})()
+
+    monkeypatch.setattr(am.requests, "get", revoked)
+
+    r = TestClient(make_app()).get("/who", headers={"X-Auth-Token": token})
+
+    assert asked, "the revocation lookup was not made"
+    assert r.status_code == 200
+    assert r.json() == {"who": None}
+    am._ok_jti.clear()

@@ -432,7 +432,7 @@ def require_readable_image(db: Session, ref: str, current: dict | None):
     image = find_readable_image(db, ref, current)
     if image is None:
         if current is None and get_image(db, ref) is not None:
-            log.warning("anonymous read of a non-public image refused: %s", ref)
+            log.warning("anonymous read of a non-public image refused: %r", ref)  # %r: ref is user input
         raise HTTPException(status_code=404, detail=f"image '{ref}' not found")
     return image
 
@@ -586,14 +586,15 @@ def list_images(
         return cached
 
     q = select(Image)
-    if visibility:
-        q = q.where(Image.visibility == visibility)
-    elif current.get("role") != "admin":
-        # Non-admin sees: public images + own private images
+    if current.get("role") != "admin":
+        # Non-admin sees: public images + own private images, whatever `visibility` asks for. A system-scoped token
+        # has no project: [None] matches nothing, so an image without an owner stays out of a non-admin's list.
         q = q.where(
             (Image.visibility == "public") |
-            (Image.project_id.in_(visible_projects(current) or [current["project_id"]]))
+            (Image.project_id.in_(visible_projects(current) or [current.get("project_id")]))
         )
+    if visibility:
+        q = q.where(Image.visibility == visibility)
     if status:
         q = q.where(Image.status == status)
     if name:
@@ -701,7 +702,7 @@ def verify_image(ref: str, current: CurrentUser, db: DB):
     Verify image integrity by recalculating SHA256 and comparing to stored signature.
 
     If the image has no signature, verifies the stored checksum against the file.
-    This endpoint is also called internally by compute worker before VM boot.
+    Signed-in only (a user token; the internal token is not accepted here), and the caller must be able to read the image.
     """
     import hashlib as _hashlib
     image = require_readable_image(db, ref, current)

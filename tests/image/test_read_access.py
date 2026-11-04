@@ -92,9 +92,13 @@ ROUTES = {
 SIGNED_IN_ONLY = {"verify", "members"}
 
 
+# verify and members take CurrentUser (require_auth only), which does not accept the internal token: the real chain
+# answers 401 for INTERNAL there, but the overrides below would let it through, so those two cells are not tested.
+CELLS = [(who, route) for who in IDENTITIES for route in ROUTES if not (who == "internal" and route in SIGNED_IN_ONLY)]
+
+
 @pytest.mark.parametrize("visibility", ["public", "private"])
-@pytest.mark.parametrize("route", ROUTES)
-@pytest.mark.parametrize("who", IDENTITIES)
+@pytest.mark.parametrize("who, route", CELLS)
 def test_the_matrix_of_identities_routes_and_visibility(img, who, route, visibility):
     image = make_image(img, visibility=visibility)
     add_members(img, image["id"])
@@ -228,7 +232,7 @@ def test_anonymous_refusal_logs_one_warning_and_a_signed_in_refusal_logs_none(im
     img.as_(ANON)
     assert img.client.get("/images/victim").status_code == 404
     warnings = [r for r in caplog.records if r.name == "image-api" and r.levelno == logging.WARNING]
-    assert [r.getMessage() for r in warnings] == ["anonymous read of a non-public image refused: victim"]
+    assert [r.getMessage() for r in warnings] == ["anonymous read of a non-public image refused: 'victim'"]
 
     caplog.clear()
     img.as_(OTHER)
@@ -301,3 +305,62 @@ def test_lookup_by_id_applies_the_rule(img):
             assert r.json() == {"detail": f"image '{private['id']}' not found"}
         assert img.client.get(f"/images/{public['id']}").status_code == 200
         assert img.client.get(f"/images/{public['id']}/download").content == b"hello"
+
+
+# ── the list applies the project filter whatever `visibility` says ────────────
+
+@pytest.fixture
+def listing(img):
+    make_image(img, name="a-private", visibility="private")
+    make_image(img, name="a-public", visibility="public")
+    make_image(img, name="a-shared", visibility="shared")
+    make_image(img, name="b-private", visibility="private", as_=OTHER)
+    make_image(img, name="b-shared", visibility="shared", as_=OTHER)
+    make_image(img, name="orphan", visibility="private")
+    edit(img, "orphan", project_id=None)
+
+    def names(who, query=""):
+        img.as_(who)
+        r = img.client.get(f"/images{query}")
+        assert r.status_code == 200, r.text
+        return {i["name"] for i in r.json()["items"]}
+
+    return names
+
+
+LIST_CASES = [
+    # (label, identity, query, names listed)
+    ("other", OTHER, "?visibility=private", {"b-private"}),
+    ("other", OTHER, "?visibility=shared", {"b-shared"}),
+    ("other", OTHER, "?visibility=public", {"a-public"}),
+    ("other", OTHER, "", {"a-public", "b-private", "b-shared"}),
+    ("owner", OWNER, "?visibility=private", {"a-private"}),
+    ("owner", OWNER, "?visibility=shared", {"a-shared"}),
+    ("owner", OWNER, "", {"a-private", "a-public", "a-shared"}),
+    ("admin", ADMIN, "?visibility=private", {"a-private", "b-private", "orphan"}),
+    ("internal", INTERNAL, "?visibility=private", {"a-private", "b-private", "orphan"}),
+    ("admin", ADMIN, "?visibility=shared", {"a-shared", "b-shared"}),
+    ("domain_admin", DOMAIN_ADMIN, "?visibility=private", {"a-private", "b-private"}),
+    ("domain_admin_elsewhere", DOMAIN_ADMIN_ELSEWHERE, "?visibility=private", set()),
+    ("no_project", NO_PROJECT, "?visibility=private", set()),
+    ("no_project", NO_PROJECT, "?visibility=shared", set()),
+    ("no_project", NO_PROJECT, "?visibility=public", {"a-public"}),
+    ("no_project", NO_PROJECT, "", {"a-public"}),
+    ("accepted", ACCEPTED, "?visibility=private", set()),
+]
+
+
+@pytest.mark.parametrize("name, who, query, expected", LIST_CASES, ids=[f"{n}{q}" for n, _, q, _ in LIST_CASES])
+def test_the_list_shows_what_the_caller_may_see_with_or_without_a_visibility_filter(listing, name, who, query, expected):
+    assert listing(who, query) == expected
+
+
+def test_the_logged_ref_cannot_forge_a_log_line(img, caplog):
+    make_image(img, name="odd\nname")
+    caplog.set_level(logging.WARNING, logger="image-api")
+    img.as_(ANON)
+    assert img.client.get("/images/odd%0Aname").status_code == 404
+    messages = [r.getMessage() for r in caplog.records if r.name == "image-api"]
+    assert len(messages) == 1
+    assert messages[0].startswith("anonymous read of a non-public image refused:")
+    assert "\n" not in messages[0] and "odd\\nname" in messages[0]
