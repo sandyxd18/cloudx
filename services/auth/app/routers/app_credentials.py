@@ -46,6 +46,16 @@ def _credential_roles(db, user: User, requested: list[str] | None) -> list[str]:
     return requested
 
 
+
+def _find_credential(db, user: User, cred_ref: str) -> ApplicationCredential | None:
+    """A credential of this user, by id or by name; another user's credential is never returned."""
+    return db.scalar(select(ApplicationCredential).where(
+        ApplicationCredential.id == cred_ref, ApplicationCredential.user_id == user.id,
+    )) or db.scalar(select(ApplicationCredential).where(
+        ApplicationCredential.name == cred_ref, ApplicationCredential.user_id == user.id,
+    ))
+
+
 @router.post("/v3/users/{user_ref}/application_credentials", status_code=201)
 def create_app_credential(user_ref: str, payload: AppCredIn, current: CurrentUser, db: DB):
     """Create an application credential for a user."""
@@ -100,12 +110,7 @@ def show_app_credential(user_ref: str, cred_ref: str, current: CurrentUser, db: 
     u = _get_user_by_ref(db, user_ref, scope_domain(current))
     if current.get("role") != "admin" and u.id != current["sub"]:
         raise HTTPException(status_code=403, detail="forbidden")
-    ac = db.get(ApplicationCredential, cred_ref) or db.scalar(
-        select(ApplicationCredential).where(
-            ApplicationCredential.name == cred_ref,
-            ApplicationCredential.user_id == u.id,
-        )
-    )
+    ac = _find_credential(db, u, cred_ref)
     if not ac:
         raise HTTPException(status_code=404, detail="application credential not found")
     return _appcred_to_dict(ac)
@@ -117,12 +122,7 @@ def delete_app_credential(user_ref: str, cred_ref: str, current: CurrentUser, db
     u = _get_user_by_ref(db, user_ref, scope_domain(current))
     if current.get("role") != "admin" and u.id != current["sub"]:
         raise HTTPException(status_code=403, detail="forbidden")
-    ac = db.get(ApplicationCredential, cred_ref) or db.scalar(
-        select(ApplicationCredential).where(
-            ApplicationCredential.name == cred_ref,
-            ApplicationCredential.user_id == u.id,
-        )
-    )
+    ac = _find_credential(db, u, cred_ref)
     if not ac:
         raise HTTPException(status_code=404, detail="application credential not found")
     db.delete(ac)
@@ -137,11 +137,7 @@ def rotate_app_credential(user_ref: str, cred_ref: str, current: CurrentUser, db
     u = _get_user_by_ref(db, user_ref, scope_domain(current))
     if current.get("role") != "admin" and u.id != current["sub"]:
         raise HTTPException(status_code=403, detail="forbidden")
-    ac = db.scalar(select(ApplicationCredential).where(
-        ApplicationCredential.id == cred_ref, ApplicationCredential.user_id == u.id,
-    )) or db.scalar(select(ApplicationCredential).where(
-        ApplicationCredential.name == cred_ref, ApplicationCredential.user_id == u.id,
-    ))
+    ac = _find_credential(db, u, cred_ref)
     if not ac:
         raise HTTPException(status_code=404, detail="application credential not found")
     secret_plain = secrets.token_urlsafe(32)
@@ -158,28 +154,39 @@ def rotate_app_credential(user_ref: str, cred_ref: str, current: CurrentUser, db
     return _appcred_to_dict(ac, secret=secret_plain)
 
 
+
+def _secret_fits(ac: ApplicationCredential, secret: str) -> bool:
+    """The current secret, or the replaced one while its grace period lasts."""
+    if _verify_password(secret, ac.secret_hash):
+        return True
+    return bool(ac.previous_secret_hash and ac.previous_valid_until and ac.previous_valid_until > utcnow()
+                and _verify_password(secret, ac.previous_secret_hash))
+
+
 @router.post("/auth/tokens/application-credential", status_code=201)
 def login_with_app_credential(payload: AppCredTokenIn, db: DB):
     """
     Authenticate using an Application Credential (name or ID + secret).
     Returns a scoped JWT token limited to the credential's roles.
     """
-    # Find the credential by id or name
-    ac: ApplicationCredential | None = None
+    # By id there is one candidate. By name several users may own a credential of that name: the secret decides.
     if payload.application_credential_id:
-        ac = db.get(ApplicationCredential, payload.application_credential_id)
+        found = db.get(ApplicationCredential, payload.application_credential_id)
+        candidates = [found] if found else []
     elif payload.application_credential_name:
-        ac = db.scalar(
-            select(ApplicationCredential).where(
-                ApplicationCredential.name == payload.application_credential_name
-            )
-        )
-    if not ac or not ac.enabled:
+        candidates = db.scalars(
+            select(ApplicationCredential)
+            .where(ApplicationCredential.name == payload.application_credential_name)
+            .order_by(ApplicationCredential.created_at, ApplicationCredential.id)
+            .limit(5)
+        ).all()
+    else:
+        candidates = []
+    candidates = [c for c in candidates if c.enabled]
+    if not candidates:
         raise HTTPException(status_code=401, detail="invalid application credential")
-    matched = _verify_password(payload.application_credential_secret, ac.secret_hash)
-    if not matched and ac.previous_secret_hash and ac.previous_valid_until and ac.previous_valid_until > utcnow():
-        matched = _verify_password(payload.application_credential_secret, ac.previous_secret_hash)
-    if not matched:
+    ac = next((c for c in candidates if _secret_fits(c, payload.application_credential_secret)), None)
+    if ac is None:
         raise HTTPException(status_code=401, detail="invalid application credential secret")
     if ac.expires_at and ac.expires_at < utcnow():
         raise HTTPException(status_code=401, detail="application credential has expired")
