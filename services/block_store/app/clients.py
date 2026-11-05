@@ -27,7 +27,7 @@ def get_server(ref: str) -> dict:
     """
     with SessionLocal() as db:
         row = db.execute(
-            text("SELECT id, name, status FROM compute_servers WHERE (id = :ref OR name = :ref) AND status != 'DELETED' LIMIT 1"),
+            text("SELECT id, name, status, project_id FROM compute_servers WHERE (id = :ref OR name = :ref) AND status != 'DELETED' LIMIT 1"),
             {"ref": ref},
         ).mappings().first()
     if not row:
