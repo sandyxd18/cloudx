@@ -238,7 +238,7 @@ def test_a_group_is_created_with_the_volumes_of_the_callers_project_and_unowned_
     r = env.client.post("/consistencygroups", json={"name": "new", "volume_ids": ["v1", "src2", "unowned"]})
 
     assert r.status_code == 201, r.text
-    assert r.json()["volume_ids"] == ["v1", "src2", "unowned"]
+    assert r.json()["volume_ids"] == ["v1", "v2", "v0"]  # names are stored as the volumes' ids
 
 
 def test_a_volume_of_another_project_is_not_added_to_a_group(env):

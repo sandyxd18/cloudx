@@ -48,20 +48,19 @@ def _cgs_to_dict(cgs: CGSnapshot) -> dict:
 def create_consistency_group(payload: ConsistencyGroupIn, current: CurrentUser, db: DB):
     """Create a new consistency group optionally pre-populated with volumes."""
     # Every volume must exist and belong to the caller's project before the group is written
-    for vid in payload.volume_ids:
-        require_volume(db, vid, current)
+    volume_ids = [require_volume(db, vid, current).id for vid in payload.volume_ids]
 
     cg = ConsistencyGroup(
         name=payload.name,
         description=payload.description,
         status="available",
         project_id=current.get("project_id"),
-        volume_ids=json.dumps(payload.volume_ids),
+        volume_ids=json.dumps(volume_ids),
     )
     db.add(cg)
     db.commit()
     db.refresh(cg)
-    log.info("ConsistencyGroup %s created with %d volumes", cg.id, len(payload.volume_ids))
+    log.info("ConsistencyGroup %s created with %d volumes", cg.id, len(volume_ids))
     return _cg_to_dict(cg)
 
 
