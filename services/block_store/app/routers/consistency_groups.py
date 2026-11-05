@@ -7,7 +7,7 @@ from sqlalchemy import select
 from .. import clients
 from ..config import log
 from ..db import DB
-from ..lookups import require_cg
+from ..lookups import can_access, require_cg, require_volume
 from ..models import CGSnapshot, ConsistencyGroup, Volume
 from ..schemas import CGSnapshotIn, ConsistencyGroupIn
 from ..serializers import _fmt_ts
@@ -47,11 +47,9 @@ def _cgs_to_dict(cgs: CGSnapshot) -> dict:
 @router.post("/consistencygroups", status_code=201)
 def create_consistency_group(payload: ConsistencyGroupIn, current: CurrentUser, db: DB):
     """Create a new consistency group optionally pre-populated with volumes."""
-    # Validate that all provided volume_ids exist
+    # Every volume must exist and belong to the caller's project before the group is written
     for vid in payload.volume_ids:
-        vol = db.scalar(select(Volume).where((Volume.id == vid) | (Volume.name == vid)))
-        if not vol:
-            raise HTTPException(status_code=404, detail=f"Volume '{vid}' not found")
+        require_volume(db, vid, current)
 
     cg = ConsistencyGroup(
         name=payload.name,
@@ -79,12 +77,12 @@ def list_consistency_groups(current: CurrentUser, db: DB):
 
 
 @router.get("/consistencygroups/{ref}")
-def get_consistency_group(ref: str, _: CurrentUser, db: DB):
-    return _cg_to_dict(require_cg(db, ref))
+def get_consistency_group(ref: str, current: CurrentUser, db: DB):
+    return _cg_to_dict(require_cg(db, ref, current))
 
 
 @router.post("/consistencygroups/{ref}/action")
-def consistency_group_action(ref: str, payload: dict, _: CurrentUser, db: DB):
+def consistency_group_action(ref: str, payload: dict, current: CurrentUser, db: DB):
     """
     Perform an action on a consistency group.
 
@@ -93,16 +91,13 @@ def consistency_group_action(ref: str, payload: dict, _: CurrentUser, db: DB):
     - remove_volumes: {"remove_volumes": {"volumes": ["vol_id_1"]}}
     - delete: {"delete": {}}
     """
-    cg = require_cg(db, ref)
+    cg = require_cg(db, ref, current)
 
     if "add_volumes" in payload:
         current_ids = set(json.loads(cg.volume_ids or "[]"))
         new_ids = payload["add_volumes"].get("volumes", [])
-        for vid in new_ids:
-            vol = db.scalar(select(Volume).where((Volume.id == vid) | (Volume.name == vid)))
-            if not vol:
-                raise HTTPException(status_code=404, detail=f"Volume '{vid}' not found")
-            current_ids.add(vol.id)
+        resolved = [require_volume(db, vid, current).id for vid in new_ids]  # validate all, then write
+        current_ids.update(resolved)
         cg.volume_ids = json.dumps(list(current_ids))
         db.commit()
         db.refresh(cg)
@@ -126,9 +121,9 @@ def consistency_group_action(ref: str, payload: dict, _: CurrentUser, db: DB):
 
 
 @router.delete("/consistencygroups/{ref}", status_code=202)
-def delete_consistency_group(ref: str, _: CurrentUser, db: DB):
+def delete_consistency_group(ref: str, current: CurrentUser, db: DB):
     """Delete a consistency group (does NOT delete the volumes inside it)."""
-    cg = require_cg(db, ref)
+    cg = require_cg(db, ref, current)
     db.delete(cg)
     db.commit()
     return {"status": "deleted", "id": cg.id}
@@ -144,11 +139,14 @@ def create_cgsnapshot(payload: CGSnapshotIn, current: CurrentUser, db: DB):
     For Ceph backends: uses rbd group snapshot (atomic).
     For LVM backends: snapshots volumes sequentially (best-effort).
     """
-    cg = require_cg(db, payload.consistency_group_id)
+    cg = require_cg(db, payload.consistency_group_id, current)
     volume_ids = json.loads(cg.volume_ids or "[]")
     if not volume_ids:
         raise HTTPException(status_code=400, detail="Consistency group has no volumes")
-    hosts = {v.host for v in db.scalars(select(Volume).where(Volume.id.in_(volume_ids)))}
+    members = db.scalars(select(Volume).where(Volume.id.in_(volume_ids))).all()
+    if not all(can_access(v.project_id, current) for v in members):
+        raise HTTPException(status_code=409, detail="consistency group has volumes outside your project")
+    hosts = {v.host for v in members}
     if len(hosts) > 1:
         raise HTTPException(status_code=409, detail="consistency group volumes live on different storage nodes")
 
@@ -199,21 +197,21 @@ def list_cgsnapshots(current: CurrentUser, db: DB):
 
 
 @router.get("/cgsnapshots/{ref}")
-def get_cgsnapshot(ref: str, _: CurrentUser, db: DB):
+def get_cgsnapshot(ref: str, current: CurrentUser, db: DB):
     snap = db.scalar(select(CGSnapshot).where(
         (CGSnapshot.id == ref) | (CGSnapshot.name == ref)
     ))
-    if not snap:
+    if not snap or not can_access(snap.project_id, current):
         raise HTTPException(status_code=404, detail=f"CG snapshot '{ref}' not found")
     return _cgs_to_dict(snap)
 
 
 @router.delete("/cgsnapshots/{ref}", status_code=202)
-def delete_cgsnapshot(ref: str, _: CurrentUser, db: DB):
+def delete_cgsnapshot(ref: str, current: CurrentUser, db: DB):
     snap = db.scalar(select(CGSnapshot).where(
         (CGSnapshot.id == ref) | (CGSnapshot.name == ref)
     ))
-    if not snap:
+    if not snap or not can_access(snap.project_id, current):
         raise HTTPException(status_code=404, detail=f"CG snapshot '{ref}' not found")
     db.delete(snap)
     db.commit()
