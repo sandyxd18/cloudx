@@ -104,7 +104,12 @@ def consistency_group_action(ref: str, payload: dict, current: CurrentUser, db: 
 
     elif "remove_volumes" in payload:
         current_ids = set(json.loads(cg.volume_ids or "[]"))
-        remove_ids = set(payload["remove_volumes"].get("volumes", []))
+        remove_ids = set()
+        for vid in payload["remove_volumes"].get("volumes", []):
+            remove_ids.add(vid)
+            vol = db.get(Volume, vid) or db.scalar(select(Volume).where(Volume.name == vid))
+            if vol:  # a group stores ids: a name removes the volume it names
+                remove_ids.add(vol.id)
         cg.volume_ids = json.dumps(list(current_ids - remove_ids))
         db.commit()
         db.refresh(cg)
@@ -154,7 +159,7 @@ def create_cgsnapshot(payload: CGSnapshotIn, current: CurrentUser, db: DB):
         description=payload.description,
         consistency_group_id=cg.id,
         status="creating",
-        project_id=current.get("project_id"),
+        project_id=cg.project_id or current.get("project_id"),  # the snapshot follows its group's project
     )
     db.add(cgs)
     db.commit()

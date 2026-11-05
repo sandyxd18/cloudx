@@ -299,3 +299,25 @@ def test_a_member_lists_only_its_own_groups_and_snapshots(env):
 
     assert env.client.get("/consistencygroups").json()["consistencygroups"] == []
     assert env.client.get("/cgsnapshots").json()["cgsnapshots"] == []
+
+
+def test_a_volume_is_removed_from_a_group_by_name_as_well_as_by_id(env):
+    env.as_(OWNER)
+    env.client.post("/consistencygroups/cg1/action", json=ACTIONS["add_volumes"])
+    assert sorted(env.group_ids()) == ["v1", "v2"]
+
+    r = env.client.post("/consistencygroups/cg1/action", json={"remove_volumes": {"volumes": ["src"]}})
+
+    assert r.status_code == 200, r.text
+    assert env.group_ids() == ["v2"]
+
+
+@pytest.mark.parametrize("who", [DOMAIN_ADMIN, ADMIN], ids=["domain_admin", "admin"])
+def test_a_cgsnapshot_made_by_an_admin_belongs_to_the_groups_project(env, who):
+    env.as_(who)
+    r = env.client.post("/cgsnapshots", json={"name": "by-admin", "consistency_group_id": "cg1"})
+    assert r.status_code == 201, r.text
+
+    assert r.json()["project_id"] == "p1"
+    env.as_(OWNER)
+    assert env.client.get("/cgsnapshots/by-admin").status_code == 200
