@@ -1,4 +1,4 @@
-"""X-Caller-Claims: a service holding INTERNAL_TOKEN states its caller's identity; OptionalUserOrInternal honours it."""
+"""X-Caller-Claims: a service holding INTERNAL_TOKEN states its caller's identity; the internal-or-user dependencies honour it."""
 import json
 import os
 import sys
@@ -301,7 +301,7 @@ def test_with_internal_token_set_to_empty_the_header_is_ignored(monkeypatch):
     assert who({"X-Internal-Token": "", HEADER: json.dumps(VALID)}) is None
 
 
-def test_other_dependencies_do_not_read_the_header():
+def test_the_strict_dependency_reads_the_header_too():
     from shared.auth_middleware import UserOrInternal
 
     app = FastAPI()
@@ -311,4 +311,4 @@ def test_other_dependencies_do_not_read_the_header():
         return {"who": current}
 
     r = TestClient(app).get("/strict", headers=claims_headers({"role": "member", "project_id": "p1"}))
-    assert r.json()["who"]["sub"] == "internal"  # the synthetic admin, as before: claims are not read here
+    assert r.json()["who"] == {"role": "member", "project_id": "p1"}
