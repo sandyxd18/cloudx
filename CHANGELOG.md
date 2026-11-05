@@ -24,6 +24,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
   boot on needs to be `shared` or `external`, and a domain admin names another project's network by id. Every
   user-or-internal route that uses the shared auth middleware now honours the identity header when one is sent.
   **Upgrade soon.**
+- **Consistency groups, their snapshots and volume snapshot schedules are checked against the caller's project.** A
+  request is answered for the caller's own project, the admin of its domain, or an admin; a group takes only volumes the
+  caller can see. A request for another project's group, snapshot or schedule now answers `404`; schedules answered
+  `403` before. **Upgrade soon.**
 
 ## 1.0.10-rc3 (2026-11-04)
 
