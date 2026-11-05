@@ -240,6 +240,8 @@ def port_ovn_show(ref: str, current: CurrentUser, db: DB):
 @router.delete("/ports/{ref}")
 def delete_port(ref: str, current: UserOrInternal, db: DB):
     port = require_owned(current, db, Port, ref, "port")
+    if port.device_id and (port.device_owner or "").startswith("compute:") and current.get("role") != "admin":
+        raise HTTPException(status_code=409, detail="port is in use by a server")
     port.security_group_ids = None
     apply_security_groups(db, port)
     ovn_cli.ovn("--if-exists", "lsp-del", port.name)

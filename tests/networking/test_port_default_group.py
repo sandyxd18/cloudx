@@ -60,3 +60,20 @@ def test_an_admin_without_a_named_group_gets_the_default_group(api):
 
     assert r.status_code == 201
     assert group_of(api, r.json()["id"]) == "sg-shared-default"
+
+
+def test_a_member_cannot_delete_a_port_a_server_uses_but_can_delete_a_free_one(api):
+    m = api.models
+    with api.db.SessionLocal() as db:
+        db.add_all([
+            m.Port(id="p-srv", name="p-srv", network_id="n-a", project_id="proj-a", mac_address="fa:16:3e:00:00:01",
+                   device_id="srv-1", device_owner="compute:instance"),
+            m.Port(id="p-free", name="p-free", network_id="n-a", project_id="proj-a", mac_address="fa:16:3e:00:00:02"),
+        ])
+        db.commit()
+
+    assert api.client.delete("/ports/p-srv").status_code == 409
+    assert api.client.delete("/ports/p-free").status_code == 200
+
+    api.user["role"] = "admin"
+    assert api.client.delete("/ports/p-srv").status_code == 200
