@@ -14,12 +14,17 @@ from .config import (
 _rpc: RPCClient | None = None
 
 
+def _headers_for(caller: dict | None) -> dict:
+    """Internal token, plus the caller's identity (X-Caller-Claims) when `caller` is given, for peers that judge it."""
+    try:
+        return on_behalf_headers(caller) if caller is not None else internal_headers()
+    except ValueError as exc:  # the claims do not fit in the header: the peer would read the call as anonymous
+        raise HTTPException(status_code=400, detail="caller identity cannot be sent to a peer service") from exc
+
+
 def api_get(url: str, caller: dict | None = None):
     """GET a peer service as the internal caller; with `caller`, as that user (X-Caller-Claims), for peers that judge the identity."""
-    try:
-        headers = on_behalf_headers(caller) if caller is not None else internal_headers()
-    except ValueError as exc:  # the claims do not fit in the header: the peer would read the call as anonymous
-        raise HTTPException(status_code=400, detail="caller identity cannot be sent to image-api") from exc
+    headers = _headers_for(caller)
     try:
         response = requests.get(url, headers={"Content-Type": "application/json", **headers}, timeout=8)
     except requests.RequestException as exc:
@@ -29,9 +34,11 @@ def api_get(url: str, caller: dict | None = None):
     return response.json()
 
 
-def api_post(url: str, payload: dict):
+def api_post(url: str, payload: dict, caller: dict | None = None):
+    """POST to a peer service as the internal caller; with `caller`, as that user (see api_get)."""
+    headers = _headers_for(caller)
     try:
-        response = requests.post(url, json=payload, headers={"Content-Type": "application/json", **internal_headers()}, timeout=300)
+        response = requests.post(url, json=payload, headers={"Content-Type": "application/json", **headers}, timeout=300)
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if response.status_code >= 400:

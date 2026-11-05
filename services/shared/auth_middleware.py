@@ -156,19 +156,31 @@ def require_internal(request: Request) -> None:
 
 
 def require_user_or_internal(request: Request) -> dict:
-    """User JWT, or a service holding INTERNAL_TOKEN (acts as admin). Unlike require_internal, never open."""
+    """User JWT, or a service holding INTERNAL_TOKEN. Unlike require_internal, never open.
+
+    A holder of the internal token is the synthetic admin, unless it states its caller's identity in X-Caller-Claims
+    (see shared.internal.on_behalf_headers): one valid header is the identity, an invalid or repeated one is a 401.
+    The header is read only when INTERNAL_TOKEN is set and X-Internal-Token matches it (see _stated_caller). The claims
+    are trusted as given: the sender must have authenticated `current` through require_auth first, and the receiver
+    does not repeat check_reader, the domain-scope or the revocation checks.
+    """
     token = os.getenv("INTERNAL_TOKEN", "")
     if token and _internal_token_matches(request, token):
-        return {
-            "sub": "internal",
-            "username": "admin",
-            "project_id": "admin",
-            "project_name": "admin",
-            "role": "admin",
-            "roles": ["admin"],
-            "scope_type": "system",
-            "jti": "internal",
-        }
+        stated = _stated_caller(request)
+        if stated is _NOT_STATED:
+            return {
+                "sub": "internal",
+                "username": "admin",
+                "project_id": "admin",
+                "project_name": "admin",
+                "role": "admin",
+                "roles": ["admin"],
+                "scope_type": "system",
+                "jti": "internal",
+            }
+        if stated is None:
+            raise HTTPException(status_code=401, detail="invalid caller identity")
+        return stated
     auth_func = getattr(getattr(request, "app", None), "dependency_overrides", {}).get(require_auth, require_auth)
     if len(inspect.signature(auth_func).parameters) > 0:
         return auth_func(request)
@@ -222,20 +234,28 @@ def _caller_from_claims_header(raw: str) -> dict | None:
     return {k: v for k, v in out.items() if v is not None}
 
 
-def optional_user_or_internal(request: Request) -> dict | None:
-    """The caller's claims (user JWT, or the synthetic admin for INTERNAL_TOKEN), or None. Never raises 401.
+_NOT_STATED = object()  # no X-Caller-Claims header: the caller did not state an identity
 
-    A holder of the internal token may state its caller's identity in X-Caller-Claims (see shared.internal.
-    on_behalf_headers): present and valid, those claims are the identity; present and invalid, anonymous, never the
-    synthetic admin. The header is read only when INTERNAL_TOKEN is set and X-Internal-Token matches it; otherwise it
-    is ignored and the JWT path decides. The claims are trusted as given: the sender must have authenticated `current`
-    through require_auth first, and the receiver does not repeat check_reader, the domain-scope or the revocation checks.
+
+def _stated_caller(request: Request):
+    """The identity a holder of the internal token states in X-Caller-Claims; call only once the token has matched.
+
+    Returns _NOT_STATED when the header is absent, the validated claims when exactly one valid header is present, and
+    None when it is invalid or repeated. The one place the rule lives: require_user_or_internal raises on None,
+    optional_user_or_internal answers None.
     """
-    token = os.getenv("INTERNAL_TOKEN", "")
-    if token and _internal_token_matches(request, token):
-        values = request.headers.getlist(CALLER_CLAIMS_HEADER)
-        if values:
-            return _caller_from_claims_header(values[0]) if len(values) == 1 else None
+    values = request.headers.getlist(CALLER_CLAIMS_HEADER)
+    if not values:
+        return _NOT_STATED
+    return _caller_from_claims_header(values[0]) if len(values) == 1 else None
+
+
+def optional_user_or_internal(request: Request) -> dict | None:
+    """The caller's claims (user JWT, the claims a holder of the internal token states, or the synthetic admin), or None.
+
+    Never raises 401: whatever require_user_or_internal refuses (including an invalid or repeated X-Caller-Claims)
+    is None here, never the synthetic admin. The trust rules are those of require_user_or_internal.
+    """
     try:
         return require_user_or_internal(request)
     except HTTPException:

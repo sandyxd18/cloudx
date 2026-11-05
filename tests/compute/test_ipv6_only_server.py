@@ -15,7 +15,7 @@ def test_a_server_on_an_ipv6_only_port_shows_its_ipv6_address(monkeypatch, tmp_p
             return {"id": "image-id", "name": "cirros"}
         return {"id": "network-id", "name": "v6only"}
 
-    def fake_post(url, payload):
+    def fake_post(url, payload, caller=None):
         # what networking-api returns for a port on a network with only an IPv6 subnet
         return {"id": "port-1", "name": payload["name"], "mac_address": "02:00:00:00:00:01", "fixed_ip": None,
                 "ip_address": None, "ipv6_address": "fd42:7:7::2", "ipv6_cidr": "fd42:7:7::/64", "logical_port_name": payload["name"]}

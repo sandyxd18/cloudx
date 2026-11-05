@@ -78,7 +78,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(requests, "delete", fake_delete)
     monkeypatch.setattr(svc.clients, "block_get", lambda path: seen["block_gets"].append(path) or current_volume["value"])
     monkeypatch.setattr(svc.clients, "cast_to_worker", lambda method, payload: seen["casts"].append(method))
-    monkeypatch.setattr(svc.clients, "api_post", lambda url, payload: seen["ports"].append(url) or {**PORT, "id": "port9"})
+    monkeypatch.setattr(svc.clients, "api_post", lambda url, payload, caller=None: seen["ports"].append(url) or {**PORT, "id": "port9"})
     monkeypatch.setattr(svc.clients, "api_delete", lambda url, payload=None: seen["api_deletes"].append(url))
     monkeypatch.setattr(svc.clients, "block_delete", lambda path: seen["block_deletes"].append(path))
     monkeypatch.setattr(svc.clients, "block_post", lambda path, payload: seen["block_posts"].append(path) or {"id": "root1"})

@@ -22,7 +22,7 @@ def test_compute_server_create_flow_mocked_worker(monkeypatch, tmp_path: Path):
 
     posted_ports = []
 
-    def fake_post(url: str, payload: dict):
+    def fake_post(url: str, payload: dict, caller=None):
         assert payload["device_owner"] == "compute:instance"
         posted_ports.append(payload["name"])
         return {

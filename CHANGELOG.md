@@ -14,6 +14,16 @@ schema between releases, so read the upgrade steps before moving a running cloud
   volume; users attach and detach through block-store's `POST /volumes/{ref}/attach` and `/detach`. The owner of an
   image made from a volume is the volume's project unless an admin or a service names another one; a domain admin no
   longer names it. **Upgrade soon.**
+- **Networks, ports, security groups and server groups named by a user are checked against the caller's project.**
+  Creating a server, and adding a port to one, now resolve the networks, ports and security groups the user names as
+  that user: compute sends its caller's identity to networking with the internal token, so networking's own rules apply
+  (own project, the admin of its domain, shared and external networks). Server groups named by id are checked like
+  those named by name. Ports of new servers belong to the project that created the server and count against its port
+  quota; servers that already exist do not change. A member cannot delete a port that a server uses (`409`). A port with
+  no security group named gets the project's `default` group, else the installation's. A network that other projects
+  boot on needs to be `shared` or `external`, and a domain admin names another project's network by id. Every
+  user-or-internal route that uses the shared auth middleware now honours the identity header when one is sent.
+  **Upgrade soon.**
 
 ## 1.0.10-rc3 (2026-11-04)
 

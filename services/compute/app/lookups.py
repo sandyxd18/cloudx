@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from shared.domain import can_see
-from .models import Flavor, Keypair, Server
+from .models import Flavor, Keypair, Server, ServerGroup
 
 
 def get_server(db: Session, ref: str):
@@ -42,6 +42,20 @@ def require_unlocked_server(db: Session, ref: str, current: dict):
     if server.locked and current.get("role") != "admin":
         raise HTTPException(status_code=409, detail="server is locked; unlock it first")
     return server
+
+
+def require_server_group(db: Session, ref: str, current: dict) -> ServerGroup:
+    """A server group by id, when it has no project or the caller may see its project (the project, the domain admin of
+    its domain, the system admin); else by name in the caller's project. 404 otherwise, the same for both."""
+    group = db.get(ServerGroup, ref)
+    if group:
+        if group.project_id and not can_see(current, group.project_id):
+            group = None
+    else:
+        group = db.scalar(select(ServerGroup).where(ServerGroup.name == ref, ServerGroup.project_id == current["project_id"]))
+    if not group:
+        raise HTTPException(status_code=404, detail="server group not found")
+    return group
 
 
 def get_flavor(db: Session, ref: str):
