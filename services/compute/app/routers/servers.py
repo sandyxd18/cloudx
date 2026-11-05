@@ -14,9 +14,10 @@ from ..lookups import (
     require_flavor,
     require_keypair,
     require_server,
+    require_server_group,
     server_port_name,
 )
-from ..models import Server, ServerGroup, ServerTag, new_id
+from ..models import Server, ServerTag, new_id
 from ..schemas import ServerIn, ServerUserDataIn
 from ..serializers import obj_to_dict, server_to_dict
 from ..service import (
@@ -59,19 +60,16 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
     _check_project_quota(db, current["project_id"], flavor.vcpus, flavor.ram_mb)
     sg = None
     if payload.server_group:
-        sg = db.get(ServerGroup, payload.server_group) or db.scalar(
-            select(ServerGroup).where(ServerGroup.name == payload.server_group,
-                                       ServerGroup.project_id == current["project_id"]))
-        if not sg:
-            raise HTTPException(status_code=404, detail="server group not found")
+        sg = require_server_group(db, payload.server_group, current)
     networking_url, block_store_url = networking_api_url(), block_store_api_url()
     image_url = image_api_url() if payload.image else None
-    network = clients.api_get(f"{networking_url}/networks/{quote(payload.network, safe='')}")
+    network = clients.api_get(f"{networking_url}/networks/{quote(payload.network, safe='')}", caller=current)
     # IPv6 is opt-in on a dual-stack network. Look the subnets up now, before a root volume is created from the image.
     ipv6_fixed_ips: dict[str, list[dict]] = {}
     if payload.ipv6:
         for network_ref in dict.fromkeys([payload.network, *payload.networks]):
-            net = network if network_ref == payload.network else clients.api_get(f"{networking_url}/networks/{quote(network_ref, safe='')}")
+            net = network if network_ref == payload.network else clients.api_get(
+                f"{networking_url}/networks/{quote(network_ref, safe='')}", caller=current)
             ipv6_fixed_ips[net["id"]] = ipv6_fixed_ips_of(networking_url, net)
     server_id = new_id()
     root_volume = None
@@ -130,7 +128,8 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
                 seen_networks.append(item)
         ports = []
         for index, network_ref in enumerate(seen_networks):
-            net = network if index == 0 else clients.api_get(f"{networking_url}/networks/{quote(network_ref, safe='')}")
+            net = network if index == 0 else clients.api_get(
+                f"{networking_url}/networks/{quote(network_ref, safe='')}", caller=current)
             port = clients.api_post(
                 f"{networking_url}/ports",
                 {
@@ -141,6 +140,7 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
                     "security_group_ids": payload.security_groups,
                     **({"fixed_ips": ipv6_fixed_ips[net["id"]]} if payload.ipv6 else {}),
                 },
+                caller=current,
             )
             ports.append(port)
             created_ports.append(port)

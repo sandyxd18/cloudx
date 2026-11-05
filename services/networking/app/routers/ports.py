@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from .. import ovn_cli
 from ..config import log
-from ..access import require_owned, scope
+from ..access import own, require_owned, scope
 from ..db import DB
 from ..quota import check_quota
 from ..events import _actor, _publish_net_event
@@ -41,6 +41,18 @@ def _allocate_ipv6(db: Session, subnet: Subnet, requested: str | None, port_mac:
     return port_mac, allocate_fixed_ip(db, subnet, requested)
 
 
+def _default_security_group(db: Session, current: dict) -> SecurityGroup:
+    """The group a port gets when none is named: the caller's own "default" group, else the shared default of the
+    installation (it belongs to no real project, so no project check applies to it)."""
+    group = get_by_ref(db, SecurityGroup, "default", current=current)
+    if group:
+        return own(current, group, "security-group") if group.project_id not in (None, "default") else group
+    group = db.scalar(select(SecurityGroup).where(SecurityGroup.name == "default", or_(SecurityGroup.project_id.is_(None), SecurityGroup.project_id == "default")))
+    if not group:
+        raise HTTPException(status_code=404, detail="security-group 'default' not found")
+    return group
+
+
 @router.post("/ports", status_code=201)
 def create_port(payload: PortIn, current: UserOrInternal, db: DB):
     if get_by_ref(db, Port, payload.name, current=current):
@@ -65,8 +77,10 @@ def create_port(payload: PortIn, current: UserOrInternal, db: DB):
     port_mac = mac()
     logical_switch_name = network.name
     logical_port_name = payload.name
-    security_group_ids = payload.security_group_ids or ["default"]
-    groups = [require_owned(current, db, SecurityGroup, group_id, "security-group") for group_id in security_group_ids]
+    if payload.security_group_ids:
+        groups = [require_owned(current, db, SecurityGroup, group_id, "security-group") for group_id in payload.security_group_ids]
+    else:
+        groups = [_default_security_group(db, current)]
 
     # IPv6: fixed_ips can ask for it. A network with no IPv4 subnet has nothing else to give, so a port on it gets an
     # IPv6 address without naming one; on a dual-stack network IPv6 stays opt-in (fixed_ips), as before

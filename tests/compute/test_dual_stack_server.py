@@ -29,7 +29,7 @@ def cloud(monkeypatch, tmp_path: Path):
             return SUBNETS[url.rsplit("/", 1)[1]]
         return NETWORKS[url.rsplit("/", 1)[1]]
 
-    def fake_post(url, payload):
+    def fake_post(url, payload, caller=None):
         seen["ports"].append(payload)
         return {"id": f"port-{len(seen['ports'])}", "name": payload["name"], "mac_address": "02:00:00:00:00:01", "fixed_ip": "10.0.0.5",
                 "ip_address": "10.0.0.5", "logical_port_name": payload["name"]}

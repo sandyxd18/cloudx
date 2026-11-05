@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 
 from ..db import DB
+from ..lookups import require_server_group
 from ..models import ServerGroup
 from ..schemas import ServerGroupIn
 from ..serializers import obj_to_dict
@@ -33,18 +34,12 @@ def list_server_groups(current: CurrentUser, db: DB):
 
 @router.get("/server-groups/{ref}")
 def show_server_group(ref: str, current: CurrentUser, db: DB):
-    sg = db.get(ServerGroup, ref) or db.scalar(
-        select(ServerGroup).where(ServerGroup.name == ref, ServerGroup.project_id == current["project_id"]))
-    if not sg:
-        raise HTTPException(status_code=404, detail="server group not found")
+    sg = require_server_group(db, ref, current)
     return {**obj_to_dict(sg), "members": [m for m in (sg.members or "").split(",") if m]}
 
 
 @router.delete("/server-groups/{ref}", status_code=204)
 def delete_server_group(ref: str, current: CurrentUser, db: DB):
-    sg = db.get(ServerGroup, ref) or db.scalar(
-        select(ServerGroup).where(ServerGroup.name == ref, ServerGroup.project_id == current["project_id"]))
-    if not sg:
-        raise HTTPException(status_code=404, detail="server group not found")
+    sg = require_server_group(db, ref, current)
     db.delete(sg)
     db.commit()

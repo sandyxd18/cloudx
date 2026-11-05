@@ -104,7 +104,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(requests, "post", fake_post)
     monkeypatch.setattr(requests, "delete", fake_delete)
     monkeypatch.setattr(svc.clients, "cast_to_worker", lambda method, payload: seen["casts"].append(method))
-    monkeypatch.setattr(svc.clients, "api_post", lambda url, payload: seen["ports"].append(url) or {**PORT, "id": "port9"})
+    monkeypatch.setattr(svc.clients, "api_post", lambda url, payload, caller=None: seen["ports"].append(url) or {**PORT, "id": "port9"})
     monkeypatch.setattr(svc.clients, "api_delete", lambda url, payload=None: seen["api_deletes"].append(url))
     monkeypatch.setattr(svc.clients, "block_delete", lambda path: seen["block_deletes"].append(path))
     monkeypatch.setattr(svc.clients, "block_post", lambda path, payload: seen["block_posts"].append(path) or
@@ -305,9 +305,9 @@ def test_create_server_with_claims_too_large_for_the_header_is_400_and_creates_n
 
     r = create(env, "x")
 
-    assert r.status_code == 400 and r.json() == {"detail": "caller identity cannot be sent to image-api"}
+    assert r.status_code == 400 and r.json() == {"detail": "caller identity cannot be sent to a peer service"}
     seen = env.seen
-    assert len(seen["claims"]) == 1 and seen["released"] == seen["claims"], "the placement claim is released"
+    assert seen["released"] == seen["claims"], "no placement claim is left (the network is looked up before it is made)"
     assert seen["image_calls"] == []
     assert server_rows(env) == 0
     assert seen["block_posts"] == [] and seen["ports"] == [] and seen["casts"] == []

@@ -338,7 +338,9 @@ def add_server_port(ref: str, payload: ServerPortIn, current: CurrentUser, db: D
     server = require_unlocked_server(db, ref, current)
     if server.status != "ACTIVE":
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE to add a port; current status is {server.status}")
-    port = clients.api_get(f"{networking_api_url()}/ports/{quote(payload.port, safe='')}")
+    port = clients.api_get(f"{networking_api_url()}/ports/{quote(payload.port, safe='')}", caller=current)
+    if port.get("device_id") and port["device_id"] != server.id:
+        raise HTTPException(status_code=409, detail="port is in use")
     if port["id"] in [server.port_id, *comma_list(server.extra_port_ids)]:
         raise HTTPException(status_code=409, detail="port is already attached to server metadata")
     # Update DB immediately, cast hotplug to worker
