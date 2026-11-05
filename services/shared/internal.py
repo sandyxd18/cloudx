@@ -16,7 +16,7 @@ CALLER_CLAIMS_KEYS = ("sub", "username", "project_id", "role", "roles", "domain_
 def on_behalf_headers(current: dict | None) -> dict:
     """`internal_headers()` plus X-Caller-Claims: the identity of `current`, stated by a service that holds INTERNAL_TOKEN.
 
-    Receivers (image-api's optional_user_or_internal) take the claims as the caller's identity, so the call is judged
+    Receivers (the user-or-internal routes of any service, e.g. image-api and networking) take the claims as the caller's identity, so the call is judged
     as `current` and not as the synthetic admin. `current` None or the synthetic internal caller: admin, no claims.
     INTERNAL_TOKEN unset: {} (the call is anonymous). Raises ValueError when the claims exceed 2048 bytes: the
     receiver would read an oversized header as anonymous, so refuse here rather than send a call that cannot work.
