@@ -22,8 +22,8 @@ def test_spaces_and_slashes_are_quoted():
     assert path_ref("a?b#c") == "a%3Fb%23c"
 
 
-@pytest.mark.parametrize("ref", [".", ".."])
-def test_dot_segments_are_not_found(ref):
+@pytest.mark.parametrize("ref", ["", ".", ".."])
+def test_empty_and_dot_segments_are_not_found(ref):
     with pytest.raises(HTTPException) as exc:
         path_ref(ref)
     assert exc.value.status_code == 404
