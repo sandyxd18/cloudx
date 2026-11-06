@@ -35,6 +35,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
   refuses to delete stays in the group and is tried again. Scaling history can only be recorded by the orchestration worker. Servers a group started before the
   upgrade stay in project `admin`, so scaling such a group in leaves them running until an admin deletes them.
   **Upgrade soon.**
+- **Small fixes.** A flavor that is not public is listed and usable by admins only; a snapshot whose volume is gone is
+  shown to admins only; references that are `.` or `..` and non-ASCII tokens in the internal-token, metrics-token and
+  health-check headers are refused with an error instead of failing the request; the project in the quota path is
+  quoted. **Upgrade soon.**
 
 ## 1.0.10-rc3 (2026-11-04)
 

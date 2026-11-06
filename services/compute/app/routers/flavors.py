@@ -33,23 +33,26 @@ def create_flavor(payload: FlavorIn, _: Annotated[dict, Depends(policy.require("
 
 
 @router.get("/flavors")
-def list_flavors(_: CurrentUser, db: DB):
-    return {"items": [_flavor(f) for f in db.scalars(select(Flavor).order_by(Flavor.created_at)).all()]}
+def list_flavors(current: CurrentUser, db: DB):
+    query = select(Flavor).order_by(Flavor.created_at)
+    if current.get("role") != "admin":
+        query = query.where(Flavor.is_public.is_(True))
+    return {"items": [_flavor(f) for f in db.scalars(query).all()]}
 
 
 @router.get("/flavors/{ref}")
-def show_flavor(ref: str, _: CurrentUser, db: DB):
-    return _flavor(require_flavor(db, ref))
+def show_flavor(ref: str, current: CurrentUser, db: DB):
+    return _flavor(require_flavor(db, ref, current))
 
 
 @router.get("/flavors/{ref}/os-extra_specs")
-def get_extra_specs(ref: str, _: CurrentUser, db: DB):
-    return {"extra_specs": _flavor(require_flavor(db, ref))["extra_specs"]}
+def get_extra_specs(ref: str, current: CurrentUser, db: DB):
+    return {"extra_specs": _flavor(require_flavor(db, ref, current))["extra_specs"]}
 
 
 @router.post("/flavors/{ref}/os-extra_specs")
-def set_extra_specs(ref: str, payload: dict, _: Annotated[dict, Depends(policy.require("compute:flavor-extra-spec:set"))], db: DB):
-    flavor = require_flavor(db, ref)
+def set_extra_specs(ref: str, payload: dict, current: Annotated[dict, Depends(policy.require("compute:flavor-extra-spec:set"))], db: DB):
+    flavor = require_flavor(db, ref, current)
     specs = payload.get("extra_specs")
     if not isinstance(specs, dict):
         raise HTTPException(status_code=400, detail="extra_specs object is required")
@@ -60,8 +63,8 @@ def set_extra_specs(ref: str, payload: dict, _: Annotated[dict, Depends(policy.r
 
 
 @router.delete("/flavors/{ref}/os-extra_specs/{key}", status_code=204)
-def delete_extra_spec(ref: str, key: str, _: Annotated[dict, Depends(policy.require("compute:flavor-extra-spec:delete"))], db: DB):
-    flavor = require_flavor(db, ref)
+def delete_extra_spec(ref: str, key: str, current: Annotated[dict, Depends(policy.require("compute:flavor-extra-spec:delete"))], db: DB):
+    flavor = require_flavor(db, ref, current)
     specs = json.loads(flavor.extra_specs or "{}")
     if key not in specs:
         raise HTTPException(status_code=404, detail="extra spec not found")
@@ -70,8 +73,8 @@ def delete_extra_spec(ref: str, key: str, _: Annotated[dict, Depends(policy.requ
     db.commit()
 
 @router.delete("/flavors/{ref}")
-def delete_flavor(ref: str, _: Annotated[dict, Depends(policy.require("compute:flavor:delete"))], db: DB):
-    flavor = require_flavor(db, ref)
+def delete_flavor(ref: str, current: Annotated[dict, Depends(policy.require("compute:flavor:delete"))], db: DB):
+    flavor = require_flavor(db, ref, current)
     db.delete(flavor)
     db.commit()
     return {"status": "deleted", "id": flavor.id, "name": flavor.name}

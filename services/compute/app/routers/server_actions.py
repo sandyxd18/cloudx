@@ -112,7 +112,7 @@ def resize_server(ref: str, payload: ServerResizeIn, current: CurrentUser, db: D
         raise HTTPException(status_code=409, detail="server has a resize to confirm or revert (confirmResize or revertResize) before it can be resized again")
     if server.status not in ("ACTIVE", "SHUTOFF"):
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE or SHUTOFF to resize; current status is {server.status}")
-    flavor = require_flavor(db, payload.flavor)
+    flavor = require_flavor(db, payload.flavor, current)
     # Snapshot original flavor for potential revert
     server.original_flavor = server.flavor
     server.original_vcpus = server.vcpus

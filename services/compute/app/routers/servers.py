@@ -55,7 +55,7 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
     backend = selected_backend(payload.backend)
     keypair_ref = payload.key_name or payload.keypair
     keypair = require_keypair(db, keypair_ref) if keypair_ref else None
-    flavor = require_flavor(db, payload.flavor)
+    flavor = require_flavor(db, payload.flavor, current)
     _check_project_quota(db, current["project_id"], flavor.vcpus, flavor.ram_mb)
     sg = None
     if payload.server_group:
