@@ -1,3 +1,5 @@
+import pytest
+
 
 def test_metadata_service_lookup_by_instance_id(monkeypatch):
     from services.metadata.app import metadata_service
@@ -80,3 +82,33 @@ def test_local_ipv4_is_never_an_ipv6_address(monkeypatch):
     client = TestClient(main.app)
     assert client.get("/latest/meta-data/local-ipv4").status_code == 404
     assert client.get("/2009-04-04/meta-data/local-ipv4").status_code == 404
+
+
+def test_non_ascii_internal_token_header_is_not_believed(monkeypatch):
+    from starlette.datastructures import Headers
+
+    from services.metadata.app import metadata_service
+
+    seen = []
+    monkeypatch.setattr(metadata_service, "compute_get",
+                        lambda path, params=None: seen.append(params) or (_ for _ in ()).throw(
+                            metadata_service.HTTPException(status_code=404)))
+    monkeypatch.setenv("INTERNAL_TOKEN", "tok")
+
+    class FakeRequest:
+        def __init__(self, token):
+            self.headers = Headers(raw=[(b"x-internal-token", token), (b"x-instance-id", b"vm-1")])
+            self.query_params = {}
+            self.client = None
+
+    for token in (b"\xe9", b"wrong"):
+        seen.clear()
+        with pytest.raises(metadata_service.HTTPException) as exc:
+            metadata_service.lookup_metadata(FakeRequest(token))
+        assert exc.value.status_code == 404
+        assert seen == []  # the identity hints were dropped, nothing was looked up
+
+    seen.clear()
+    with pytest.raises(metadata_service.HTTPException):
+        metadata_service.lookup_metadata(FakeRequest(b"tok"))
+    assert seen == [{"instance_id": "vm-1"}]

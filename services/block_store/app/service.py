@@ -1,10 +1,9 @@
-from urllib.parse import quote
-
 import requests
 from fastapi import HTTPException
 from shared.auth_middleware import CurrentUser
 from shared.catalog import CatalogError
 from shared.internal import internal_headers, on_behalf_headers
+from shared.refs import path_ref
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -63,7 +62,7 @@ def resolve_readable_image(ref: str, current: dict) -> str:
     except ValueError as exc:  # the claims do not fit in the header: image-api would read the call as anonymous
         raise HTTPException(status_code=400, detail="caller identity cannot be sent to image-api") from exc
     try:  # quoted: a ref with / ? # must not address another image-api route
-        response = requests.get(f"{image_api_url()}/images/{quote(ref, safe='')}", headers=headers, timeout=8)
+        response = requests.get(f"{image_api_url()}/images/{path_ref(ref)}", headers=headers, timeout=8)
     except (CatalogError, requests.RequestException) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if response.status_code >= 400:

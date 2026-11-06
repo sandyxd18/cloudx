@@ -1,8 +1,7 @@
-from urllib.parse import quote
-
 from fastapi import APIRouter, HTTPException, Query
 from shared.domain import can_see, visible_projects
 from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal
+from shared.refs import path_ref
 from sqlalchemy import select
 
 from .. import clients
@@ -56,20 +55,23 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
     backend = selected_backend(payload.backend)
     keypair_ref = payload.key_name or payload.keypair
     keypair = require_keypair(db, keypair_ref) if keypair_ref else None
-    flavor = require_flavor(db, payload.flavor)
+    flavor = require_flavor(db, payload.flavor, current)
     _check_project_quota(db, current["project_id"], flavor.vcpus, flavor.ram_mb)
     sg = None
     if payload.server_group:
         sg = require_server_group(db, payload.server_group, current)
     networking_url, block_store_url = networking_api_url(), block_store_api_url()
     image_url = image_api_url() if payload.image else None
-    network = clients.api_get(f"{networking_url}/networks/{quote(payload.network, safe='')}", caller=current)
+    for ref in (payload.network, *payload.networks, payload.image, payload.boot_volume):
+        if ref:
+            path_ref(ref)  # refused here, before a host is claimed or anything is created
+    network = clients.api_get(f"{networking_url}/networks/{path_ref(payload.network)}", caller=current)
     # IPv6 is opt-in on a dual-stack network. Look the subnets up now, before a root volume is created from the image.
     ipv6_fixed_ips: dict[str, list[dict]] = {}
     if payload.ipv6:
         for network_ref in dict.fromkeys([payload.network, *payload.networks]):
             net = network if network_ref == payload.network else clients.api_get(
-                f"{networking_url}/networks/{quote(network_ref, safe='')}", caller=current)
+                f"{networking_url}/networks/{path_ref(network_ref)}", caller=current)
             ipv6_fixed_ips[net["id"]] = ipv6_fixed_ips_of(networking_url, net)
     server_id = new_id()
     root_volume = None
@@ -85,7 +87,7 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
         if host is None:
             host = fallback_host(db, flavor, group=sg, az=payload.availability_zone)
         if payload.image:
-            image = clients.api_get(f"{image_url}/images/{quote(payload.image, safe='')}", caller=current)
+            image = clients.api_get(f"{image_url}/images/{path_ref(payload.image)}", caller=current)
             image_id = image["id"]
             # EC2-style block device mapping: the root volume size is chosen
             # entirely by the user (default 8 GiB) — flavors are instance-type
@@ -109,7 +111,7 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
             boot_source = "image"
             auto_root_volume = True
         else:
-            root_volume = clients.block_get(f"/volumes/{quote(payload.boot_volume, safe='')}")
+            root_volume = clients.block_get(f"/volumes/{path_ref(payload.boot_volume)}")
             # block-store answers compute as an admin, so the caller's right to the volume is checked here, before
             # anything about the volume (bootable, status) is reported.
             if "project_id" not in root_volume or (root_volume["project_id"] and not can_see(current, root_volume["project_id"])):
@@ -129,7 +131,7 @@ def create_server(payload: ServerIn, current: UserOrInternal, db: DB):
         ports = []
         for index, network_ref in enumerate(seen_networks):
             net = network if index == 0 else clients.api_get(
-                f"{networking_url}/networks/{quote(network_ref, safe='')}", caller=current)
+                f"{networking_url}/networks/{path_ref(network_ref)}", caller=current)
             port = clients.api_post(
                 f"{networking_url}/ports",
                 {

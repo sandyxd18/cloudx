@@ -3,12 +3,12 @@ cloudx shared Prometheus metrics instrumentation.
 """
 from __future__ import annotations
 
-import hmac
 import os
 import time
 from prometheus_client import Counter, Histogram, CONTENT_TYPE_LATEST, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi import HTTPException
+from shared.internal import token_matches
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -43,7 +43,7 @@ class _MetricsMiddleware(BaseHTTPMiddleware):
 def check_metrics_token(request: Request) -> None:
     """/metrics needs `Authorization: Bearer $METRICS_TOKEN` when METRICS_TOKEN is set (installer generates one)."""
     token = os.getenv("METRICS_TOKEN", "")
-    if token and not hmac.compare_digest(request.headers.get("Authorization", ""), f"Bearer {token}"):
+    if token and not token_matches(request.headers.get("Authorization", ""), f"Bearer {token}"):
         raise HTTPException(status_code=401, detail="metrics token required")
 
 

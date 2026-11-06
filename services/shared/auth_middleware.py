@@ -18,7 +18,6 @@ Authentication methods (checked in order):
   3. X-Access-Key-Id + X-Secret-Access-Key  →  calls auth-api to exchange for token
 """
 
-import hmac
 import inspect
 import json
 import logging
@@ -30,7 +29,7 @@ import requests
 from fastapi import Depends, HTTPException, Request
 from jose import JWTError, jwt
 
-from shared.internal import CALLER_CLAIMS_HEADER, CALLER_CLAIMS_KEYS, CALLER_CLAIMS_MAX_BYTES
+from shared.internal import CALLER_CLAIMS_HEADER, CALLER_CLAIMS_KEYS, CALLER_CLAIMS_MAX_BYTES, token_matches
 
 log = logging.getLogger("cloudx-auth")
 
@@ -141,7 +140,7 @@ def require_admin(current: dict = Depends(require_auth)) -> dict:
 
 def _internal_token_matches(request: Request, token: str) -> bool:
     """Constant-time compare of X-Internal-Token with `token`, on bytes: a non-ASCII header is a mismatch, not a TypeError."""
-    return hmac.compare_digest(request.headers.get("X-Internal-Token", "").encode(), token.encode())
+    return token_matches(request.headers.get("X-Internal-Token", ""), token)
 
 
 def require_internal(request: Request) -> None:

@@ -18,6 +18,8 @@ import os
 import time
 from fastapi import HTTPException, Request
 
+from shared.internal import token_matches
+
 from .clients import compute_get
 from .config import METADATA_HMAC_KEY
 
@@ -47,7 +49,7 @@ def lookup_metadata(
 
     # Identity hints are only believed from the metadata-proxy (X-Internal-Token); a VM could forge them.
     token = os.getenv("INTERNAL_TOKEN", "")
-    if token and not hmac.compare_digest(headers.get("X-Internal-Token", ""), token):
+    if token and not token_matches(headers.get("X-Internal-Token", ""), token):
         header_instance = header_port = query_instance = query_port = query_ip = forwarded_for = None
 
     candidates = [

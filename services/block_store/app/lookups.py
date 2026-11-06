@@ -33,6 +33,8 @@ def require_snapshot(db: Session, ref: str, current: dict | None = None) -> Snap
         vol = db.get(Volume, snapshot.volume_id)
         if vol and not can_access(vol.project_id, current):
             snapshot = None
+        elif not vol and current.get("role") != "admin":  # without its volume, a snapshot is for admins only
+            snapshot = None
     if not snapshot:
         raise HTTPException(status_code=404, detail=f"snapshot '{ref}' not found")
     return snapshot

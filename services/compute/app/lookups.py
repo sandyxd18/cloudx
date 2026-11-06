@@ -62,8 +62,11 @@ def get_flavor(db: Session, ref: str):
     return db.get(Flavor, ref) or db.scalar(select(Flavor).where(Flavor.name == ref))
 
 
-def require_flavor(db: Session, ref: str):
+def require_flavor(db: Session, ref: str, current: dict | None = None):
+    """current=None skips the visibility check (internal callers). A flavor that is not public is for admins only."""
     flavor = get_flavor(db, ref)
+    if flavor and current is not None and current.get("role") != "admin" and not flavor.is_public:
+        flavor = None
     if not flavor:
         raise HTTPException(status_code=404, detail=f"flavor '{ref}' not found")
     return flavor
