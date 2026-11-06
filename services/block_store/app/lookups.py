@@ -89,10 +89,10 @@ def next_target_device(db: Session, server_id: str) -> str:
     raise HTTPException(status_code=409, detail="no available disk target devices for server")
 
 
-def require_cg(db: Session, ref: str) -> ConsistencyGroup:
+def require_cg(db: Session, ref: str, current: dict | None = None) -> ConsistencyGroup:
     cg = db.scalar(select(ConsistencyGroup).where(
         (ConsistencyGroup.id == ref) | (ConsistencyGroup.name == ref)
     ))
-    if not cg:
+    if not cg or not can_access(cg.project_id, current):
         raise HTTPException(status_code=404, detail=f"Consistency group '{ref}' not found")
     return cg
