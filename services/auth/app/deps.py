@@ -1,10 +1,10 @@
-import hmac
 import os
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
 from shared import policy
 from shared.auth_middleware import READ_ONLY_METHODS, check_reader
+from shared.internal import token_matches
 
 from .db import DB
 from .models import RevokedToken
@@ -42,7 +42,7 @@ def _require_admin(payload: dict = Depends(_require_token)) -> dict:
 
 def _require_user_or_internal(request: Request, user: dict = Depends(_require_token)) -> dict:
     token = os.getenv("INTERNAL_TOKEN", "")
-    if token and hmac.compare_digest(request.headers.get("X-Internal-Token", ""), token):
+    if token_matches(request.headers.get("X-Internal-Token", ""), token):
         return {
             "sub": "internal",
             "username": "admin",

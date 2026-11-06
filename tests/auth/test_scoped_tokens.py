@@ -136,3 +136,12 @@ def test_domain_token_cannot_create_project_bound_rows(auth):
     h = {"X-Auth-Token": login(auth, "da1", scope={"domain": "d1"}).json()["token"]}
     assert auth.client.post("/groups", json={"name": "g"}, headers=h).status_code == 403
     assert auth.client.post("/access-keys", json={"name": "k"}, headers=h).status_code == 403
+
+
+def test_user_or_internal_dependency_takes_a_non_ascii_internal_token_as_no_token(auth, monkeypatch):
+    monkeypatch.setenv("INTERNAL_TOKEN", "tok")
+    cafe = "café".encode("latin-1")
+    user = {"Authorization": f"Bearer {login(auth, 'u1').json()['token']}"}
+    assert auth.client.get("/projects/p1/quota", headers={**user, "X-Internal-Token": cafe}).status_code == 200
+    assert auth.client.get("/projects/p1/quota", headers={"X-Internal-Token": cafe}).status_code == 401
+    assert auth.client.get("/projects/p1/quota", headers={**user, "X-Internal-Token": "tok"}).status_code == 200
