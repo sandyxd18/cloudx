@@ -351,8 +351,11 @@ def test_terminate_removes_a_server_of_the_groups_project(env):
         assert db.get(env.svc.Server, "srv-p2").status == "DELETING"
 
 
-def test_terminate_refuses_a_server_of_another_project(env):
-    assert w._terminate_server("srv-p1", p2_group(env)) is False
+def test_terminate_leaves_a_server_of_another_project_alone(env, caplog):
+    with caplog.at_level(logging.WARNING, logger="orchestration-worker"):
+        assert w._terminate_server("srv-p1", p2_group(env)) is True  # not found in the group's project: nothing to do
+
+    assert "not found in project p2" in caplog.text
 
     with env.svc.SessionLocal() as db:
         assert db.get(env.svc.Server, "srv-p1").status == "ACTIVE"
@@ -375,3 +378,38 @@ def test_pool_of_another_project_is_left_alone(env):
     assert w._remove_member_from_pool("pool-p1", "srv-p1", group) is False
 
     assert env.members("pool-p1") == ["member-p1"]
+
+
+def _scale_in_with(monkeypatch, terminate_result, recorded):
+    monkeypatch.setenv("INTERNAL_TOKEN", TOKEN)
+    monkeypatch.setattr(w, "_peers_resolvable", lambda peers: True)
+    group = {**GROUP, "target_cpu_percent": 50, "cooldown_seconds": 0, "scale_in_cooldown_seconds": 0,
+             "min_instances": 1, "max_instances": 3, "load_balancer_pool_id": None}
+    monkeypatch.setattr(w, "_record_history", lambda *a, **k: recorded.append(a))
+    monkeypatch.setattr(w, "_terminate_server", lambda sid, g: terminate_result)
+    monkeypatch.setattr(w, "_get_group_instances", lambda gid: [
+        {"status": "active", "server_id": f"s{n}", "created_at": str(n)} for n in range(2)])
+    monkeypatch.setattr(w, "_get_instance_avg_cpu", lambda ids: 1.0)
+    w._check_group(group)
+
+
+def test_a_server_compute_refused_to_terminate_stays_in_the_group(monkeypatch):
+    recorded = []
+    _scale_in_with(monkeypatch, False, recorded)
+
+    assert recorded == []  # no history, so the instance is kept and the next cycle tries again
+
+
+def test_a_terminated_server_leaves_the_group(monkeypatch):
+    recorded = []
+    _scale_in_with(monkeypatch, True, recorded)
+
+    assert [a[1] for a in recorded] == ["scale_in"]
+
+
+def test_a_refused_pool_call_is_logged(env, caplog):
+    group = {**p2_group(env), "load_balancer_pool_id": "pool-p1"}
+    with caplog.at_level(logging.WARNING, logger="orchestration-worker"):
+        assert w._add_member_to_pool("pool-p1", {"id": "srv9", "ip_address": "10.0.2.10"}, group) is False
+
+    assert "refused to add server srv9 to pool pool-p1" in caplog.text

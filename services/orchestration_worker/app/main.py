@@ -187,7 +187,11 @@ def _spawn_server(group: dict, name: str) -> dict | None:
 
 
 def _terminate_server(server_id: str, group: dict) -> bool:
-    """Terminate a server via compute-api, as a member of the group's project."""
+    """Terminate a server via compute-api, as a member of the group's project.
+
+    True when nothing is left to terminate: deleted, or not found in the group's project (404, so the group has nothing
+    to remove). False when compute refused or failed, so the caller keeps the instance and tries again.
+    """
     try:
         headers = _group_headers(group)
         r = requests.delete(
@@ -195,6 +199,13 @@ def _terminate_server(server_id: str, group: dict) -> bool:
             headers=headers,
             timeout=30,
         )
+        if r.status_code == 404:
+            log.warning("Group %s: server %s not found in project %s, nothing to terminate",
+                        group.get("id"), server_id, group.get("project_id"))
+            return True
+        if r.status_code not in (200, 202, 204):
+            log.warning("Group %s: compute refused to terminate server %s: %s %s",
+                        group.get("id"), server_id, r.status_code, r.text[:200])
         return r.status_code in (200, 202, 204)
     except Exception as e:
         log.error("Error terminating server %s: %s", server_id, e)
@@ -224,6 +235,9 @@ def _add_member_to_pool(pool_id: str, server: dict, group: dict) -> bool:
             },
             timeout=30,
         )
+        if r.status_code not in (200, 201, 202):
+            log.warning("Group %s: load balancer refused to add server %s to pool %s: %s %s",
+                        group.get("id"), server.get("id"), pool_id, r.status_code, r.text[:200])
         return r.status_code in (200, 201, 202)
     except Exception as e:
         log.error("Error adding member to pool: %s", e)
@@ -242,6 +256,9 @@ def _remove_member_from_pool(pool_id: str, server_id: str, group: dict) -> bool:
             headers=headers,
             timeout=30,
         )
+        if r.status_code not in (200, 202, 204):
+            log.warning("Group %s: load balancer refused to remove server %s from pool %s: %s %s",
+                        group.get("id"), server_id, pool_id, r.status_code, r.text[:200])
         return r.status_code in (200, 202, 204)
     except Exception as e:
         log.error("Error removing member from pool: %s", e)
@@ -380,8 +397,9 @@ def _check_group(group: dict):
             if group.get("load_balancer_pool_id"):
                 _remove_member_from_pool(group["load_balancer_pool_id"], server_id, group)
             
-            # Terminate server
-            _terminate_server(server_id, group)
+            # Terminate server; when compute refused or failed the instance stays and the next cycle tries again
+            if not _terminate_server(server_id, group):
+                continue
             
             _record_history(
                 group_id, "scale_in",
