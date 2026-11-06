@@ -402,7 +402,12 @@ class ScalingEventIn(BaseModel):
 @app.post("/scaling-groups/{group_id}/history", status_code=status.HTTP_201_CREATED)
 @app.post("/orchestration/scaling-groups/{group_id}/history", status_code=status.HTTP_201_CREATED)
 def record_scaling_event(admin: UserOrInternal, group_id: str, data: ScalingEventIn, db: DB):
-    """Called by orchestration-worker after it scaled: logs history, syncs instances and cooldown timestamps."""
+    """Called by orchestration-worker after it scaled: logs history, syncs instances and cooldown timestamps.
+
+    Only the worker (the internal token without a stated caller) records; users scale through the manual routes.
+    """
+    if admin.get("sub") != "internal":
+        raise HTTPException(status_code=403, detail="internal callers only")
     group = _own_group(db, admin, group_id)
     now = datetime.now(timezone.utc)
     if data.action == "scale_out":

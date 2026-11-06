@@ -28,6 +28,12 @@ schema between releases, so read the upgrade steps before moving a running cloud
   request is answered for the caller's own project, the admin of its domain, or an admin; a group takes only volumes the
   caller can see. A request for another project's group, snapshot or schedule now answers `404`; schedules answered
   `403` before. **Upgrade soon.**
+- **Servers started by an autoscaling group belong to the group's project and count against its quota.** The
+  orchestration worker now acts as a member of that project, so the image, network and load balancer pool of a group
+  are checked against it by the services that own them. A group that names something its project cannot use no longer
+  scales out. Scaling history can only be recorded by the orchestration worker. Servers a group started before the
+  upgrade stay in project `admin`, so scaling such a group in leaves them running until an admin deletes them.
+  **Upgrade soon.**
 
 ## 1.0.10-rc3 (2026-11-04)
 
