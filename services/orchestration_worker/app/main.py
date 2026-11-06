@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 from shared import catalog
-from shared.internal import internal_headers
+from shared.internal import internal_headers, on_behalf_headers
 
 
 log = logging.getLogger("orchestration-worker")
@@ -40,6 +40,22 @@ logging.basicConfig(
 
 def _api_headers() -> dict:
     return {"Content-Type": "application/json", **internal_headers()}
+
+
+def _group_headers(group: dict) -> dict:
+    """Headers for a call made for a scaling group: the worker states the group's identity, a member of the group's project."""
+    project_id = group.get("project_id")
+    if not isinstance(project_id, str) or not project_id:
+        raise ValueError(f"scaling group {group.get('id')} has no project")
+    identity = {
+        "sub": f"autoscale:{group['id']}",
+        "username": "autoscale",
+        "role": "member",
+        "roles": ["member"],
+        "project_id": project_id,
+        "scope_type": "project",
+    }
+    return {"Content-Type": "application/json", **on_behalf_headers(identity)}
 
 
 def _peer(service: str) -> str:
@@ -154,9 +170,10 @@ def _spawn_server(group: dict, name: str) -> dict | None:
     }
     
     try:
+        headers = _group_headers(group)
         r = requests.post(
             f"{_peer('compute')}/servers",
-            headers=_api_headers(),
+            headers=headers,
             json=payload,
             timeout=30,
         )
@@ -169,22 +186,34 @@ def _spawn_server(group: dict, name: str) -> dict | None:
     return None
 
 
-def _terminate_server(server_id: str) -> bool:
-    """Terminate a server via compute-api."""
+def _terminate_server(server_id: str, group: dict) -> bool:
+    """Terminate a server via compute-api, as a member of the group's project.
+
+    True when nothing is left to terminate: deleted, or not found in the group's project (404, so the group has nothing
+    to remove). False when compute refused or failed, so the caller keeps the instance and tries again.
+    """
     try:
+        headers = _group_headers(group)
         r = requests.delete(
             f"{_peer('compute')}/servers/{server_id}",
-            headers=_api_headers(),
+            headers=headers,
             timeout=30,
         )
+        if r.status_code == 404:
+            log.warning("Group %s: server %s not found in project %s, nothing to terminate",
+                        group.get("id"), server_id, group.get("project_id"))
+            return True
+        if r.status_code not in (200, 202, 204):
+            log.warning("Group %s: compute refused to terminate server %s: %s %s",
+                        group.get("id"), server_id, r.status_code, r.text[:200])
         return r.status_code in (200, 202, 204)
     except Exception as e:
         log.error("Error terminating server %s: %s", server_id, e)
     return False
 
 
-def _add_member_to_pool(pool_id: str, server: dict) -> bool:
-    """Add server to load balancer pool."""
+def _add_member_to_pool(pool_id: str, server: dict, group: dict) -> bool:
+    """Add server to load balancer pool, as a member of the group's project."""
     if not pool_id:
         return True
     
@@ -194,9 +223,10 @@ def _add_member_to_pool(pool_id: str, server: dict) -> bool:
         return False
     
     try:
+        headers = _group_headers(group)
         r = requests.post(
             f"{_peer('load-balancer')}/pools/{pool_id}/members",
-            headers=_api_headers(),
+            headers=headers,
             json={
                 "address": ip_address,
                 "protocol_port": 80,
@@ -205,23 +235,30 @@ def _add_member_to_pool(pool_id: str, server: dict) -> bool:
             },
             timeout=30,
         )
+        if r.status_code not in (200, 201, 202):
+            log.warning("Group %s: load balancer refused to add server %s to pool %s: %s %s",
+                        group.get("id"), server.get("id"), pool_id, r.status_code, r.text[:200])
         return r.status_code in (200, 201, 202)
     except Exception as e:
         log.error("Error adding member to pool: %s", e)
     return False
 
 
-def _remove_member_from_pool(pool_id: str, server_id: str) -> bool:
-    """Remove server from load balancer pool."""
+def _remove_member_from_pool(pool_id: str, server_id: str, group: dict) -> bool:
+    """Remove server from load balancer pool, as a member of the group's project."""
     if not pool_id:
         return True
     
     try:
+        headers = _group_headers(group)
         r = requests.delete(
             f"{_peer('load-balancer')}/pools/{pool_id}/members/{server_id}",
-            headers=_api_headers(),
+            headers=headers,
             timeout=30,
         )
+        if r.status_code not in (200, 202, 204):
+            log.warning("Group %s: load balancer refused to remove server %s from pool %s: %s %s",
+                        group.get("id"), server_id, pool_id, r.status_code, r.text[:200])
         return r.status_code in (200, 202, 204)
     except Exception as e:
         log.error("Error removing member from pool: %s", e)
@@ -312,7 +349,7 @@ def _check_group(group: dict):
                 if server_id and group.get("load_balancer_pool_id"):
                     server_detail = _get_server(server_id)
                     if server_detail:
-                        _add_member_to_pool(group["load_balancer_pool_id"], server_detail)
+                        _add_member_to_pool(group["load_balancer_pool_id"], server_detail, group)
                 
                 _record_history(
                     group_id, "scale_out",
@@ -358,10 +395,11 @@ def _check_group(group: dict):
             
             # Remove from LB pool first (drain)
             if group.get("load_balancer_pool_id"):
-                _remove_member_from_pool(group["load_balancer_pool_id"], server_id)
+                _remove_member_from_pool(group["load_balancer_pool_id"], server_id, group)
             
-            # Terminate server
-            _terminate_server(server_id)
+            # Terminate server; when compute refused or failed the instance stays and the next cycle tries again
+            if not _terminate_server(server_id, group):
+                continue
             
             _record_history(
                 group_id, "scale_in",
