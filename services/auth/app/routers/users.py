@@ -1,11 +1,11 @@
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from ..config import ADMIN_USERNAME
 from ..db import DB
 from ..deps import CurrentUser, gate, scope_domain
 from ..lookups import _get_user_by_ref, _scoped_project, _scoped_user
-from ..models import User
+from ..models import AccessKey, ApplicationCredential, GroupMember, Trust, User
 from ..schemas import UserIn, UserUpdate
 from ..serializers import _user_to_dict
 from ..tokens import _hash_password
@@ -90,5 +90,9 @@ def delete_user(ref: str, current: CurrentUser, db: DB):
     u = _scoped_user(db, ref, current)
     if u.username == ADMIN_USERNAME:
         raise HTTPException(status_code=400, detail="cannot delete admin user")
+    # What belongs to the user goes with it (role assignments cascade in the database).
+    for model in (ApplicationCredential, AccessKey, GroupMember):
+        db.execute(delete(model).where(model.user_id == u.id))
+    db.execute(delete(Trust).where((Trust.trustor_user_id == u.id) | (Trust.trustee_user_id == u.id)))
     db.delete(u)
     db.commit()

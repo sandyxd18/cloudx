@@ -1,13 +1,13 @@
 from fastapi import APIRouter, HTTPException, Query
 from shared.auth_middleware import InternalAuth
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ..config import ADMIN_PROJECT
 from ..db import DB
 from ..deps import CurrentUser, UserOrInternal, gate, scope_domain
 from ..lookups import _get_project_by_ref, _scoped_project
-from ..models import Domain, Group, GroupMember, Project, DomainQuota, ProjectQuota, User, utcnow
+from ..models import AccessKey, ApplicationCredential, Domain, Group, GroupMember, Project, DomainQuota, ProjectQuota, User, utcnow
 from ..schemas import ProjectIn, ProjectUpdate, QuotaUpdate
 from ..serializers import _project_to_dict
 
@@ -104,6 +104,15 @@ def delete_project(ref: str, current: CurrentUser, db: DB):
     p = _scoped_project(db, ref, current)
     if p.name == ADMIN_PROJECT:
         raise HTTPException(status_code=400, detail="cannot delete admin project")
+    if db.scalar(select(User.id).where(User.project_id == p.id).limit(1)):
+        raise HTTPException(status_code=409, detail="project still has users")
+    # Groups, access keys and application credentials scoped to the project go with it.
+    group_ids = list(db.scalars(select(Group.id).where(Group.project_id == p.id)))
+    if group_ids:
+        db.execute(delete(GroupMember).where(GroupMember.group_id.in_(group_ids)))
+        db.execute(delete(Group).where(Group.id.in_(group_ids)))
+    db.execute(delete(ApplicationCredential).where(ApplicationCredential.project_id == p.id))
+    db.execute(delete(AccessKey).where(AccessKey.project_id == p.id))
     db.delete(p)
     db.commit()
 
