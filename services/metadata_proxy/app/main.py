@@ -28,7 +28,7 @@ def lookup_port(ip: str | None) -> dict:
     if not ip:
         return {}
     try:
-        response = requests.get(f"{catalog.url('network').rstrip('/')}/ports", timeout=5)
+        response = requests.get(f"{catalog.url('network').rstrip('/')}/ports", headers=internal_headers(), timeout=5)
         response.raise_for_status()
         for port in response.json().get("items", []):
             if ip in {port.get("fixed_ip"), port.get("ip_address")}:
@@ -51,7 +51,8 @@ def forward(path: str, request: Request) -> Response:
     if port.get("device_id"):
         headers["X-Instance-ID"] = port["device_id"]
     try:
-        upstream = requests.get(f"{upstream_url}/{path}", params=dict(request.query_params), headers=headers, timeout=10)
+        # No query string: who the VM is comes from its source address and port, never from what the VM sends.
+        upstream = requests.get(f"{upstream_url}/{path}", headers=headers, timeout=10)
     except requests.RequestException as exc:
         return JSONResponse({"detail": f"metadata proxy upstream failed: {exc}"}, status_code=502)
     return Response(content=upstream.content, status_code=upstream.status_code, media_type=upstream.headers.get("content-type"))
