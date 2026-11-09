@@ -15,7 +15,9 @@ schema between releases, so read the upgrade steps before moving a running cloud
   checked the same way and the VM image and flavors it uses must be usable by that project: the worker's VM image
   (`VM_IMAGE`) must be public or owned by the cluster's project, and its master and worker flavors (`MASTER_FLAVOR`,
   `WORKER_FLAVOR`) must be public. References that are empty, `.` or `..`, or contain `/` or `?`, in reservation,
-  orchestration and database provisioning are validated as path segments. **Upgrade soon.**
+  orchestration and database provisioning are validated as path segments. The k3s cloud-config no longer carries the
+  platform's internal token; a cluster's VMs report readiness with a per-cluster token (VMs of existing clusters keep
+  working). **Upgrade soon.**
 
 ## 1.0.10-rc4 (2026-11-09)
 

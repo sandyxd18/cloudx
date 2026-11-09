@@ -4,11 +4,12 @@ import os
 import secrets
 import datetime
 from typing import Optional
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, String, Integer, DateTime, ForeignKey, Boolean, select
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
-from shared.auth_middleware import CurrentUser, InternalAuth
+from shared.auth_middleware import CurrentUser, InternalAuth, _internal_token_matches
+from shared.internal import token_matches
 from shared.schema import require_schema
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx_k8s_engine")
@@ -288,10 +289,16 @@ class NodeReadyInternal(BaseModel):
     ip: str
     node_name: Optional[str] = None
 
-@app.post("/internal/k8s-engine/clusters/{cls_id}/ready", dependencies=[InternalAuth])
-def internal_node_ready(cls_id: str, body: NodeReadyInternal, db: Session = Depends(get_db)):
-    """Called by the VM itself, which only knows its cluster id, role and IP."""
+@app.post("/internal/k8s-engine/clusters/{cls_id}/ready")
+def internal_node_ready(cls_id: str, body: NodeReadyInternal, request: Request, db: Session = Depends(get_db)):
+    """Called by the VM itself, which only knows its cluster id, role and IP.
+
+    Accepts the internal token (VMs of existing clusters send it) or the cluster's own `X-Cluster-Token`.
+    """
+    internal = _internal_token_matches(request, os.getenv("INTERNAL_TOKEN", ""))
     cls = db.get(K8sCluster, cls_id)
+    if not internal and not (cls and token_matches(request.headers.get("X-Cluster-Token", ""), cls.join_token or "")):
+        raise HTTPException(status_code=401, detail="Invalid or missing token")
     if not cls:
         raise HTTPException(status_code=404, detail="Cluster not found")
     nodes = db.scalars(select(K8sNode).where(K8sNode.cluster_id == cls_id, K8sNode.role == body.role)).all()

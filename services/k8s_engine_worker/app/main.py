@@ -56,8 +56,10 @@ def _create_vm(cluster: dict, name: str, flavor: str, user_data: str) -> str:
     return r.json()["id"]
 
 
-def _delete_vm(cluster: dict, server_id: str) -> None:
-    r = requests.delete(f"{_compute()}/servers/{server_id}", headers=_cluster_headers(cluster), timeout=30)
+def _delete_vm(server_id: str) -> None:
+    """Delete a VM the worker recorded, with the internal identity: the ids come from its own records and clusters
+    created earlier keep their VMs in the admin project."""
+    r = requests.delete(f"{_compute()}/servers/{server_id}", headers=internal_headers(), timeout=30)
     if r.status_code != 404:  # already gone is fine
         r.raise_for_status()
 
@@ -88,14 +90,13 @@ def _spawn(cluster: dict, role: str, name: str, flavor: str, user_data: str) -> 
     try:
         _record_node(cluster["id"], server_id, role)
     except Exception:  # best-effort: the original error is re-raised after the orphan VM is removed
-        _delete_vm(cluster, server_id)
+        _delete_vm(server_id)
         raise
 
 
 def _spawn_workers(cluster: dict, master_ip: str, have: int, want: int) -> None:
-    token = os.getenv("INTERNAL_TOKEN", "")
     for n in range(have + 1, want + 1):
-        ud = render_worker(cluster["id"], master_ip, cluster["join_token"], CALLBACK_URL, token)
+        ud = render_worker(cluster["id"], master_ip, cluster["join_token"], CALLBACK_URL, cluster["join_token"])
         _spawn(cluster, "worker", f"{cluster['name']}-{cluster['id'][-6:]}-worker-{n}", WORKER_FLAVOR, ud)
 
 
@@ -115,7 +116,7 @@ def reconcile_cluster(cluster: dict) -> None:
 
     if status == "DELETING":
         for n in nodes:
-            _delete_vm(cluster, n["server_id"])  # a failure keeps the row so the next tick retries
+            _delete_vm(n["server_id"])  # a failure keeps the row so the next tick retries
         r = requests.delete(f"{_api()}/internal/k8s-engine/clusters/{cid}", headers=internal_headers(), timeout=10)
         if r.status_code != 404:
             r.raise_for_status()
@@ -127,7 +128,7 @@ def reconcile_cluster(cluster: dict) -> None:
             _set_status(cid, "ERROR", "timeout waiting for nodes")
             return
         if not masters:
-            ud = render_master(cid, cluster["name"], cluster["join_token"], cluster["admin_token"], CALLBACK_URL, os.getenv("INTERNAL_TOKEN", ""))
+            ud = render_master(cid, cluster["name"], cluster["join_token"], cluster["admin_token"], CALLBACK_URL, cluster["join_token"])
             _spawn(cluster, "master", f"{cluster['name']}-{cid[-6:]}-master", MASTER_FLAVOR, ud)
             return
         if not (any(n["ready"] for n in masters) and master_ip):
@@ -145,7 +146,7 @@ def reconcile_cluster(cluster: dict) -> None:
             _spawn_workers(cluster, master_ip, len(workers), want)
         elif len(workers) > want:
             for w in workers[want:]:  # newest last
-                _delete_vm(cluster, w["server_id"])
+                _delete_vm(w["server_id"])
                 _delete_node_record(cid, w["id"])
         elif all(n["ready"] for n in nodes):
             _set_status(cid, "ACTIVE", "")
@@ -164,7 +165,7 @@ def tick() -> None:
                     try:
                         _set_status(cls["id"], "ERROR", str(exc)[:200])
                         for n in cls.get("nodes", []):
-                            _delete_vm(cls, n["server_id"])
+                            _delete_vm(n["server_id"])
                     except Exception:  # best-effort: the cluster stays ERROR; deleting it retries every VM
                         pass
     except Exception as exc:  # best-effort: fetch clusters failure

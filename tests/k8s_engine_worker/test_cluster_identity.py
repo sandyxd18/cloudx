@@ -1,4 +1,4 @@
-"""The worker creates and deletes cluster VMs as a member of the cluster's project.
+"""The worker creates cluster VMs as a member of the cluster's project and deletes them with the internal identity.
 
 Part one captures the requests the worker sends and checks the headers. Part two wires the worker's `requests`
 calls to the real compute app (with the real image-api and networking apps behind it), so each service applies
@@ -51,21 +51,25 @@ def claims_of(headers):
     return json.loads(headers["X-Caller-Claims"])
 
 
-VM_CALLS = {
-    "create": lambda cluster: w._create_vm(cluster, "c1-master", "small", "ud"),
-    "delete": lambda cluster: w._delete_vm(cluster, "srv9"),
-}
-
-
-@pytest.mark.parametrize("name", VM_CALLS)
-def test_vm_calls_send_the_clusters_identity(monkeypatch, captured, name):
+def test_create_sends_the_clusters_identity(monkeypatch, captured):
     monkeypatch.setenv("INTERNAL_TOKEN", TOKEN)
 
-    VM_CALLS[name](CLUSTER)
+    w._create_vm(CLUSTER, "c1-master", "small", "ud")
 
     (_, _, headers), = captured
     assert headers["X-Internal-Token"] == TOKEN
     assert claims_of(headers) == IDENTITY
+
+
+def test_delete_sends_the_internal_token_and_no_claims(monkeypatch, captured):
+    monkeypatch.setenv("INTERNAL_TOKEN", TOKEN)
+
+    w._delete_vm("srv9")
+
+    (method, url, headers), = captured
+    assert (method, url) == ("DELETE", f"{COMPUTE_URL}/servers/srv9")
+    assert headers["X-Internal-Token"] == TOKEN
+    assert "X-Caller-Claims" not in headers
 
 
 def test_vm_calls_state_the_project_of_the_cluster_they_are_given(monkeypatch, captured):
@@ -90,38 +94,38 @@ def test_record_status_and_read_calls_send_the_internal_token_only(monkeypatch, 
         assert "X-Caller-Claims" not in headers
 
 
-@pytest.mark.parametrize("name", VM_CALLS)
-def test_without_an_internal_token_no_claims_are_sent(monkeypatch, captured, name):
+@pytest.mark.parametrize("call", [lambda: w._create_vm(CLUSTER, "c1-master", "small", "ud"), lambda: w._delete_vm("srv9")],
+                         ids=["create", "delete"])
+def test_without_an_internal_token_no_claims_are_sent(monkeypatch, captured, call):
     monkeypatch.delenv("INTERNAL_TOKEN", raising=False)
 
-    VM_CALLS[name](CLUSTER)
+    call()
 
     (_, _, headers), = captured
     assert "X-Caller-Claims" not in headers and "X-Internal-Token" not in headers
 
 
-@pytest.mark.parametrize("name", VM_CALLS)
 @pytest.mark.parametrize("cluster", [{k: v for k, v in CLUSTER.items() if k != "project_id"}, {**CLUSTER, "project_id": ""},
                                      {**CLUSTER, "project_id": None}], ids=["missing", "empty", "none"])
-def test_a_cluster_without_a_project_makes_no_call(monkeypatch, captured, name, cluster):
+def test_a_cluster_without_a_project_makes_no_call(monkeypatch, captured, cluster):
     monkeypatch.setenv("INTERNAL_TOKEN", TOKEN)
 
     with pytest.raises(ValueError, match="no project"):
-        VM_CALLS[name](cluster)
+        w._create_vm(cluster, "c1-master", "small", "ud")
 
     assert captured == []
 
 
-def test_spawn_and_cleanup_pass_the_cluster(monkeypatch):
+def test_spawn_creates_as_the_cluster_and_cleans_up_by_server_id(monkeypatch):
     seen = []
     monkeypatch.setattr(w, "_create_vm", lambda cluster, *a: seen.append(("create", cluster["project_id"])) or "srv1")
-    monkeypatch.setattr(w, "_delete_vm", lambda cluster, sid: seen.append(("delete", cluster["project_id"])))
+    monkeypatch.setattr(w, "_delete_vm", lambda sid: seen.append(("delete", sid)))
     monkeypatch.setattr(w, "_record_node", lambda *a: (_ for _ in ()).throw(RuntimeError("no record")))
 
     with pytest.raises(RuntimeError):
         w._spawn(CLUSTER, "master", "c1-master", "small", "ud")
 
-    assert seen == [("create", "p2"), ("delete", "p2")]
+    assert seen == [("create", "p2"), ("delete", "srv1")]
 
 
 # ── the real services behind the worker ──────────────────────────────────────
@@ -222,13 +226,9 @@ def test_vm_on_a_private_network_of_another_project_is_not_created(env):
     assert env.projects() == before
 
 
-def test_delete_removes_a_server_of_the_clusters_project(env):
-    w._delete_vm(CLUSTER, "srv-p2")
+def test_delete_removes_a_server_of_any_project(env):
+    w._delete_vm("srv-p2")
+    w._delete_vm("srv-p1")
 
     assert env.status("srv-p2") == "DELETING"
-
-
-def test_delete_leaves_a_server_of_another_project_alone(env):
-    w._delete_vm(CLUSTER, "srv-p1")  # not found in the cluster's project: nothing to delete
-
-    assert env.status("srv-p1") == "ACTIVE"
+    assert env.status("srv-p1") == "DELETING"
