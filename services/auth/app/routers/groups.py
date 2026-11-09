@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from ..db import DB
 from ..deps import CurrentUser, in_scope, scope_domain
@@ -81,5 +81,6 @@ def remove_group_member(ref: str, user_ref: str, current: CurrentUser, db: DB):
 @router.delete("/groups/{ref}", status_code=204)
 def delete_group(ref: str, current: CurrentUser, db: DB):
     g = _group(db, ref, current)
+    db.execute(delete(GroupMember).where(GroupMember.group_id == g.id))
     db.delete(g)
     db.commit()

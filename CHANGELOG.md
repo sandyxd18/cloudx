@@ -6,6 +6,12 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Fixed
+- Deleting a user, a group or a project no longer fails with `500` when other rows refer to it. A user's application
+  credentials, access keys, group memberships and trusts are deleted with it; a group's memberships go with the group.
+  A project that is still the home project of a user answers `409 project still has users`; otherwise its groups, access
+  keys and application credentials are deleted with it.
+
 ## 1.0.10-rc5 (2026-11-09)
 
 Release candidate, after 1.0.10-rc4: the same features and checks, plus containers, share networks and load balancers allocating their ports as the caller, cluster VMs of the k8s-engine created as the cluster's project, and a per-cluster readiness token. **Upgrade soon.** Read behaviour changes 20 to 22 in `docs/releases/v1.0.10.md` first. No schema change beyond rc1's three. The notes are in `docs/releases/v1.0.10.md`.
