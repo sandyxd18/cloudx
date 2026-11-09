@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from shared import policy
-from shared.auth_middleware import CurrentUser, InternalAuth
+from shared.auth_middleware import AdminOrInternal, CurrentUser, InternalAuth
 from shared.schema import require_schema
 from shared.cors import cors_origins
 from fastapi import Depends, FastAPI, HTTPException
@@ -413,7 +413,7 @@ class HeartbeatIn(BaseModel):
 
 
 @app.post("/resource_providers/{rp_uuid}/heartbeat", status_code=200)
-def heartbeat(rp_uuid: str, payload: HeartbeatIn, _: CurrentUser, db: DB):
+def heartbeat(rp_uuid: str, payload: HeartbeatIn, _: AdminOrInternal, db: DB):
     """Receive heartbeat from a compute node worker."""
     rp = _get_rp(db, rp_uuid)
     hb = db.get(ComputeNodeHeartbeat, rp.uuid)
@@ -567,7 +567,7 @@ def get_traits(rp_uuid: str, _: CurrentUser, db: DB):
 
 
 @app.put("/resource_providers/{rp_uuid}/traits")
-def set_traits(rp_uuid: str, payload: TraitIn, _: CurrentUser, db: DB):
+def set_traits(rp_uuid: str, payload: TraitIn, _: AdminOrInternal, db: DB):
     rp = _get_rp(db, rp_uuid)
     # Clear existing
     existing = db.scalars(
@@ -626,7 +626,7 @@ def list_resource_classes(_: CurrentUser, db: DB):
 
 
 @app.put("/resource_classes/{name}", status_code=201)
-def create_or_update_resource_class(name: str, _: CurrentUser, db: DB):
+def create_or_update_resource_class(name: str, _: AdminOrInternal, db: DB):
     """
     Create a custom resource class. Name must start with 'CUSTOM_'.
     Standard classes cannot be created via this endpoint.
@@ -661,7 +661,7 @@ def show_resource_class(name: str, _: CurrentUser, db: DB):
 
 
 @app.delete("/resource_classes/{name}", status_code=204)
-def delete_resource_class(name: str, _: CurrentUser, db: DB):
+def delete_resource_class(name: str, _: AdminOrInternal, db: DB):
     """Delete a custom resource class. Standard classes cannot be deleted."""
     if name in _STANDARD_RESOURCE_CLASSES:
         raise HTTPException(status_code=400, detail="Cannot delete a standard resource class")
@@ -686,7 +686,7 @@ def get_aggregates(rp_uuid: str, _: CurrentUser, db: DB):
 
 
 @app.put("/resource_providers/{rp_uuid}/aggregates")
-def set_aggregates(rp_uuid: str, payload: dict, _: CurrentUser, db: DB):
+def set_aggregates(rp_uuid: str, payload: dict, _: AdminOrInternal, db: DB):
     """Set the aggregate UUIDs for a resource provider (replaces existing)."""
     rp = _get_rp(db, rp_uuid)
     aggregate_uuids = payload.get("aggregates", [])
@@ -1105,7 +1105,7 @@ class ReshaperIn(BaseModel):
 
 
 @app.post("/reshaper", status_code=204)
-def reshape(payload: ReshaperIn, _: CurrentUser, db: DB):
+def reshape(payload: ReshaperIn, _: AdminOrInternal, db: DB):
     """
     Atomically move inventories and allocations between resource providers.
     Used when restructuring resource providers (e.g., adding nested providers).

@@ -43,6 +43,9 @@ schema between releases, so read the upgrade steps before moving a running cloud
 - **The metadata proxy identifies a VM by its source address and port only.** It no longer forwards the VM's query
   string to the metadata service, and its port lookup now carries the internal token, so the instance and port it states
   come from the port that owns the source address. **Upgrade soon.**
+- **Placement routes that change scheduling data, and creating an external network, are for admins.** Heartbeats,
+  traits, aggregates, custom resource classes and the reshaper in placement now need an admin or the internal token, and
+  `POST /networks` with `external` set answers `403` for anyone else. **Upgrade soon.**
 
 ## 1.0.10-rc3 (2026-11-04)
 
