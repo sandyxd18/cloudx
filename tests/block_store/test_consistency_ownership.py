@@ -213,9 +213,11 @@ def test_a_cgsnapshot_can_be_made_by_the_project_and_by_admins(env, who):
 
 
 @pytest.mark.parametrize("ref", ["g0", "cg0"])
-def test_a_group_without_a_project_is_visible_to_everyone(env, ref):
+def test_a_group_without_a_project_is_for_admins_only(env, ref):
     env.as_(OTHER)
+    assert env.client.get(f"/consistencygroups/{ref}").status_code == 404
 
+    env.as_(ADMIN)
     r = env.client.get(f"/consistencygroups/{ref}")
 
     assert r.status_code == 200, r.text
@@ -234,11 +236,11 @@ def test_a_group_is_not_created_with_a_volume_of_another_project(env):
     assert env.count(env.svc.ConsistencyGroup) == before, "no group row"
 
 
-def test_a_group_is_created_with_the_volumes_of_the_callers_project_and_unowned_volumes(env):
-    r = env.client.post("/consistencygroups", json={"name": "new", "volume_ids": ["v1", "src2", "unowned"]})
+def test_a_group_is_created_with_the_volumes_of_the_callers_project(env):
+    r = env.client.post("/consistencygroups", json={"name": "new", "volume_ids": ["v1", "src2"]})
 
     assert r.status_code == 201, r.text
-    assert r.json()["volume_ids"] == ["v1", "v2", "v0"]  # names are stored as the volumes' ids
+    assert r.json()["volume_ids"] == ["v1", "v2"]  # names are stored as the volumes' ids
 
 
 def test_a_volume_of_another_project_is_not_added_to_a_group(env):
@@ -250,8 +252,8 @@ def test_a_volume_of_another_project_is_not_added_to_a_group(env):
         assert env.group_ids() == ["v1"], "the group is unchanged, including the volume that could have been added"
 
 
-@pytest.mark.parametrize("ref", ["v2", "src2", "v0", "unowned"])
-def test_a_volume_of_the_callers_project_or_without_a_project_is_added_to_a_group(env, ref):
+@pytest.mark.parametrize("ref", ["v2", "src2"])
+def test_a_volume_of_the_callers_project_is_added_to_a_group(env, ref):
     r = env.client.post("/consistencygroups/g1/action", json={"add_volumes": {"volumes": [ref]}})
 
     assert r.status_code == 200, r.text
@@ -321,3 +323,40 @@ def test_a_cgsnapshot_made_by_an_admin_belongs_to_the_groups_project(env, who):
     assert r.json()["project_id"] == "p1"
     env.as_(OWNER)
     assert env.client.get("/cgsnapshots/by-admin").status_code == 200
+
+
+# ── rows without a project are for admins and services only ────────────────────
+
+NOT_ADMIN = [OWNER, OTHER, DOMAIN_ADMIN]
+
+
+@pytest.mark.parametrize("who", NOT_ADMIN)
+def test_a_group_without_a_project_is_not_found(env, who):
+    env.as_(who)
+
+    assert env.client.get("/consistencygroups/g0").status_code == 404
+    assert env.client.post("/consistencygroups/g0/action", json={"delete": {}}).status_code == 404
+    with env.svc.SessionLocal() as s:
+        assert s.get(env.svc.ConsistencyGroup, "g0") is not None
+
+
+@pytest.mark.parametrize("who", NOT_ADMIN)
+def test_a_volume_without_a_project_is_not_found(env, who):
+    env.as_(who)
+
+    assert env.client.get("/volumes/v0").status_code == 404
+    assert env.client.get("/volumes/unowned").status_code == 404
+
+
+def test_an_admin_still_reaches_rows_without_a_project(env):
+    env.as_(ADMIN)
+
+    assert env.client.get("/consistencygroups/g0").status_code == 200
+    assert env.client.get("/volumes/v0").status_code == 200
+
+
+def test_a_volume_without_a_project_is_not_put_in_a_group_by_a_member(env):
+    r = env.client.post("/consistencygroups/g1/action", json={"add_volumes": {"volumes": ["unowned"]}})
+
+    assert r.status_code == 404
+    assert env.group_ids() == ["v1"]

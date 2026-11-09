@@ -126,12 +126,12 @@ def test_a_domain_admin_of_another_domain_is_refused(env):
     assert env.casts == []
 
 
-def test_a_source_without_an_owner_stays_usable(env):
+def test_a_source_without_an_owner_is_not_usable_by_a_member(env):
     env.as_(OTHER)
 
     r = clone(env, {"source_volume": "unowned"})
 
-    assert r.status_code == 201, r.text
+    assert r.status_code == 404, r.text
 
 
 @pytest.mark.parametrize("source", SOURCES)
