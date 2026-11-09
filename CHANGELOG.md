@@ -7,6 +7,9 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ## Unreleased
 
 ### Fixed
+- Adding a port to a server (`POST /servers/{ref}/ports`) refuses, with `409 port is in use`, a port that another live
+  server already has as its port or one of its secondary ports. Enabling port security on a port without security
+  groups gives it the `default` group of the port's own project, else the installation's, whoever makes the call.
 - The dashboard's storage gateway (`/storage/<bucket>/<key>`) sends the bucket and the key to object-store as path
   segments: URL characters in them are quoted, and an empty, `.` or `..` bucket, or a key with `.` or `..` segments or
   a backslash, answers `404`.
