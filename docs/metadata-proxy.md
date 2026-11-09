@@ -32,3 +32,7 @@ sudo scripts/cleanup-metadata-route.sh --force
 ```
 
 The rule only targets `169.254.169.254:80` to the metadata-proxy port. This is still single-node lab behaviour, not the full CloudX metadata agent.
+
+## Overlapping address ranges
+
+The proxy identifies a VM by its source address. If two live instances (for example in two projects) hold the same address, the address does not say which VM is asking, so the proxy answers `404` and does not forward the request; `compute` answers `404` to a lookup by address in the same case. Those VMs read their SSH keys and user-data from the config drive.

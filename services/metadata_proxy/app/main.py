@@ -26,18 +26,22 @@ def source_ip(request: Request) -> str | None:
     return peer
 
 
-def lookup_port(ip: str | None) -> dict:
+def lookup_ports(ip: str | None) -> list[dict]:
+    """The ports of instances that hold this address (more than one when projects reuse an address range)."""
     if not ip:
-        return {}
+        return []
     try:
         response = requests.get(f"{catalog.url('network').rstrip('/')}/ports", headers=internal_headers(), timeout=5)
         response.raise_for_status()
-        for port in response.json().get("items", []):
-            if ip in {port.get("fixed_ip"), port.get("ip_address")}:
-                return port
+        return [port for port in response.json().get("items", [])
+                if ip in {port.get("fixed_ip"), port.get("ip_address")} and port.get("device_id")]
     except (requests.RequestException, catalog.CatalogError):
-        return {}
-    return {}
+        return []
+
+
+def lookup_port(ip: str | None) -> dict:
+    ports = lookup_ports(ip)
+    return ports[0] if len(ports) == 1 else {}
 
 
 def forward(path: str, request: Request) -> Response:
@@ -46,7 +50,11 @@ def forward(path: str, request: Request) -> Response:
     except catalog.CatalogError as exc:
         return JSONResponse({"detail": f"metadata proxy upstream failed: {exc}"}, status_code=502)
     ip = source_ip(request)
-    port = lookup_port(ip)
+    ports = lookup_ports(ip)
+    if len(ports) > 1:
+        # The address alone does not say which VM is asking: nothing is served.
+        return JSONResponse({"detail": "metadata path not found"}, status_code=404)
+    port = ports[0] if ports else {}
     headers = {"X-Forwarded-For": ip or "", **internal_headers()}
     if port.get("id"):
         headers["X-Port-ID"] = port["id"]
