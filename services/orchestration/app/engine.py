@@ -13,7 +13,9 @@ import uuid
 
 import requests
 import yaml
+from fastapi import HTTPException
 from shared import catalog
+from shared.refs import path_ref
 from sqlalchemy import select
 
 POLL = 3  # seconds between status polls (tests set 0)
@@ -205,6 +207,14 @@ def _gone(api, svc, path):
     raise ResourceFailure(f"timed out waiting for {path} to be deleted")
 
 
+def _seg(ref) -> str:
+    """A template value as one URL path segment; a refused value fails the resource like any other handler error."""
+    try:
+        return path_ref(str(ref))
+    except HTTPException as exc:
+        raise ResourceFailure(str(exc.detail)) from None
+
+
 def _pick(p, *keys):
     return {k: p[k] for k in keys if p.get(k) is not None}
 
@@ -233,8 +243,9 @@ def _router_d(api, rid):
 
 
 def _iface_c(api, p):
-    api.call("net", "POST", f"/routers/{p['router']}/interfaces", {"subnet": p["subnet"]})
-    return f"{p['router']}/{p['subnet']}", {}
+    router, subnet = _seg(p["router"]), _seg(p["subnet"])
+    api.call("net", "POST", f"/routers/{router}/interfaces", {"subnet": p["subnet"]})
+    return f"{router}/{subnet}", {}
 
 
 def _iface_d(api, pid):
@@ -248,17 +259,17 @@ def _fip_c(api, p):
 
 def _fipassoc_c(api, p):
     key = "server" if p.get("server_id") else "port"
-    api.call("net", "POST", f"/floating-ips/{p['floatingip_id']}/associate", {key: p.get("server_id") or p["port_id"]})
+    api.call("net", "POST", f"/floating-ips/{_seg(p['floatingip_id'])}/associate", {key: p.get("server_id") or p["port_id"]})
     return p["floatingip_id"], {}
 
 
 def _fipassoc_d(api, fid):
-    api.call("net", "POST", f"/floating-ips/{fid}/disassociate", {}, ok=(200, 202, 204, 404))
+    api.call("net", "POST", f"/floating-ips/{_seg(fid)}/disassociate", {}, ok=(200, 202, 204, 404))
 
 
 def _fipassoc_u(api, pid, old_p, new_p):
     key = "server" if new_p.get("server_id") else "port"
-    api.call("net", "POST", f"/floating-ips/{new_p['floatingip_id']}/associate", {key: new_p.get("server_id") or new_p["port_id"]})
+    api.call("net", "POST", f"/floating-ips/{_seg(new_p['floatingip_id'])}/associate", {key: new_p.get("server_id") or new_p["port_id"]})
     return new_p["floatingip_id"], {}
 
 

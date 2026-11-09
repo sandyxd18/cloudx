@@ -6,6 +6,19 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Fixed
+- Containers, share networks and load balancers allocate their ports and floating IPs as the caller, so the network,
+  subnet and security groups a user names are checked against the caller's project (networking's rules: own project,
+  its domain's admin, shared and external networks); the ports belong to the caller's project and count against its
+  port quota. A subnet named for a port must belong to the port's network (networking answers `404 subnet not found`).
+  The k8s-engine worker creates and deletes cluster VMs as a member of the cluster's project, so its network is
+  checked the same way and the VM image and flavors it uses must be usable by that project: the worker's VM image
+  (`VM_IMAGE`) must be public or owned by the cluster's project, and its master and worker flavors (`MASTER_FLAVOR`,
+  `WORKER_FLAVOR`) must be public. References that are empty, `.` or `..`, or contain `/` or `?`, in reservation,
+  orchestration and database provisioning are validated as path segments. The k3s cloud-config no longer carries the
+  platform's internal token; a cluster's VMs report readiness with a per-cluster token (VMs of existing clusters keep
+  working). **Upgrade soon.**
+
 ## 1.0.10-rc4 (2026-11-09)
 
 Release candidate, after 1.0.10-rc3 and not yet run on the lab: the same features and image access fixes, plus project checks on volumes and snapshots, networks, ports and security groups, consistency groups and schedules, autoscaling and the metadata proxy, and a few smaller fixes. **Upgrade soon.** Read behaviour changes 13 to 19 in `docs/releases/v1.0.10.md` first. No schema change beyond rc1's three. The notes, with the upgrade steps and what was and was not tested, are in `docs/releases/v1.0.10.md`.

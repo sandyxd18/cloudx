@@ -77,3 +77,19 @@ def test_a_member_cannot_delete_a_port_a_server_uses_but_can_delete_a_free_one(a
 
     api.user["role"] = "admin"
     assert api.client.delete("/ports/p-srv").status_code == 200
+
+
+def test_a_subnet_of_another_network_cannot_be_named_for_a_port(api):
+    m = api.models
+    with api.db.SessionLocal() as db:
+        db.add_all([
+            m.Network(id="n-b", name="net-b", project_id="proj-b"),
+            m.Subnet(id="s-b", name="sub-b", network_id="n-b", cidr="10.2.0.0/24", gateway="10.2.0.1", ip_version=4),
+        ])
+        db.commit()
+
+    r = api.client.post("/ports", json={"name": "p1", "network": "net-a", "fixed_ips": [{"subnet_id": "s-b"}]})
+    ok = api.client.post("/ports", json={"name": "p2", "network": "net-a", "fixed_ips": [{"subnet_id": "s-a"}]})
+
+    assert r.status_code == 404 and r.json() == {"detail": "subnet not found"}
+    assert ok.status_code == 201

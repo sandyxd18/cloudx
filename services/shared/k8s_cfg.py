@@ -16,11 +16,11 @@ def _ok(rx: re.Pattern, value: str, what: str) -> str:
     return value
 
 
-def _callback(cluster_id: str, role: str, callback_url: str, internal_token: str) -> str:
+def _callback(cluster_id: str, role: str, callback_url: str, callback_token: str) -> str:
     url = f"{callback_url.rstrip('/')}/internal/k8s-engine/clusters/{cluster_id}/ready"
     return (
         "      for i in $(seq 1 120); do\n"
-        f"        curl -sf -X POST -H 'X-Internal-Token: {internal_token}' -H 'Content-Type: application/json' "
+        f"        curl -sf -X POST -H 'X-Cluster-Token: {callback_token}' -H 'Content-Type: application/json' "
         f"-d \"{{\\\"role\\\":\\\"{role}\\\",\\\"ip\\\":\\\"$IP\\\",\\\"node_name\\\":\\\"$(hostname)\\\"}}\" {url} && break\n"
         "        sleep 5\n"
         "      done\n"
@@ -28,9 +28,9 @@ def _callback(cluster_id: str, role: str, callback_url: str, internal_token: str
     )
 
 
-def render_master(cluster_id: str, name: str, join_token: str, admin_token: str, callback_url: str, internal_token: str) -> str:
+def render_master(cluster_id: str, name: str, join_token: str, admin_token: str, callback_url: str, callback_token: str) -> str:
     _ok(_ID, cluster_id, "cluster_id"); _ok(_NAME, name, "name")
-    _ok(_TOKEN, join_token, "join_token"); _ok(_TOKEN, admin_token, "admin_token"); _ok(_TOKEN, internal_token, "internal_token")
+    _ok(_TOKEN, join_token, "join_token"); _ok(_TOKEN, admin_token, "admin_token"); _ok(_TOKEN, callback_token, "callback_token")
     _ok(_URL, callback_url, "callback_url")
     return (
         "#cloud-config\n"
@@ -49,14 +49,14 @@ def render_master(cluster_id: str, name: str, join_token: str, admin_token: str,
         "        curl -sk https://127.0.0.1:6443/readyz -H 'Authorization: Bearer " + admin_token + "' | grep -q ok && break\n"
         "        sleep 5\n"
         "      done\n"
-        + _callback(cluster_id, "master", callback_url, internal_token)
+        + _callback(cluster_id, "master", callback_url, callback_token)
         + "runcmd:\n  - [ systemd-run, --unit=cloudx-k3s-boot, --property=Delegate=yes, /usr/local/bin/cloudx-k3s-boot.sh ]\n"
     )
 
 
-def render_worker(cluster_id: str, master_ip: str, join_token: str, callback_url: str, internal_token: str) -> str:
+def render_worker(cluster_id: str, master_ip: str, join_token: str, callback_url: str, callback_token: str) -> str:
     _ok(_ID, cluster_id, "cluster_id"); _ok(_IP, master_ip, "master_ip")
-    _ok(_TOKEN, join_token, "join_token"); _ok(_TOKEN, internal_token, "internal_token"); _ok(_URL, callback_url, "callback_url")
+    _ok(_TOKEN, join_token, "join_token"); _ok(_TOKEN, callback_token, "callback_token"); _ok(_URL, callback_url, "callback_url")
     return (
         "#cloud-config\n"
         "write_files:\n"
@@ -67,6 +67,6 @@ def render_worker(cluster_id: str, master_ip: str, join_token: str, callback_url
         "      IP=$(hostname -I | awk '{print $1}')\n"
         f"      k3s agent --server https://{master_ip}:6443 --token {join_token} >/var/log/k3s.log 2>&1 &\n"
         "      sleep 20\n"
-        + _callback(cluster_id, "worker", callback_url, internal_token)
+        + _callback(cluster_id, "worker", callback_url, callback_token)
         + "runcmd:\n  - [ systemd-run, --unit=cloudx-k3s-boot, --property=Delegate=yes, /usr/local/bin/cloudx-k3s-boot.sh ]\n"
     )

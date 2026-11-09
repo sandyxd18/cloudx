@@ -23,7 +23,7 @@ from shared.auth_middleware import CurrentUser, InternalAuth
 from shared.cors import cors_origins
 from shared.domain import can_see, owns, visible_projects
 from shared.fs_validate import check_access, check_size
-from shared.internal import internal_headers
+from shared.internal import internal_headers, on_behalf_headers
 from shared.request_id_middleware import RequestIDMiddleware
 from shared.schema import require_schema
 
@@ -105,11 +105,35 @@ def health():
 def _pid(current: dict) -> str:
     return current.get("project_id") or current.get("tenant_id") or "default"
 
-def _net(method: str, path: str, **kw) -> dict:
-    headers = {**kw.pop("headers", {}), "Content-Type": "application/json", **internal_headers()}
+def _net(method: str, path: str, caller: dict | None = None, **kw) -> dict:
+    """Call networking as the internal caller; with `caller`, as that user (X-Caller-Claims), so networking judges the names it was given."""
+    try:
+        identity = on_behalf_headers(caller) if caller is not None else internal_headers()
+    except ValueError as exc:  # the claims do not fit in the header: networking would read the call as anonymous
+        raise HTTPException(400, "caller identity cannot be sent to a peer service") from exc
+    headers = {**kw.pop("headers", {}), "Content-Type": "application/json", **identity}
     r = requests.request(method, f"{catalog.url('network').rstrip('/')}{path}", headers=headers, timeout=15, **kw)
     r.raise_for_status()
     return r.json() if r.content else {}
+
+
+def _refused(exc: Exception) -> HTTPException | None:
+    """Networking's own 404 (`<label> not found`) for a name the caller may not use, passed on as is."""
+    response = getattr(exc, "response", None)
+    if isinstance(exc, requests.HTTPError) and response is not None and response.status_code == 404:
+        try:
+            return HTTPException(404, response.json().get("detail", "not found"))
+        except ValueError:
+            return HTTPException(404, "not found")
+    return None
+
+
+def _check_subnet(network: str, subnet_id: str, caller: dict) -> None:
+    """The named subnet must be on the named network, which networking resolves as the caller (404 when the caller may not use it)."""
+    net = _net("GET", f"/networks/{network}", caller=caller)
+    subnet = _net("GET", f"/subnets/{subnet_id}")
+    if subnet.get("network_id") != net.get("id"):
+        raise HTTPException(404, "subnet not found")
 
 def _release_port(port_id: str | None) -> None:
     if not port_id:
@@ -157,11 +181,15 @@ def create_share_network(body: ShareNetworkIn, current: CurrentUser, db: DB):
     if body.subnet_id:
         payload["fixed_ips"] = [{"subnet_id": body.subnet_id}]
     try:
-        port = _net("POST", "/ports", json=payload)
+        if body.subnet_id:
+            _check_subnet(body.network_id, body.subnet_id, current)
+        port = _net("POST", "/ports", caller=current, json=payload)
         fixed = port["fixed_ips"][0]
         subnet = _net("GET", f"/subnets/{fixed['subnet_id']}")
         net = _net("GET", f"/networks/{port['network_id']}")
     except (requests.RequestException, catalog.CatalogError, KeyError, IndexError, ValueError) as exc:
+        if (refused := _refused(exc)) is not None:
+            raise refused from None
         log.error("share network port allocation failed: %s", exc)
         raise HTTPException(502, f"Port allocation failed: {exc}") from None
     n = ShareNetwork(name=body.name, project_id=_pid(current), network_id=body.network_id, subnet_id=fixed["subnet_id"],

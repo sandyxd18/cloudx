@@ -55,6 +55,43 @@ def test_ready_callback_as_vm_sends_it(ctx):
     assert got["master_ip"] == "10.0.0.50" and [n["ready"] for n in got["nodes"]] == [True]
 
 
+def cluster_token(c, cid):
+    return {"X-Cluster-Token": next(x["join_token"] for x in c.get("/internal/k8s-engine/clusters", headers=IH).json() if x["id"] == cid)}
+
+
+def test_ready_accepts_the_clusters_own_token(ctx):
+    c, _, cid = ctx
+    node(c, cid, "master", "srv-m")
+    r = c.post(f"/internal/k8s-engine/clusters/{cid}/ready", json={"role": "master", "ip": "10.0.0.50"}, headers=cluster_token(c, cid))
+    assert r.status_code == 200
+    assert c.get("/internal/k8s-engine/clusters", headers=IH).json()[0]["master_ip"] == "10.0.0.50"
+
+
+def test_ready_rejects_the_token_of_another_cluster(ctx):
+    c, _, cid = ctx
+    other = c.post("/clusters", json={"name": "c2", "template_id": c.get("/cluster-templates", headers=AUTH).json()[0]["id"],
+                                      "worker_count": 1, "network_id": "n1"}, headers=AUTH).json()["id"]
+    node(c, cid, "master", "srv-m")
+    r = c.post(f"/internal/k8s-engine/clusters/{cid}/ready", json={"role": "master", "ip": "10.0.0.50"}, headers=cluster_token(c, other))
+    assert r.status_code == 401
+    assert c.get("/internal/k8s-engine/clusters", headers=IH).json()[0]["master_ip"] in (None, "")
+
+
+@pytest.mark.parametrize("headers", [{}, {"X-Cluster-Token": "wrong-token-value"}, {"X-Cluster-Token": ""}, {"X-Internal-Token": "x" * 32}])
+def test_ready_rejects_a_missing_or_wrong_token(ctx, headers):
+    c, _, cid = ctx
+    assert c.post(f"/internal/k8s-engine/clusters/{cid}/ready", json={"role": "master", "ip": "10.0.0.5"}, headers=headers).status_code == 401
+    assert c.post("/internal/k8s-engine/clusters/cls-nope/ready", json={"role": "master", "ip": "10.0.0.5"}, headers=headers).status_code == 401
+
+
+def test_ready_without_a_configured_internal_token_needs_the_cluster_token(ctx, monkeypatch):
+    c, _, cid = ctx
+    monkeypatch.delenv("INTERNAL_TOKEN")
+    assert c.post(f"/internal/k8s-engine/clusters/{cid}/ready", json={"role": "master", "ip": "10.0.0.5"}).status_code == 401
+    assert c.post(f"/internal/k8s-engine/clusters/{cid}/ready", json={"role": "master", "ip": "10.0.0.5"},
+                  headers={"X-Cluster-Token": ""}).status_code == 401
+
+
 def test_ready_unknown_cluster_or_node_is_404(ctx):
     c, _, cid = ctx
     assert c.post("/internal/k8s-engine/clusters/cls-nope/ready", json={"role": "master", "ip": "10.0.0.5"}, headers=IH).status_code == 404

@@ -66,7 +66,7 @@ cloudx cluster delete <id>     # status DELETING; the worker deletes all VMs and
 - The K3s image is built by hand; the K3s version is fixed by the image.
 - Tokens are stored in plaintext in the DB; the kubeconfig uses a bearer token with `insecure-skip-tls-verify`.
 - `master_flavor`, `worker_flavor` and `vm_image` come from the worker configuration, not from the cluster template.
-- Cluster VMs are created through an internal call, so they land in the `admin` project, not the cluster owner's project (quota and billing follow the admin project).
+- Cluster VMs are created as a member of the cluster's project and count against its quota. `VM_IMAGE` must be public or owned by that project, and `MASTER_FLAVOR` and `WORKER_FLAVOR` must be public. VMs of clusters created by earlier versions stay in the `admin` project; the worker deletes them with the internal identity.
 - There is no timeout for `SCALING` (no scale start time is stored).
 - The `ready` callback matches nodes by role and IP; the first node that is not ready is used when the IP is not yet known.
 - The existing CSI/CCM are not yet connected to a real cluster.

@@ -59,6 +59,10 @@ def create_port(payload: PortIn, current: UserOrInternal, db: DB):
         raise HTTPException(status_code=409, detail="port already exists")
     check_quota(db, current.get("project_id"), Port, "ports")
     network = require_owned(current, db, Network, payload.network, "network")
+    for entry in payload.fixed_ips or []:  # a subnet named for the port must belong to the port's network
+        named = db.get(Subnet, entry.get("subnet_id")) if entry.get("subnet_id") else None
+        if named and named.network_id != network.id:
+            raise HTTPException(status_code=404, detail="subnet not found")
     subnet = db.scalar(select(Subnet).where(Subnet.network_id == network.id).where(Subnet.ip_version == 4).order_by(Subnet.created_at))
     requested_ip = payload.fixed_ip or payload.ip_address
 
