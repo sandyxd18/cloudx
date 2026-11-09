@@ -40,7 +40,7 @@ def calls(monkeypatch):
 def test_the_query_string_of_the_vm_is_not_forwarded(calls):
     client = TestClient(proxy.app, client=("127.0.0.1", 50000))
 
-    r = client.get("/latest/meta-data/?instance_id=victim&fixed_ip=10.0.0.9&port_id=other",
+    r = client.get("/latest/meta-data/?instance_id=other-instance&fixed_ip=10.0.0.9&port_id=other",
                    headers={"X-Forwarded-For": "10.0.0.5"})
 
     assert r.status_code == 200
@@ -52,7 +52,7 @@ def test_the_query_string_of_the_vm_is_not_forwarded(calls):
 def test_the_identity_comes_from_the_port_of_the_source_address(calls):
     client = TestClient(proxy.app, client=("127.0.0.1", 50000))
 
-    client.get("/latest/user-data?instance_id=victim", headers={"X-Forwarded-For": "10.0.0.5"})
+    client.get("/latest/user-data?instance_id=other-instance", headers={"X-Forwarded-For": "10.0.0.5"})
 
     headers = calls[-1][1]["headers"]
     assert headers["X-Instance-ID"] == "i1" and headers["X-Port-ID"] == "p1"
@@ -72,7 +72,27 @@ def test_the_port_lookup_carries_the_internal_token(calls):
 def test_identity_headers_sent_by_the_vm_are_not_forwarded(calls):
     client = TestClient(proxy.app, client=("127.0.0.1", 50000))
 
-    client.get("/latest/", headers={"X-Forwarded-For": "10.0.0.77", "X-Instance-ID": "victim", "X-Port-ID": "other"})
+    client.get("/latest/", headers={"X-Forwarded-For": "10.0.0.77", "X-Instance-ID": "other-instance", "X-Port-ID": "other"})
 
     headers = calls[-1][1]["headers"]
     assert "X-Instance-ID" not in headers and "X-Port-ID" not in headers
+
+
+@pytest.mark.parametrize("path", ["latest/meta-data/%3Finstance_id=other", "latest/x%23y", "latest/%3Ffixed_ip=10.0.0.9"])
+def test_characters_of_the_path_never_become_a_query_or_fragment(calls, path):
+    client = TestClient(proxy.app, client=("127.0.0.1", 50000))
+
+    client.get(f"/{path}", headers={"X-Forwarded-For": "10.0.0.5"})
+
+    upstream = [url for url, _ in calls if url.startswith("http://md:1")]
+    assert upstream and all("?" not in url and "#" not in url for url in upstream)
+
+
+@pytest.mark.parametrize("path", ["latest/../servers", "latest/%2e%2e/x", "openstack/%2E%2E", "latest/%2e/x", "latest%5Cx"])
+def test_dot_segments_and_backslashes_are_not_found(calls, path):
+    client = TestClient(proxy.app, client=("127.0.0.1", 50000))
+
+    r = client.get(f"/{path}", headers={"X-Forwarded-For": "10.0.0.5"})
+
+    assert r.status_code == 404
+    assert not [url for url, _ in calls if url.startswith("http://md:1")]
