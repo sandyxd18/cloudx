@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from shared import policy
 from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal, require_user_or_internal
 from shared.internal import internal_headers
+from shared.refs import path_ref
 from sqlalchemy import select
 
 from .. import clients
@@ -111,7 +112,7 @@ def _quota_set(q: dict) -> dict:
 
 def _auth(method: str, project: str, headers: dict, **kw) -> dict:
     try:
-        r = requests.request(method, f"{AUTH_API_URL}/projects/{project}/quota", headers=headers, timeout=5, **kw)
+        r = requests.request(method, f"{AUTH_API_URL}/projects/{path_ref(project)}/quota", headers=headers, timeout=5, **kw)
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if r.status_code >= 400:

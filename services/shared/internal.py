@@ -1,3 +1,4 @@
+import hmac
 import json
 import os
 
@@ -6,6 +7,16 @@ def internal_headers() -> dict:
     """Header a calling service adds on /internal/* requests (empty when INTERNAL_TOKEN is unset)."""
     token = os.getenv("INTERNAL_TOKEN", "")
     return {"X-Internal-Token": token} if token else {}
+
+
+def token_matches(provided: str, expected: str) -> bool:
+    """Constant-time equality of two tokens as UTF-8 bytes; False when `expected` is empty.
+
+    Any str is accepted (a header read as latin-1 may hold non-ASCII text), so this never raises.
+    """
+    return bool(expected) and hmac.compare_digest(
+        provided.encode("utf-8", "surrogatepass"), expected.encode("utf-8", "surrogatepass")
+    )
 
 
 CALLER_CLAIMS_HEADER = "X-Caller-Claims"

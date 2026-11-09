@@ -42,8 +42,9 @@ def create_snapshot(payload: SnapshotIn, volume: str, current: CurrentUser, db: 
 @router.get("/snapshots")
 def list_snapshots(current: CurrentUser, db: DB):
     owner = {v.id: v.project_id for v in db.scalars(select(Volume)).all()}
+    admin = current.get("role") == "admin"
     return {"items": [snapshot_to_os_dict(s) for s in db.scalars(select(Snapshot).order_by(Snapshot.created_at)).all()
-                      if can_access(owner.get(s.volume_id), current)]}
+                      if (s.volume_id in owner or admin) and can_access(owner.get(s.volume_id), current)]}
 
 
 @router.get("/snapshots/{ref}")

@@ -52,3 +52,20 @@ def test_the_strict_dependencies_answer_401(client, path):
 @pytest.mark.parametrize("path", ["/optional", "/user-or-internal", "/admin-or-internal", "/internal"])
 def test_a_correct_token_still_works(client, path):
     assert client.get(path, headers={"X-Internal-Token": "tok"}).status_code == 200
+
+
+def test_metrics_token_non_ascii_is_a_401(monkeypatch):
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from shared.metrics import check_metrics_token
+
+    monkeypatch.setenv("METRICS_TOKEN", "s3")
+
+    def req(value):
+        return Request({"type": "http", "headers": [(b"authorization", value)]})
+
+    with pytest.raises(HTTPException) as exc:
+        check_metrics_token(req(b"Bearer \xe9"))
+    assert exc.value.status_code == 401
+    check_metrics_token(req(b"Bearer s3"))

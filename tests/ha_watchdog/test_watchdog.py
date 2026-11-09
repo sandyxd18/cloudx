@@ -140,3 +140,45 @@ def test_any_ha_api_instance_answering_counts(monkeypatch, w):
     assert w.fetch("GET", "/x") == (False, None)   # all silent: unreachable
     monkeypatch.setattr(w.requests, "request", lambda m, u, **k: Resp(503) if u.startswith("http://a") else Resp(200))
     assert w.fetch("GET", "/x")[1].status_code == 200   # a healthy instance beats a 5xx one
+
+
+def _reach_status(w, token):
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    servers = []
+    real = ThreadingHTTPServer
+
+    class Capture(real):
+        def __init__(self, addr, handler):
+            super().__init__(("127.0.0.1", 0), handler)
+            servers.append(self)
+
+        def serve_forever(self, *a, **k):
+            started.set()
+            super().serve_forever(*a, **k)
+
+    started = threading.Event()
+    w.ThreadingHTTPServer = Capture
+    t = threading.Thread(target=w.serve_reach, args=(w.State(0.0),), daemon=True)
+    t.start()
+    assert started.wait(5)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", servers[0].server_address[1], timeout=5)
+        headers = {"X-Internal-Token": token} if token is not None else {}
+        conn.putrequest("GET", "/reach")
+        for k, v in headers.items():
+            conn.putheader(k, v.encode("latin-1"))
+        conn.endheaders()
+        return conn.getresponse().status
+    finally:
+        servers[0].shutdown()
+        servers[0].server_close()
+
+
+def test_reach_answers_401_to_a_non_ascii_token_and_200_to_the_right_one(w):
+    assert _reach_status(w, "caf\xe9") == 401
+    assert _reach_status(w, "wrong") == 401
+    assert _reach_status(w, None) == 401
+    assert _reach_status(w, "tok") == 200

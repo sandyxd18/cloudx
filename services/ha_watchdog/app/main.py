@@ -11,7 +11,6 @@ from shared.config import load_service_config
 
 load_service_config("ha-watchdog")
 
-import hmac
 import json
 import logging
 import os
@@ -22,7 +21,7 @@ from pathlib import Path
 
 import requests
 from shared import catalog
-from shared.internal import internal_headers
+from shared.internal import internal_headers, token_matches
 from shared.proc import run
 from shared.watchdog_logic import decide
 
@@ -161,7 +160,7 @@ def serve_reach(st: State) -> None:
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
             token = os.getenv("INTERNAL_TOKEN", "")
-            if self.path != "/reach" or not token or not hmac.compare_digest(self.headers.get("X-Internal-Token", ""), token):
+            if self.path != "/reach" or not token_matches(self.headers.get("X-Internal-Token", ""), token):
                 self.send_response(401)
                 self.end_headers()
                 return

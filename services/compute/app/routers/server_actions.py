@@ -1,10 +1,9 @@
-from urllib.parse import quote
-
 import requests
 from fastapi import APIRouter, HTTPException
 from shared.auth_middleware import AdminOrInternal, CurrentUser, UserOrInternal
 from shared.catalog import CatalogError
 from shared.internal import internal_headers
+from shared.refs import path_ref
 
 from .. import clients
 from ..config import (
@@ -113,7 +112,7 @@ def resize_server(ref: str, payload: ServerResizeIn, current: CurrentUser, db: D
         raise HTTPException(status_code=409, detail="server has a resize to confirm or revert (confirmResize or revertResize) before it can be resized again")
     if server.status not in ("ACTIVE", "SHUTOFF"):
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE or SHUTOFF to resize; current status is {server.status}")
-    flavor = require_flavor(db, payload.flavor)
+    flavor = require_flavor(db, payload.flavor, current)
     # Snapshot original flavor for potential revert
     server.original_flavor = server.flavor
     server.original_vcpus = server.vcpus
@@ -191,7 +190,7 @@ def ports_of(server) -> tuple[dict, list[dict]]:
 @router.post("/servers/{ref}/rebuild")
 def rebuild_server(ref: str, payload: ServerRebuildIn, current: CurrentUser, db: DB):
     server = require_unlocked_server(db, ref, current)
-    image = clients.api_get(f"{image_api_url()}/images/{quote(payload.image, safe='')}", caller=current)
+    image = clients.api_get(f"{image_api_url()}/images/{path_ref(payload.image)}", caller=current)
     port, ports = ports_of(server)
     server.image_id = image["id"]
     server.status = "REBUILD"
@@ -206,7 +205,7 @@ def rescue_server(ref: str, payload: ServerRescueIn, current: CurrentUser, db: D
     server = require_unlocked_server(db, ref, current)
     rescue_image_id = server.image_id
     if payload.image:
-        rescue_img = clients.api_get(f"{image_api_url()}/images/{quote(payload.image, safe='')}", caller=current)
+        rescue_img = clients.api_get(f"{image_api_url()}/images/{path_ref(payload.image)}", caller=current)
         rescue_image_id = rescue_img["id"]
     port, ports = ports_of(server)
     server.status = "RESCUE"
@@ -321,8 +320,9 @@ def create_server_snapshot(ref: str, payload: ServerSnapshotIn, current: Current
         image_url = image_api_url()  # resolved before the first side effect: no orphan volume snapshot on failure
     except CatalogError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    name_ref = path_ref(payload.name)  # outside the try below: its 404 means "no image has this name"
     try:
-        clients.api_get(f"{image_url}/images/{quote(payload.name, safe='')}")
+        clients.api_get(f"{image_url}/images/{name_ref}")
     except HTTPException as exc:
         if exc.status_code != 404:
             raise
@@ -338,7 +338,7 @@ def add_server_port(ref: str, payload: ServerPortIn, current: CurrentUser, db: D
     server = require_unlocked_server(db, ref, current)
     if server.status != "ACTIVE":
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE to add a port; current status is {server.status}")
-    port = clients.api_get(f"{networking_api_url()}/ports/{quote(payload.port, safe='')}", caller=current)
+    port = clients.api_get(f"{networking_api_url()}/ports/{path_ref(payload.port)}", caller=current)
     if port.get("device_id") and port["device_id"] != server.id:
         raise HTTPException(status_code=409, detail="port is in use")
     if port["id"] in [server.port_id, *comma_list(server.extra_port_ids)]:
@@ -355,7 +355,7 @@ def add_server_port(ref: str, payload: ServerPortIn, current: CurrentUser, db: D
 def remove_server_port(ref: str, port_ref: str, current: CurrentUser, db: DB):
     server = require_unlocked_server(db, ref, current)
     extra = comma_list(server.extra_port_ids)
-    port = clients.api_get(f"{networking_api_url()}/ports/{quote(port_ref, safe='')}")
+    port = clients.api_get(f"{networking_api_url()}/ports/{path_ref(port_ref)}")
     if port["id"] not in extra:
         raise HTTPException(status_code=404, detail="port is not an attached secondary port")
     server.extra_port_ids = format_comma_list([item for item in extra if item != port["id"]])
