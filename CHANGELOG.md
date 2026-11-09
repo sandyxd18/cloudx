@@ -7,6 +7,9 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ## Unreleased
 
 ### Fixed
+- The dashboard's storage gateway (`/storage/<bucket>/<key>`) sends the bucket and the key to object-store as path
+  segments: URL characters in them are quoted, and an empty, `.` or `..` bucket, or a key with `.` or `..` segments or
+  a backslash, answers `404`.
 - Block-store rows without a project (volumes, backups, consistency groups and schedules kept from versions that did
   not record one) are reachable by admins and services only; other callers get `404`, as for another project's row.
   Nothing created by this version lacks a project.
