@@ -6,6 +6,11 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Fixed
+- The metadata proxy and compute's `metadata-lookup` by address serve a VM only when exactly one live instance holds
+  the source address. When projects reuse an address range, the HTTP metadata path answers `404` for those VMs instead
+  of picking one; SSH keys and user-data still arrive through the config drive.
+
 ## 1.0.10-rc6 (2026-11-09)
 
 Release candidate, after 1.0.10-rc5: the same features and checks, plus deleting a user, a group or a project removing what belongs to it instead of answering `500`. No schema change beyond rc1's three. The notes are in `docs/releases/v1.0.10.md`.

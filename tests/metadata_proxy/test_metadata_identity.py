@@ -96,3 +96,38 @@ def test_dot_segments_and_backslashes_are_not_found(calls, path):
 
     assert r.status_code == 404
     assert not [url for url, _ in calls if url.startswith("http://md:1")]
+
+
+def test_an_address_held_by_two_instances_is_not_served(monkeypatch):
+    monkeypatch.setenv("INTERNAL_TOKEN", TOKEN)
+    monkeypatch.setenv("METADATA_API_URL", "http://md:1")
+    monkeypatch.setenv("NETWORKING_API_URL", "http://net:2")
+    seen = []
+
+    def get(url, **kw):
+        seen.append(url)
+        return Resp({"items": [{"fixed_ip": "10.0.0.5", "id": "p1", "device_id": "i1"},
+                               {"fixed_ip": "10.0.0.5", "id": "p2", "device_id": "i2"}]})
+
+    monkeypatch.setattr(proxy.requests, "get", get)
+    client = TestClient(proxy.app, client=("127.0.0.1", 50000))
+
+    r = client.get("/latest/user-data", headers={"X-Forwarded-For": "10.0.0.5"})
+
+    assert r.status_code == 404
+    assert not any(u.startswith("http://md:1") for u in seen)
+
+
+def test_an_unattached_port_with_the_same_address_does_not_make_it_ambiguous(monkeypatch):
+    monkeypatch.setenv("INTERNAL_TOKEN", TOKEN)
+    monkeypatch.setenv("METADATA_API_URL", "http://md:1")
+    monkeypatch.setenv("NETWORKING_API_URL", "http://net:2")
+
+    def get(url, **kw):
+        return Resp({"items": [{"fixed_ip": "10.0.0.5", "id": "p1", "device_id": "i1"},
+                               {"fixed_ip": "10.0.0.5", "id": "p2", "device_id": None}]})
+
+    monkeypatch.setattr(proxy.requests, "get", get)
+    client = TestClient(proxy.app, client=("127.0.0.1", 50000))
+
+    assert client.get("/latest/user-data", headers={"X-Forwarded-For": "10.0.0.5"}).status_code == 200

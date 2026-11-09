@@ -273,10 +273,11 @@ def metadata_lookup(
     # Order by most recently created to ensure deterministic results when multiple
     # servers share the same IP (e.g. after repeated lab cleanup/create cycles).
     query = query.order_by(Server.created_at.desc())
-    server = db.scalar(query)
-    if not server:
+    servers = db.scalars(query.limit(2)).all()
+    # An address does not identify a server when projects reuse an address range: answer nothing.
+    if not servers or (fixed_ip and not instance_id and len(servers) > 1):
         raise HTTPException(status_code=404, detail="server metadata not found")
-    return server_metadata_payload(server)
+    return server_metadata_payload(servers[0])
 
 
 @router.get("/internal/servers/by-instance/{instance_id}", dependencies=[InternalAuth])
