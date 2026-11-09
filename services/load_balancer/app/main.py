@@ -48,7 +48,7 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+psycopg://cloudx:cloudx@127.0.0.1:5432/cloudx",
 )
-from shared.internal import internal_headers
+from shared.internal import internal_headers, on_behalf_headers
 
 AUTH_API_URL = os.getenv("AUTH_API_URL", "http://auth-api:8000").rstrip("/")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -509,26 +509,55 @@ def _get_driver(lb: LoadBalancer):
     return driver_cls({})
 
 
-def _net(method: str, path: str, **kw) -> dict:
-    headers = {**kw.pop("headers", {}), "Content-Type": "application/json", **internal_headers()}
+def _net(method: str, path: str, caller: dict | None = None, **kw) -> dict:
+    """Call networking as the internal caller; with `caller`, as that user (X-Caller-Claims), so networking judges the names it was given."""
+    try:
+        identity = on_behalf_headers(caller) if caller is not None else internal_headers()
+    except ValueError as exc:  # the claims do not fit in the header: networking would read the call as anonymous
+        raise HTTPException(400, "caller identity cannot be sent to a peer service") from exc
+    headers = {**kw.pop("headers", {}), "Content-Type": "application/json", **identity}
     r = requests.request(method, f"{catalog.url('network').rstrip('/')}{path}", headers=headers, timeout=15, **kw)
     r.raise_for_status()
     return r.json() if r.content else {}
 
 
-def _allocate_vip(network_id: str, subnet_id: str | None) -> dict:
-    """Allocate the VIP port and look up what the data plane needs to answer for it (switch, mask, gateway)."""
+def _refused(exc: Exception) -> HTTPException | None:
+    """Networking's own 404 (`<label> not found`) for a name the caller may not use, passed on as is."""
+    response = getattr(exc, "response", None)
+    if isinstance(exc, requests.HTTPError) and response is not None and response.status_code == 404:
+        try:
+            return HTTPException(404, response.json().get("detail", "not found"))
+        except ValueError:
+            return HTTPException(404, "not found")
+    return None
+
+
+def _check_subnet(network: str, subnet_id: str, caller: dict) -> None:
+    """The named subnet must be on the named network, which networking resolves as the caller (404 when the caller may not use it)."""
+    net = _net("GET", f"/networks/{network}", caller=caller)
+    subnet = _net("GET", f"/subnets/{subnet_id}")
+    if subnet.get("network_id") != net.get("id"):
+        raise HTTPException(404, "subnet not found")
+
+
+def _allocate_vip(network_id: str, subnet_id: str | None, current: dict) -> dict:
+    """Allocate the VIP port as the caller and look up what the data plane needs to answer for it (switch, mask, gateway)."""
     try:
         payload = {"name": f"lb-vip-{new_id()}", "network": network_id, "device_owner": "cloudx:loadbalancer"}
         if subnet_id:
+            _check_subnet(network_id, subnet_id, current)
             payload["fixed_ips"] = [{"subnet_id": subnet_id}]
-        port = _net("POST", "/ports", json=payload)
+        port = _net("POST", "/ports", caller=current, json=payload)
         fixed = port["fixed_ips"][0]
         subnet = _net("GET", f"/subnets/{fixed['subnet_id']}")
         net = _net("GET", f"/networks/{port['network_id']}")
         return {**port, "ip": fixed["ip_address"], "switch": net["name"],
                 "prefix": int(subnet["cidr"].split("/")[1]), "gateway": subnet.get("gateway_ip")}
+    except HTTPException:
+        raise
     except Exception as exc:
+        if (refused := _refused(exc)) is not None:
+            raise refused from None
         log.error("VIP allocation failed: %s", exc)
         raise HTTPException(status_code=502, detail=f"VIP allocation failed: {exc}")
 
@@ -728,7 +757,7 @@ def _apply_lb_state(db: Session, lb: LoadBalancer):
 def create_load_balancer(payload: LoadBalancerIn, current: CurrentUser, db: DB):
     project_id = _project_id(current)
 
-    vip = _allocate_vip(payload.vip_network_id, payload.vip_subnet_id)
+    vip = _allocate_vip(payload.vip_network_id, payload.vip_subnet_id, current)
     lb = LoadBalancer(
         name=payload.name,
         project_id=project_id,
@@ -752,7 +781,7 @@ def create_load_balancer(payload: LoadBalancerIn, current: CurrentUser, db: DB):
     db.commit()
     if payload.floating_network:
         try:
-            fip = _net("POST", "/floating-ips", json={"external_network": payload.floating_network})
+            fip = _net("POST", "/floating-ips", caller=current, json={"external_network": payload.floating_network})
             lb.vip_floating_ip_id, lb.vip_floating_ip = fip["id"], fip["floating_ip_address"]
             _net("POST", f"/floating-ips/{fip['id']}/associate", json={"port": vip["id"]})
             db.commit()
