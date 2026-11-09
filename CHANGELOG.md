@@ -6,6 +6,13 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Fixed
+- A synchronous RPC (`RPCClient.call`) on a connection that the broker side had closed while it sat idle (the HAProxy
+  defaults of the HA guide, `timeout client 30m`, apply to the RabbitMQ listener) failed with `BrokenPipeError` or `Transport
+  indicated EOF` on its first use. It now reconnects and tries once more when the failure comes before the message is
+  published, as `cast` already did; a failure after the publish is still raised, so a method is never sent twice. This
+  was visible as `novnc_url: null` from `console-url` once per compute-api worker after a quiet period.
+
 ## 1.0.10-rc7 (2026-11-09)
 
 Release candidate, after 1.0.10-rc6: the same features and checks, plus a port that belongs to one server at a time, port security using the port's project `default` group, the dashboard's storage gateway quoting bucket and key, block-store rows without a project reachable by admins only, and the metadata proxy refusing ambiguous source addresses. No schema change beyond rc1's three. The notes are in `docs/releases/v1.0.10.md`.
