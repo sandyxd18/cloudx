@@ -7,6 +7,9 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ## Unreleased
 
 ### Fixed
+- Block-store rows without a project (volumes, backups, consistency groups and schedules kept from versions that did
+  not record one) are reachable by admins and services only; other callers get `404`, as for another project's row.
+  Nothing created by this version lacks a project.
 - The metadata proxy and compute's `metadata-lookup` by address serve a VM only when exactly one live instance holds
   the source address. When projects reuse an address range, the HTTP metadata path answers `404` for those VMs instead
   of picking one; SSH keys and user-data still arrive through the config drive.
