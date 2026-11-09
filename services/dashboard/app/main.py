@@ -21,6 +21,7 @@ import termios
 import threading
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 
 import httpx
@@ -34,6 +35,7 @@ from pymemcache.client.base import PooledClient as MemcacheClient
 
 # Import shared RPC EventConsumer
 from shared import catalog
+from shared.refs import path_ref
 from shared.rpc import EventConsumer
 from shared.cors import cors_origins
 
@@ -862,6 +864,13 @@ async def proxy(path: str, request: Request):
     )
 
 
+def _object_key(key: str) -> str:
+    """An object key quoted for the object-store path; dot segments and backslashes are refused (404)."""
+    if "\\" in key or any(segment in (".", "..") for segment in key.split("/")):
+        raise HTTPException(status_code=404, detail="object not found")
+    return quote(key, safe="/")
+
+
 @app.get("/storage/{bucket_name}", include_in_schema=False)
 @app.get("/storage/{bucket_name}/", include_in_schema=False)
 async def storage_gateway_list(bucket_name: str, request: Request):
@@ -870,7 +879,7 @@ async def storage_gateway_list(bucket_name: str, request: Request):
         store = await asyncio.to_thread(_backend_url, "object-store")
     except catalog.CatalogError as exc:
         return Response(content=f"storage gateway error: {exc}", status_code=502)
-    target = f"{store}/buckets/{bucket_name}/objects"
+    target = f"{store}/buckets/{path_ref(bucket_name)}/objects"
     qs = str(request.url.query)
     if qs:
         target = f"{target}?{qs}"
@@ -913,7 +922,7 @@ async def storage_gateway(bucket_name: str, key: str, request: Request):
         store = await asyncio.to_thread(_backend_url, "object-store")
     except catalog.CatalogError as exc:
         return Response(content=f"storage gateway error: {exc}", status_code=502)
-    target = f"{store}/buckets/{bucket_name}/objects/{key}"
+    target = f"{store}/buckets/{path_ref(bucket_name)}/objects/{_object_key(key)}"
     qs = str(request.url.query)
     if qs:
         target = f"{target}?{qs}"
