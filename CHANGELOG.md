@@ -40,6 +40,9 @@ schema between releases, so read the upgrade steps before moving a running cloud
   shown to admins only; references that are `.` or `..` and non-ASCII tokens in the internal-token, metrics-token and
   health-check headers are refused with an error instead of failing the request; the project in the quota path is
   quoted. **Upgrade soon.**
+- **The metadata proxy identifies a VM by its source address and port only.** It no longer forwards the VM's query
+  string to the metadata service, and its port lookup now carries the internal token, so the instance and port it states
+  come from the port that owns the source address. **Upgrade soon.**
 
 ## 1.0.10-rc3 (2026-11-04)
 

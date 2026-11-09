@@ -1,6 +1,8 @@
 from shared.config import load_service_config
 load_service_config("metadata-proxy")
 
+from urllib.parse import quote
+
 import requests
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
@@ -28,7 +30,7 @@ def lookup_port(ip: str | None) -> dict:
     if not ip:
         return {}
     try:
-        response = requests.get(f"{catalog.url('network').rstrip('/')}/ports", timeout=5)
+        response = requests.get(f"{catalog.url('network').rstrip('/')}/ports", headers=internal_headers(), timeout=5)
         response.raise_for_status()
         for port in response.json().get("items", []):
             if ip in {port.get("fixed_ip"), port.get("ip_address")}:
@@ -51,7 +53,8 @@ def forward(path: str, request: Request) -> Response:
     if port.get("device_id"):
         headers["X-Instance-ID"] = port["device_id"]
     try:
-        upstream = requests.get(f"{upstream_url}/{path}", params=dict(request.query_params), headers=headers, timeout=10)
+        # No query string: who the VM is comes from its source address and port, never from what the VM sends.
+        upstream = requests.get(f"{upstream_url}/{quote(path, safe='/')}", headers=headers, timeout=10)
     except requests.RequestException as exc:
         return JSONResponse({"detail": f"metadata proxy upstream failed: {exc}"}, status_code=502)
     return Response(content=upstream.content, status_code=upstream.status_code, media_type=upstream.headers.get("content-type"))
@@ -63,5 +66,7 @@ def proxy(path: str, request: Request):
     # like '2009-04-04/...', '2010-08-11/...', etc. used by CirrOS and older cloud-init.
     is_ec2_versioned = len(path) >= 10 and path[4] == "-" and path[7] == "-" and path[:4].isdigit()
     if not (path == "" or path.startswith("latest") or path.startswith("openstack") or is_ec2_versioned):
+        return JSONResponse({"detail": "metadata path not found"}, status_code=404)
+    if "\\" in path or any(segment in (".", "..") for segment in path.split("/")):
         return JSONResponse({"detail": "metadata path not found"}, status_code=404)
     return forward(path, request)
