@@ -192,7 +192,9 @@ def enable_port_security(ref: str, current: CurrentUser, db: DB):
     port = require_owned(current, db, Port, ref, "port")
     port.port_security_enabled = True
     if not parse_id_list(port.security_group_ids):
-        default_group = get_by_ref(db, SecurityGroup, "default", current=current)
+        # The group of the port's own project, else the installation's, whoever asks.
+        default_group = db.scalar(select(SecurityGroup).where(SecurityGroup.name == "default", SecurityGroup.project_id == port.project_id)) \
+            or db.scalar(select(SecurityGroup).where(SecurityGroup.name == "default", or_(SecurityGroup.project_id.is_(None), SecurityGroup.project_id == "default")))
         if default_group:
             port.security_group_ids = format_id_list([default_group.id])
     db.commit()

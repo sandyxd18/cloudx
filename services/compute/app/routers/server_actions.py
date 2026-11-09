@@ -4,6 +4,7 @@ from shared.auth_middleware import AdminOrInternal, CurrentUser, UserOrInternal
 from shared.catalog import CatalogError
 from shared.internal import internal_headers
 from shared.refs import path_ref
+from sqlalchemy import select
 
 from .. import clients
 from ..config import (
@@ -15,7 +16,7 @@ from ..config import (
 )
 from ..db import DB
 from ..lookups import get_flavor, require_flavor, require_server, require_unlocked_server
-from ..models import ServerGroup
+from ..models import Server, ServerGroup
 from ..schemas import (
     ServerPasswordIn,
     ServerPortIn,
@@ -343,6 +344,10 @@ def add_server_port(ref: str, payload: ServerPortIn, current: CurrentUser, db: D
         raise HTTPException(status_code=409, detail="port is in use")
     if port["id"] in [server.port_id, *comma_list(server.extra_port_ids)]:
         raise HTTPException(status_code=409, detail="port is already attached to server metadata")
+    # A secondary port carries no device_id: look for it among the ports of the other live servers.
+    for other in db.scalars(select(Server).where(Server.id != server.id, Server.status != "DELETED")):
+        if port["id"] == other.port_id or port["id"] in comma_list(other.extra_port_ids):
+            raise HTTPException(status_code=409, detail="port is in use")
     # Update DB immediately, cast hotplug to worker
     server.extra_port_ids = format_comma_list([*comma_list(server.extra_port_ids), port["id"]])
     db.commit()

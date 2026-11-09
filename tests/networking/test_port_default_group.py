@@ -93,3 +93,50 @@ def test_a_subnet_of_another_network_cannot_be_named_for_a_port(api):
 
     assert r.status_code == 404 and r.json() == {"detail": "subnet not found"}
     assert ok.status_code == 201
+
+
+def _port_without_group(api, project="proj-a", name="p-enable"):
+    with api.db.SessionLocal() as db:
+        db.add(api.models.Port(id=name, name=name, network_id="n-a", project_id=project, mac_address="02:00:00:00:00:09",
+                               port_security_enabled=False))
+        db.commit()
+    return name
+
+
+def test_enabling_port_security_gives_the_ports_project_default_group(api):
+    with api.db.SessionLocal() as db:
+        db.add_all([api.models.SecurityGroup(id="sg-a-default", name="default", project_id="proj-a"),
+                    api.models.SecurityGroup(id="sg-b-default", name="default", project_id="proj-b")])
+        db.commit()
+    port = _port_without_group(api)
+    api.user["role"] = "admin"
+    api.user["project_id"] = "proj-b"
+
+    r = api.client.post(f"/ports/{port}/security/enable")
+
+    assert r.status_code == 200, r.text
+    assert group_of(api, port) == "sg-a-default"
+
+
+def test_enabling_port_security_falls_back_to_the_installation_default(api):
+    with api.db.SessionLocal() as db:
+        db.add(api.models.SecurityGroup(id="sg-b-default", name="default", project_id="proj-b"))
+        db.commit()
+    port = _port_without_group(api)
+    api.user["role"] = "admin"
+    api.user["project_id"] = "proj-b"
+
+    api.client.post(f"/ports/{port}/security/enable")
+
+    assert group_of(api, port) == "sg-shared-default"
+
+
+def test_enabling_port_security_keeps_the_groups_already_set(api):
+    port = _port_without_group(api)
+    with api.db.SessionLocal() as db:
+        db.get(api.models.Port, port).security_group_ids = "sg-shared-default"
+        db.commit()
+
+    api.client.post(f"/ports/{port}/security/enable")
+
+    assert group_of(api, port) == "sg-shared-default"

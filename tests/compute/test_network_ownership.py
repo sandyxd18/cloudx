@@ -400,3 +400,30 @@ def test_add_server_port_asks_networking_as_the_caller(env):
     (_, url, headers), = env.seen["net_calls"]
     assert url == "/ports/port-free"
     assert headers["X-Caller-Claims"] == on_behalf_headers(OTHER)["X-Caller-Claims"]
+
+
+def test_add_server_port_refuses_a_port_another_live_server_lists_as_an_extra_port(env):
+    add_server(env)
+    with env.svc.SessionLocal() as db:
+        db.add(env.svc.Server(id="srv2", name="vm-other", project_id="p2", image_id="img0", root_volume_id="vol2",
+                              flavor="small", network_id="net-p2", port_id="port-main2", extra_port_ids="port-free",
+                              host="node-1", status="ACTIVE"))
+        db.commit()
+    env.as_(OTHER)
+
+    r = env.client.post("/servers/srv1/ports", json={"port": "port-free"})
+
+    assert r.status_code == 409 and r.json() == {"detail": "port is in use"}
+    assert not extra_ports(env) and env.seen["casts"] == []
+
+
+def test_add_server_port_accepts_a_port_a_deleted_server_listed(env):
+    add_server(env)
+    with env.svc.SessionLocal() as db:
+        db.add(env.svc.Server(id="srv2", name="vm-gone", project_id="p2", image_id="img0", root_volume_id="vol2",
+                              flavor="small", network_id="net-p2", port_id="port-main2", extra_port_ids="port-free",
+                              host="node-1", status="DELETED"))
+        db.commit()
+    env.as_(OTHER)
+
+    assert env.client.post("/servers/srv1/ports", json={"port": "port-free"}).status_code == 200
