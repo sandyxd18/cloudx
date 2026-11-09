@@ -6,6 +6,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+## 1.0.10-rc7 (2026-11-09)
+
+Release candidate, after 1.0.10-rc6: the same features and checks, plus a port that belongs to one server at a time, port security using the port's project `default` group, the dashboard's storage gateway quoting bucket and key, block-store rows without a project reachable by admins only, and the metadata proxy refusing ambiguous source addresses. No schema change beyond rc1's three. The notes are in `docs/releases/v1.0.10.md`.
+
 ### Fixed
 - Adding a port to a server (`POST /servers/{ref}/ports`) refuses, with `409 port is in use`, a port that another live
   server already has as its port or one of its secondary ports. Enabling port security on a port without security
