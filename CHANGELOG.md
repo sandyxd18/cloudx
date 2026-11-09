@@ -6,6 +6,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+## 1.0.10-rc5 (2026-11-09)
+
+Release candidate, after 1.0.10-rc4: the same features and checks, plus containers, share networks and load balancers allocating their ports as the caller, cluster VMs of the k8s-engine created as the cluster's project, and a per-cluster readiness token. **Upgrade soon.** Read behaviour changes 20 to 22 in `docs/releases/v1.0.10.md` first. No schema change beyond rc1's three. The notes are in `docs/releases/v1.0.10.md`.
+
 ### Fixed
 - Containers, share networks and load balancers allocate their ports and floating IPs as the caller, so the network,
   subnet and security groups a user names are checked against the caller's project (networking's rules: own project,
