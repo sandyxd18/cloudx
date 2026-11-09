@@ -18,6 +18,8 @@ router = APIRouter()
 
 @router.post("/networks", status_code=201)
 def create_network(payload: NetworkIn, current: CurrentUser, db: DB):
+    if payload.external and current.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin role required to create an external network")
     if get_by_ref(db, Network, payload.name, current=current):
         raise HTTPException(status_code=409, detail="network already exists")
     check_quota(db, current.get("project_id"), Network, "networks")
