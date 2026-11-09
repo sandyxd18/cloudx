@@ -13,7 +13,7 @@ JT, AT, IT = "jointoken_0123456", "admintoken_0123456", "internal_0123456789"
 
 def cluster(status="CREATING", nodes=None, workers=1, master_ip=None, age=10):
     created = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=age)).replace(tzinfo=None).isoformat()
-    return {"id": "cls-1234567890ab", "name": "c1", "worker_count": workers, "network_id": "net-1", "status": status,
+    return {"id": "cls-1234567890ab", "name": "c1", "worker_count": workers, "network_id": "net-1", "project_id": "p1", "status": status,
             "master_ip": master_ip, "created_at": created, "join_token": JT, "admin_token": AT, "nodes": nodes or []}
 
 

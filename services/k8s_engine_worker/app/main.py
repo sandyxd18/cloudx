@@ -12,7 +12,7 @@ import time
 
 import requests
 from shared import catalog
-from shared.internal import internal_headers
+from shared.internal import internal_headers, on_behalf_headers
 from shared.k8s_cfg import render_master, render_worker
 
 log = logging.getLogger("k8s-engine-worker")
@@ -32,15 +32,32 @@ def _compute() -> str:
     return catalog.url("compute").rstrip("/")
 
 
-def _create_vm(name: str, flavor: str, network: str, user_data: str) -> str:
-    payload = {"name": name, "image": VM_IMAGE, "flavor": flavor, "network": network, "user_data": user_data}
-    r = requests.post(f"{_compute()}/servers", json=payload, headers=internal_headers(), timeout=30)
+def _cluster_headers(cluster: dict) -> dict:
+    """Headers for a VM call made for a cluster: the worker states the cluster's identity, a member of its project."""
+    project_id = cluster.get("project_id")
+    if not isinstance(project_id, str) or not project_id:
+        raise ValueError(f"cluster {cluster.get('id')} has no project")
+    identity = {
+        "sub": f"k8s-cluster:{cluster['id']}",
+        "username": "k8s-engine",
+        "role": "member",
+        "roles": ["member"],
+        "project_id": project_id,
+        "scope_type": "project",
+    }
+    return on_behalf_headers(identity)
+
+
+def _create_vm(cluster: dict, name: str, flavor: str, user_data: str) -> str:
+    """Create a VM on the cluster's network, as a member of the cluster's project."""
+    payload = {"name": name, "image": VM_IMAGE, "flavor": flavor, "network": cluster["network_id"], "user_data": user_data}
+    r = requests.post(f"{_compute()}/servers", json=payload, headers=_cluster_headers(cluster), timeout=30)
     r.raise_for_status()
     return r.json()["id"]
 
 
-def _delete_vm(server_id: str) -> None:
-    r = requests.delete(f"{_compute()}/servers/{server_id}", headers=internal_headers(), timeout=30)
+def _delete_vm(cluster: dict, server_id: str) -> None:
+    r = requests.delete(f"{_compute()}/servers/{server_id}", headers=_cluster_headers(cluster), timeout=30)
     if r.status_code != 404:  # already gone is fine
         r.raise_for_status()
 
@@ -67,11 +84,11 @@ def _set_status(cluster_id: str, status: str, reason: str | None = None) -> None
 
 def _spawn(cluster: dict, role: str, name: str, flavor: str, user_data: str) -> None:
     """Create the VM, then record it; a VM that cannot be recorded would be invisible to cleanup, so drop it."""
-    server_id = _create_vm(name, flavor, cluster["network_id"], user_data)
+    server_id = _create_vm(cluster, name, flavor, user_data)
     try:
         _record_node(cluster["id"], server_id, role)
     except Exception:  # best-effort: the original error is re-raised after the orphan VM is removed
-        _delete_vm(server_id)
+        _delete_vm(cluster, server_id)
         raise
 
 
@@ -98,7 +115,7 @@ def reconcile_cluster(cluster: dict) -> None:
 
     if status == "DELETING":
         for n in nodes:
-            _delete_vm(n["server_id"])  # a failure keeps the row so the next tick retries
+            _delete_vm(cluster, n["server_id"])  # a failure keeps the row so the next tick retries
         r = requests.delete(f"{_api()}/internal/k8s-engine/clusters/{cid}", headers=internal_headers(), timeout=10)
         if r.status_code != 404:
             r.raise_for_status()
@@ -128,7 +145,7 @@ def reconcile_cluster(cluster: dict) -> None:
             _spawn_workers(cluster, master_ip, len(workers), want)
         elif len(workers) > want:
             for w in workers[want:]:  # newest last
-                _delete_vm(w["server_id"])
+                _delete_vm(cluster, w["server_id"])
                 _delete_node_record(cid, w["id"])
         elif all(n["ready"] for n in nodes):
             _set_status(cid, "ACTIVE", "")
@@ -147,7 +164,7 @@ def tick() -> None:
                     try:
                         _set_status(cls["id"], "ERROR", str(exc)[:200])
                         for n in cls.get("nodes", []):
-                            _delete_vm(n["server_id"])
+                            _delete_vm(cls, n["server_id"])
                     except Exception:  # best-effort: the cluster stays ERROR; deleting it retries every VM
                         pass
     except Exception as exc:  # best-effort: fetch clusters failure
