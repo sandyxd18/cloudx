@@ -23,6 +23,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from shared import catalog
 from shared.auth_middleware import CurrentUser
 from shared.cors import cors_origins
+from shared.refs import path_ref
 from shared.domain import owns, visible_projects
 from shared.request_id_middleware import RequestIDMiddleware
 from shared.schema import require_schema
@@ -156,7 +157,7 @@ def create_lease(data: LeaseIn, request: Request, current: CurrentUser, db: DB):
         raise HTTPException(422, "start_at is in the past")
     if end <= start or end - start > MAX_WINDOW:
         raise HTTPException(422, "end_at must be after start_at, at most 30 days later")
-    fl = _call(request, "compute", f"/flavors/{data.flavor}")
+    fl = _call(request, "compute", f"/flavors/{path_ref(data.flavor)}")
     v, r = fl["vcpus"] * data.amount, fl["ram_mb"] * data.amount
     cap_v, cap_r = cluster_capacity(request)
     if db.get_bind().dialect.name == "postgresql":  # two admissions at once must not both see the same free capacity

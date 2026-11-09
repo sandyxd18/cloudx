@@ -12,10 +12,12 @@ import time
 from datetime import datetime
 
 import requests
+from fastapi import HTTPException
 
 from shared import catalog
 from shared.db_cloudinit import PORTS, READY, render
 from shared.db_validate import check_cidr
+from shared.refs import path_ref
 
 log = logging.getLogger("database-api")
 SERVICES = {"net": "network", "compute": "compute", "block": "volume", "file": "file-store", "container": "container"}
@@ -57,6 +59,13 @@ def wait(fn, timeout: float, what: str):
             raise Failure(f"timed out waiting for {what}")
         time.sleep(POLL)
 
+def _seg(ref) -> str:
+    """A request value as one URL path segment; a refused value fails the instance like any other build error."""
+    try:
+        return path_ref(str(ref))
+    except HTTPException as exc:
+        raise Failure(str(exc.detail)) from None
+
 def _upd(sf, Inst, iid, **kw):
     with sf() as db:
         row = db.get(Inst, iid)
@@ -92,7 +101,7 @@ def _build(sf, Inst, iid, api, s):
     name, engine, port = f"db-{iid[:8]}", s["engine"], PORTS[s["engine"]]
     cidr = s["allowed_cidr"]
     if not cidr:
-        net = api.call("net", "GET", f"/networks/{s['network_id']}")
+        net = api.call("net", "GET", f"/networks/{_seg(s['network_id'])}")
         cidr = api.call("net", "GET", f"/subnets/{net['subnets'][0]}")["cidr"]
     cidr = check_cidr(cidr)
     sg = api.call("net", "POST", "/security-groups", {"name": name, "description": "database instance"})
@@ -123,7 +132,7 @@ def _build(sf, Inst, iid, api, s):
     storage, nfs, vol, share_id = s["storage"], None, None, None
     if storage == "block":
         if s.get("backup_volume_id"):  # restore: the data volume comes from the backup, not an empty one
-            vol = api.call("block", "POST", f"/backups/{s['backup_volume_id']}/restore", {"name": name})
+            vol = api.call("block", "POST", f"/backups/{_seg(s['backup_volume_id'])}/restore", {"name": name})
             up(volume_id=vol["id"])
             wait(lambda: api.call("block", "GET", f"/volumes/{vol['id']}")["status"] == "available", TIMEOUT["step"], "the restored volume")
         else:
