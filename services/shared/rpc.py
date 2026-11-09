@@ -176,38 +176,47 @@ class RPCClient:
         response: dict = {}
 
         with self._lock:
-            self._ensure_connection()
-
-            # Exclusive auto-delete reply queue
-            result = self._channel.queue_declare("", exclusive=True, auto_delete=True)
-            reply_queue = result.method.queue
+            msg = {
+                "id": str(uuid.uuid4()),
+                "method": method,
+                "args": args,
+                "reply_to": None,
+                "correlation_id": correlation_id,
+                "timestamp": time.time(),
+            }
 
             def _on_reply(ch, method_frame, props, body):
                 if props.correlation_id == correlation_id:
                     response["data"] = json.loads(body)
                     ch.basic_cancel(method_frame.consumer_tag)
 
-            self._channel.basic_consume(reply_queue, _on_reply, auto_ack=True)
-
-            msg = {
-                "id": str(uuid.uuid4()),
-                "method": method,
-                "args": args,
-                "reply_to": reply_queue,
-                "correlation_id": correlation_id,
-                "timestamp": time.time(),
-            }
-            self._channel.basic_publish(
-                exchange=self._exchange,
-                routing_key=routing_key,
-                body=json.dumps(msg, default=str),
-                properties=pika.BasicProperties(
-                    reply_to=reply_queue,
-                    correlation_id=correlation_id,
-                    content_type="application/json",
-                    delivery_mode=1,  # non-persistent for calls
-                ),
-            )
+            # A connection the other side closed while it sat idle (HAProxy's `timeout client`) only shows when it is
+            # used. Up to the publish nothing has reached the worker, so one reconnect and a second try is safe; after
+            # the publish a failure is raised, because the worker may have run the method already.
+            for attempt in (1, 2):
+                try:
+                    self._ensure_connection()
+                    # Exclusive auto-delete reply queue
+                    reply_queue = self._channel.queue_declare("", exclusive=True, auto_delete=True).method.queue
+                    self._channel.basic_consume(reply_queue, _on_reply, auto_ack=True)
+                    msg["reply_to"] = reply_queue
+                    self._channel.basic_publish(
+                        exchange=self._exchange,
+                        routing_key=routing_key,
+                        body=json.dumps(msg, default=str),
+                        properties=pika.BasicProperties(
+                            reply_to=reply_queue,
+                            correlation_id=correlation_id,
+                            content_type="application/json",
+                            delivery_mode=1,  # non-persistent for calls
+                        ),
+                    )
+                    break
+                except (pika.exceptions.AMQPConnectionError, pika.exceptions.AMQPChannelError) as exc:
+                    if attempt == 2:
+                        raise
+                    log.warning("Call %s.%s: connection unusable (%s), reconnecting", routing_key, method, exc)
+                    self._reconnect()
             log.debug("CALL %s.%s → %s (timeout=%ds)", routing_key, method,
                        msg["id"], timeout)
 
