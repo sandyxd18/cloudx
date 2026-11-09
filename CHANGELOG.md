@@ -6,6 +6,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+## 1.0.10-rc6 (2026-11-09)
+
+Release candidate, after 1.0.10-rc5: the same features and checks, plus deleting a user, a group or a project removing what belongs to it instead of answering `500`. No schema change beyond rc1's three. The notes are in `docs/releases/v1.0.10.md`.
+
 ### Fixed
 - Deleting a user, a group or a project no longer fails with `500` when other rows refer to it. A user's application
   credentials, access keys, group memberships and trusts are deleted with it; a group's memberships go with the group.
