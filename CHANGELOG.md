@@ -6,6 +6,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+## 1.0.10-rc8 (2026-11-09)
+
+Release candidate, after 1.0.10-rc7: the same features and checks, plus a synchronous RPC that reconnects once when its connection went stale while idle. No schema change beyond rc1's three. The notes are in `docs/releases/v1.0.10.md`.
+
 ### Fixed
 - A synchronous RPC (`RPCClient.call`) on a connection that the broker side had closed while it sat idle (the HAProxy
   defaults of the HA guide, `timeout client 30m`, apply to the RabbitMQ listener) failed with `BrokenPipeError` or `Transport
