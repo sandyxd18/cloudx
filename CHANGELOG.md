@@ -6,6 +6,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+## 1.0.10-rc4 (2026-11-09)
+
+Release candidate, after 1.0.10-rc3 and not yet run on the lab: the same features and image access fixes, plus project checks on volumes and snapshots, networks, ports and security groups, consistency groups and schedules, autoscaling and the metadata proxy, and a few smaller fixes. **Upgrade soon.** Read behaviour changes 13 to 19 in `docs/releases/v1.0.10.md` first. No schema change beyond rc1's three. The notes, with the upgrade steps and what was and was not tested, are in `docs/releases/v1.0.10.md`.
+
 ### Fixed
 - **Volume and snapshot references are checked against the caller's project.** Booting from a volume, and cloning a
   volume or a snapshot, now require the volume or snapshot to belong to the caller (or the caller to be an admin or a
