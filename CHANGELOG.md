@@ -6,6 +6,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+## 1.0.11-rc1 (2026-11-10)
+
+Release candidate of a patch release after 1.0.10: three fixes, no schema change, no configuration change. The notes are in `docs/releases/v1.0.11.md`.
+
 ### Fixed
 - `POST /qos/policies/{id}/bandwidth_limit_rules` answered `500` (`type object 'Port' has no attribute 'qos_policy_id'`)
   after it had stored the rule, so the dashboard's "Add bandwidth rule" showed an error for a rule that existed and a
