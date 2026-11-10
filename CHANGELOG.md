@@ -7,6 +7,9 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ## Unreleased
 
 ### Fixed
+- `cloudx-manage policy check` on `/etc/cloudx/policy.yaml` as a user who cannot read it (the directory is `root:cloudx`
+  750) printed only `Permission denied`; it now adds a line saying to run it with `sudo` or as a user in the `cloudx`
+  group. The exit status is still 1 and the other problems are unchanged.
 - `cloudx object-store object put`, `get` and `delete` quote the key in the URL and `list --prefix` sends the prefix as
   a query parameter, so a key or prefix with `#`, `?`, `%`, `&` or a space reaches object-store as typed. `put --key
   'a b#c.txt'` used to store the key `a b`. The bucket name is quoted as one path segment too.
