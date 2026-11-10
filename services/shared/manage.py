@@ -145,6 +145,9 @@ def check_policy(path: str) -> int:
     changed = policy.overrides(path)
     for line in problems:
         print(line)
+    if any("Permission denied" in line for line in problems):
+        # /etc/cloudx is root:cloudx 750 and the policy file root:cloudx 640: a plain user cannot read either.
+        print("hint: run it with sudo, or as a user in the cloudx group (the services run as cloudx and read the same file)")
     for action, rule in changed.items():
         print(f"differs from the default: {action}: {rule}")
     if not problems and not changed:
