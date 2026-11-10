@@ -6,6 +6,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+## 1.0.10 (2026-11-10)
+
+No change since 1.0.10-rc8: the release is built from the same code, and the sections of 1.0.10-rc1 to rc8 below hold the changes (behaviour changes 1 to 22 are listed in `docs/releases/v1.0.10.md`, which also has the upgrade steps and what was and was not tested). There are **three schema changes** since 1.0.9 (`cloudx-manage db sync` after the first controller is upgraded). The release files of 1.0.10-rc8 (the checksums of the 47 `.deb` files matched `SHA256SUMS`) were installed on the lab (three controllers, two compute nodes, controllers first) and checked there: the unit list and states and a hash of `/etc/cloudx` were identical to before on every node, no unit failed, and `vm-default` kept running (the same QEMU process). The checks of the release notes were run on rc7 and rc8, except a browser, a system scoped login and the upgrade from 1.0.9.
+
 ## 1.0.10-rc8 (2026-11-09)
 
 Release candidate, after 1.0.10-rc7: the same features and checks, plus a synchronous RPC that reconnects once when its connection went stale while idle. No schema change beyond rc1's three. The notes are in `docs/releases/v1.0.10.md`.
