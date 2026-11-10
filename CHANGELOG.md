@@ -6,6 +6,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+## 1.0.11 (2026-11-10)
+
+No change since 1.0.11-rc1: the release is built from the same code, and the section of 1.0.11-rc1 below holds the changes. No schema change. The release files of 1.0.11-rc1 (the checksums of the 47 `.deb` files matched `SHA256SUMS`) were installed on the lab (three controllers, two compute nodes, controllers first) and checked there; see `docs/releases/v1.0.11.md`.
+
 ## 1.0.11-rc1 (2026-11-10)
 
 Release candidate of a patch release after 1.0.10: three fixes, no schema change, no configuration change. The notes are in `docs/releases/v1.0.11.md`.
