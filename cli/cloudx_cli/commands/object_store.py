@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from urllib.parse import quote
 
 import click
 import requests
@@ -64,6 +65,13 @@ def bucket_delete(ctx, name):
 
 
 # ── Object Store Objects ────────────────═══════════════════════════════════════
+def _objects_url(bucket, key=None):
+    """Objects URL of a bucket: the bucket is one path segment, the key keeps its `/` and has its other URL characters
+    (`#`, `?`, `%`, a space) quoted, so object-store receives the key as it was typed."""
+    url = f"{DEFAULT_URLS['object-store']}/buckets/{quote(bucket, safe='')}/objects"
+    return url if key is None else f"{url}/{quote(key, safe='/')}"
+
+
 @object_store.group("object")
 @click.pass_context
 def object_cmd(ctx):
@@ -75,9 +83,7 @@ def object_cmd(ctx):
 @click.option("--prefix", default="", help="Prefix filter")
 @click.pass_context
 def object_list(ctx, bucket, prefix):
-    url = f"{DEFAULT_URLS['object-store']}/buckets/{bucket}/objects"
-    if prefix: url += f"?prefix={prefix}"
-    data = _api("get", url, ctx.obj["profile"])
+    data = _api("get", _objects_url(bucket), ctx.obj["profile"], params={"prefix": prefix} if prefix else None)
     _output(data.get("objects", data), ctx.obj["fmt"], ["id", "key", "size", "content_type", "created_at"])
 
 
@@ -92,7 +98,7 @@ def object_put(ctx, bucket, local_file, key):
     headers.pop("Content-Type", None)  # let requests set multipart boundary
     with open(local_file, "rb") as f:
         files = {"file": (key, f)}
-        r = requests.put(f"{DEFAULT_URLS['object-store']}/buckets/{bucket}/objects/{key}", headers=headers, files=files, timeout=60)
+        r = requests.put(_objects_url(bucket, key), headers=headers, files=files, timeout=60)
         if not r.ok:
             click.echo(f"❌ Upload failed (HTTP {r.status_code}): {r.text}", err=True)
             sys.exit(1)
@@ -106,7 +112,7 @@ def object_put(ctx, bucket, local_file, key):
 @click.pass_context
 def object_get(ctx, bucket, key, out):
     headers = _headers(ctx.obj["profile"])
-    r = requests.get(f"{DEFAULT_URLS['object-store']}/buckets/{bucket}/objects/{key}", headers=headers, timeout=60)
+    r = requests.get(_objects_url(bucket, key), headers=headers, timeout=60)
     if not r.ok:
         click.echo(f"❌ Download failed (HTTP {r.status_code}): {r.text}", err=True)
         sys.exit(1)
@@ -123,7 +129,7 @@ def object_get(ctx, bucket, key, out):
 @click.argument("key")
 @click.pass_context
 def object_delete(ctx, bucket, key):
-    _api("delete", f"{DEFAULT_URLS['object-store']}/buckets/{bucket}/objects/{key}", ctx.obj["profile"])
+    _api("delete", _objects_url(bucket, key), ctx.obj["profile"])
     click.echo(f"✓ Object {key} deleted from bucket {bucket}")
 
 
