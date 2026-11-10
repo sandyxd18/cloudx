@@ -6,6 +6,14 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Fixed
+- `POST /qos/policies/{id}/bandwidth_limit_rules` answered `500` (`type object 'Port' has no attribute 'qos_policy_id'`)
+  after it had stored the rule, so the dashboard's "Add bandwidth rule" showed an error for a rule that existed and a
+  retry stored a second one. It answers `201`. The call tried to apply the rule to the ports that use the policy, but no
+  port refers to a policy (the column was dropped from the port model), so that step is removed: a policy only holds
+  rules, and a port is limited with `qos_max_kbps` and `qos_burst_kbps`. Rules that a failed call left behind stay; delete
+  the duplicates with `DELETE /qos/policies/{id}/bandwidth_limit_rules/{rule_id}`.
+
 ## 1.0.10 (2026-11-10)
 
 No change since 1.0.10-rc8: the release is built from the same code, and the sections of 1.0.10-rc1 to rc8 below hold the changes (behaviour changes 1 to 22 are listed in `docs/releases/v1.0.10.md`, which also has the upgrade steps and what was and was not tested). There are **three schema changes** since 1.0.9 (`cloudx-manage db sync` after the first controller is upgraded). The release files of 1.0.10-rc8 (the checksums of the 47 `.deb` files matched `SHA256SUMS`) were installed on the lab (three controllers, two compute nodes, controllers first) and checked there: the unit list and states and a hash of `/etc/cloudx` were identical to before on every node, no unit failed, and `vm-default` kept running (the same QEMU process); the release files of 1.0.10 itself were installed the same way afterwards with the same result. The checks of the release notes were run on rc7 and rc8, except a browser, a system scoped login and the upgrade from 1.0.9.

@@ -386,6 +386,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **RBAC policies per network** | A `shared` flag per network, no per-project RBAC entries |
 | **Address scopes** | None (the fields in responses are empty) |
 | **QoS rule types** | Bandwidth limit only |
+| **QoS policy on a port** | A policy only stores its rules; no port refers to one and OVN is not changed by a rule. Limit a port with `qos_max_kbps` and `qos_burst_kbps` |
 
 **Estimated Networking similarity: ~80%**
 
