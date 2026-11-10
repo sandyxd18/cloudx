@@ -7,6 +7,12 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ## Unreleased
 
 ### Fixed
+- `POST /qos/policies/{id}/bandwidth_limit_rules` answered `500` (`type object 'Port' has no attribute 'qos_policy_id'`)
+  after it had stored the rule, so the dashboard's "Add bandwidth rule" showed an error for a rule that existed and a
+  retry stored a second one. It answers `201`. The call tried to apply the rule to the ports that use the policy, but no
+  port refers to a policy (the column was dropped from the port model), so that step is removed: a policy only holds
+  rules, and a port is limited with `qos_max_kbps` and `qos_burst_kbps`. Rules that a failed call left behind stay; delete
+  the duplicates with `DELETE /qos/policies/{id}/bandwidth_limit_rules/{rule_id}`.
 - `cloudx-manage policy check` on `/etc/cloudx/policy.yaml` as a user who cannot read it (the directory is `root:cloudx`
   750) printed only `Permission denied`; it now adds a line saying to run it with `sudo` or as a user in the `cloudx`
   group. The exit status is still 1 and the other problems are unchanged.

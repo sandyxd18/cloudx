@@ -6,9 +6,8 @@ from shared import policy as policy_rules  # `policy` is a local name in this mo
 from shared.auth_middleware import CurrentUser
 from sqlalchemy import select
 
-from .. import ovn_cli
 from ..db import DB
-from ..models import Port, QosBandwidthLimitRule, QosPolicy
+from ..models import QosBandwidthLimitRule, QosPolicy
 from ..schemas import QosBwLimitRuleIn, QosPolicyIn
 from ..serializers import get_by_ref
 
@@ -92,8 +91,8 @@ def create_bw_limit_rule(policy_id: str, payload: QosBwLimitRuleIn, _: CurrentUs
     db.add(rule)
     db.commit()
     db.refresh(rule)
-    # Apply OVN QoS on affected ports
-    _apply_qos_to_policy_ports(policy_id, rule, db)
+    # A policy only holds rules for now: no port refers to a policy (ports carry qos_max_kbps and qos_burst_kbps), so there
+    # is nothing to apply to OVN here.
     return {
         "id": rule.id, "max_kbps": rule.max_kbps,
         "max_burst_kbps": rule.max_burst_kbps, "direction": rule.direction,
@@ -106,32 +105,3 @@ def delete_bw_limit_rule(policy_id: str, rule_id: str, _: CurrentUser, db: DB):
         raise HTTPException(status_code=404, detail="rule not found")
     db.delete(rule)
     db.commit()
-
-def _apply_qos_to_policy_ports(policy_id: str, rule: QosBandwidthLimitRule, db) -> None:
-    """Apply OVN QoS meter to all ports associated with this policy."""
-    ports = db.scalars(select(Port).where(Port.qos_policy_id == policy_id)).all()
-    for port in ports:
-        if port.logical_switch_name and port.logical_port_name:
-            _apply_ovn_qos(port.logical_switch_name, port.logical_port_name, rule)
-
-def _apply_ovn_qos(ls_name: str, lp_name: str, rule: QosBandwidthLimitRule) -> None:
-    """Set OVN QoS bandwidth limit on a logical switch port."""
-    # Convert kbps to bps for OVN
-    rate_bps = rule.max_kbps * 1000
-    burst_bps = rule.max_burst_kbps * 1000 if rule.max_burst_kbps else rate_bps
-    direction = "from-lport" if rule.direction == "egress" else "to-lport"
-    try:
-        # Remove existing QoS rule for this port
-        ovn_cli.ovn(f'--where direction={direction} --data-bare --no-heading --columns _uuid find QoS '
-            f'match="inport == \'{lp_name}\'"')
-        # Add new bandwidth rule
-        ovn_cli.ovn(
-            f'set Logical_Switch {ls_name} '
-            f'qos_rules=[{{"direction": "{direction}", '
-            f'"match": "inport == \'{lp_name}\'", '
-            f'"bandwidth": {{"rate": {rate_bps}, "burst": {burst_bps}}}, '
-            f'"priority": 100}}]'
-        )
-    except Exception as exc:
-        import logging
-        logging.getLogger("networking-api").warning("OVN QoS apply failed for port %s: %s", lp_name, exc)
