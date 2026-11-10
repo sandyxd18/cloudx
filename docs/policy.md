@@ -270,7 +270,7 @@ The service never fails to start because of this file. Problems go to the logger
 
 ## `cloudx-manage policy`
 
-`cloudx-manage policy check [FILE]` loads a file the way the service does and prints one line per problem, then one `differs from the default:` line for each action whose rule in the file is in effect and not the same as the built-in one. Without `FILE` it checks the configured file (`CLOUDX_POLICY_FILE` or `/etc/cloudx/policy.yaml`). The exit status is 1 when it printed a problem line (an ERROR or a WARNING of the table above) and 0 otherwise. It does not log, and it does not change the rules of a running service.
+`cloudx-manage policy check [FILE]` loads a file the way the service does and prints one line per problem, then one `differs from the default:` line for each action whose rule in the file is in effect and not the same as the built-in one. Without `FILE` it checks the configured file (`CLOUDX_POLICY_FILE` or `/etc/cloudx/policy.yaml`). The exit status is 1 when it printed a problem line (an ERROR or a WARNING of the table above) and 0 otherwise. It does not log, and it does not change the rules of a running service. `/etc/cloudx` is `root:cloudx` with mode 750, so run the command with `sudo` (or as a user in the `cloudx` group) to check the installed file: a plain user gets `cannot be read: [Errno 13] Permission denied` followed by a hint line, and exit status 1.
 
 A good file (the three examples above):
 

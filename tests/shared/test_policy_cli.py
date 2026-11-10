@@ -113,6 +113,24 @@ def test_check_an_unreadable_file_is_a_problem(tmp_path, capsys):
     assert len(lines) == 1 and lines[0].startswith(f"policy file {path} cannot be read: ")
 
 
+def test_check_says_what_to_do_when_the_file_is_unreadable_for_lack_of_permission(monkeypatch, capsys):
+    path = "/etc/cloudx/policy.yaml"
+    denied = f"policy file {path} cannot be read: [Errno 13] Permission denied: '{path}'"
+    monkeypatch.setattr(policy, "check_file", lambda p=None: [denied])
+    monkeypatch.setattr(policy, "overrides", lambda p=None: {})
+    status, lines, _ = run(capsys, "check", path)
+    assert status == 1
+    assert lines[0] == denied
+    assert len(lines) == 2 and "sudo" in lines[1] and "cloudx" in lines[1]
+
+
+def test_check_gives_no_permission_hint_for_other_problems(tmp_path, capsys):
+    path = tmp_path / "policy.yaml"
+    path.write_bytes(b"\xff\xfe\x00bad")
+    status, lines, _ = run(capsys, "check", str(path))
+    assert status == 1 and len(lines) == 1
+
+
 def test_check_messages_are_the_ones_the_engine_logs(tmp_path, caplog):
     text = ('identity:user:create: "is_admin"\nidentity:user:lst: "role:admin"\n'
             'a: "rule:b"\nb: "rule:a"\nidentity:user:list: 5\n')
