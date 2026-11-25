@@ -213,6 +213,18 @@ def run(args: dict, rpc, *, update_server, notify) -> None:
             _running.discard(server_id)
 
 
+def _report(server_id: str, fields: dict, result: str, message: str | None, update_server, notify) -> None:
+    """Set the server's fields through the conductor, then notify compute-api of the outcome. The notify always goes
+    out with the real result, even when the status update fails (a cast raises while RabbitMQ is down)."""
+    try:
+        update_server(server_id, fields)
+    except Exception as exc:
+        log.error("live migration of %s: could not update the server to %s: %s", server_id, fields, exc)
+        note = f"the status update failed ({exc})"
+        message = f"{message}; {note}" if message else note
+    notify(server_id, result, message, "live_migrate")
+
+
 def _run(args: dict, rpc, update_server, notify) -> None:
     server_id = _server_id(args)
     target = args.get("_target_host")
@@ -221,8 +233,7 @@ def _run(args: dict, rpc, update_server, notify) -> None:
         reason = "live migration payload needs a server id, _target_host and libvirt_domain_name"
         log.error("live migration of %s: %s", server_id, reason)
         if server_id:
-            update_server(server_id, {"status": "ACTIVE", "error_message": None})
-            notify(server_id, "error", reason, "live_migrate")
+            _report(server_id, {"status": "ACTIVE", "error_message": None}, "error", reason, update_server, notify)
         return
     # the destination puts the config drive and console log at the same path, and rollback removes it there
     args = {**args, "instance_dir": str(_instance_dir(args)), "_source_host": COMPUTE_HOST}
@@ -241,12 +252,14 @@ def _run(args: dict, rpc, update_server, notify) -> None:
         )
     except Exception as exc:
         log.error("live migration of %s to %s failed: %s; rolling back the target", server_id, target, exc)
+        # Known limitation: after a prepare timeout, prepare may still be running on the target, and this rollback can
+        # race it (rollback runs first and prepare then leaves taps, sessions or the instance dir behind).
         try:
             _call(rpc, target, "live_migrate_rollback", args, ROLLBACK_TIMEOUT)
         except Exception as rollback_exc:
             log.warning("live migration of %s: rollback on %s failed: %s", server_id, target, rollback_exc)
-        update_server(server_id, {"status": "ACTIVE", "error_message": None})
-        notify(server_id, "error", f"live migration failed: {exc}", "live_migrate")
+        _report(server_id, {"status": "ACTIVE", "error_message": None}, "error", f"live migration failed: {exc}",
+                update_server, notify)
         return
 
     log.info("live migration of %s: the domain runs on %s; cleaning up", server_id, target)
@@ -262,14 +275,20 @@ def _run(args: dict, rpc, update_server, notify) -> None:
     # this node's taps go first, so two chassis never carry the same iface-id
     for tap in taps:
         attempt(f"delete tap {tap}", network_manager.delete_tap, tap)
+    cleaned = len(failures)
     attempt(f"finish on {target}", _call, rpc, target, "live_migrate_finish", args, FINISH_TIMEOUT)
+    finish_failed = len(failures) > cleaned
     for volume in volumes:
         if _reaches_over_iscsi(volume):
             attempt(f"disconnect volume {volume['volume_id']}", volume_manager.disconnect,
                     volume["volume_id"], volume.get("host"), rpc)
     attempt("remove the instance dir", _remove_dir, Path(args["instance_dir"]))
-    update_server(server_id, {"host": target, "status": "ACTIVE", "error_message": None})
+    # The guest runs on the target whatever failed above, so the result is "success": compute-api moves the placement
+    # claim back to the source on "error", which would be wrong for a server that now lives on the target.
+    message = None
     if failures:
-        notify(server_id, "error", "migrated, but cleanup failed: " + "; ".join(failures), "live_migrate")
-    else:
-        notify(server_id, "success", None, "live_migrate")
+        message = "migrated, but cleanup failed: " + "; ".join(failures)
+        if finish_failed:
+            message += (f"; the guest's network may be down until an operator re-binds its ports on {target}")
+    _report(server_id, {"host": target, "status": "ACTIVE", "error_message": None}, "success", message,
+            update_server, notify)

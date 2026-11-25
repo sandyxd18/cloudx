@@ -275,7 +275,57 @@ def test_finish_failure_after_a_successful_migration_does_not_roll_back(fakes):
     assert len(fakes.of("disconnect")) == 2  # the rest of the cleanup still runs
     assert _updates(fakes) == [{"host": "node-b", "status": "ACTIVE", "error_message": None}]
     ((result, message, action),) = _notified(fakes)
-    assert result == "error" and "cleanup" in message and "ovs-vsctl failed" in message and action == "live_migrate"
+    # the guest runs on the target: "success", so compute-api does not move the placement claim back to the source
+    assert result == "success" and action == "live_migrate"
+    assert message.startswith("migrated, but cleanup failed: ") and "ovs-vsctl failed" in message
+    assert "network may be down" in message
+
+
+def test_source_cleanup_failure_notifies_success_without_the_network_warning(fakes, monkeypatch):
+    def delete_tap(tap):
+        fakes.log("delete_tap", tap)
+        raise RuntimeError("ovs-vsctl del-port timed out")
+
+    monkeypatch.setattr(live_migration.network_manager, "delete_tap", delete_tap)
+
+    _run(fakes)
+
+    assert fakes.of("live_migrate_rollback") == []
+    assert len(fakes.of("live_migrate_finish")) == 1  # the rest of the cleanup still runs
+    assert _updates(fakes) == [{"host": "node-b", "status": "ACTIVE", "error_message": None}]
+    ((result, message, _action),) = _notified(fakes)
+    assert result == "success" and message.startswith("migrated, but cleanup failed: ")
+    assert "del-port timed out" in message and "network may be down" not in message
+
+
+def test_a_failed_status_update_after_success_still_notifies_success(fakes, monkeypatch):
+    def update_server(server_id, fields):
+        fakes.log("update_server", server_id, fields)
+        raise RuntimeError("Failed to cast update_server after 3 attempts")
+
+    monkeypatch.setattr(fakes, "update_server", update_server)
+
+    _run(fakes)
+
+    ((result, message, action),) = _notified(fakes)
+    assert result == "success" and action == "live_migrate"
+    assert "status update failed" in message and "Failed to cast" in message
+
+
+def test_a_failed_status_update_after_a_rollback_still_notifies_the_error(fakes, monkeypatch):
+    fakes.migrate_error = live_migration.libvirt_driver.MigrationError("connection reset")
+
+    def update_server(server_id, fields):
+        fakes.log("update_server", server_id, fields)
+        raise RuntimeError("Failed to cast update_server after 3 attempts")
+
+    monkeypatch.setattr(fakes, "update_server", update_server)
+
+    _run(fakes)
+
+    assert len(fakes.of("live_migrate_rollback")) == 1
+    ((result, message, _action),) = _notified(fakes)
+    assert result == "error" and "connection reset" in message and "status update failed" in message
 
 
 def test_rollback_failure_is_logged_and_the_status_is_still_restored(fakes, caplog):
