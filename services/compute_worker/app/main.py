@@ -627,6 +627,8 @@ def handle_build_instance(args: dict) -> None:
             # Inject the real path into args so worker.spawn_server can use it
             if args.get("root_volume") is not None:
                 args["root_volume"]["path"] = ready_volume.get("path", "")
+                for key in ("max_iops", "max_throughput"):  # the limits of the volume's type, for the root disk's <iotune>
+                    args["root_volume"][key] = ready_volume.get(key)
             else:
                 args["root_volume"] = ready_volume
             # An LV on another storage node is reached over iSCSI: spawn_server gets the local block device.
@@ -662,7 +664,7 @@ def handle_build_instance(args: dict) -> None:
                         vol_info = vol_resp.json()
                         conn_path = str(volume_manager.connect({**vol_info, "volume_id": vol_id}, _rpc))
                         target_dev = (dv.get("target_device") or vol_info.get("target_device") or "sdb").split("/")[-1]
-                        libvirt_driver.attach_disk(result["libvirt_domain_name"], conn_path, target_dev=target_dev)
+                        libvirt_driver.attach_disk(result["libvirt_domain_name"], conn_path, target_dev=target_dev, **volume_manager.qos_limits(vol_info))
                         _http_post(f"{bs_url}/internal/volumes/{vol_id}/attach-server", {"server_id": server_id, "target_device": target_dev})
                 except Exception as exc:
                     log.error("Failed to reattach data volume %s to VM %s: %s", vol_id, server_id, exc)

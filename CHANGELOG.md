@@ -6,6 +6,17 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Added
+- A volume type's `max_iops` and `max_throughput` (MB/s) now limit LVM volumes (and NFS file volumes) too. They used to
+  be applied only on Ceph, so an LVM volume ignored them. The compute node sets them as a libvirt `<iotune>` on the
+  disk (one total for reads and writes together): on a data volume when it is attached, and on the root volume when the
+  server is built (so also after a cold migrate or an unshelve). Block-store reads the limits
+  from the type at that moment, so a change to the type applies from the next attach; a disk already attached to a
+  running VM keeps its limit until then. A Ceph volume is not given an `<iotune>`: it keeps the limit set on its RBD
+  image when it was created. No schema change and no configuration change, and the services can be updated in any order:
+  the limits apply once block-store, compute-api and the compute worker are all updated. A `rebuild` and a `rescue`
+  define the domain again without a limit on the root disk (as they do without its data disks).
+
 ## 1.0.11 (2026-11-10)
 
 No change since 1.0.11-rc1: the release is built from the same code, and the section of 1.0.11-rc1 below holds the changes. No schema change. The release files of 1.0.11-rc1 (the checksums of the 47 `.deb` files matched `SHA256SUMS`) were installed on the lab (three controllers, two compute nodes, controllers first) and checked there; see `docs/releases/v1.0.11.md`.

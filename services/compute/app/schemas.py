@@ -86,6 +86,8 @@ class VolumeAttachIn(BaseModel):
     path: str
     host: str | None = None  # storage node that owns the LV; the compute-worker logs in over iSCSI if it is not itself
     target_dev: str | None = None
+    max_iops: int | None = None  # limits of the volume's type, applied to the disk as libvirt <iotune>
+    max_throughput: int | None = None  # MB/s
 
 
 class ServerSnapshotIn(BaseModel):

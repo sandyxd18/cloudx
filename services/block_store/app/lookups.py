@@ -11,6 +11,13 @@ def get_volume(db: Session, ref: str):
     return db.get(Volume, ref) or db.scalar(select(Volume).where(Volume.name == ref))
 
 
+def volume_qos(db: Session, volume: Volume) -> dict:
+    """`max_iops` and `max_throughput` (MB/s) of the volume's type, or None for both when the volume has no type or its
+    type is gone. Read when the volume is attached or built into a server, so a change of the type applies from then on."""
+    vt = db.scalar(select(VolumeType).where(VolumeType.name == volume.volume_type)) if volume.volume_type else None
+    return {"max_iops": vt.max_iops if vt else None, "max_throughput": vt.max_throughput if vt else None}
+
+
 def can_access(project_id: str | None, current: dict | None) -> bool:
     """Admins (and internal callers, current=None) see everything; others only the projects they may see. A row without
     a project (kept from versions that did not record one) is for admins and internal callers only."""
