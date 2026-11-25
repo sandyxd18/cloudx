@@ -161,7 +161,11 @@ def reconcile_stale_domains() -> None:
         return
 
     domain_to_host = {s["libvirt_domain_name"]: s["host"] for s in all_servers if s.get("libvirt_domain_name")}
+    # A migrating server has its domain on both hosts and the API host is not settled yet: leave both copies alone.
+    migrating = {s["libvirt_domain_name"] for s in all_servers if s.get("libvirt_domain_name") and s.get("status") == "MIGRATING"}
     for domain_name in domain_states:
+        if domain_name in migrating:
+            continue
         api_host = domain_to_host.get(domain_name)
         if api_host and api_host != COMPUTE_HOST:
             log.warning("[reconcile] domain %s host in API is %s (this node=%s) — destroying stale domain", domain_name, api_host, COMPUTE_HOST)
@@ -186,6 +190,31 @@ def reconcile_stale_domains() -> None:
                     iscsi.logout(portal, target)
                 except Exception as exc:  # best-effort: the domain is already gone; a stale session only wastes a login
                     log.warning("[reconcile] could not log out %s: %s", target, exc)
+
+
+def recover_migrating_servers() -> None:
+    """At worker start: free a server that is still MIGRATING but whose domain runs here.
+
+    A migration is driven by one handler; if the worker restarted while it ran, nothing is left to finish it
+    and the server would stay MIGRATING for good. If the domain is running on this host, the guest is alive
+    here, so it goes back to ACTIVE. Never raises.
+    """
+    try:
+        domain_states = libvirt_driver.get_all_domain_states()
+        api_url = catalog.url("compute").rstrip("/")
+        resp = requests.get(f"{api_url}/internal/servers", headers=internal_headers(), timeout=5)
+        if resp.status_code != 200:
+            return
+        all_servers = resp.json().get("servers", [])
+        for server in all_servers:
+            if server.get("status") != "MIGRATING" or server.get("host") != COMPUTE_HOST:
+                continue
+            if domain_states.get(server.get("libvirt_domain_name")) != "RUNNING":
+                continue
+            log.warning("[recover] server %s is MIGRATING but its domain runs here — back to ACTIVE", server["id"])
+            conductor_update_server(server["id"], {"status": "ACTIVE", "error_message": None})
+    except Exception as exc:
+        log.warning("[recover] could not recover migrating servers: %s", exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1066,6 +1095,8 @@ def main():
     else:
         log.error("Could not connect to RabbitMQ after 30 attempts")
         sys.exit(1)
+
+    recover_migrating_servers()
 
     threading.Thread(target=sync_power_states_loop, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
