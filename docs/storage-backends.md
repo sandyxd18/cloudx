@@ -55,10 +55,10 @@ LVM nodes do not share a disk. A volume lives on the one node whose volume group
 - The storage node of a new LVM volume is the one with the least allocated space among `block_store_lvm_hosts`. It is not the node where the VM runs, so a VM on one node can well have its root volume on the other.
 - CloudX does not require or set up a separate network interface for iSCSI. `iscsi_portal_ip` is only the address that compute nodes are told to connect to; the lab used the management address. An address on a storage network should work the same way, but no guide describes it and it was not tried.
 - Instance HA restarts a protected VM on another compute node when its node dies. The disk is reached over iSCSI from the storage node, so this works only when that node is still alive. A VM with a root or data volume on the dead node is skipped ([ha.md](ha.md)).
-- Live migration is not supported yet. `POST /servers/{id}/live-migrate` answers 501; use `POST /servers/{id}/migrate` (cold migration, which restarts the server on the target node). Cold migration and evacuate were tried in a lab with LVM data volumes that switch between local and iSCSI.
+- Live migration works for a server whose LVM volumes the target can reach over iSCSI, including a volume on the node the server leaves (the target then logs in to the source node). `cloudx host drain` does not move such a server, because that volume stays on the node being emptied. There is no block migration: a volume is never copied. See [live-migration.md](live-migration.md). It has been tested with unit tests only; a lab run is still to be done. Cold migration (`POST /servers/{id}/migrate`, which restarts the server on the target node) and evacuate were tried in a lab with LVM data volumes that switch between local and iSCSI.
 - Replication of a volume to another storage node is manual and asynchronous (`cloudx volume enable-replication`, `sync-replication`, `failover`). It is a copy made when you ask, not a mirror.
 
-With Ceph RBD the disk is reachable from every compute node, so a VM can restart on any node as long as the cluster is healthy, and none of the limits above for LVM apply. Live migration is not supported with RBD either.
+With Ceph RBD the disk is reachable from every compute node, so a VM can restart on any node as long as the cluster is healthy, and none of the limits above for LVM apply. Live migration works with RBD disks too, without iSCSI ([live-migration.md](live-migration.md)).
 
 ### Using LVM and Ceph together
 

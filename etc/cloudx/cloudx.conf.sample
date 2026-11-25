@@ -80,3 +80,16 @@ dns_resolver_clients = 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 # root_volume_wait_timeout = 3600
 # Address browsers use to reach port 6080 (websockify) on this node; the console link points here. Defaults to the node name.
 # console_proxy_host = 203.0.113.10
+# Live migration (see docs/live-migration.md; all optional, the ssh trust between the compute nodes comes from scripts/setup-migration-ssh.sh):
+# Name or address the other compute nodes use to reach this node. Defaults to the node name (compute_host).
+# live_migration_host = comp01
+# Template of the libvirt connection to the target node; {host} is the target's live_migration_host.
+# live_migration_uri = qemu+ssh://root@{host}/system
+# Seconds in total before a migration is aborted and rolled back.
+# live_migration_timeout = 1800
+# The longest pause, in milliseconds, libvirt may take for the last step of a migration.
+# live_migration_max_downtime_ms = 300
+# Cap on the memory transfer, in megabits per second. 0 = no cap.
+# live_migration_bandwidth_mbps = 0
+# Slow down the vCPUs of a guest that changes memory faster than it can be sent, so the migration can finish.
+# live_migration_auto_converge = false

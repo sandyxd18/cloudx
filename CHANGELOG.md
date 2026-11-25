@@ -6,6 +6,33 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Added
+- Live migration. `POST /servers/{ref}/live-migrate` (`cloudx server live-migrate SERVER [--host NODE]`) now moves a
+  running server to another compute node instead of answering 501. The policy action is `compute:server:live_migrate`
+  (`role:admin` by default). The source worker drives it over `qemu+ssh`: it prepares the target (taps, iSCSI logins,
+  config drive), migrates the domain, then binds the ports on the target and cleans up the source. A migration that
+  fails before it completes is rolled back: the server is `ACTIVE` on the source again with the reason in
+  `os-instance-actions`, and the placement claim goes back to the source. A migration that completed but whose cleanup
+  or final port binding failed is reported as success with a message that starts with `migrated, but cleanup failed:`.
+  `reconcile_stale_domains` leaves the domain of a `MIGRATING` server alone, and a worker that starts frees a
+  `MIGRATING` server whose domain runs on its node. Disks on Ceph RBD, and LVM volumes that the target reaches over
+  iSCSI, can move; there is no block migration. Expect a network pause of one to three seconds, no zero-loss guarantee.
+- `cloudx host drain NODE [--dry-run] [--timeout SECONDS]` disables a compute node and moves its servers away one at a
+  time (live migration for `ACTIVE`, cold migration for `SHUTOFF`). A server it cannot move, such as one with a local LVM
+  volume on that node, is skipped and listed, and the command exits non-zero. The node stays disabled; the new
+  `cloudx host enable NODE` puts it back in service.
+- Six settings for the compute worker, all optional: `live_migration_host`, `live_migration_uri`,
+  `live_migration_timeout` (1800), `live_migration_max_downtime_ms` (300), `live_migration_bandwidth_mbps` (0 = no
+  cap, in megabits per second) and `live_migration_auto_converge` (false).
+- `scripts/setup-migration-ssh.sh [--dry-run] NODE...` prepares the ssh trust between the compute nodes (a key
+  `/root/.ssh/cloudx_migration` per node, `authorized_keys`, `known_hosts` and `config` entries). It gives every compute
+  node root access to every other one; `docs/live-migration.md` explains the prerequisites, the open ports (TCP 22 and
+  49152-49215 between the compute nodes) and the limits.
+
+Upgrade: no schema change. Update all compute nodes first, then compute-api. Known limitation: if the worker of the
+source node restarts while a migration runs, the server can stay `MIGRATING`; `docs/live-migration.md` says how to
+recover. The code is covered by unit tests; it has not been run on a lab yet.
+
 ## 1.0.11 (2026-11-10)
 
 No change since 1.0.11-rc1: the release is built from the same code, and the section of 1.0.11-rc1 below holds the changes. No schema change. The release files of 1.0.11-rc1 (the checksums of the 47 `.deb` files matched `SHA256SUMS`) were installed on the lab (three controllers, two compute nodes, controllers first) and checked there; see `docs/releases/v1.0.11.md`.

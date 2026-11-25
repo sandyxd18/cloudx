@@ -178,7 +178,8 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 #### Migration & Recovery
 | Feature | Endpoint | Status |
 |---|---|:---:|
-| Live migration to a target host (answers 501; planned, use cold migration for now) | `POST /servers/{ref}/live-migrate` | ✗ |
+| **Live migration** of an `ACTIVE` server to another compute node (admin; the scheduler picks the target or `--host` names it; RBD disks, and LVM disks that the target reaches over iSCSI; a network pause of about one to three seconds; a failed migration leaves the server `ACTIVE` on the source; code and unit tests only, not run on a lab yet; see docs/live-migration.md) | `POST /servers/{ref}/live-migrate` | ✅ |
+| **Drain a compute node** (`cloudx host drain`: disables the node, live-migrates its `ACTIVE` servers and cold-migrates the `SHUTOFF` ones, one at a time, and skips what cannot move; `cloudx host enable` puts the node back) | CLI over `PUT /os-services/{host}` and the two calls above | ✅ |
 | Cold migration | `POST /servers/{ref}/migrate` | ✅ |
 | List possible target hosts | `GET /servers/{ref}/migration-candidates` | ✅ |
 | Evacuate a server from a failed host | `POST /servers/{ref}/evacuate` | ✅ |
@@ -270,6 +271,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **vfat config drive format** | ISO9660 only |
 | **Trusted image certificates** | None |
 | **Trigger crash dump** | None |
+| **Live migration beyond the basics** | No block migration (a local LVM volume is never copied), no TLS on the libvirt connection (ssh is used), no zero-loss network handover (OVN multi-chassis is not used), no dashboard button, no automatic evacuation by `ha-api` |
 
 **Estimated Compute similarity: ~85%**
 

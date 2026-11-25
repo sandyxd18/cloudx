@@ -12,6 +12,7 @@ CloudX runs natively under systemd on Ubuntu 24.04. There is no Docker Compose d
 | `tutorials/` | Step-by-step tutorials: [three-node cloud](tutorials/multi-node.md), [auto-scaling](tutorials/autoscaling.md), [Ceph RBD](tutorials/ceph.md), [HA control plane with LVM and Ceph](tutorials/ha-control-plane.md), [Kubernetes](tutorials/kubernetes.md), [dashboard tour](tutorials/dashboard-tour.md). Each says at the top whether it was run and where |
 | `deb-install.md` | Reference for the `.deb` packages: building them, installing by role, spreading services across nodes, catalog, rotating passwords, upgrading tarball nodes, rollback |
 | `../SETUP.md` | Setup guide: choosing a layout, preparing PostgreSQL, RabbitMQ and OVN, the admin account, the first network |
+| `live-migration.md` | Moving a running server to another compute node, the ssh setup script, and emptying a node with `cloudx host drain` |
 | `storage-backends.md` | Services with more than one backend (block store, images, object store, file store, backups): how each is chosen, what it needs, what has been run |
 | `production-readiness.md` | What exists for multi-node, backups, monitoring and migrations, and what does not |
 | `user-guide-cli.md` | `cloudx` CLI guide |
