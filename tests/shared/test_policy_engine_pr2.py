@@ -1,4 +1,4 @@
-"""PR 2 of the policy file: the 35 admin actions of the other services, check() and the .action marker."""
+"""PR 2 of the policy file: the 36 admin actions of the other services, check() and the .action marker."""
 import re
 
 import pytest
@@ -12,6 +12,7 @@ NEW_ACTIONS = {
     "compute:flavor-extra-spec:set", "compute:flavor-extra-spec:delete",
     "compute:aggregate:create", "compute:aggregate:update", "compute:aggregate:delete", "compute:aggregate:action",
     "compute:quota:set", "compute:service:update", "compute:server:migrate", "compute:server:evacuate",
+    "compute:server:live_migrate",
     "block-store:volume-type:create", "block-store:volume-type:update", "block-store:volume-type:delete",
     "block-store:quota:set", "block-store:quota:clear",
     "block-store:volume:force-detach", "block-store:volume:force-delete", "block-store:volume:reset-status",
@@ -28,9 +29,9 @@ ADMIN = {"role": "admin"}
 MEMBER = {"role": "member"}
 
 
-def test_the_table_has_57_actions_35_of_them_new_and_role_admin():
-    assert len(NEW_ACTIONS) == 35
-    assert len(policy.DEFAULT_RULES) == 57
+def test_the_table_has_58_actions_36_of_them_new_and_role_admin():
+    assert len(NEW_ACTIONS) == 36
+    assert len(policy.DEFAULT_RULES) == 58
     for action in NEW_ACTIONS:
         assert policy.DEFAULT_RULES[action] == "role:admin", action
     new = set(policy.DEFAULT_RULES) - {a for a in policy.DEFAULT_RULES if a.startswith("identity:")}
@@ -38,7 +39,7 @@ def test_the_table_has_57_actions_35_of_them_new_and_role_admin():
     assert len([a for a in policy.DEFAULT_RULES if a.startswith("identity:")]) == 22
     assert not any(a.startswith("identity:") for a in NEW_ACTIONS)
     for action in policy.DEFAULT_RULES:
-        assert re.fullmatch(r"[a-z-]+:[a-z-]+:[a-z-]+", action), action
+        assert re.fullmatch(r"[a-z-]+:[a-z-]+:[a-z_-]+", action), action
 
 
 def test_the_table_is_read_only():

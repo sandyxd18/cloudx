@@ -46,6 +46,7 @@ _NEW_ADMIN_ACTIONS = (
     "compute:quota:set",
     "compute:service:update",
     "compute:server:migrate",
+    "compute:server:live_migrate",
     "compute:server:evacuate",
     # block-store
     "block-store:volume-type:create",

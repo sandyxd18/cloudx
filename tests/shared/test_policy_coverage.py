@@ -11,6 +11,9 @@ from tests.stack import fresh_service  # noqa: E402
 # decided inside POST /volumes/{ref}/action by policy.check(), so no route dependency carries them
 INLINE_ACTIONS = {"block-store:volume:force-delete", "block-store:volume:reset-status"}
 
+# registered ahead of its route; Task 6 of the live-migration plan gates POST /servers/{ref}/live-migrate with it and removes this set
+NOT_YET_ROUTED = {"compute:server:live_migrate"}
+
 # services whose app is one main.py; they are imported anew so that every require() runs again
 SINGLE_MODULE_SERVICES = ("placement", "billing", "telemetry", "object_store", "ha")
 
@@ -35,10 +38,10 @@ def _import_every_service(monkeypatch, tmp_path):
 def test_every_action_is_used_by_a_route_or_is_a_known_inline_action(monkeypatch, tmp_path):
     _import_every_service(monkeypatch, tmp_path)
 
-    used = policy.required_actions() | INLINE_ACTIONS
+    used = policy.required_actions() | INLINE_ACTIONS | NOT_YET_ROUTED
 
     assert used == set(policy.DEFAULT_RULES), (
         f"in the table but gated nowhere: {sorted(set(policy.DEFAULT_RULES) - used)}; "
         f"gated but not in the table: {sorted(used - set(policy.DEFAULT_RULES))}"
     )
-    assert len(policy.DEFAULT_RULES) == 57
+    assert len(policy.DEFAULT_RULES) == 58

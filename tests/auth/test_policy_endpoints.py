@@ -11,7 +11,7 @@ def test_get_policy_lists_effective_rules_and_sources(auth, pfile):  # noqa: F81
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["policy"] == dict(policy.DEFAULT_RULES)
-    assert len(body["policy"]) == 57
+    assert len(body["policy"]) == 58
     assert body["sources"] == {action: "default" for action in policy.DEFAULT_RULES}
 
     pfile.write('identity:user:create: "role:member"\n')

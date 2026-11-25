@@ -84,13 +84,13 @@ def no_logs(caplog):
     return [r for r in caplog.records if r.name == "cloudx-policy"] == []
 
 
-def test_the_22_identity_actions_of_the_spec_are_unchanged_inside_the_57():
+def test_the_22_identity_actions_of_the_spec_are_unchanged_inside_the_58():
     expected = {a: "role:admin or domain_admin:True" for a in ADMIN_OR_DOMAIN_ADMIN_ACTIONS}
     expected.update({a: "role:admin" for a in ADMIN_ONLY_ACTIONS})
     assert len(expected) == 22
     identity = {a: r for a, r in policy.DEFAULT_RULES.items() if a.startswith("identity:")}
     assert identity == expected
-    assert len(policy.DEFAULT_RULES) == 57
+    assert len(policy.DEFAULT_RULES) == 58
 
 
 def test_policy_file_default_path_and_env_read_at_call_time(monkeypatch):
@@ -755,3 +755,7 @@ def test_a_file_of_exactly_1_mib_is_read(pfile, caplog):
     assert pfile.path.stat().st_size == policy.MAX_FILE_BYTES
     assert policy.sources()["identity:user:list"] == "file"
     assert no_logs(caplog)
+
+
+def test_live_migrate_is_an_admin_action():
+    assert policy.DEFAULT_RULES["compute:server:live_migrate"] == "role:admin"
