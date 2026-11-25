@@ -126,14 +126,20 @@ def conductor_delete_record(server_id: str) -> None:
     })
 
 
-def _notify_action_finish(server_id: str | None, result: str = "success", message: str | None = None, action: str | None = None) -> None:
+def _notify_action_finish(server_id: str | None, result: str = "success", message: str | None = None, action: str | None = None,
+                          target_host: str | None = None) -> None:
+    """Close the server's open action in compute-api. A finished live migration also names its target host, so
+    compute-api can set host and status itself when the conductor cast was lost."""
     if not server_id:
         return
+    body = {"result": result, "message": message, "action": action}
+    if target_host:
+        body["target_host"] = target_host
     try:
         api_url = catalog.url("compute").rstrip("/")
         requests.post(
             f"{api_url}/internal/servers/{server_id}/actions/finish",
-            json={"result": result, "message": message, "action": action},
+            json=body,
             headers=internal_headers(),
             timeout=5,
         )
@@ -192,29 +198,74 @@ def reconcile_stale_domains() -> None:
                     log.warning("[reconcile] could not log out %s: %s", target, exc)
 
 
+# How long worker-start recovery waits for an aborted migration job to end, and how often it looks.
+RECOVER_ABORT_WAIT_SECONDS = 30
+_RECOVER_POLL_SECONDS = 1.0
+RECOVERED_MESSAGE = "the compute worker restarted during the live migration; the migration was aborted"
+
+
+def _stop_migration_job(domain: str) -> bool:
+    """True when the domain has no libvirt job (any more): abort a running one and wait for it to end."""
+    if not libvirt_driver.active_job(domain):
+        return True
+    log.warning("[recover] %s still has a libvirt job (the migration libvirtd kept running); aborting it", domain)
+    try:
+        libvirt_driver.abort_job(domain)
+    except Exception as exc:  # the job may have ended on its own meanwhile; the loop below tells
+        log.warning("[recover] abortJob on %s failed: %s", domain, exc)
+    deadline = time.monotonic() + RECOVER_ABORT_WAIT_SECONDS
+    while libvirt_driver.active_job(domain):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_RECOVER_POLL_SECONDS)
+    return True
+
+
+def _recover_migrating_server(server: dict, domain_states: dict) -> None:
+    domain = server.get("libvirt_domain_name")
+    if domain_states.get(domain) != "RUNNING":
+        return  # not here (cold migrate, evacuate, or the guest moved): nothing to decide on this node
+    if not _stop_migration_job(domain):
+        log.warning("[recover] server %s stays MIGRATING: the migration job of %s did not stop within %s s; check "
+                    "`virsh domjobinfo %s` and docs/live-migration.md", server["id"], domain, RECOVER_ABORT_WAIT_SECONDS, domain)
+        return
+    if libvirt_driver.domain_state(domain) != "RUNNING":
+        # the move completed as the job was aborted: ACTIVE with this host would let the target's reconciler destroy it
+        log.warning("[recover] server %s stays MIGRATING: %s is no longer running here after its job ended",
+                    server["id"], domain)
+        return
+    log.warning("[recover] server %s is MIGRATING but its domain runs here with no job — back to ACTIVE", server["id"])
+    conductor_update_server(server["id"], {"status": "ACTIVE", "error_message": None})
+    # "error" makes compute-api move the placement claim back here (it went to the target when the migration began)
+    _notify_action_finish(server["id"], "error", RECOVERED_MESSAGE, "live_migrate")
+
+
 def recover_migrating_servers() -> None:
     """At worker start: free a server that is still MIGRATING but whose domain runs here.
 
-    A migration is driven by one handler; if the worker restarted while it ran, nothing is left to finish it
-    and the server would stay MIGRATING for good. If the domain is running on this host, the guest is alive
-    here, so it goes back to ACTIVE. Never raises.
+    A migration is driven by one handler; if the worker restarted while it ran, nothing is left to finish it and the
+    server would stay MIGRATING for good. libvirtd may still be running the peer-to-peer job, which could complete
+    the move later; so a job still running is aborted first. Only when the domain then runs here with no job does
+    the server go back to ACTIVE, with an "error" finish so the claim returns. Never raises.
     """
     try:
         domain_states = libvirt_driver.get_all_domain_states()
         api_url = catalog.url("compute").rstrip("/")
         resp = requests.get(f"{api_url}/internal/servers", headers=internal_headers(), timeout=5)
         if resp.status_code != 200:
+            log.warning("[recover] compute-api answered %s; migrating servers are not recovered", resp.status_code)
             return
         all_servers = resp.json().get("servers", [])
-        for server in all_servers:
-            if server.get("status") != "MIGRATING" or server.get("host") != COMPUTE_HOST:
-                continue
-            if domain_states.get(server.get("libvirt_domain_name")) != "RUNNING":
-                continue
-            log.warning("[recover] server %s is MIGRATING but its domain runs here — back to ACTIVE", server["id"])
-            conductor_update_server(server["id"], {"status": "ACTIVE", "error_message": None})
     except Exception as exc:
         log.warning("[recover] could not recover migrating servers: %s", exc)
+        return
+    for server in all_servers:
+        if server.get("status") != "MIGRATING" or server.get("host") != COMPUTE_HOST:
+            continue
+        try:
+            _recover_migrating_server(server, domain_states)
+        except Exception as exc:
+            log.warning("[recover] could not recover migrating server %s: %s", server.get("id"), exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

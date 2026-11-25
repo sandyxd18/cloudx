@@ -355,7 +355,52 @@ def lookup(name: str):
 
 
 class MigrationError(RuntimeError):
-    """A live migration did not complete: libvirt failed it, or it ran past its timeout and was aborted."""
+    """A live migration did not complete: libvirt failed it, or it ran past its timeout and was aborted.
+
+    `still_running` is True when the migration call had not returned 30 s after abortJob: libvirt may still finish the
+    move, so nobody can tell yet where the guest will run."""
+
+    def __init__(self, message: str, *, still_running: bool = False):
+        super().__init__(message)
+        self.still_running = still_running
+
+
+def domain_state(name: str) -> str | None:
+    """State of one domain on this node (RUNNING, PAUSED, SHUTOFF, SUSPENDED), or None when libvirt has no such
+    domain. Any other libvirt error is raised: the caller cannot tell whether the domain is here."""
+    conn = connect()
+    try:
+        try:
+            domain = conn.lookupByName(name)
+        except Exception as exc:
+            code = getattr(exc, "get_error_code", lambda: None)()
+            if code == getattr(libvirt, "VIR_ERR_NO_DOMAIN", 42):
+                return None
+            raise
+        state = _LIBVIRT_STATE_MAP.get(domain.state()[0], "SHUTOFF")
+        if state == "SHUTOFF" and _has_managed_save(domain):
+            state = "SUSPENDED"
+        return state
+    finally:
+        conn.close()
+
+
+def active_job(name: str) -> bool:
+    """True when the domain has a libvirt job running (a migration, for one)."""
+    conn, domain = lookup(name)
+    try:
+        return domain.jobInfo()[0] != getattr(libvirt, "VIR_DOMAIN_JOB_NONE", 0)
+    finally:
+        conn.close()
+
+
+def abort_job(name: str) -> None:
+    """Ask libvirt to abort the domain's running job. Returns at once; the job may take a moment to end."""
+    conn, domain = lookup(name)
+    try:
+        domain.abortJob()
+    finally:
+        conn.close()
 
 
 # How often migrate_domain looks at the running job. Tests shorten it.
@@ -383,9 +428,12 @@ def domain_xml_for_migration(name: str) -> str:
 
 
 def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, bandwidth_mbps: int,
-                   max_downtime_ms: int, auto_converge: bool) -> None:
+                   max_downtime_ms: int, auto_converge: bool, migration_host: str | None = None) -> None:
     """Live-migrate the running domain to `dest_uri` (peer to peer) using `dest_xml` as its definition there.
-    Blocks until it completes; raises MigrationError if libvirt fails it or `timeout` seconds pass (the job is aborted)."""
+    Blocks until it completes; raises MigrationError if libvirt fails it or `timeout` seconds pass (the job is aborted).
+
+    `migration_host` is the destination's address for the memory stream (QEMU, ports 49152-49215); without it the
+    destination libvirt offers tcp://<its own hostname>, which may resolve to another network."""
     # The fallbacks are libvirt's own values (libvirt-domain.h), so a libvirt-python without a name still works.
     flags = (getattr(libvirt, "VIR_MIGRATE_LIVE", 1) | getattr(libvirt, "VIR_MIGRATE_PEER2PEER", 2)
              | getattr(libvirt, "VIR_MIGRATE_PERSIST_DEST", 8) | getattr(libvirt, "VIR_MIGRATE_UNDEFINE_SOURCE", 16)
@@ -393,6 +441,8 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
     if auto_converge:
         flags |= getattr(libvirt, "VIR_MIGRATE_AUTO_CONVERGE", 8192)
     params = {getattr(libvirt, "VIR_MIGRATE_PARAM_DEST_XML", "destination_xml"): dest_xml}
+    if migration_host:
+        params[getattr(libvirt, "VIR_MIGRATE_PARAM_URI", "migrate_uri")] = f"tcp://{migration_host}"
     if bandwidth_mbps > 0:
         # bandwidth_mbps is megabits per second; libvirt's parameter is MiB/s (rounded, at least 1 so a small value is not "unlimited")
         params[getattr(libvirt, "VIR_MIGRATE_PARAM_BANDWIDTH", "bandwidth")] = max(1, round(bandwidth_mbps * 1_000_000 / 8 / 2**20))
@@ -439,7 +489,9 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
                 worker.join(30)
                 if worker.is_alive():
                     log.warning("%s: the migration call is still running 30 s after abortJob", name)
-                elif "error" not in outcome:
+                    raise MigrationError(f"timed out after {timeout} s; the migration call is still running after "
+                                         "abortJob", still_running=True)
+                if "error" not in outcome:
                     # it finished between the deadline and the abort: the domain is already on the destination
                     log.info("%s: the migration completed as the timeout was reached; treating it as a success", name)
                     return

@@ -64,6 +64,9 @@ def fakes(monkeypatch, tmp_path):
     monkeypatch.setattr(live_migration.cloudinit, "create_config_drive", create_config_drive)
     monkeypatch.setattr(live_migration.worker, "expose_to_host_libvirt", lambda *p: f.log("expose", *p))
     monkeypatch.setattr(live_migration.libvirt_driver, "delete", lambda n: f.domain_deleted.append(n))
+    monkeypatch.setattr(live_migration, "INSTANCE_DIR", tmp_path / "instances")
+    monkeypatch.setattr(live_migration.iscsi, "initiator_iqn", lambda: f.own_iqn)
+    f.own_iqn = "iqn.2004-10.com.ubuntu:01:node-b"
     f.instance_dir = tmp_path / "instances" / SERVER
     return f
 
@@ -225,3 +228,71 @@ def test_the_handlers_are_registered_and_pass_the_rpc_client(monkeypatch):
         main.HANDLERS[method]({"id": SERVER})
 
     assert seen == [("prepare", main._rpc), ("finish", None), ("rollback", main._rpc)]
+
+
+# --- final-review fixes: instance_dir validation (M1), duplicate initiator names (I5) ------------------------------
+
+@pytest.fixture
+def outside(tmp_path):
+    # never real system paths: a bug here would rmtree them
+    d = tmp_path / "outside"
+    d.mkdir()
+    (d / "keep").write_text("x")
+    return d
+
+
+def _bad_dirs(fakes, outside):
+    return [str(fakes.instance_dir / ".." / ".." / "outside"), str(outside), str(fakes.instance_dir.parent)]
+
+
+def test_rollback_never_removes_a_dir_outside_the_instances_dir(fakes, outside):
+    fakes.instance_dir.mkdir(parents=True)
+    for bad in _bad_dirs(fakes, outside):
+        args = _args(fakes)
+        args["instance_dir"] = bad
+
+        assert live_migration.rollback(args, rpc=object()) == {"status": "ok"}
+
+        assert (outside / "keep").exists() and fakes.instance_dir.parent.exists(), bad
+
+
+def test_prepare_refuses_a_dir_outside_the_instances_dir(fakes, outside):
+    for bad in _bad_dirs(fakes, outside):
+        args = _args(fakes)
+        args["instance_dir"] = bad
+
+        with pytest.raises(ValueError, match="instance_dir"):
+            live_migration.prepare(args, rpc=object())
+
+    assert fakes.of("create_tap") == [] and fakes.of("connect") == []
+    assert (outside / "keep").exists()
+
+
+def test_a_dir_inside_the_instances_dir_is_accepted(fakes):
+    assert live_migration._instance_dir({"instance_dir": str(fakes.instance_dir)}) == fakes.instance_dir.resolve()
+    assert live_migration._instance_dir({"id": SERVER}) == fakes.instance_dir.resolve()
+
+
+def test_prepare_refuses_when_both_nodes_share_an_initiator_name_and_a_volume_needs_iscsi(fakes):
+    args = {**_args(fakes), "_source_initiator_iqn": fakes.own_iqn}
+
+    with pytest.raises(RuntimeError, match="initiator name"):
+        live_migration.prepare(args, rpc=object())
+
+    assert fakes.of("create_tap") == [] and fakes.of("connect") == []
+    assert not fakes.instance_dir.exists()
+
+
+def test_a_shared_initiator_name_is_fine_without_iscsi_volumes(fakes):
+    volumes = [{"volume_id": "v-root", "host": None, "path": RBD, "backend": "ceph", "target_dev": "sda"},
+               {"volume_id": "v-local", "host": "node-b", "path": "/dev/vg/v-local", "backend": "lvm", "target_dev": "sdb"}]
+    args = {**_args(fakes, volumes), "_source_initiator_iqn": fakes.own_iqn}
+
+    assert live_migration.prepare(args, rpc=object())["disk_paths"] == {"v-root": RBD, "v-local": "/dev/vg/v-local"}
+
+
+@pytest.mark.parametrize("source_iqn", ["iqn.2004-10.com.ubuntu:01:node-a", None])
+def test_distinct_or_unknown_initiator_names_are_accepted(fakes, source_iqn):
+    args = {**_args(fakes), "_source_initiator_iqn": source_iqn}
+
+    assert "v-remote" in live_migration.prepare(args, rpc=object())["disk_paths"]

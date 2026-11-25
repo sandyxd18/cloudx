@@ -55,6 +55,8 @@ class Fakes:
         self.migrate_gate = None  # threading.Event that migrate_domain waits on
         self.migrate_entered = threading.Event()
         self.mappings = []
+        self.target_hosts = []
+        self.source_state = "RUNNING"  # what domain_state answers for the source domain after a failed migration
 
     def log(self, *call):
         self.calls.append(call)
@@ -68,8 +70,9 @@ class Fakes:
     def update_server(self, server_id, fields):
         self.log("update_server", server_id, fields)
 
-    def notify(self, server_id, result, message, action):
+    def notify(self, server_id, result, message, action, target_host=None):
         self.log("notify", server_id, result, message, action)
+        self.target_hosts.append(target_host)
 
 
 @pytest.fixture
@@ -101,10 +104,20 @@ def fakes(monkeypatch, tmp_path):
             raise f.migrate_error
 
     monkeypatch.setattr(ld, "migrate_domain", migrate_domain)
+
+    def domain_state(name):
+        f.log("domain_state", name)
+        if isinstance(f.source_state, Exception):
+            raise f.source_state
+        return f.source_state
+
+    monkeypatch.setattr(ld, "domain_state", domain_state)
+    monkeypatch.setattr(live_migration.iscsi, "initiator_iqn", lambda: "iqn.2004-10.com.ubuntu:01:node-a")
     monkeypatch.setattr(live_migration.network_manager, "delete_tap", lambda tap: f.log("delete_tap", tap))
     monkeypatch.setattr(live_migration.iscsi, "find_session", lambda volume_id: SESSIONS.get(volume_id))
     monkeypatch.setattr(live_migration.volume_manager, "disconnect", lambda vid, host, rpc: f.log("disconnect", vid, host))
     f.rpc = FakeRPC(f)
+    monkeypatch.setattr(live_migration, "INSTANCE_DIR", tmp_path / "instances")
     f.instance_dir = tmp_path / "instances" / SERVER
     f.instance_dir.mkdir(parents=True)
     (f.instance_dir / "seed.iso").write_text("x")
@@ -179,7 +192,8 @@ def test_migrate_domain_uses_the_configured_values(fakes):
     ((name, uri, _xml, kwargs),) = fakes.of("migrate_domain")
     assert name == DOMAIN
     assert uri == "qemu+ssh://root@node-b.mig/system"
-    assert kwargs == {"timeout": 1800, "bandwidth_mbps": 100, "max_downtime_ms": 300, "auto_converge": False}
+    assert kwargs == {"timeout": 1800, "bandwidth_mbps": 100, "max_downtime_ms": 300, "auto_converge": False,
+                      "migration_host": "node-b.mig"}
 
 
 def test_dest_xml_uses_the_target_paths_only_for_changed_disks(fakes):
@@ -413,3 +427,136 @@ def test_handler_runs_in_a_thread(monkeypatch):
 def test_live_migrate_is_the_handler_key():
     assert main.HANDLERS["live_migrate"] is main.handle_live_migrate
     assert "live_migrate_instance" not in main.HANDLERS
+
+
+# --- final-review fixes -------------------------------------------------------------------------------------------
+
+def test_success_notify_carries_the_target_host(fakes):
+    _run(fakes)
+
+    assert fakes.target_hosts == ["node-b"]  # compute-api sets host/status itself if the conductor cast was lost
+
+
+def test_the_memory_stream_falls_back_to_the_target_name(fakes):
+    fakes.rpc.replies["live_migrate_prepare"] = {"disk_paths": DISK_PATHS}
+
+    _run(fakes)
+
+    ((_name, uri, _xml, kwargs),) = fakes.of("migrate_domain")
+    assert uri == "qemu+ssh://root@node-b/system" and kwargs["migration_host"] == "node-b"
+
+
+def test_prepare_gets_the_source_initiator_name(fakes):
+    _run(fakes)
+
+    ((_queue, args, _timeout),) = fakes.of("live_migrate_prepare")
+    assert args["_source_initiator_iqn"] == "iqn.2004-10.com.ubuntu:01:node-a"
+
+
+def test_a_source_without_open_iscsi_sends_no_initiator_name(fakes, monkeypatch):
+    def missing():
+        raise FileNotFoundError("/etc/iscsi/initiatorname.iscsi")
+
+    monkeypatch.setattr(live_migration.iscsi, "initiator_iqn", missing)
+
+    _run(fakes)
+
+    ((_queue, args, _timeout),) = fakes.of("live_migrate_prepare")
+    assert args["_source_initiator_iqn"] is None
+    assert _notified(fakes) == [("success", None, "live_migrate")]
+
+
+def test_a_prepare_failure_rolls_back_without_looking_at_the_source_domain(fakes):
+    fakes.rpc.raises["live_migrate_prepare"] = RuntimeError("export refused")
+
+    _run(fakes)
+
+    assert fakes.of("domain_state") == []
+    assert len(fakes.of("live_migrate_rollback")) == 1
+
+
+def test_a_failed_migration_with_the_source_domain_running_rolls_back(fakes):
+    fakes.migrate_error = live_migration.libvirt_driver.MigrationError("connection reset")
+
+    _run(fakes)
+
+    assert fakes.of("domain_state") == [(DOMAIN,)]
+    assert len(fakes.of("live_migrate_rollback")) == 1
+    assert _notified(fakes)[0][0] == "error"
+
+
+def test_a_failed_migration_whose_guest_already_left_takes_the_success_path(fakes):
+    # migrateToURI3 raised after the destination resumed (the connection dropped in the confirm step): the source
+    # domain is gone, so the guest runs on the target and must not be rolled back
+    fakes.migrate_error = live_migration.libvirt_driver.MigrationError("End of file while reading data")
+    fakes.source_state = None
+
+    _run(fakes)
+
+    assert fakes.of("live_migrate_rollback") == []
+    assert [t for (t,) in fakes.of("delete_tap")] == ["tap-a", "tap-b"]
+    assert len(fakes.of("live_migrate_finish")) == 1
+    assert _updates(fakes) == [{"host": "node-b", "status": "ACTIVE", "error_message": None}]
+    ((result, message, action),) = _notified(fakes)
+    assert result == "success" and action == "live_migrate"
+    assert "End of file while reading data" in message
+    assert fakes.target_hosts == ["node-b"]
+    assert not fakes.instance_dir.exists()
+
+
+UNCLEAR = [
+    ("call still running", live_migration.libvirt_driver.MigrationError("timed out", still_running=True), "RUNNING"),
+    ("source lookup fails", live_migration.libvirt_driver.MigrationError("connection reset"), RuntimeError("libvirtd down")),
+    ("source domain paused", live_migration.libvirt_driver.MigrationError("connection reset"), "PAUSED"),
+]
+
+
+@pytest.mark.parametrize("error,state", [u[1:] for u in UNCLEAR], ids=[u[0] for u in UNCLEAR])
+def test_an_unclear_outcome_neither_rolls_back_nor_reports(fakes, caplog, error, state):
+    fakes.migrate_error = error
+    fakes.source_state = state
+
+    with caplog.at_level("ERROR", logger="compute-worker"):
+        _run(fakes)
+
+    assert fakes.of("live_migrate_rollback") == [] and fakes.of("live_migrate_finish") == []
+    assert fakes.of("delete_tap") == [] and fakes.of("disconnect") == []
+    assert fakes.of("notify") == []                      # no claim restore, no status change by compute-api
+    (fields,) = _updates(fakes)
+    assert set(fields) == {"error_message"}               # status stays MIGRATING for an operator
+    assert "inspect" in fields["error_message"] and "MIGRATING" in fields["error_message"]
+    assert "live migration of" in caplog.text
+    assert fakes.instance_dir.exists()
+
+
+@pytest.mark.parametrize("bad", ["escape", "elsewhere", "root"])
+def test_an_instance_dir_outside_the_instances_dir_is_refused(fakes, tmp_path, bad):
+    # never real system paths: a bug here would rmtree them
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("x")
+    value = {"escape": str(fakes.instance_dir / ".." / ".." / "outside"), "elsewhere": str(outside),
+             "root": str(tmp_path / "instances")}[bad]
+    args = _args(fakes)
+    args["instance_dir"] = value
+
+    _run(fakes, args)
+
+    assert fakes.of("live_migrate_prepare") == [] and fakes.of("migrate_domain") == []
+    assert _updates(fakes) == [{"status": "ACTIVE", "error_message": None}]
+    ((result, message, _action),) = _notified(fakes)
+    assert result == "error" and "instance_dir" in message
+    assert (outside / "keep").exists() and fakes.instance_dir.exists()
+
+
+def test_notify_sends_the_target_host_only_when_given(monkeypatch):
+    sent = []
+    monkeypatch.setattr(main.catalog, "url", lambda name: "http://compute.test:8003")
+    monkeypatch.setattr(main.requests, "post", lambda url, json=None, **kw: sent.append((url, json)))
+
+    main._notify_action_finish(SERVER, "success", None, "live_migrate", target_host="node-b")
+    main._notify_action_finish(SERVER, "error", "boom", "shelve")
+
+    assert sent[0] == (f"http://compute.test:8003/internal/servers/{SERVER}/actions/finish",
+                       {"result": "success", "message": None, "action": "live_migrate", "target_host": "node-b"})
+    assert sent[1][1] == {"result": "error", "message": "boom", "action": "shelve"}  # unchanged for other actions

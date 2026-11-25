@@ -277,3 +277,145 @@ def test_auto_converge_parsing(monkeypatch, reloaded_config, raw, expected):
     monkeypatch.setenv("LIVE_MIGRATION_AUTO_CONVERGE", raw)
 
     assert reloaded_config().LIVE_MIGRATION_AUTO_CONVERGE is expected
+
+
+# --- final-review fixes: memory stream URI (I3), still_running (I4), job helpers (C1) ------------------------------
+
+def test_migrate_domain_sends_the_memory_stream_to_the_migration_host(fake):
+    domain = FakeDomain()
+    fake(domain)
+
+    _migrate(domain, migration_host="10.9.9.2")
+
+    _, params, _ = domain.calls[0]
+    assert params["migrate_uri"] == "tcp://10.9.9.2"     # VIR_MIGRATE_PARAM_URI, libvirt's own value as the fallback
+    assert params["destination_xml"] == "<domain>dest</domain>"
+
+
+def test_migrate_domain_uses_the_libvirt_constant_for_the_uri_param(fake, monkeypatch):
+    monkeypatch.setattr(FakeLibvirt, "VIR_MIGRATE_PARAM_URI", "the-uri-key", raising=False)
+    domain = FakeDomain()
+    fake(domain)
+
+    _migrate(domain, migration_host="node-2.mig")
+
+    assert domain.calls[0][1]["the-uri-key"] == "tcp://node-2.mig"
+
+
+def test_a_migration_error_says_whether_the_call_is_still_running(fake):
+    domain = FakeDomain(migrate=lambda d: (_ for _ in ()).throw(RuntimeError("unable to connect")))
+    fake(domain)
+
+    with pytest.raises(libvirt_driver.MigrationError) as err:
+        _migrate(domain)
+
+    assert err.value.still_running is False
+
+
+def test_abort_job_raising_still_ends_with_a_migration_error(fake):
+    class AbortFails(FakeDomain):
+        def abortJob(self):
+            self.aborted.set()
+            raise RuntimeError("Requested operation is not valid: no job is active")
+
+    def until_aborted(d):
+        d.aborted.wait(10)
+        raise RuntimeError("operation aborted")
+
+    domain = AbortFails(migrate=until_aborted)
+    fake(domain)
+
+    with pytest.raises(libvirt_driver.MigrationError) as err:
+        _migrate(domain, timeout=1)
+
+    assert err.value.still_running is False
+
+
+def test_a_call_still_running_after_abort_is_flagged(fake, monkeypatch):
+    release = threading.Event()
+    domain = FakeDomain(migrate=lambda d: release.wait(10))   # ignores abortJob
+    fake(domain)
+    real_thread = threading.Thread
+
+    class ShortJoin(real_thread):
+        def join(self, timeout=None):
+            return super().join(min(timeout, 0.2) if timeout else timeout)
+
+    monkeypatch.setattr(libvirt_driver.threading, "Thread", ShortJoin)
+    try:
+        with pytest.raises(libvirt_driver.MigrationError) as err:
+            _migrate(domain, timeout=1)
+        assert err.value.still_running is True
+        assert domain.aborted.is_set()
+    finally:
+        release.set()
+
+
+def test_job_info_raising_mid_poll_does_not_stop_the_migration(fake):
+    class FlakyJobInfo(FakeDomain):
+        def jobInfo(self):
+            raise RuntimeError("domain is not running")
+
+    done = threading.Event()
+    domain = FlakyJobInfo(migrate=lambda d: done.wait(0.3))
+    fake(domain)
+
+    _migrate(domain)        # returns normally once the call does
+
+    assert not domain.aborted.is_set()
+
+
+class JobDomain(FakeDomain):
+    def __init__(self, job=0, state=1):
+        super().__init__()
+        self.job, self._state = job, state
+
+    def jobInfo(self):
+        return [self.job] + [0] * 12
+
+    def abortJob(self):
+        self.aborted.set()
+        self.job = 0
+
+    def state(self):
+        return [self._state, 0]
+
+
+def test_active_job_and_abort_job(fake):
+    domain = JobDomain(job=2)
+    conn = fake(domain)
+
+    assert libvirt_driver.active_job("vm1") is True
+    libvirt_driver.abort_job("vm1")
+    assert domain.aborted.is_set()
+    assert libvirt_driver.active_job("vm1") is False
+    assert conn.closed
+
+
+@pytest.mark.parametrize("state,expected", [(1, "RUNNING"), (3, "PAUSED"), (5, "SHUTOFF")])
+def test_domain_state_reads_one_domain(fake, state, expected):
+    fake(JobDomain(state=state))
+
+    assert libvirt_driver.domain_state("vm1") == expected
+
+
+class NoDomain(Exception):
+    def get_error_code(self):
+        return 42
+
+
+def test_domain_state_is_none_for_a_missing_domain_and_raises_otherwise(fake, monkeypatch):
+    class Conn(FakeConn):
+        def __init__(self, exc):
+            super().__init__(None)
+            self.exc = exc
+
+        def lookupByName(self, name):
+            raise self.exc
+
+    monkeypatch.setattr(libvirt_driver, "connect", lambda: Conn(NoDomain("Domain not found")))
+    assert libvirt_driver.domain_state("vm1") is None
+
+    monkeypatch.setattr(libvirt_driver, "connect", lambda: Conn(RuntimeError("libvirtd is down")))
+    with pytest.raises(RuntimeError, match="libvirtd is down"):
+        libvirt_driver.domain_state("vm1")

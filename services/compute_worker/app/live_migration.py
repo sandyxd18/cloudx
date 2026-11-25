@@ -4,7 +4,8 @@ run() drives the whole thing.
 
 The source worker drives the migration and calls the destination's three through RPC. The payload is the one the
 server was built with (server_worker_payload: port, ports, ...) plus `_volumes`, a list of {volume_id, host, path,
-backend, target_dev} (the root volume included), `_target_host` (from compute-api) and `_source_host` (added by run).
+backend, target_dev} (the root volume included), `_target_host` (from compute-api), and `_source_host` and
+`_source_initiator_iqn` (added by run).
 """
 import logging
 import shutil
@@ -27,12 +28,19 @@ def _server_id(args: dict) -> str:
 
 
 def _instance_dir(args: dict) -> Path:
-    # the same path as on the source: the migrated domain XML points at the config drive and console log there
+    """The server's instance directory: the same path as on the source, since the migrated domain XML points at the
+    config drive and console log there. Prepare, rollback and the source cleanup delete it as root, so a value from the
+    payload must lie strictly inside INSTANCE_DIR (after resolving `..` and symlinks); anything else is a ValueError."""
     if args.get("instance_dir"):
-        return Path(args["instance_dir"])
-    if not _server_id(args):
-        raise ValueError("live migration payload has neither instance_dir nor a server id")  # never INSTANCE_DIR itself
-    return INSTANCE_DIR / _server_id(args)
+        path = Path(args["instance_dir"])
+    elif _server_id(args):
+        path = INSTANCE_DIR / _server_id(args)
+    else:
+        raise ValueError("live migration payload has neither instance_dir nor a server id")
+    base, resolved = Path(INSTANCE_DIR).resolve(), path.resolve()
+    if resolved == base or base not in resolved.parents:
+        raise ValueError(f"live migration payload instance_dir {str(path)!r} is not inside {base}")
+    return resolved
 
 
 def _taps(args: dict) -> list[tuple[str, dict]]:
@@ -53,12 +61,27 @@ def _reaches_over_iscsi(volume: dict) -> bool:
     return bool(host) and host != COMPUTE_HOST and not volume_manager._is_rbd(volume.get("path"))
 
 
+def _refuse_a_shared_initiator_name(args: dict) -> None:
+    """LIO keeps one ACL per initiator name. Two nodes cloned from one template share /etc/iscsi/initiatorname.iscsi,
+    and during a live migration both are logged in to the same LV: the source's logout and unexport afterwards would
+    then cut the target's session too. Refuse before anything is made (the source then rolls back)."""
+    source_iqn = args.get("_source_initiator_iqn")
+    if not source_iqn or not any(_reaches_over_iscsi(v) for v in args.get("_volumes") or []):
+        return
+    own_iqn = iscsi.initiator_iqn()
+    if own_iqn == source_iqn:
+        raise RuntimeError(
+            f"{COMPUTE_HOST} and {args.get('_source_host') or 'the source node'} have the same iSCSI initiator name "
+            f"{own_iqn}; give every compute node its own (/etc/iscsi/initiatorname.iscsi, see docs/live-migration.md)")
+
+
 def prepare(args: dict, rpc) -> dict:
     """Make this node ready for the domain: unbound taps on br-int, iSCSI sessions of the LVs that live elsewhere, and
     the config drive at the source's path. Repeating the call is harmless. If a step fails, what this call made is
     removed and the error is raised."""
     server_id = _server_id(args)
     instance_dir = _instance_dir(args)
+    _refuse_a_shared_initiator_name(args)
     dir_existed = instance_dir.exists()
     taps, connected, disk_paths = [], [], {}
     try:
@@ -195,9 +218,11 @@ def _remove_dir(path: Path) -> None:
 def run(args: dict, rpc, *, update_server, notify) -> None:
     """Live-migrate the server to args["_target_host"] and report the outcome. Never raises.
 
-    The server is MIGRATING while this runs. On success its host becomes the target; on any failure before the
-    domain has left, the target is rolled back and the server stays ACTIVE here; a failure in the cleanup after the
-    domain has left is reported but does not roll back (the guest already runs on the target)."""
+    The server is MIGRATING while this runs. On success its host becomes the target; on a failure while the domain
+    still runs here with no job left, the target is rolled back and the server goes back to ACTIVE here; when libvirt
+    raised but the domain has left this node, the migration is finished as a success; a failure in the cleanup after
+    the domain has left is reported but does not roll back (the guest already runs on the target). When it cannot be
+    told where the guest runs, nothing is rolled back or reported: the server stays MIGRATING with an error_message."""
     server_id = _server_id(args)
     with _running_lock:
         if server_id in _running:
@@ -213,57 +238,111 @@ def run(args: dict, rpc, *, update_server, notify) -> None:
             _running.discard(server_id)
 
 
-def _report(server_id: str, fields: dict, result: str, message: str | None, update_server, notify) -> None:
+def _report(server_id: str, fields: dict, result: str, message: str | None, update_server, notify, **extra) -> None:
     """Set the server's fields through the conductor, then notify compute-api of the outcome. The notify always goes
-    out with the real result, even when the status update fails (a cast raises while RabbitMQ is down)."""
+    out with the real result, even when the status update fails (a cast raises while RabbitMQ is down); compute-api
+    then sets host and status itself from the notify (`extra` carries the target host on success)."""
     try:
         update_server(server_id, fields)
     except Exception as exc:
         log.error("live migration of %s: could not update the server to %s: %s", server_id, fields, exc)
         note = f"the status update failed ({exc})"
         message = f"{message}; {note}" if message else note
-    notify(server_id, result, message, "live_migrate")
+    notify(server_id, result, message, "live_migrate", **extra)
+
+
+def _own_initiator_iqn() -> str | None:
+    """This node's iSCSI initiator name, or None on a node without open-iscsi (RBD only)."""
+    try:
+        return iscsi.initiator_iqn()
+    except Exception as exc:
+        log.debug("no iSCSI initiator name on this node: %s", exc)
+        return None
+
+
+def _outcome_after_failure(domain: str, exc: Exception) -> str:
+    """Where is the guest after migrate_domain raised? "source": the job has ended and the domain still runs here, so
+    the target can be rolled back. "target": the domain has left this node (libvirt raised after the destination took
+    over, e.g. the connection dropped in the confirm step). "unclear": the migration call may still be running, the
+    lookup failed, or the domain is here but not running; rolling back could destroy the only running copy."""
+    if getattr(exc, "still_running", False):
+        return "unclear"
+    try:
+        state = libvirt_driver.domain_state(domain)
+    except Exception as lookup_exc:
+        log.error("live migration: could not look up %s on this node after the failure: %s", domain, lookup_exc)
+        return "unclear"
+    if state is None:
+        return "target"
+    return "source" if state == "RUNNING" else "unclear"
 
 
 def _run(args: dict, rpc, update_server, notify) -> None:
     server_id = _server_id(args)
     target = args.get("_target_host")
     domain = args.get("libvirt_domain_name")
+    reason = None
     if not server_id or not target or not domain:
         reason = "live migration payload needs a server id, _target_host and libvirt_domain_name"
+    else:
+        try:  # the destination puts the config drive and console log at the same path, and rollback removes it there
+            args = {**args, "instance_dir": str(_instance_dir(args)), "_source_host": COMPUTE_HOST,
+                    "_source_initiator_iqn": _own_initiator_iqn()}
+        except ValueError as exc:
+            reason = str(exc)
+    if reason:
         log.error("live migration of %s: %s", server_id, reason)
         if server_id:
             _report(server_id, {"status": "ACTIVE", "error_message": None}, "error", reason, update_server, notify)
         return
-    # the destination puts the config drive and console log at the same path, and rollback removes it there
-    args = {**args, "instance_dir": str(_instance_dir(args)), "_source_host": COMPUTE_HOST}
     volumes = args.get("_volumes") or []
     log.info("live migration of %s (%s): %s -> %s", server_id, domain, COMPUTE_HOST, target)
 
+    migrating = False  # set once migrate_domain is entered: from then on the guest may have left this node
     try:
         prepared = _call(rpc, target, "live_migrate_prepare", args, PREPARE_TIMEOUT)
         mapping = _disk_mapping(server_id, volumes, prepared.get("disk_paths") or {})
         dest_xml = libvirt_driver.rewrite_disk_sources(libvirt_driver.domain_xml_for_migration(domain), mapping)
         taps = libvirt_driver.interface_taps(domain)  # read now: the domain is gone from here once it has migrated
+        # one address for both the libvirt connection and the QEMU memory stream (VIR_MIGRATE_PARAM_URI)
+        migration_host = prepared.get("migration_host") or target
+        migrating = True
         libvirt_driver.migrate_domain(
-            domain, LIVE_MIGRATION_URI.format(host=prepared.get("migration_host") or target), dest_xml,
+            domain, LIVE_MIGRATION_URI.format(host=migration_host), dest_xml,
             timeout=LIVE_MIGRATION_TIMEOUT, bandwidth_mbps=LIVE_MIGRATION_BANDWIDTH_MBPS,
             max_downtime_ms=LIVE_MIGRATION_MAX_DOWNTIME_MS, auto_converge=LIVE_MIGRATION_AUTO_CONVERGE,
+            migration_host=migration_host,
         )
+        moved_despite = None
     except Exception as exc:
-        log.error("live migration of %s to %s failed: %s; rolling back the target", server_id, target, exc)
-        # Known limitation: after a prepare timeout, prepare may still be running on the target, and this rollback can
-        # race it (rollback runs first and prepare then leaves taps, sessions or the instance dir behind).
-        try:
-            _call(rpc, target, "live_migrate_rollback", args, ROLLBACK_TIMEOUT)
-        except Exception as rollback_exc:
-            log.warning("live migration of %s: rollback on %s failed: %s", server_id, target, rollback_exc)
-        _report(server_id, {"status": "ACTIVE", "error_message": None}, "error", f"live migration failed: {exc}",
-                update_server, notify)
-        return
+        outcome = _outcome_after_failure(domain, exc) if migrating else "source"
+        if outcome == "unclear":
+            note = (f"live migration to {target} failed ({exc}) and it is unclear where the guest runs; the server stays "
+                    f"MIGRATING: inspect both nodes (virsh domjobinfo / virsh list) before any recovery step")
+            log.error("live migration of %s: %s", server_id, note)
+            try:
+                update_server(server_id, {"error_message": note})
+            except Exception as update_exc:
+                log.error("live migration of %s: could not record the error message: %s", server_id, update_exc)
+            return
+        if outcome == "source":
+            log.error("live migration of %s to %s failed: %s; rolling back the target", server_id, target, exc)
+            # No race with a prepare that timed out: the target worker has one consumer with prefetch 1
+            # (shared/rpc.py RPCConsumer) and acks after the handler, so its queue runs prepare to the end before it
+            # delivers this rollback (an unacked prepare is redelivered ahead of it after a target worker restart).
+            try:
+                _call(rpc, target, "live_migrate_rollback", args, ROLLBACK_TIMEOUT)
+            except Exception as rollback_exc:
+                log.warning("live migration of %s: rollback on %s failed: %s", server_id, target, rollback_exc)
+            _report(server_id, {"status": "ACTIVE", "error_message": None}, "error", f"live migration failed: {exc}",
+                    update_server, notify)
+            return
+        log.warning("live migration of %s: libvirt reported %s, but the domain has left this node; finishing the "
+                    "migration on %s", server_id, exc, target)
+        moved_despite = exc
 
     log.info("live migration of %s: the domain runs on %s; cleaning up", server_id, target)
-    failures = []
+    failures = [f"libvirt reported an error after the guest had moved ({moved_despite})"] if moved_despite else []
 
     def attempt(what: str, step, *step_args) -> None:
         try:
@@ -291,4 +370,4 @@ def _run(args: dict, rpc, update_server, notify) -> None:
         if finish_failed:
             message += (f"; the guest's network may be down until an operator re-binds its ports on {target}")
     _report(server_id, {"host": target, "status": "ACTIVE", "error_message": None}, "success", message,
-            update_server, notify)
+            update_server, notify, target_host=target)
