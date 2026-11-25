@@ -71,6 +71,9 @@ pub=$1 peer=$2 key=/root/.ssh/cloudx_migration
 install -d -m 700 /root/.ssh
 touch /root/.ssh/authorized_keys /root/.ssh/known_hosts /root/.ssh/config
 chmod 600 /root/.ssh/authorized_keys /root/.ssh/known_hosts /root/.ssh/config
+# a file whose last line has no newline must not glue the next line to it
+nl() { [[ ! -s $1 || -z $(tail -c1 "$1") ]] || echo >> "$1"; }
+nl /root/.ssh/authorized_keys; nl /root/.ssh/known_hosts; nl /root/.ssh/config
 grep -qxF "$pub" /root/.ssh/authorized_keys || echo "$pub" >> /root/.ssh/authorized_keys
 if ! ssh-keygen -F "$peer" -f /root/.ssh/known_hosts >/dev/null; then
     scanned=$(ssh-keyscan -H -T 10 "$peer" 2>/dev/null) || scanned=""

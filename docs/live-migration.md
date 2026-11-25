@@ -18,7 +18,7 @@ Only `ACTIVE` servers can be moved live. Paused, suspended, stopped and other st
 
 ## Prerequisites
 
-1. **ssh between the compute nodes.** The compute worker runs as root on every node and opens a libvirt connection `qemu+ssh://root@NODE/system` to the target. Nothing creates the keys for you: run the script from any machine that can ssh to all the compute nodes as a user with sudo (the lab notes use `ubuntu`):
+1. **ssh between the compute nodes.** The compute worker runs as root on every node and opens a libvirt connection `qemu+ssh://root@NODE/system` to the target. Nothing creates the keys for you: run the script from any machine that can ssh to all the compute nodes as a user with passwordless sudo (the lab notes use `ubuntu`):
 
    ```bash
    scripts/setup-migration-ssh.sh --dry-run comp01 comp02    # print the plan, run no ssh
@@ -29,9 +29,9 @@ Only `ACTIVE` servers can be moved live. Paused, suspended, stopped and other st
 
 2. **Network between the compute nodes.** TCP 22 (the libvirt connection) and TCP 49152-49215 (the memory of the guest, sent by QEMU) must be open from every compute node to every other one. The memory travels unencrypted. Nothing else changes: iSCSI and Ceph work as before.
 
-3. **Security consequence.** After step 1 every compute node can log in as root on every other compute node, with a key that has no passphrase. Anyone who gets root on one compute node gets root on all of them. Keep the compute nodes on a management network that only operators reach, and do not run the script if that trade is not acceptable. Removing the access later is a matter of deleting the `cloudx-migration@...` lines from `/root/.ssh/authorized_keys` and the `cloudx-migration` blocks from `/root/.ssh/config`.
+3. **Security consequence.** After step 1 every compute node can log in as root on every other compute node, with a key that has no passphrase. Anyone who gets root on one compute node gets root on all of them. The host keys that the script puts into `known_hosts` come from `ssh-keyscan`, which is trust on first use: it takes whatever answers on that name at that moment, so run the script only on a network you trust. Keep the compute nodes on a management network that only operators reach, and do not run the script if that trade is not acceptable. Removing the access later is a matter of deleting the `cloudx-migration@...` lines from `/root/.ssh/authorized_keys` and the `cloudx-migration` blocks from `/root/.ssh/config`.
 
-4. **A version that knows the call.** Upgrade all compute nodes first, then compute-api. A worker that does not know the new calls answers them with an error, so a request sent to a node that has not been upgraded yet fails with that error and changes nothing.
+4. **A version that knows the call.** Upgrade all compute nodes first, then compute-api. Follow that order: a node that has not been upgraded does not know the new calls (see the last rows of the troubleshooting table for what that looks like).
 
 ## Configuration
 
@@ -103,14 +103,37 @@ The reason is the message of the `live_migrate` entry of `GET /servers/{ref}/os-
 
 **A migration that completed but was not cleaned up.** When the guest already runs on the target, but removing the old taps, the final port binding on the target, the iSCSI logout or the cleanup of the source directory failed, the action is reported as **success** with a message that starts with `migrated, but cleanup failed:` followed by the failed steps. The server is `ACTIVE` on the target. If the failed step was the final binding of the ports, the network of the guest may be down until an operator binds the ports on the target: on the target node check with `ovs-vsctl` that each tap of the guest (`virsh -c qemu:///system domiflist DOMAIN`) has `external_ids:iface-id` set (`ovs-vsctl get Interface TAP external_ids`), and read the worker log for the reason. If the status update itself could not be sent, the message says `the status update failed`.
 
-**The worker of the source node restarts during a migration.** This is a known limitation. libvirt may still finish the move while the worker is gone. The server can then stay `MIGRATING` with the source as its host, and the ports on the target are not bound. When the worker starts it only puts a server back to `ACTIVE` when its domain is still running on that node. To recover, check both nodes:
+**The worker of the source node restarts during a migration.** This is a known limitation. libvirt may still finish the move while the worker is gone. The server can then stay `MIGRATING` with the source as its `host`, and the ports on the target are not bound (the worker that would do it is gone). When a worker starts it puts a `MIGRATING` server whose `host` is that node back to `ACTIVE` only when the domain is `RUNNING` on that node (`recover_migrating_servers`, `services/compute_worker/app/main.py`). It changes nothing else. To recover, find where the guest runs:
 
 ```bash
 sudo virsh -c qemu:///system list        # on the source and on the target
 ```
 
-- The domain runs on the **target**: bind its ports on the target (see above) and fix the server record (`host` and status) in the compute database.
-- The domain runs on the **source**: restart the worker (`sudo systemctl restart cloudx-compute-worker`) or run `cloudx server start web-1`, and the server returns to `ACTIVE`.
+*The domain runs on the source.* The migration did not happen. Either restart the worker on the source (`sudo systemctl restart cloudx-compute-worker`) or run `cloudx server start web-1`: the API sets `STARTING` without checking the old status, the worker's start does nothing to a domain that already runs, and then sets `ACTIVE`. Both end with the server `ACTIVE` on the source. **The placement claim stays on the target**: the API moved it there when the migration started, and only a failed migration reported by the worker (`live_migrate`, result `error`) moves it back. Neither the worker start nor `server start` does that. The CLI has no command for placement allocations. The placement API has `POST /allocations` (admin), which replaces all allocations of a consumer; a body with the server id as `consumer_uuid`, its `project_id` and `{"<source resource provider uuid>": {"resources": {"VCPU": N, "MEMORY_MB": M}}}` puts the claim back on the source (`cloudx placement provider-list` shows the provider uuids). If you do not, the capacity accounting for that server is wrong, with the target charged and the source not, until the server is moved, resized or deleted.
+
+*The domain runs on the target.* The guest runs, but its network is not bound there and the server record still says source. The placement claim is already on the target, which is right.
+
+1. On the **source** node remove the old tap, which still carries the `iface-id` of the port (two nodes with the same `iface-id` make `ovn-controller` fight over the port). Take the tap names from `ovs-vsctl list-ports br-int` with the `tap-mini-` prefix that belong to this server, or from the target's `virsh domiflist` (the names are the same on both nodes):
+
+   ```bash
+   sudo ovs-vsctl --if-exists del-port TAP
+   sudo ip link delete TAP
+   ```
+
+2. On the **target** node, for each tap of the domain (`sudo virsh -c qemu:///system domiflist DOMAIN`, DOMAIN is `libvirt_domain_name` in `cloudx server show web-1`), set the four values that the worker sets when it binds a port. `LOGICAL_PORT` is `logical_port_name` of the port and `MAC` its `mac_address` (`cloudx port show PORT_ID`; the ports of the server are `port_id` and `extra_port_ids` in `cloudx server show web-1`), and `SERVER_ID` is the server id:
+
+   ```bash
+   sudo ovs-vsctl set Interface TAP external_ids:iface-id=LOGICAL_PORT
+   sudo ovs-vsctl set Interface TAP external_ids:attached-mac=MAC
+   sudo ovs-vsctl set Interface TAP external_ids:vm-id=SERVER_ID
+   sudo ovs-vsctl set Interface TAP external_ids:iface-status=active
+   ```
+
+   (`network_manager.set_tap_binding`; if a tap is missing from `br-int`, add it first with `sudo ovs-vsctl --may-exist add-port br-int TAP`.)
+
+3. Fix the server record. **No CLI or API command can change the `host` of a server or take it out of `MIGRATING`**: `POST /servers/{ref}/migrate` and `evacuate` refuse a `MIGRATING` server, and only the workers can write these fields (through the conductor). The way left is to edit the row in the compute database, table `compute_servers`, after a backup: `UPDATE compute_servers SET host = 'TARGET', status = 'ACTIVE', error_message = NULL WHERE id = 'SERVER_ID';`. This is a manual database edit, not a supported command.
+
+4. Optional, on the **source** node only (the target uses the same path for the guest): the source still holds the instance directory of the server (`/var/lib/cloudx/compute/instances/SERVER_ID/`) and, for an LVM volume that the source reached over iSCSI, an iSCSI session. Remove them by hand once you are sure the guest runs on the target.
 
 **Other limits.**
 
@@ -129,7 +152,7 @@ sudo virsh -c qemu+ssh://root@comp02/system list               # the URI the wor
 
 | Symptom | Likely cause |
 |---|---|
-| `live migration failed: ... Host key verification failed` or `Permission denied (publickey)` | The ssh trust is missing or the node name differs from the one in `known_hosts` and `config`. Run `scripts/setup-migration-ssh.sh` again with the names used in `live_migration_host`. |
+| `live migration failed: ... Host key verification failed` or `Permission denied (publickey)` | The ssh trust is missing or the node name differs from the one in `known_hosts` and `config`. Run `scripts/setup-migration-ssh.sh` again with the names used in `live_migration_host`. If the host key of a node changed (a reinstalled node), the script does not replace it, because it skips peers that are already in `known_hosts`: on each affected node run `sudo ssh-keygen -R NODE -f /root/.ssh/known_hosts` first, then the script. |
 | `live migration failed: ... Connection refused` or a timeout on port 49152-49215 | The memory ports are blocked between the nodes. |
 | The migration fails at once with an unknown method error | The target node still runs an older worker. Upgrade the compute nodes before compute-api; with an older worker on the source node the server can stay `MIGRATING` (restart that worker, see above). |
 | `server ... cannot be live-migrated (needs ACTIVE)` | The server is not `ACTIVE`, or another migration is running. |
