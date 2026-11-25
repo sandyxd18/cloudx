@@ -70,12 +70,29 @@ def show_instance_action(ref: str, request_id: str, current: CurrentUser, db: DB
                                "finish_time": r.finish_time.isoformat() if r.finish_time else None}}
 
 
+def _settle_live_migration(db, server_id: str, result: str, target_host: str | None) -> None:
+    """The worker sets host and status through a conductor cast, which can be lost while this HTTP notify arrives.
+    So a server that is still MIGRATING is settled here as well: on success it is ACTIVE on the target (only when the
+    worker named it: ACTIVE on the source would let the target's reconciler destroy the moved guest), on error ACTIVE
+    on its host. A server in any other status (DELETING, DELETED, already settled) is left alone."""
+    if result == "success" and target_host:
+        values = {"host": target_host, "status": "ACTIVE", "error_message": None}
+    elif result == "error":
+        values = {"status": "ACTIVE"}
+    else:
+        return
+    db.execute(update(Server).where(Server.id == server_id, Server.status == "MIGRATING").values(**values))
+    db.commit()
+
+
 @router.post("/internal/servers/{server_id}/actions/finish", dependencies=[InternalAuth])
 def internal_finish_action(server_id: str, payload: dict, db: DB):
     result, action = payload.get("result", "success"), payload.get("action")
     finish_action(db, server_id, result=result, message=payload.get("message"), action=action)
     if action == "shelve" and result == "success":  # an offloaded server holds no vCPU or memory on any node
         release_allocation(server_id)
+    if action == "live_migrate":
+        _settle_live_migration(db, server_id, result, payload.get("target_host"))
     if action == "live_migrate" and result == "error":
         # the domain stayed on the source; the claim moved to the target when the migration began. On "success" with a
         # message (a cleanup problem after the domain left) the server lives on the target, so the claim stays there.
@@ -207,7 +224,9 @@ def place_and_build(db, server, status: str, target_status: str, host: str | Non
 
 def _relocate(ref: str, host: str | None, current: dict, db, evacuate: bool) -> dict:
     server = require_server(db, ref, current)
-    ok = {"ACTIVE", "SHUTOFF", "ERROR"} if evacuate else {"ACTIVE", "SHUTOFF"}
+    # Evacuate also takes a MIGRATING server: it only runs once the source is forced down (checked below), and then
+    # nothing else can take the server out of MIGRATING.
+    ok = {"ACTIVE", "SHUTOFF", "ERROR", "MIGRATING"} if evacuate else {"ACTIVE", "SHUTOFF"}
     if server.status not in ok:
         raise HTTPException(status_code=409, detail=f"server status {server.status} cannot be {'evacuated' if evacuate else 'migrated'}")
     if not server.root_volume_id or not server.host:
