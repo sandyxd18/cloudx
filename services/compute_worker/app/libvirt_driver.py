@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import threading
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -351,6 +352,91 @@ def lookup(name: str):
     except Exception:
         conn.close()
         raise
+
+
+class MigrationError(RuntimeError):
+    """A live migration did not complete: libvirt failed it, or it ran past its timeout and was aborted."""
+
+
+# How often migrate_domain looks at the running job. Tests shorten it.
+_MIGRATION_POLL_SECONDS = 1.0
+
+
+def rewrite_disk_sources(xml: str, mapping: dict[str, str]) -> str:
+    """Replace the <source dev=...> / <source file=...> of every disk whose current value is a key of `mapping`.
+    Other disks, including network (RBD) disks, are left as they are."""
+    root = ET.fromstring(xml)
+    for source in root.findall("./devices/disk/source"):
+        for attr in ("dev", "file"):
+            current = source.get(attr)
+            if current is not None and current in mapping:
+                source.set(attr, mapping[current])
+    return ET.tostring(root, encoding="unicode")
+
+
+def domain_xml_for_migration(name: str) -> str:
+    conn, domain = lookup(name)
+    try:
+        return domain.XMLDesc(getattr(libvirt, "VIR_DOMAIN_XML_MIGRATABLE", 8))
+    finally:
+        conn.close()
+
+
+def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, bandwidth_mbps: int,
+                   max_downtime_ms: int, auto_converge: bool) -> None:
+    """Live-migrate the running domain to `dest_uri` (peer to peer) using `dest_xml` as its definition there.
+    Blocks until it completes; raises MigrationError if libvirt fails it or `timeout` seconds pass (the job is aborted)."""
+    # The fallbacks are libvirt's own values (libvirt-domain.h), so a libvirt-python without a name still works.
+    flags = (getattr(libvirt, "VIR_MIGRATE_LIVE", 1) | getattr(libvirt, "VIR_MIGRATE_PEER2PEER", 2)
+             | getattr(libvirt, "VIR_MIGRATE_PERSIST_DEST", 8) | getattr(libvirt, "VIR_MIGRATE_UNDEFINE_SOURCE", 16)
+             | getattr(libvirt, "VIR_MIGRATE_ABORT_ON_ERROR", 4096))
+    if auto_converge:
+        flags |= getattr(libvirt, "VIR_MIGRATE_AUTO_CONVERGE", 8192)
+    params = {getattr(libvirt, "VIR_MIGRATE_PARAM_DEST_XML", "destination_xml"): dest_xml}
+    if bandwidth_mbps > 0:
+        # libvirt reads this parameter in MiB/s; the option name follows the config key and is passed through as is
+        params[getattr(libvirt, "VIR_MIGRATE_PARAM_BANDWIDTH", "bandwidth")] = bandwidth_mbps
+
+    conn, domain = lookup(name)
+    outcome: dict[str, BaseException] = {}
+
+    def run_migration():
+        try:
+            domain.migrateToURI3(dest_uri, params, flags)
+        except BaseException as exc:  # reported to the caller below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run_migration, name=f"migrate-{name}", daemon=True)
+    try:
+        deadline = time.monotonic() + timeout
+        downtime_set = False
+        worker.start()
+        while worker.is_alive():
+            worker.join(_MIGRATION_POLL_SECONDS)
+            if not worker.is_alive():
+                break
+            if not downtime_set:
+                try:
+                    domain.migrateSetMaxDowntime(max_downtime_ms)
+                    downtime_set = True
+                except Exception as exc:  # the job may not have started yet; try again on the next tick
+                    log.debug("%s: migrateSetMaxDowntime not accepted yet: %s", name, exc)
+            try:
+                info = domain.jobInfo()
+                log.debug("%s: migration job %s, %s of %s bytes of memory remaining", name, info[0], info[8], info[6])
+            except Exception as exc:
+                log.debug("%s: jobInfo failed: %s", name, exc)
+            if time.monotonic() >= deadline:
+                try:
+                    domain.abortJob()
+                except Exception as exc:
+                    log.warning("%s: abortJob failed: %s", name, exc)
+                worker.join(30)
+                raise MigrationError(f"timed out after {timeout} s")
+        if "error" in outcome:
+            raise MigrationError(str(outcome["error"])) from outcome["error"]
+    finally:
+        conn.close()
 
 
 def _ensure_unmanaged_taps(domain) -> None:

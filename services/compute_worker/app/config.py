@@ -42,3 +42,12 @@ def endpoint(args: dict, key: str, env_name: str, default: str | None = None) ->
 COMPUTE_HOST = os.getenv("COMPUTE_HOST", os.getenv("NODE_NAME", "cloudx-compute-01"))
 # Address browsers use to reach this node's websockify on port 6080 (the console link compute-api hands out); defaults to the node name.
 CONSOLE_PROXY_HOST = os.getenv("CONSOLE_PROXY_HOST") or COMPUTE_HOST
+
+# Live migration. The host is the address other nodes use to reach this one; the URI is a template for the libvirt
+# connection to the destination ({host} is replaced by the destination's live_migration_host).
+LIVE_MIGRATION_HOST = os.getenv("LIVE_MIGRATION_HOST") or COMPUTE_HOST
+LIVE_MIGRATION_URI = os.getenv("LIVE_MIGRATION_URI", "qemu+ssh://root@{host}/system")
+LIVE_MIGRATION_TIMEOUT = int(os.getenv("LIVE_MIGRATION_TIMEOUT", "1800"))
+LIVE_MIGRATION_MAX_DOWNTIME_MS = int(os.getenv("LIVE_MIGRATION_MAX_DOWNTIME_MS", "300"))
+LIVE_MIGRATION_BANDWIDTH_MBPS = int(os.getenv("LIVE_MIGRATION_BANDWIDTH_MBPS", "0"))  # 0 = unlimited
+LIVE_MIGRATION_AUTO_CONVERGE = os.getenv("LIVE_MIGRATION_AUTO_CONVERGE", "false").strip().lower() in ("true", "1", "yes")

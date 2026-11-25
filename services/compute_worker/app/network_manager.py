@@ -45,12 +45,21 @@ def _add_tap(name: str) -> None:
     run(["ip", "link", "set", name, "up"])
 
 
-def bind_tap_to_ovs(name: str, logical_port_name: str, mac_address: str, server_id: str) -> None:
+def plug_tap(name: str) -> None:
+    """Add the tap to the integration bridge without an iface-id, so OVN does not claim the port yet."""
     run(["ovs-vsctl", "--may-exist", "add-port", OVS_BRIDGE, name])
+
+
+def set_tap_binding(name: str, logical_port_name: str, mac_address: str, server_id: str) -> None:
     run(["ovs-vsctl", "set", "Interface", name, f"external_ids:iface-id={logical_port_name}"])
     run(["ovs-vsctl", "set", "Interface", name, f"external_ids:attached-mac={mac_address}"])
     run(["ovs-vsctl", "set", "Interface", name, f"external_ids:vm-id={server_id}"])
     run(["ovs-vsctl", "set", "Interface", name, "external_ids:iface-status=active"])
+
+
+def bind_tap_to_ovs(name: str, logical_port_name: str, mac_address: str, server_id: str) -> None:
+    plug_tap(name)
+    set_tap_binding(name, logical_port_name, mac_address, server_id)
 
 
 def delete_tap(name: str) -> None:
