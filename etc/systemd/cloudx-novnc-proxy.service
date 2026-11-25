@@ -12,7 +12,8 @@ User=root
 Group=root
 # console_proxy.py is a top-level module for websockify, and it imports the shared package
 Environment=PYTHONPATH=/opt/cloudx/services/compute_worker/app:/opt/cloudx/services
-ExecStart=/opt/cloudx/venv/bin/python -m websockify --web /usr/share/novnc --token-plugin console_proxy.ConsoleTokenPlugin 6080
+# console_proxy.main() runs websockify on port 6080, with https when console_proxy_cert and console_proxy_key are set in compute-worker.conf
+ExecStart=/opt/cloudx/venv/bin/python -m console_proxy
 Restart=always
 RestartSec=5s
 

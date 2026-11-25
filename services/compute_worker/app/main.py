@@ -37,7 +37,7 @@ from shared import catalog  # noqa: E402
 from shared.internal import internal_headers  # noqa: E402
 from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
-from . import iscsi, libvirt_driver, network_manager, volume_manager, worker  # noqa: E402
+from . import console_proxy, iscsi, libvirt_driver, network_manager, volume_manager, worker  # noqa: E402
 from .config import COMPUTE_HOST, CONSOLE_PROXY_HOST, LIBVIRT_URI, OVS_BRIDGE, ROOT_VOLUME_WAIT_TIMEOUT, VM_NAME_PREFIX, endpoint  # noqa: E402
 FENCED_FLAG = Path("/var/lib/cloudx/ha-watchdog/fenced")  # written by cloudx-ha-watchdog after it destroyed VMs
 from shared.proc import CommandError, succeeds
@@ -854,7 +854,11 @@ def handle_get_console_info(args: dict) -> dict:
     domain = args.get("libvirt_domain_name")
     if not domain:
         return {"error": "server has no libvirt domain"}
-    return {**libvirt_driver.vnc_info(domain), "host": COMPUTE_HOST, "proxy_host": CONSOLE_PROXY_HOST,
+    try:
+        scheme = "https" if console_proxy.tls_files() else "http"  # the proxy serves https when it has a certificate and a key
+    except ValueError:  # one of the two only: the proxy does not start, so the link scheme does not matter
+        scheme = "http"
+    return {**libvirt_driver.vnc_info(domain), "host": COMPUTE_HOST, "proxy_host": CONSOLE_PROXY_HOST, "proxy_scheme": scheme,
             "domain": domain}   # the console token is bound to this libvirt domain and its port
 
 

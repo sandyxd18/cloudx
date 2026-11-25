@@ -6,6 +6,18 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Added
+- The browser console proxy can serve https. Set `console_proxy_cert` and `console_proxy_key` (a certificate chain and a
+  key file, both readable by root) in `/etc/cloudx/compute-worker/compute-worker.conf` on a compute node and restart
+  `cloudx-compute-worker`: `cloudx-novnc-proxy` then accepts https only on port 6080, and the console link starts with
+  `https://`. Before, the proxy was always plain http and the console token crossed the network in the clear. Without the
+  two settings nothing changes. One of them alone, or a file that cannot be read, stops the proxy with the reason in
+  `journalctl -u cloudx-novnc-proxy` instead of serving http under an https link. CloudX does not create the certificate:
+  use one your users' browsers trust, or accept a self-signed one once by opening `https://<console_proxy_host>:6080`.
+  The unit now starts `python -m console_proxy` (same websockify, same port, same plugin), so the unit file is replaced
+  by the upgrade; `cloudx-compute-api` reads a new optional `proxy_scheme` from the worker and uses `http` when the
+  worker does not send one.
+
 ## 1.0.11 (2026-11-10)
 
 No change since 1.0.11-rc1: the release is built from the same code, and the section of 1.0.11-rc1 below holds the changes. No schema change. The release files of 1.0.11-rc1 (the checksums of the 47 `.deb` files matched `SHA256SUMS`) were installed on the lab (three controllers, two compute nodes, controllers first) and checked there; see `docs/releases/v1.0.11.md`.
