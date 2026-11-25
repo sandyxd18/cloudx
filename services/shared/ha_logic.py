@@ -8,14 +8,20 @@ def is_stale(last_seen: datetime, now: datetime, limit: int = 60) -> bool:
 
 def partition(servers: list[dict], protected: set[str], dead_host: str,
               vol_hosts: dict[str, list[str | None]]) -> tuple[list[str], list[tuple[str, str]]]:
-    """(evacuate ids, [(skipped id, reason)]). A server is safe only if every volume is on a known, living host."""
+    """(evacuate ids, [(skipped id, reason)]). A server is safe only if every volume is on a known, living host.
+
+    A MIGRATING server is never evacuated automatically: its guest may already run on the live-migration
+    target, and a second copy on the same disks would corrupt them. An operator decides (docs/live-migration.md).
+    """
     ok: list[str] = []
     skipped: list[tuple[str, str]] = []
     for s in servers:
         if s["host"] != dead_host or s["id"] not in protected:
             continue
         hosts = vol_hosts.get(s["id"]) or [None]  # no volume info = cannot prove safe
-        if any(h is None for h in hosts):
+        if s.get("status") == "MIGRATING":
+            skipped.append((s["id"], "live migration in progress; check the target before evacuating"))
+        elif any(h is None for h in hosts):
             skipped.append((s["id"], "volume host unknown"))
         elif dead_host in hosts:
             skipped.append((s["id"], "volume on failed host"))

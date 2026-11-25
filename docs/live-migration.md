@@ -178,7 +178,7 @@ If compute-api logged that the claim could not be put back (`... its placement c
 
 ### Other limits
 
-- No block migration, no TLS for the libvirt connection (the ssh connection is encrypted, the memory stream on 49152-49215 is not), no multi-chassis binding, no dashboard button, and no automatic evacuation by `ha-api`.
+- No block migration, no TLS for the libvirt connection (the ssh connection is encrypted, the memory stream on 49152-49215 is not), no multi-chassis binding, no dashboard button, and `ha-api` never evacuates a `MIGRATING` server on its own (it records it as skipped, with the reason); that case is for an operator.
 - `host drain` migrates one server at a time; a node with many large servers takes long.
 - Servers with a local LV on the drained node are always left behind.
 

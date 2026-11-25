@@ -29,6 +29,18 @@ def test_partition_mixed():
     assert dict(skipped) == {"bad-vol": "volume on failed host", "unknown-vol": "volume host unknown"}
 
 
+def test_partition_skips_a_server_that_is_live_migrating():
+    # the guest may already run on the live-migration target; evacuating would start a second copy
+    servers = [
+        {"id": "moving", "host": "h1", "status": "MIGRATING"},
+        {"id": "ok", "host": "h1", "status": "ACTIVE"},
+    ]
+    vols = {"moving": ["h3"], "ok": ["h3"]}
+    ids, skipped = partition(servers, {"moving", "ok"}, "h1", vols)
+    assert ids == ["ok"]
+    assert dict(skipped) == {"moving": "live migration in progress; check the target before evacuating"}
+
+
 def test_partition_server_without_volumes_is_skipped():
     ids, skipped = partition([{"id": "a", "host": "h1", "status": "ACTIVE"}], {"a"}, "h1", {})
     assert ids == [] and dict(skipped) == {"a": "volume host unknown"}
