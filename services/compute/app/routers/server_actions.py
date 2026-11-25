@@ -278,17 +278,6 @@ def delete_server(ref: str, current: UserOrInternal, db: DB, keep_root_volume: b
     return {"status": "deleting", "id": server.id, "name": original_name}
 
 
-@router.post("/servers/{ref}/live-migrate", status_code=202)
-def live_migrate_server(ref: str, payload: dict, current: CurrentUser, db: DB):
-    """Not built yet. The route stays so the API shape is fixed; it refuses the request and changes nothing.
-    POST /servers/{ref}/migrate is the supported way to move a server to another node."""
-    require_server(db, ref, current)
-    raise HTTPException(
-        status_code=501,
-        detail="live migration is not supported yet; use POST /servers/{ref}/migrate (cold migrate), which restarts the server on the target node",
-    )
-
-
 @router.get("/servers/{ref}/migration-candidates")
 def list_migration_candidates(ref: str, current: CurrentUser, db: DB):
     """List possible target hosts for live migration."""

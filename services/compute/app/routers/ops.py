@@ -1,4 +1,4 @@
-"""Nova operator surface: instance actions, os-services, limits, cold migrate, evacuate."""
+"""Nova operator surface: instance actions, os-services, limits, cold migrate, live migrate, evacuate."""
 from datetime import datetime, timedelta
 from typing import Annotated
 
@@ -8,13 +8,13 @@ from shared import policy
 from shared.auth_middleware import CurrentUser, InternalAuth, UserOrInternal, require_user_or_internal
 from shared.internal import internal_headers
 from shared.refs import path_ref
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from .. import clients
 from ..clients import response_detail
-from ..config import AUTH_API_URL, block_store_api_url, networking_api_url
+from ..config import AUTH_API_URL, block_store_api_url, log, networking_api_url, placement_api_url
 from ..db import DB
-from ..lookups import get_flavor, get_server, require_server
+from ..lookups import get_flavor, get_server, require_server, require_unlocked_server
 from ..models import ComputeService, Flavor, Server, ServerAction, now
 from ..schemas import MoveIn, ServiceUpdateIn
 from ..service import (
@@ -76,6 +76,16 @@ def internal_finish_action(server_id: str, payload: dict, db: DB):
     finish_action(db, server_id, result=result, message=payload.get("message"), action=action)
     if action == "shelve" and result == "success":  # an offloaded server holds no vCPU or memory on any node
         release_allocation(server_id)
+    if action == "live_migrate" and result == "error":
+        # the domain stayed on the source; the claim moved to the target when the migration began. On "success" with a
+        # message (a cleanup problem after the domain left) the server lives on the target, so the claim stays there.
+        server = db.get(Server, server_id)
+        if server and server.host:
+            try:
+                restore_source_claim(db, server)
+            except Exception as exc:  # the action is finished either way; an operator can re-claim later
+                log.error("live migration of %s failed and its placement claim could not be put back on %s: %s",
+                          server_id, server.host, exc)
     return {"ok": True}
 
 
@@ -228,3 +238,110 @@ def migrate(ref: str, current: Annotated[dict, Depends(policy.require("compute:s
 @router.post("/servers/{ref}/evacuate", status_code=202)
 def evacuate(ref: str, current: Annotated[dict, Depends(policy.require("compute:server:evacuate", authenticate=require_user_or_internal))], db: DB, payload: MoveIn | None = None):
     return _relocate(ref, payload.host if payload else None, current, db, True)
+
+
+def restore_source_claim(db, server) -> None:
+    """Put the placement allocation of a server whose live migration failed back on its host (the source). The claim
+    names the source as the only host and excludes none: claim_host would filter out a disabled source, and a drain
+    disables the node before it live-migrates its servers. Raises when placement refuses or cannot be reached."""
+    flavor = _flavor_of(db, server)
+    r = requests.post(f"{placement_api_url()}/internal/claim", headers=internal_headers(), timeout=10, json={
+        "consumer_uuid": server.id, "project_id": server.project_id,
+        "resources": {"VCPU": flavor.vcpus, "MEMORY_MB": flavor.ram_mb},
+        "exclude_hosts": [], "only_hosts": [server.host]})
+    if r.status_code >= 400:
+        raise RuntimeError(f"placement answered {r.status_code}: {response_detail(r)}")
+
+
+def _volume_entry(volume: dict, target_dev: str) -> dict:
+    return {"volume_id": volume["id"], "host": volume.get("host"), "path": volume.get("path"),
+            "backend": volume.get("backend"), "target_dev": target_dev}
+
+
+def live_migration_payload(db, server, host: str | None) -> tuple[str, dict]:
+    """Check the server's volumes, claim a target (placement moves the allocation there) and return (target, payload
+    of the `live_migrate` cast). The payload is the build payload (ports, root volume) plus `_volumes` (every disk,
+    the root one as sda), `_source_host` and `_target_host`. The server record is not changed here."""
+    root = clients.block_get(f"/volumes/{server.root_volume_id}")
+    data = [v for v in clients.block_get("/volumes").get("items", [])
+            if v.get("attached_to_server_id") == server.id and v["id"] != server.root_volume_id]
+    for volume in [root, *data]:
+        if volume.get("status") != "in-use":
+            raise HTTPException(status_code=409, detail=f"volume {volume['id']} is {volume.get('status')}, not in-use")
+        if not volume.get("path"):
+            raise HTTPException(status_code=409, detail=f"volume {volume['id']} has no path")
+    volumes = [_volume_entry(root, "sda")] + [
+        _volume_entry(v, (v.get("target_device") or v.get("mountpoint") or "sdb").split("/")[-1]) for v in data]
+    port = clients.api_get(f"{networking_api_url()}/ports/{server.port_id}")
+    ports = [port] + [clients.api_get(f"{networking_api_url()}/ports/{p}") for p in (server.extra_port_ids or "").split(",") if p]
+    flavor = _flavor_of(db, server)
+    target = claim_host(db, server.id, server.project_id, flavor, host=host, avoid=(server.host,))
+    if target is None:
+        target = fallback_host(db, flavor, host=host, avoid=(server.host,))
+    if target is None:
+        raise HTTPException(status_code=409, detail="No valid host was found")
+    payload = server_worker_payload(server, port, ports, root)
+    payload.update({"_volumes": volumes, "_source_host": server.host, "_target_host": target})
+    return target, payload
+
+
+def _check_live_migration_target(db, server, host: str) -> None:
+    if host == server.host:
+        raise HTTPException(status_code=409, detail=f"server is already on {host}")
+    svc = db.get(ComputeService, host)
+    if svc and svc.disabled:
+        raise HTTPException(status_code=409, detail=f"host {host} is disabled")
+    if svc and svc.forced_down:
+        raise HTTPException(status_code=409, detail=f"host {host} is forced down")
+    known = compute_hosts()
+    if known and host not in known:
+        raise HTTPException(status_code=409, detail=f"host {host} is not a known compute node")
+
+
+def _undo_live_migration_start(db, server, restore_claim: bool) -> None:
+    """The request failed after the server went MIGRATING: back to ACTIVE, and the claim back on the source."""
+    server.status = "ACTIVE"
+    db.commit()
+    if restore_claim:
+        try:
+            restore_source_claim(db, server)
+        except Exception as exc:
+            log.error("live migration of %s was not started and its placement claim could not be put back on %s: %s",
+                      server.id, server.host, exc)
+
+
+@router.post("/servers/{ref}/live-migrate", status_code=202)
+def live_migrate(ref: str, current: Annotated[dict, Depends(policy.require("compute:server:live_migrate"))], db: DB, payload: MoveIn | None = None):
+    """Move a running server to another node without stopping it. The source worker drives the migration and moves
+    `host` once the domain runs on the target; until then the server stays on its old host, MIGRATING."""
+    host = payload.host if payload else None
+    server = require_unlocked_server(db, ref, current)
+    if server.locked:  # require_unlocked_server lets an admin through; a locked server is never moved live
+        raise HTTPException(status_code=409, detail="server is locked; unlock it first")
+    if server.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail=f"server status {server.status} cannot be live-migrated (needs ACTIVE)")
+    if not server.host or not server.root_volume_id:
+        raise HTTPException(status_code=409, detail="server has no root volume or host")
+    if not server.libvirt_domain_name:
+        raise HTTPException(status_code=409, detail="server has no libvirt domain")
+    if host:
+        _check_live_migration_target(db, server, host)
+    # ACTIVE -> MIGRATING in one statement: of two requests at once, only one gets past here and claims a target
+    taken = db.execute(update(Server).where(Server.id == server.id, Server.status == "ACTIVE").values(status="MIGRATING"))
+    db.commit()
+    db.refresh(server)
+    if taken.rowcount != 1:
+        raise HTTPException(status_code=409, detail=f"server status {server.status} cannot be live-migrated (needs ACTIVE)")
+    try:
+        target, cast = live_migration_payload(db, server, host)
+    except Exception:
+        _undo_live_migration_start(db, server, restore_claim=False)  # nothing claimed: the claim is the last step
+        raise
+    record_action(db, server.id, "live_migrate", current)
+    try:
+        clients.cast_to_worker("live_migrate", cast)
+    except Exception as exc:
+        _undo_live_migration_start(db, server, restore_claim=True)
+        finish_action(db, server.id, result="error", message=f"could not reach the compute worker: {exc}", action="live_migrate")
+        raise HTTPException(status_code=503, detail=f"could not send live_migrate to the compute worker of {server.host}: {exc}") from exc
+    return {"server_id": server.id, "from": server.host, "to": target, "status": server.status}

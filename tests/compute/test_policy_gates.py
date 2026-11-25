@@ -1,4 +1,4 @@
-"""The 12 admin-only routes of compute are gated by the central policy (shared.policy)."""
+"""The 13 admin-only routes of compute are gated by the central policy (shared.policy)."""
 import os
 import re
 import sys
@@ -25,6 +25,7 @@ EXPECTED = {
     ("PUT", "/os-services/{host}"): "compute:service:update",
     ("POST", "/servers/{ref}/migrate"): "compute:server:migrate",
     ("POST", "/servers/{ref}/evacuate"): "compute:server:evacuate",
+    ("POST", "/servers/{ref}/live-migrate"): "compute:server:live_migrate",
 }
 ROUTES = [(method, path, action) for (method, path), action in EXPECTED.items()]
 
@@ -46,7 +47,7 @@ def test_each_gated_route_has_its_action(compute):
     found = {key: action for key, action in route_actions(compute.app).items() if action.startswith("compute:")}
 
     assert found == EXPECTED
-    assert len(found) == 12
+    assert len(found) == 13
 
 
 def test_member_domain_admin_and_reader_are_refused_and_admin_is_not(compute):
