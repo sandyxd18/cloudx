@@ -49,5 +49,5 @@ LIVE_MIGRATION_HOST = os.getenv("LIVE_MIGRATION_HOST") or COMPUTE_HOST
 LIVE_MIGRATION_URI = os.getenv("LIVE_MIGRATION_URI", "qemu+ssh://root@{host}/system")
 LIVE_MIGRATION_TIMEOUT = int(os.getenv("LIVE_MIGRATION_TIMEOUT", "1800"))
 LIVE_MIGRATION_MAX_DOWNTIME_MS = int(os.getenv("LIVE_MIGRATION_MAX_DOWNTIME_MS", "300"))
-LIVE_MIGRATION_BANDWIDTH_MBPS = int(os.getenv("LIVE_MIGRATION_BANDWIDTH_MBPS", "0"))  # 0 = unlimited
+LIVE_MIGRATION_BANDWIDTH_MBPS = int(os.getenv("LIVE_MIGRATION_BANDWIDTH_MBPS", "0"))  # megabits per second, 0 = unlimited
 LIVE_MIGRATION_AUTO_CONVERGE = os.getenv("LIVE_MIGRATION_AUTO_CONVERGE", "false").strip().lower() in ("true", "1", "yes")

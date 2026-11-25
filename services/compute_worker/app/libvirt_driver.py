@@ -394,8 +394,8 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
         flags |= getattr(libvirt, "VIR_MIGRATE_AUTO_CONVERGE", 8192)
     params = {getattr(libvirt, "VIR_MIGRATE_PARAM_DEST_XML", "destination_xml"): dest_xml}
     if bandwidth_mbps > 0:
-        # libvirt reads this parameter in MiB/s; the option name follows the config key and is passed through as is
-        params[getattr(libvirt, "VIR_MIGRATE_PARAM_BANDWIDTH", "bandwidth")] = bandwidth_mbps
+        # bandwidth_mbps is megabits per second; libvirt's parameter is MiB/s (rounded, at least 1 so a small value is not "unlimited")
+        params[getattr(libvirt, "VIR_MIGRATE_PARAM_BANDWIDTH", "bandwidth")] = max(1, round(bandwidth_mbps * 1_000_000 / 8 / 2**20))
 
     conn, domain = lookup(name)
     outcome: dict[str, BaseException] = {}
@@ -411,6 +411,11 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
         deadline = time.monotonic() + timeout
         downtime_set = False
         worker.start()
+        try:  # usually too early (the job has not started); the loop below retries
+            domain.migrateSetMaxDowntime(max_downtime_ms)
+            downtime_set = True
+        except Exception as exc:
+            log.debug("%s: migrateSetMaxDowntime not accepted yet: %s", name, exc)
         while worker.is_alive():
             worker.join(_MIGRATION_POLL_SECONDS)
             if not worker.is_alive():
@@ -432,6 +437,12 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
                 except Exception as exc:
                     log.warning("%s: abortJob failed: %s", name, exc)
                 worker.join(30)
+                if worker.is_alive():
+                    log.warning("%s: the migration call is still running 30 s after abortJob", name)
+                elif "error" not in outcome:
+                    # it finished between the deadline and the abort: the domain is already on the destination
+                    log.info("%s: the migration completed as the timeout was reached; treating it as a success", name)
+                    return
                 raise MigrationError(f"timed out after {timeout} s")
         if "error" in outcome:
             raise MigrationError(str(outcome["error"])) from outcome["error"]

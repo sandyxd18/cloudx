@@ -115,8 +115,12 @@ def _migrate(domain, **overrides):
 
 
 def test_migrate_domain_aborts_after_the_timeout(fake):
-    # blocks until abortJob, like a migration that never converges
-    domain = FakeDomain(migrate=lambda d: d.aborted.wait(10))
+    def until_aborted(d):
+        # blocks until abortJob, like a migration that never converges, then fails as libvirt does
+        d.aborted.wait(10)
+        raise RuntimeError("operation aborted: migration out: canceled by client")
+
+    domain = FakeDomain(migrate=until_aborted)
     conn = fake(domain)
 
     started = time.monotonic()
@@ -126,6 +130,27 @@ def test_migrate_domain_aborts_after_the_timeout(fake):
     assert domain.aborted.is_set()
     assert time.monotonic() - started < 5
     assert conn.closed
+
+
+def test_migrate_domain_succeeds_when_the_call_finishes_as_the_timeout_aborts(fake):
+    # the call returns normally the moment abortJob arrives: the domain is already on the destination
+    domain = FakeDomain(migrate=lambda d: d.aborted.wait(10))
+    conn = fake(domain)
+
+    _migrate(domain, timeout=1)       # does not raise
+
+    assert domain.aborted.is_set()
+    assert conn.closed
+
+
+@pytest.mark.parametrize("mbps,expected", [(1, 1), (8, 1), (100, 12), (1000, 119)])
+def test_bandwidth_is_converted_from_megabits_to_mib_per_second(fake, mbps, expected):
+    domain = FakeDomain()
+    fake(domain)
+
+    _migrate(domain, bandwidth_mbps=mbps)
+
+    assert domain.calls[0][1][FakeLibvirt.VIR_MIGRATE_PARAM_BANDWIDTH] == expected
 
 
 def test_migrate_domain_passes_flags_params_and_options(fake):
@@ -145,7 +170,7 @@ def test_migrate_domain_passes_flags_params_and_options(fake):
     _migrate(tuned, auto_converge=True, bandwidth_mbps=100, max_downtime_ms=250)
     _, params, flags = tuned.calls[0]
     assert flags == base | L.VIR_MIGRATE_AUTO_CONVERGE
-    assert params[L.VIR_MIGRATE_PARAM_BANDWIDTH] == 100
+    assert params[L.VIR_MIGRATE_PARAM_BANDWIDTH] == 12      # 100 Mbit/s is 11.9 MiB/s, which libvirt takes in MiB/s
     assert params[L.VIR_MIGRATE_PARAM_DEST_XML] == "<domain>dest</domain>"
     assert tuned.downtime == 250                           # set once the migration is running
 
