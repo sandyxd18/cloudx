@@ -37,7 +37,7 @@ from shared import catalog  # noqa: E402
 from shared.internal import internal_headers  # noqa: E402
 from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
-from . import iscsi, libvirt_driver, network_manager, volume_manager, worker  # noqa: E402
+from . import iscsi, libvirt_driver, live_migration, network_manager, volume_manager, worker  # noqa: E402
 from .config import COMPUTE_HOST, CONSOLE_PROXY_HOST, LIBVIRT_URI, OVS_BRIDGE, ROOT_VOLUME_WAIT_TIMEOUT, VM_NAME_PREFIX, endpoint  # noqa: E402
 FENCED_FLAG = Path("/var/lib/cloudx/ha-watchdog/fenced")  # written by cloudx-ha-watchdog after it destroyed VMs
 from shared.proc import CommandError, succeeds
@@ -1033,6 +1033,21 @@ def handle_live_migrate(args: dict) -> None:
         conductor_mark_error(server_id, f"live migration failed: {exc}")
 
 
+def handle_live_migrate_prepare(args: dict) -> dict:
+    """RPC Call from the source worker: get this node ready to receive the domain."""
+    return live_migration.prepare(args, _rpc)
+
+
+def handle_live_migrate_finish(args: dict) -> dict:
+    """RPC Call from the source worker: the domain runs here, bind its taps to OVN."""
+    return live_migration.finish(args)
+
+
+def handle_live_migrate_rollback(args: dict) -> dict:
+    """RPC Call from the source worker: the migration failed, undo prepare."""
+    return live_migration.rollback(args, _rpc)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Handler dispatch table
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1062,6 +1077,9 @@ HANDLERS = {
     "get_logs":         handle_get_logs,
     "get_console_info": handle_get_console_info,
     "get_metrics":      handle_get_metrics,
+    "live_migrate_prepare":  handle_live_migrate_prepare,
+    "live_migrate_finish":   handle_live_migrate_finish,
+    "live_migrate_rollback": handle_live_migrate_rollback,
     # Hotplug (Cast)
     "attach_volume":    handle_attach_volume,
     "detach_volume":    handle_detach_volume,
