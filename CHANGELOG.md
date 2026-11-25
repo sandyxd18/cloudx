@@ -14,8 +14,13 @@ schema between releases, so read the upgrade steps before moving a running cloud
   fails before it completes is rolled back: the server is `ACTIVE` on the source again with the reason in
   `os-instance-actions`, and the placement claim goes back to the source. A migration that completed but whose cleanup
   or final port binding failed is reported as success with a message that starts with `migrated, but cleanup failed:`.
-  `reconcile_stale_domains` leaves the domain of a `MIGRATING` server alone, and a worker that starts frees a
-  `MIGRATING` server whose domain runs on its node. Disks on Ceph RBD, and LVM volumes that the target reaches over
+  When libvirt fails the call after the guest has moved, the migration is finished instead of rolled back; when it
+  cannot be told where the guest runs, nothing is rolled back and the server stays `MIGRATING` with an `error_message`.
+  `reconcile_stale_domains` leaves the domain of a `MIGRATING` server alone, and a worker that starts aborts a migration
+  job libvirtd still runs and frees a `MIGRATING` server whose domain then runs on its node (the claim goes back). While
+  a server is `MIGRATING`, start, stop, reboot, pause, resume, suspend, rebuild, rescue, unrescue, set-password, delete
+  and port detach answer 409; evacuate accepts it once its source is forced down. Compute nodes need distinct iSCSI
+  initiator names for servers with LVM volumes. Disks on Ceph RBD, and LVM volumes that the target reaches over
   iSCSI, can move; there is no block migration. Expect a network pause of one to three seconds, no zero-loss guarantee.
 - `cloudx host drain NODE [--dry-run] [--timeout SECONDS]` disables a compute node and moves its servers away one at a
   time (live migration for `ACTIVE`, cold migration for `SHUTOFF`). A server it cannot move, such as one with a local LVM
@@ -24,14 +29,14 @@ schema between releases, so read the upgrade steps before moving a running cloud
 - Six settings for the compute worker, all optional: `live_migration_host`, `live_migration_uri`,
   `live_migration_timeout` (1800), `live_migration_max_downtime_ms` (300), `live_migration_bandwidth_mbps` (0 = no
   cap, in megabits per second) and `live_migration_auto_converge` (false).
-- `scripts/setup-migration-ssh.sh [--dry-run] NODE...` prepares the ssh trust between the compute nodes (a key
+- `cloudx-setup-migration-ssh [--dry-run] NODE...` (in the `cloudx-cli` package; `scripts/setup-migration-ssh.sh` in
+  the source) prepares the ssh trust between the compute nodes (a key
   `/root/.ssh/cloudx_migration` per node, `authorized_keys`, `known_hosts` and `config` entries). It gives every compute
   node root access to every other one; `docs/live-migration.md` explains the prerequisites, the open ports (TCP 22 and
   49152-49215 between the compute nodes) and the limits.
 
-Upgrade: no schema change. Update all compute nodes first, then compute-api. Known limitation: if the worker of the
-source node restarts while a migration runs, the server can stay `MIGRATING`; `docs/live-migration.md` says how to
-recover. The code is covered by unit tests; it has not been run on a lab yet.
+Upgrade: no schema change. Update all compute nodes first, then compute-api. A server can still stay `MIGRATING` in rare
+cases (a migration job that cannot be aborted, or an unclear outcome); `docs/live-migration.md` says how to settle it. The code is covered by unit tests; it has not been run on a lab yet.
 
 ## 1.0.11 (2026-11-10)
 

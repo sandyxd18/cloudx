@@ -277,3 +277,47 @@ def test_enable_puts_disabled_false(install):
 
     assert res.exit_code == 0, res.output
     assert fake.calls == [("put", "C/os-services/n1", {"disabled": False})]
+
+
+class PagedFake(Fake):
+    """GET /servers serves `page` servers at a time, following the API's marker (the id of the last one seen)."""
+
+    def __init__(self, servers, page, **kw):
+        super().__init__(servers, **kw)
+        self.page = page
+
+    def __call__(self, method, url, profile="default", **kw):
+        if method == "get" and url.startswith(f"{C}/servers?"):
+            self.calls.append((method, url.replace(C, "C"), None))
+            query = dict(part.split("=", 1) for part in url.split("?", 1)[1].split("&"))
+            assert query["limit"] == str(self.page)
+            start = 0
+            if "marker" in query:
+                start = [s["id"] for s in self.servers].index(query["marker"]) + 1
+            return {"items": self.servers[start:start + self.page]}
+        return super().__call__(method, url, profile, **kw)
+
+
+def test_drain_follows_the_server_list_pages(install, monkeypatch):
+    monkeypatch.setattr(host_cmd, "SERVER_PAGE", 2)
+    servers = [_server("s1", "a", host="n2"), _server("s2", "b", host="n2"), _server("s3", "c"), _server("s4", "d")]
+    fake = install(PagedFake(servers, 2, after={"s3": [("ACTIVE", "n2")], "s4": [("ACTIVE", "n3")]}))
+
+    res = _drain()
+
+    assert res.exit_code == 0, res.output
+    lists = [c[1] for c in fake.calls if c[1].startswith("C/servers?")]
+    # the third page is empty: a full page always asks for the next one
+    assert lists == ["C/servers?limit=2", "C/servers?limit=2&marker=s2", "C/servers?limit=2&marker=s4"]
+    assert ("post", "C/servers/s3/live-migrate", None) in fake.calls
+    assert ("post", "C/servers/s4/live-migrate", None) in fake.calls
+
+
+def test_a_short_page_ends_the_listing(install, monkeypatch):
+    monkeypatch.setattr(host_cmd, "SERVER_PAGE", 2)
+    fake = install(PagedFake([_server("s1", "a", host="n2"), _server("s2", "b", host="n2"), _server("s3", "c", host="n2")], 2))
+
+    res = _drain("--dry-run")
+
+    assert res.exit_code == 0, res.output
+    assert [c[1] for c in fake.calls if c[1].startswith("C/servers?")] == ["C/servers?limit=2", "C/servers?limit=2&marker=s2"]

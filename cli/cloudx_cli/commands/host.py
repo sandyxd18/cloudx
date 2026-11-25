@@ -9,6 +9,21 @@ from cloudx_cli.commands.compute import host
 from cloudx_cli.common import DEFAULT_URLS, _api, _output
 
 POLL_SECONDS = 5
+SERVER_PAGE = 1000  # the API's largest `limit`
+
+
+def _all_servers(compute: str, profile: str) -> list[dict]:
+    """Every server the caller can see, page by page: `limit` applies to the whole cloud, so one page could miss
+    servers on the node. GET /servers pages with `marker` (the id of the last server of the previous page); a page
+    shorter than the limit is the last one. GET /volumes has no paging and is read in one call."""
+    servers, marker = [], None
+    while True:
+        url = f"{compute}/servers?limit={SERVER_PAGE}" + (f"&marker={marker}" if marker else "")
+        page = _api("get", url, profile).get("items", [])
+        servers += page
+        if len(page) < SERVER_PAGE:
+            return servers
+        marker = page[-1]["id"]
 
 
 def plan_drain(node: str, servers: list[dict], volumes: list[dict]) -> list[dict]:
@@ -91,7 +106,7 @@ def host_drain(ctx, node, dry_run, timeout):
     compute, profile = DEFAULT_URLS["compute"], ctx.obj["profile"]
     if not dry_run:
         _api("put", f"{compute}/os-services/{node}", profile, json={"disabled": True, "disabled_reason": "drain"})
-    servers = _api("get", f"{compute}/servers?limit=1000", profile).get("items", [])
+    servers = _all_servers(compute, profile)
     volumes = _api("get", f"{DEFAULT_URLS['volume']}/volumes", profile).get("items", [])
     plan = plan_drain(node, servers, volumes)
     enable_hint = f"{node} stays disabled. Run `cloudx host enable {node}` to put it back in service."
