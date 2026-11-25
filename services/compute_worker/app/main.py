@@ -38,7 +38,7 @@ from shared.internal import internal_headers  # noqa: E402
 from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
 from . import iscsi, libvirt_driver, live_migration, network_manager, volume_manager, worker  # noqa: E402
-from .config import COMPUTE_HOST, CONSOLE_PROXY_HOST, LIBVIRT_URI, OVS_BRIDGE, ROOT_VOLUME_WAIT_TIMEOUT, VM_NAME_PREFIX, endpoint  # noqa: E402
+from .config import COMPUTE_HOST, CONSOLE_PROXY_HOST, LIBVIRT_URI, OVS_BRIDGE, ROOT_VOLUME_WAIT_TIMEOUT, endpoint  # noqa: E402
 FENCED_FLAG = Path("/var/lib/cloudx/ha-watchdog/fenced")  # written by cloudx-ha-watchdog after it destroyed VMs
 from shared.proc import CommandError, succeeds
 from .utils import tool_available  # noqa: E402
@@ -984,53 +984,23 @@ def handle_prefetch_image(args: dict) -> dict:
 
 
 def handle_live_migrate(args: dict) -> None:
-    """Live migrate a running VM to another compute node (Phase 6.1).
+    """Cast from compute-api: live-migrate a running server from this node to args["_target_host"].
 
-    Not reachable: compute-api answers 501 for live-migrate. Kept as the starting point for the real thing, which needs
-    `id` instead of `server_id`, ssh between nodes, taps and OVN binding on the target, and non-shared LVM handled."""
-    server_id = args.get("server_id")
-    target_host = args.get("target_host")
-    log.info("Live migrate request: server=%s target=%s", server_id, target_host)
-    if not server_id or not target_host:
-        conductor_mark_error(server_id or "unknown", "server_id and target_host required for live migration")
-        return
-
-    try:
-        import libvirt
-        conn = libvirt.open(LIBVIRT_URI)
-        if not conn:
-            raise RuntimeError("failed to open libvirt connection")
-
-        dom = None
+    The consumer runs one handler at a time and a migration can take up to LIVE_MIGRATION_TIMEOUT, so it runs in its
+    own thread and reports through the conductor and the action log. It gets its own RPC client: RPCClient.call holds
+    the client's lock while it waits for the reply, which would stall every cast of this worker meanwhile."""
+    def migrate() -> None:
+        rpc = RPCClient(RABBITMQ_URL)
         try:
-            dom = conn.lookupByUUIDString(server_id)
-        except Exception:  # best-effort: falls back to lookup by name
+            live_migration.run(args, rpc, update_server=conductor_update_server, notify=_notify_action_finish)
+        finally:
             try:
-                dom = conn.lookupByName(f"{VM_NAME_PREFIX}-{server_id[:8]}")
-            except Exception:  # best-effort: dom stays None and a 'domain not found' error is raised below
-                pass
+                rpc.close()
+            except Exception as exc:  # best-effort: the migration is over either way
+                log.debug("live migration: closing its RPC client failed: %s", exc)
 
-        if not dom:
-            raise RuntimeError(f"domain for server {server_id} not found")
-
-        # Target URI for migration (shared storage required)
-        target_uri = f"qemu+ssh://{target_host}/system"
-
-        # Perform live migration with persistent and undefine-source flags
-        flags = libvirt.VIR_MIGRATE_LIVE | libvirt.VIR_MIGRATE_PERSIST_DEST | libvirt.VIR_MIGRATE_UNDEFINE_SOURCE
-        new_dom = dom.migrateToURI3(target_uri, flags, None, None)
-
-        if new_dom:
-            log.info("Live migration of server %s to %s succeeded", server_id, target_host)
-            conductor_update_server(server_id, {
-                "status": "ACTIVE",
-                "host": target_host,
-            })
-        else:
-            raise RuntimeError("migration returned None")
-    except Exception as exc:
-        log.exception("Live migration failed for server %s: %s", server_id, exc)
-        conductor_mark_error(server_id, f"live migration failed: {exc}")
+    server_id = args.get("id") or args.get("server_id")
+    threading.Thread(target=migrate, name=f"live-migrate-{str(server_id)[:8]}", daemon=True).start()
 
 
 def handle_live_migrate_prepare(args: dict) -> dict:
@@ -1071,7 +1041,7 @@ HANDLERS = {
     "set_password":     handle_set_password,
     "shelve":           handle_shelve,
     "prefetch_image":   handle_prefetch_image,
-    "live_migrate_instance": handle_live_migrate,
+    "live_migrate":     handle_live_migrate,
     # Call (sync reply)
     "health":           handle_health,
     "get_logs":         handle_get_logs,
