@@ -157,6 +157,19 @@ def server_revert_resize(ctx, ref):
     click.echo(f"✓ Resize of {ref} is being reverted")
 
 
+@server.command("live-migrate")
+@click.argument("ref")
+@click.option("--host", "node", help="Compute node to move the server to (the scheduler picks one when left out)")
+@click.pass_context
+def server_live_migrate(ctx, ref, node):
+    """Move a running server to another node without stopping it."""
+    payload = {"host": node} if node else None
+    data = _api("post", f"{DEFAULT_URLS['compute']}/servers/{ref}/live-migrate",
+                ctx.obj["profile"], json=payload)
+    click.echo(f"✓ Server {ref} is live-migrating from {data.get('from')} to {data.get('to')}. "
+               f"Check `cloudx server show {ref}`: the status returns to ACTIVE when it is done.")
+
+
 @server.command("rebuild")
 @click.argument("ref")
 @click.option("--image", required=True)

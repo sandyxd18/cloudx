@@ -28,6 +28,7 @@ from cloudx_cli.commands import (  # noqa: F401
     dns,
     file_store,
     ha,
+    host,
     image,
     key_manager,
     kubernetes,
