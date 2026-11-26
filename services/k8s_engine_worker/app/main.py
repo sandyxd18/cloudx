@@ -56,12 +56,18 @@ def _create_vm(cluster: dict, name: str, flavor: str, user_data: str) -> str:
     return r.json()["id"]
 
 
-def _delete_vm(server_id: str) -> None:
+def _delete_vm(server_id: str) -> bool:
     """Delete a VM the worker recorded, with the internal identity: the ids come from its own records and clusters
-    created earlier keep their VMs in the admin project."""
+    created earlier keep their VMs in the admin project. False when compute-api answers 409 (the VM is busy, e.g.
+    MIGRATING during `cloudx host drain`): the caller keeps its record and the next reconcile tries again."""
     r = requests.delete(f"{_compute()}/servers/{server_id}", headers=internal_headers(), timeout=30)
+    if r.status_code == 409:
+        log.info("VM %s cannot be deleted yet (409, e.g. a migration is in progress); retrying on the next reconcile",
+                 server_id)
+        return False
     if r.status_code != 404:  # already gone is fine
         r.raise_for_status()
+    return True
 
 
 def _record_node(cluster_id: str, server_id: str, role: str) -> None:
@@ -115,8 +121,10 @@ def reconcile_cluster(cluster: dict) -> None:
     master_ip = cluster.get("master_ip") or next((n["ip"] for n in masters if n["ip"]), None)
 
     if status == "DELETING":
-        for n in nodes:
-            _delete_vm(n["server_id"])  # a failure keeps the row so the next tick retries
+        # a failure keeps the row so the next tick retries; a busy VM (409) does too, after the others have gone
+        busy = [n["server_id"] for n in nodes if not _delete_vm(n["server_id"])]
+        if busy:
+            return
         r = requests.delete(f"{_api()}/internal/k8s-engine/clusters/{cid}", headers=internal_headers(), timeout=10)
         if r.status_code != 404:
             r.raise_for_status()
@@ -146,8 +154,8 @@ def reconcile_cluster(cluster: dict) -> None:
             _spawn_workers(cluster, master_ip, len(workers), want)
         elif len(workers) > want:
             for w in workers[want:]:  # newest last
-                _delete_vm(w["server_id"])
-                _delete_node_record(cid, w["id"])
+                if _delete_vm(w["server_id"]):  # a busy VM keeps its record: the next tick tries again
+                    _delete_node_record(cid, w["id"])
         elif all(n["ready"] for n in nodes):
             _set_status(cid, "ACTIVE", "")
 

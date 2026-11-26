@@ -296,10 +296,14 @@ def record_action(db: Session, server_id: str, action: str, current: dict, resul
     return sa_row
 
 
-def finish_action(db: Session, server_id: str, result: str = "success", message: str | None = None, action: str | None = None) -> None:
+def finish_action(db: Session, server_id: str, result: str = "success", message: str | None = None, action: str | None = None,
+                  action_id: str | None = None) -> None:
+    """Close the newest open row of the server (of `action`, when given), or exactly the row `action_id` while open."""
     stmt = select(ServerAction).where(ServerAction.server_id == server_id, ServerAction.finish_time.is_(None))
     if action:
         stmt = stmt.where(ServerAction.action == action)
+    if action_id:
+        stmt = stmt.where(ServerAction.id == action_id)
     stmt = stmt.order_by(ServerAction.start_time.desc())
     row = db.scalar(stmt)
     if row:

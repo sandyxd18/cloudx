@@ -85,15 +85,31 @@ def _settle_live_migration(db, server_id: str, result: str, target_host: str | N
     db.commit()
 
 
+def _newest_open_live_migration(db, server_id: str) -> str | None:
+    """Id of the newest live_migrate row of the server that is not finished yet."""
+    return db.scalar(select(ServerAction.id).where(
+        ServerAction.server_id == server_id, ServerAction.action == "live_migrate", ServerAction.finish_time.is_(None),
+    ).order_by(ServerAction.start_time.desc()))
+
+
 @router.post("/internal/servers/{server_id}/actions/finish", dependencies=[InternalAuth])
 def internal_finish_action(server_id: str, payload: dict, db: DB):
-    result, action = payload.get("result", "success"), payload.get("action")
-    finish_action(db, server_id, result=result, message=payload.get("message"), action=action)
+    result, action, action_id = payload.get("result", "success"), payload.get("action"), payload.get("action_id")
+    current = True
+    if action == "live_migrate" and action_id:
+        # The worker names the row compute-api opened for its migration. When a newer migration has opened its own
+        # row since (the worker sets ACTIVE before it notifies), this is a late report: close its row only, and leave
+        # the status and the claim to the newer one. Without an id (older worker, operator) nothing changes here.
+        current = _newest_open_live_migration(db, server_id) == action_id
+        if not current:
+            log.warning("live migration of %s: late %s report for action %s, which is not the newest open "
+                        "live_migrate action; closing that row only", server_id, result, action_id)
+    finish_action(db, server_id, result=result, message=payload.get("message"), action=action, action_id=action_id)
     if action == "shelve" and result == "success":  # an offloaded server holds no vCPU or memory on any node
         release_allocation(server_id)
-    if action == "live_migrate":
+    if action == "live_migrate" and current:
         _settle_live_migration(db, server_id, result, payload.get("target_host"))
-    if action == "live_migrate" and result == "error":
+    if action == "live_migrate" and current and result == "error":
         # the domain stayed on the source; the claim moved to the target when the migration began. On "success" with a
         # message (a cleanup problem after the domain left) the server lives on the target, so the claim stays there.
         server = db.get(Server, server_id)
@@ -109,7 +125,12 @@ def internal_finish_action(server_id: str, payload: dict, db: DB):
 @router.get("/internal/servers", dependencies=[InternalAuth])
 def internal_list_servers(db: DB):
     rows = db.scalars(select(Server).where(Server.status != "DELETED")).all()
-    return {"servers": [{"id": s.id, "host": s.host, "libvirt_domain_name": s.libvirt_domain_name, "status": s.status} for s in rows]}
+    # newest open live_migrate row per server (ascending order: the last one wins). A worker that restarts frees a
+    # MIGRATING server only when it has one: a cold migrate is MIGRATING too and is settled by its build.
+    live = dict(db.execute(select(ServerAction.server_id, ServerAction.id).where(
+        ServerAction.action == "live_migrate", ServerAction.finish_time.is_(None)).order_by(ServerAction.start_time)).all())
+    return {"servers": [{"id": s.id, "host": s.host, "libvirt_domain_name": s.libvirt_domain_name, "status": s.status,
+                         "live_migrate_action_id": live.get(s.id)} for s in rows]}
 
 
 @router.get("/internal/resize-pending", dependencies=[InternalAuth])
@@ -356,7 +377,13 @@ def live_migrate(ref: str, current: Annotated[dict, Depends(policy.require("comp
     except Exception:
         _undo_live_migration_start(db, server, restore_claim=False)  # nothing claimed: the claim is the last step
         raise
-    record_action(db, server.id, "live_migrate", current)
+    try:  # the claim is on the target now: a failure to record the action puts the status and the claim back too
+        row = record_action(db, server.id, "live_migrate", current)
+        cast["_action_id"] = row.id  # the worker names it in its finish, so a late report cannot settle a newer migration
+    except Exception:
+        db.rollback()
+        _undo_live_migration_start(db, server, restore_claim=True)
+        raise
     try:
         clients.cast_to_worker("live_migrate", cast)
     except Exception as exc:

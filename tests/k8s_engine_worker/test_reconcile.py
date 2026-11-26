@@ -25,6 +25,7 @@ class Env:
     def __init__(self, mp):
         self.clusters, self.calls, self.fail_create, self.fail_delete, self.seq = [], [], False, set(), 0
         self.gone = set()
+        self.busy = set()  # servers compute-api answers 409 for (MIGRATING, e.g. during `host drain`)
         mp.setenv("INTERNAL_TOKEN", IT)
         mp.setenv("K8S_ENGINE_API_URL", "http://k8s-engine.test:8015")
         mp.setenv("COMPUTE_API_URL", "http://compute.test:8003")
@@ -52,7 +53,7 @@ class Env:
     def delete(self, url, **k):
         self.calls.append(("DELETE", url, None))
         sid = url.rsplit("/", 1)[-1]
-        return self._r(500 if sid in self.fail_delete else 404 if sid in self.gone else 204)
+        return self._r(500 if sid in self.fail_delete else 404 if sid in self.gone else 409 if sid in self.busy else 204)
 
     def of(self, method, suffix):
         return [c for c in self.calls if c[0] == method and c[1].endswith(suffix)]
@@ -189,3 +190,34 @@ def test_vm_already_gone_is_not_an_error(env):
     env.clusters = [cluster("DELETING", [n("master", "srv-m")])]
     w.tick()
     assert env.of("DELETE", "/clusters/cls-1234567890ab")
+
+
+# --- a node VM that is MIGRATING answers 409: it is retried on the next reconcile, the others still go ----------
+
+def test_delete_retries_a_migrating_vm_on_the_next_tick_and_keeps_the_cluster_row(env, caplog):
+    env.busy = {"srv-m"}
+    env.clusters = [cluster("DELETING", [n("master", "srv-m"), n("worker", "srv-w")])]
+
+    with caplog.at_level(logging.INFO, logger="k8s-engine-worker"):
+        w.tick()
+
+    assert env.of("DELETE", "/servers/srv-w")                    # the other VM still goes this tick
+    assert not env.of("DELETE", "/clusters/cls-1234567890ab")    # the cluster row waits for the busy VM
+    assert "reconcile failed" not in caplog.text                 # not an error: a migration is in progress
+
+    env.busy, env.calls = set(), []
+    env.gone = {"srv-w"}
+    w.tick()
+
+    assert env.of("DELETE", "/servers/srv-m") and env.of("DELETE", "/clusters/cls-1234567890ab")
+
+
+def test_scale_down_keeps_the_node_record_of_a_migrating_vm(env):
+    env.busy = {"srv-w2"}
+    env.clusters = [cluster("SCALING", [n("master", "srv-m", True, "10.0.0.5"), n("worker", "srv-w1", True),
+                                        n("worker", "srv-w2", True)], workers=1, master_ip="10.0.0.5")]
+
+    w.tick()
+
+    assert env.of("DELETE", "/servers/srv-w2")
+    assert not env.of("DELETE", "/nodes/node-srv-w2")            # retried on the next tick
