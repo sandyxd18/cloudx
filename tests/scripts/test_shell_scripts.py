@@ -393,7 +393,7 @@ def test_prepare_lvm_node_accepts_a_controller_ip_option():
 
 def test_install_systemd_installs_websockify_for_the_novnc_proxy_unit():
     """The script copies every etc/systemd/*.service, including cloudx-novnc-proxy.service, whose ExecStart is
-    `python -m websockify`; without the package in the venv that unit would restart-loop on a tarball compute node.
+    `python -m console_proxy`, which runs websockify; without the package in the venv that unit would restart-loop on a tarball compute node.
     The script needs root and apt, so this reads its pip line instead of running it."""
     script = (ROOT / "scripts" / "install-systemd.sh").read_text()
     pip_lines = [line.split() for line in script.splitlines() if '/venv/bin/pip" install ' in line]

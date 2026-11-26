@@ -4,7 +4,7 @@ from shared import console_token
 from .config import log
 
 PROXY_PORT = 6080
-PROXY_SCHEME = "http"
+PROXY_SCHEME = "http"  # when the worker does not say otherwise (a proxy without a certificate, or an older worker)
 
 
 def novnc_url(server_id: str, vnc: dict) -> str | None:
@@ -18,4 +18,5 @@ def novnc_url(server_id: str, vnc: dict) -> str | None:
     except ValueError as exc:
         log.warning("no console link for %s: %s", server_id, exc)
         return None
-    return f"{PROXY_SCHEME}://{proxy_host}:{PROXY_PORT}/vnc.html?autoconnect=1&path=websockify%3Ftoken={token}"
+    scheme = vnc.get("proxy_scheme") if vnc.get("proxy_scheme") in ("http", "https") else PROXY_SCHEME
+    return f"{scheme}://{proxy_host}:{PROXY_PORT}/vnc.html?autoconnect=1&path=websockify%3Ftoken={token}"

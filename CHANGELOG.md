@@ -7,6 +7,16 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ## Unreleased
 
 ### Added
+- The browser console proxy can serve https. Set `console_proxy_cert` and `console_proxy_key` (a certificate chain and a
+  key file, both readable by root) in `/etc/cloudx/compute-worker/compute-worker.conf` on a compute node and restart
+  `cloudx-compute-worker`: `cloudx-novnc-proxy` then accepts https only on port 6080, and the console link starts with
+  `https://`. Before, the proxy was always plain http and the console token crossed the network in the clear. Without the
+  two settings nothing changes. One of them alone, or a file that cannot be read, stops the proxy with the reason in
+  `journalctl -u cloudx-novnc-proxy` instead of serving http under an https link. CloudX does not create the certificate:
+  use one your users' browsers trust, or accept a self-signed one once by opening `https://<console_proxy_host>:6080`.
+  The unit now starts `python -m console_proxy` (same websockify, same port, same plugin), so the unit file is replaced
+  by the upgrade; `cloudx-compute-api` reads a new optional `proxy_scheme` from the worker and uses `http` when the
+  worker does not send one.
 - A volume type's `max_iops` and `max_throughput` (MB/s) now limit LVM volumes (and NFS file volumes) too. They used to
   be applied only on Ceph, so an LVM volume ignored them. The compute node sets them as a libvirt `<iotune>` on the
   disk (one total for reads and writes together): on a data volume when it is attached, and on the root volume when the

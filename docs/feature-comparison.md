@@ -266,7 +266,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Feature | Notes |
 |---|---|
 | **Separate ephemeral disk** | Volume-first, no ephemeral disk (flavors carry `ephemeral_gb` but it is not used) |
-| **One console proxy address** | Each compute node runs its own proxy (`cloudx-novnc-proxy`, port 6080, plain http, no TLS), so browsers must reach every compute node; the link is not routed through a central proxy |
+| **One console proxy address** | Each compute node runs its own proxy (`cloudx-novnc-proxy`, port 6080; http, or https when `console_proxy_cert` and `console_proxy_key` are set, `docs/console.md`), so browsers must reach every compute node and every node needs its own certificate; the link is not routed through a central proxy |
 | **vfat config drive format** | ISO9660 only |
 | **Trusted image certificates** | None |
 | **Trigger crash dump** | None |
@@ -736,7 +736,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 ### ❌ Missing Features (vs. the real CloudX Dashboard)
 | Feature | Notes |
 |---|---|
-| **Console over one address or TLS** | The console pages load the noVNC client over plain http from port 6080 of each compute node; there is no TLS and no single address |
+| **Console over one address** | The console pages load the noVNC client from port 6080 of each compute node (https when the node has a certificate and a key, otherwise plain http); there is no single address, and CloudX does not issue the certificates |
 
 **Estimated CloudX Dashboard similarity: ~90%**
 
