@@ -60,6 +60,7 @@
 # compute:quota:set: "role:admin"
 # compute:service:update: "role:admin"
 # compute:server:migrate: "role:admin"
+# compute:server:live_migrate: "role:admin"
 # compute:server:evacuate: "role:admin"
 # block-store:volume-type:create: "role:admin"
 # block-store:volume-type:update: "role:admin"

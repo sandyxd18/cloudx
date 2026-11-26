@@ -1,6 +1,6 @@
 # Policy file
 
-The file now covers every service's admin-only actions: `auth-api` and the other API services decide who may call 57 actions with one rule per action. 22 of them are `auth-api` routes (the `identity:*` actions); the other 35 are the admin-only routes of compute, block-store, placement, billing, telemetry, networking, object-store and ha. The built-in rules are the checks those routes had before the file existed (admin, or admin and domain admin for some `auth-api` routes). The optional file `/etc/cloudx/policy.yaml` replaces the rule of any action you list in it, so an operator can open or close an action without a code change. This page covers the file, the rule language, the 57 actions, reloading, what happens when the file is wrong, and what the file cannot do.
+The file now covers every service's admin-only actions: `auth-api` and the other API services decide who may call 58 actions with one rule per action. 22 of them are `auth-api` routes (the `identity:*` actions); the other 36 are the admin-only routes of compute, block-store, placement, billing, telemetry, networking, object-store and ha. The built-in rules are the checks those routes had before the file existed (admin, or admin and domain admin for some `auth-api` routes). The optional file `/etc/cloudx/policy.yaml` replaces the rule of any action you list in it, so an operator can open or close an action without a code change. This page covers the file, the rule language, the 58 actions, reloading, what happens when the file is wrong, and what the file cannot do.
 
 ## Where the file lives
 
@@ -73,7 +73,7 @@ policy file: line 2: duplicate entry 'identity:domain:create' (first at line 1)
 
 ### Named rules
 
-An entry whose key is not one of the 57 actions is a named rule that other rules can use with `rule:NAME`:
+An entry whose key is not one of the 58 actions is a named rule that other rules can use with `rule:NAME`:
 
 ```yaml
 ops: "role:admin or domain_admin:True"
@@ -82,9 +82,9 @@ identity:user:list: "rule:ops"
 
 That pair is the same as the built-in rule of `identity:user:list`; it shows how the reference works. A named rule that no rule uses is reported as a probable typo (WARNING). Rules that reference each other in a cycle, a reference to a name that does not exist, and chains of more than 10 `rule:` references in a row are errors.
 
-## The 57 actions
+## The 58 actions
 
-The 22 `identity:*` actions come first, then the 35 actions of the other services, one section each. The `Route` column is the route that the action gates; the policy is checked after the token is validated and before the request body is.
+The 22 `identity:*` actions come first, then the 36 actions of the other services, one section each. The `Route` column is the route that the action gates; the policy is checked after the token is validated and before the request body is.
 
 ### auth-api: 22 identity actions
 
@@ -117,9 +117,9 @@ The 22 `identity:*` actions come first, then the 35 actions of the other service
 
 These checks run before the policy and a rule cannot change them: a missing, invalid, expired or revoked token is `401`, a token with the `reader` role is refused (`403 reader role is read-only`) on every method except `GET`, `HEAD` and `OPTIONS` (logout stays allowed), and a token issued from a trust is refused (`403 trust tokens cannot modify identity`) on every call that changes something.
 
-A denied request answers `403` with `{"detail": "Policy does not allow <action>"}`. This is the text of all 57 actions.
+A denied request answers `403` with `{"detail": "Policy does not allow <action>"}`. This is the text of all 58 actions.
 
-### The other services: 35 admin-only actions
+### The other services: 36 admin-only actions
 
 Every one of them has the built-in rule `role:admin`, the exact check the route had before (`role` claim equal to `admin`; `domain_admin` was never looked at). A domain admin who is not an admin gets `403` on all of them until a rule says otherwise, for example `role:admin or domain_admin:True`. The internal token (`X-Internal-Token`, used by the HA monitor) counts as a token with `role: admin` on the two routes that accept it, `compute:service:update` and `compute:server:evacuate`. A service that states its caller's identity in `X-Caller-Claims` (compute, towards networking and image-api) is judged as that identity, not as that token.
 
@@ -140,6 +140,7 @@ The same checks run before the policy on every service and a rule cannot change 
 | `compute:quota:set` | `PUT /os-quota-sets/{project}` | `role:admin` |
 | `compute:service:update` | `PUT /os-services/{host}` | `role:admin` |
 | `compute:server:migrate` | `POST /servers/{ref}/migrate` | `role:admin` |
+| `compute:server:live_migrate` | `POST /servers/{ref}/live-migrate` | `role:admin` |
 | `compute:server:evacuate` | `POST /servers/{ref}/evacuate` | `role:admin` |
 
 `compute:aggregate:action` is one action for the three sub-actions of that route (`add_host`, `remove_host`, `set_metadata`).
@@ -324,7 +325,7 @@ sudo -u cloudx cloudx-manage policy check
 
 ## The API
 
-`GET /policy` and `POST /policy/enforce` are routes of `auth-api`. They answer for all 57 actions, those of the other services included: `auth-api` reads the same file and evaluates the rule of the action, without calling the other service. `GET /policy` returns the effective rule of each of the 57 actions and where it comes from:
+`GET /policy` and `POST /policy/enforce` are routes of `auth-api`. They answer for all 58 actions, those of the other services included: `auth-api` reads the same file and evaluates the rule of the action, without calling the other service. `GET /policy` returns the effective rule of each of the 58 actions and where it comes from:
 
 ```json
 {"policy": {"identity:user:create": "role:admin or domain_admin:True", "compute:flavor:create": "role:admin", "...": "..."},
@@ -345,12 +346,12 @@ sudo -u cloudx cloudx-manage policy check
 
 The same call with `{"action": "compute:flavor:create"}` evaluates the rule of that action against the caller's token and answers the same way, `{"action": "compute:flavor:create", "allowed": false, "role": "member"}` for a member. It does not call compute or look at its route: it only evaluates the rule against the token you send. So it answers for the action alone (not for a second door such as placement's `/internal/...` routes), and it cannot tell what the internal token would get on `compute:service:update`, because it only takes a user token.
 
-It answers `400 {"detail": "'action' is required"}` when `action` is missing or empty, and `400 {"detail": "unknown action '...'"}` for a name that is not one of the 57 actions or is not a string. A `target_project_id` in the body is accepted and ignored: rules do not look at a target.
+It answers `400 {"detail": "'action' is required"}` when `action` is missing or empty, and `400 {"detail": "unknown action '...'"}` for a name that is not one of the 58 actions or is not a string. A `target_project_id` in the body is accepted and ignored: rules do not look at a target.
 
 ## What the file does not do
 
 - It decides whether the caller may call the route. What the handler then returns stays in code and is not in the file: which rows a list shows, "owner or admin" checks, scoping to the caller's domain. There is no per-project policy and no rule that looks at the owner of a resource.
-- Only pure role gates are in the file: the 22 `identity:*` actions and the 35 actions above. Everything else stays in code and no rule changes it:
+- Only pure role gates are in the file: the 22 `identity:*` actions and the 36 actions above. Everything else stays in code and no rule changes it:
   - ownership and visibility checks (a member sees and changes the resources of their own project);
   - state checks that an admin bypasses (a locked server, a quota that its own project may read);
   - the internal routes (`/internal/...`, `X-Internal-Token`), which workers and monitors call;
@@ -359,7 +360,7 @@ It answers `400 {"detail": "'action' is required"}` when `action` is missing or 
 
   The 11 admin-only `identity:*` actions are worse: their handlers have no domain scoping at all, because they were written for the system admin. Opening one to domain admins lets them act on every domain. For example, `identity:project:quota-set: "role:admin or domain_admin:True"` lets a domain admin change the quota of a project in any domain, and the same goes for `identity:domain:update`, `identity:domain:quota-set` and `identity:domain:quota-clear`, which then work on any domain, and for the catalog and audit-log actions, which are global.
 
-  The 35 actions of the other services have the same property: they were written for the system admin, have no domain scoping, and a domain admin who is allowed acts on every project and host of the cloud.
+  The 36 actions of the other services have the same property: they were written for the system admin, have no domain scoping, and a domain admin who is allowed acts on every project and host of the cloud.
 - You can lock yourself out. `"!"`, or a typo in a role name (`role:admn`), closes an action for everyone, admins included, and the change is live within seconds. Keep a root shell open on the node while you edit, and run `cloudx-manage policy check` first: an API session cannot undo a lock-out, because the policy cannot be changed through the API, so only a shell on the node can edit the file back.
 - The policy cannot be changed through the API; edit the file.
 

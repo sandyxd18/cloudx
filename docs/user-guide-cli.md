@@ -75,10 +75,15 @@ cloudx server reboot web-1
 cloudx server resize web-1 --flavor medium       # the server then waits in VERIFY_RESIZE
 cloudx server confirm-resize web-1              # keep the new size
 cloudx server revert-resize web-1               # or go back to the old one
+cloudx server live-migrate web-1 --host comp02  # admin: move a running server to another node (live-migration.md)
+cloudx host drain comp01 --dry-run              # admin: plan for emptying a node; without --dry-run it moves the servers
+cloudx host enable comp01                       # put a drained node back in service
 cloudx server delete web-1
 ```
 
 A server that nobody confirms or reverts is confirmed by `cloudx-reaper` (it runs on the controller) once it has been in `VERIFY_RESIZE` for `RESIZE_CONFIRM_WINDOW_SECONDS`, 86400 (24 hours) by default. The reaper calls `confirmResize` as the admin, once per pass, so the confirmation can come up to `reaper_interval` (600 seconds by default) after the window. Set `resize_confirm_window_seconds` in `/etc/cloudx/reaper/reaper.conf` (`[DEFAULT]`) to change the window; `0` turns the sweep off, and `reaper_dry_run = true` only logs `would confirm resize <id>`. A server that is already in `VERIFY_RESIZE` when the compute schema is upgraded (`cloudx-manage db sync`) gets a full window from the upgrade. A server that an older version left `ACTIVE` with a rollback snapshot is not touched.
+
+`cloudx server live-migrate` and `cloudx host drain` need the ssh setup between the compute nodes and are explained in [live-migration.md](live-migration.md). `drain` disables the node, moves its servers one at a time (live for running ones, cold for stopped ones), skips what cannot move (also a server with a local LVM volume on that node), exits non-zero when anything was skipped, and leaves the node disabled until `cloudx host enable`.
 
 Every server boots from a root volume; `--volume-size` sets its size in GB. `--ipv6` also gives the server an IPv6 address (see [IPAM](ipam.md#ipv6)). `cloudx hypervisor list` shows the compute nodes and `cloudx placement provider-list` their capacity.
 

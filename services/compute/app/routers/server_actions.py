@@ -15,7 +15,7 @@ from ..config import (
     log,
 )
 from ..db import DB
-from ..lookups import get_flavor, require_flavor, require_server, require_unlocked_server
+from ..lookups import get_flavor, require_flavor, require_server, require_settled_server, require_unlocked_server
 from ..models import Server, ServerGroup
 from ..schemas import (
     ServerPasswordIn,
@@ -35,7 +35,7 @@ router = APIRouter()
 
 @router.post("/servers/{ref}/start")
 def start_server(ref: str, current: CurrentUser, db: DB):
-    server = require_unlocked_server(db, ref, current)
+    server = require_settled_server(db, ref, current)
     server.status = "STARTING"
     db.commit()
     clients.cast_to_worker("start", server_worker_payload(server))
@@ -45,7 +45,7 @@ def start_server(ref: str, current: CurrentUser, db: DB):
 
 @router.post("/servers/{ref}/stop")
 def stop_server(ref: str, current: CurrentUser, db: DB):
-    server = require_unlocked_server(db, ref, current)
+    server = require_settled_server(db, ref, current)
     server.status = "STOPPING"
     db.commit()
     clients.cast_to_worker("stop", server_worker_payload(server))
@@ -55,7 +55,7 @@ def stop_server(ref: str, current: CurrentUser, db: DB):
 
 @router.post("/servers/{ref}/reboot")
 def reboot_server(ref: str, current: CurrentUser, db: DB, payload: ServerRebootIn = None):
-    server = require_unlocked_server(db, ref, current)
+    server = require_settled_server(db, ref, current)
     rtype = payload.type if payload else "soft"
     server.status = "REBOOT"
     db.commit()
@@ -66,7 +66,7 @@ def reboot_server(ref: str, current: CurrentUser, db: DB, payload: ServerRebootI
 
 @router.post("/servers/{ref}/pause")
 def pause_server(ref: str, current: CurrentUser, db: DB):
-    server = require_unlocked_server(db, ref, current)
+    server = require_settled_server(db, ref, current)
     server.status = "PAUSING"
     db.commit()
     clients.cast_to_worker("pause", server_worker_payload(server))
@@ -76,7 +76,7 @@ def pause_server(ref: str, current: CurrentUser, db: DB):
 
 @router.post("/servers/{ref}/resume")
 def resume_server(ref: str, current: CurrentUser, db: DB):
-    server = require_unlocked_server(db, ref, current)
+    server = require_settled_server(db, ref, current)
     server.status = "RESUMING"
     db.commit()
     clients.cast_to_worker("resume", server_worker_payload(server))
@@ -86,7 +86,7 @@ def resume_server(ref: str, current: CurrentUser, db: DB):
 
 @router.post("/servers/{ref}/suspend")
 def suspend_server(ref: str, current: CurrentUser, db: DB):
-    server = require_unlocked_server(db, ref, current)
+    server = require_settled_server(db, ref, current)
     server.status = "SUSPENDING"
     db.commit()
     clients.cast_to_worker("suspend", server_worker_payload(server))
@@ -190,7 +190,7 @@ def ports_of(server) -> tuple[dict, list[dict]]:
 
 @router.post("/servers/{ref}/rebuild")
 def rebuild_server(ref: str, payload: ServerRebuildIn, current: CurrentUser, db: DB):
-    server = require_unlocked_server(db, ref, current)
+    server = require_settled_server(db, ref, current)
     image = clients.api_get(f"{image_api_url()}/images/{path_ref(payload.image)}", caller=current)
     port, ports = ports_of(server)
     server.image_id = image["id"]
@@ -203,7 +203,7 @@ def rebuild_server(ref: str, payload: ServerRebuildIn, current: CurrentUser, db:
 
 @router.post("/servers/{ref}/rescue")
 def rescue_server(ref: str, payload: ServerRescueIn, current: CurrentUser, db: DB):
-    server = require_unlocked_server(db, ref, current)
+    server = require_settled_server(db, ref, current)
     rescue_image_id = server.image_id
     if payload.image:
         rescue_img = clients.api_get(f"{image_api_url()}/images/{path_ref(payload.image)}", caller=current)
@@ -218,7 +218,7 @@ def rescue_server(ref: str, payload: ServerRescueIn, current: CurrentUser, db: D
 
 @router.post("/servers/{ref}/unrescue")
 def unrescue_server(ref: str, current: CurrentUser, db: DB):
-    server = require_unlocked_server(db, ref, current)
+    server = require_settled_server(db, ref, current)
     port, ports = ports_of(server)
     server.status = "UNRESCUING"
     db.commit()
@@ -229,14 +229,14 @@ def unrescue_server(ref: str, current: CurrentUser, db: DB):
 
 @router.post("/servers/{ref}/password")
 def set_server_password(ref: str, payload: ServerPasswordIn, current: CurrentUser, db: DB):
-    server = require_unlocked_server(db, ref, current)
+    server = require_settled_server(db, ref, current)
     clients.cast_to_worker("set_password", {**server_worker_payload(server), "password": payload.password})
     return {"server": server.name, "status": "password injection requested"}
 
 
 @router.delete("/servers/{ref}")
 def delete_server(ref: str, current: UserOrInternal, db: DB, keep_root_volume: bool = False):
-    server = require_unlocked_server(db, ref, current)
+    server = require_settled_server(db, ref, current)
     original_name = server.name
     try:
         block_store_url, networking_url = block_store_api_url(), networking_api_url()
@@ -276,17 +276,6 @@ def delete_server(ref: str, current: UserOrInternal, db: DB, keep_root_volume: b
     except Exception as exc:
         log.warning("compute.instance.delete.start event not published: %s", exc)
     return {"status": "deleting", "id": server.id, "name": original_name}
-
-
-@router.post("/servers/{ref}/live-migrate", status_code=202)
-def live_migrate_server(ref: str, payload: dict, current: CurrentUser, db: DB):
-    """Not built yet. The route stays so the API shape is fixed; it refuses the request and changes nothing.
-    POST /servers/{ref}/migrate is the supported way to move a server to another node."""
-    require_server(db, ref, current)
-    raise HTTPException(
-        status_code=501,
-        detail="live migration is not supported yet; use POST /servers/{ref}/migrate (cold migrate), which restarts the server on the target node",
-    )
 
 
 @router.get("/servers/{ref}/migration-candidates")
@@ -358,7 +347,7 @@ def add_server_port(ref: str, payload: ServerPortIn, current: CurrentUser, db: D
 
 @router.delete("/servers/{ref}/ports/{port_ref}")
 def remove_server_port(ref: str, port_ref: str, current: CurrentUser, db: DB):
-    server = require_unlocked_server(db, ref, current)
+    server = require_settled_server(db, ref, current)
     extra = comma_list(server.extra_port_ids)
     port = clients.api_get(f"{networking_api_url()}/ports/{path_ref(port_ref)}")
     if port["id"] not in extra:

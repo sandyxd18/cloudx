@@ -399,3 +399,28 @@ def test_install_systemd_installs_websockify_for_the_novnc_proxy_unit():
     pip_lines = [line.split() for line in script.splitlines() if '/venv/bin/pip" install ' in line]
 
     assert any("websockify" in words for words in pip_lines)
+
+
+def _fake_ssh_that_fails(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    ssh = bin_dir / "ssh"
+    ssh.write_text('#!/bin/sh\necho "ssh must not be called: $*" >&2\nexit 99\n')
+    ssh.chmod(0o755)
+    return bin_dir
+
+
+def test_setup_migration_ssh_dry_run_prints_the_plan_and_calls_no_ssh(tmp_path):
+    env = {**os.environ, "PATH": f"{_fake_ssh_that_fails(tmp_path)}:{os.environ['PATH']}"}
+    result = subprocess.run(["bash", str(ROOT / "scripts" / "setup-migration-ssh.sh"), "--dry-run", "comp01", "comp02"],
+                            env=env, text=True, capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert "ssh must not be called" not in result.stderr
+    assert "comp01" in result.stdout and "comp02" in result.stdout
+    assert "cloudx_migration" in result.stdout
+
+
+def test_setup_migration_ssh_without_nodes_prints_usage():
+    result = subprocess.run(["bash", str(ROOT / "scripts" / "setup-migration-ssh.sh")], text=True, capture_output=True, timeout=20)
+    assert result.returncode == 2
+    assert "usage" in (result.stdout + result.stderr).lower()

@@ -104,6 +104,22 @@ def test_mixed_partition_evacuates_safe_only(env):
     assert state(m, db) == "fenced"
 
 
+def test_a_live_migrating_server_is_never_evacuated_by_ha(env):
+    m, mon, db, api = env
+    api.srv += [{"id": "moving", "host": "h1", "status": "MIGRATING"}]
+    api.vh["moving"] = ["h2"]
+    db.add(m.Protected(server_id="moving", project_id="p1"))
+    db.commit()
+    mon.cycle(db, api, T0)
+    mon.cycle(db, api, T0 + timedelta(seconds=31))
+    assert ("evacuate", "moving") not in api.calls and ("evacuate", "ok") in api.calls
+    # its volumes are not fenced either: the target of the migration may be using them
+    assert all("vol-moving" not in c[2] for c in api.calls if c[0] == "fence")
+    rows = {r.server_id: r for r in db.query(m.Recovery)}
+    assert rows["moving"].status == "skipped" and "live migration" in rows["moving"].message
+    assert state(m, db) == "fenced"
+
+
 def test_force_down_before_fence_before_evacuate(env):
     m, mon, db, api = env
     mon.cycle(db, api, T0)

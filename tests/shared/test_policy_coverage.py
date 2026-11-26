@@ -41,4 +41,4 @@ def test_every_action_is_used_by_a_route_or_is_a_known_inline_action(monkeypatch
         f"in the table but gated nowhere: {sorted(set(policy.DEFAULT_RULES) - used)}; "
         f"gated but not in the table: {sorted(used - set(policy.DEFAULT_RULES))}"
     )
-    assert len(policy.DEFAULT_RULES) == 57
+    assert len(policy.DEFAULT_RULES) == 58

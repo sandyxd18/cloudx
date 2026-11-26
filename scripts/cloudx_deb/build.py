@@ -26,11 +26,13 @@ META_RECOMMENDS = {
     "compute": ["libvirt-daemon-system", "qemu-kvm", "openvswitch-switch", "ovn-host", "qemu-utils"],
     "storage": [],
 }
-# Host preparation the packages cannot do on their own (they need addresses or disks), shipped with the role's meta package.
+# Host preparation the packages cannot do on their own (they need addresses or disks), shipped with the role's meta package
+# ("cli": run from an admin machine that reaches the nodes over ssh, shipped with cloudx-cli).
 HOST_SCRIPTS = {
     "compute": {"usr/sbin/cloudx-setup-compute": "setup-compute-node.sh",
                 "usr/sbin/cloudx-setup-ceph-secret": "setup-ceph-libvirt-secret.sh"},
     "storage": {"usr/sbin/cloudx-setup-storage": "prepare-lvm-node.sh"},
+    "cli": {"usr/bin/cloudx-setup-migration-ssh": "setup-migration-ssh.sh"},
 }
 _DEFAULT_SECRET = re.compile(r"^auth_secret_key *= *cloudx-secret-key-change-in-production.*(\n|$)", re.MULTILINE)
 
@@ -258,6 +260,7 @@ def _stage_cli(staging: Path, version: str, work_dir: Path, with_venv: bool) -> 
     _write(staging / "DEBIAN/control", control_file(
         "cloudx-cli", version, ["python3 (>= 3.12)", "python3 (<< 3.13)"],
         "CloudX command line client (cloudx), installable on its own"))
+    _copy_host_scripts(staging, "cli")
 
 
 def _stage_meta(staging: Path, version: str, role: str, packaged: list[Unit]) -> None:
@@ -271,6 +274,10 @@ def _stage_meta(staging: Path, version: str, role: str, packaged: list[Unit]) ->
     recommends += ["cloudx-cli", *META_RECOMMENDS[role]]
     _write(staging / "DEBIAN/control", control_file(
         f"cloudx-{role}", version, depends, f"CloudX {role} node: every {role} service", recommends))
+    _copy_host_scripts(staging, role)
+
+
+def _copy_host_scripts(staging: Path, role: str) -> None:
     for dest, source in HOST_SCRIPTS.get(role, {}).items():
         (staging / dest).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / "scripts" / source, staging / dest)  # bytes: the scripts hold non-ASCII text

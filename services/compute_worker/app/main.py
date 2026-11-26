@@ -37,8 +37,8 @@ from shared import catalog  # noqa: E402
 from shared.internal import internal_headers  # noqa: E402
 from shared.rpc import RPCClient, RPCConsumer, host_queue  # noqa: E402
 
-from . import console_proxy, iscsi, libvirt_driver, network_manager, volume_manager, worker  # noqa: E402
-from .config import COMPUTE_HOST, CONSOLE_PROXY_HOST, LIBVIRT_URI, OVS_BRIDGE, ROOT_VOLUME_WAIT_TIMEOUT, VM_NAME_PREFIX, endpoint  # noqa: E402
+from . import console_proxy, iscsi, libvirt_driver, live_migration, network_manager, volume_manager, worker  # noqa: E402
+from .config import COMPUTE_HOST, CONSOLE_PROXY_HOST, LIBVIRT_URI, OVS_BRIDGE, ROOT_VOLUME_WAIT_TIMEOUT, endpoint  # noqa: E402
 FENCED_FLAG = Path("/var/lib/cloudx/ha-watchdog/fenced")  # written by cloudx-ha-watchdog after it destroyed VMs
 from shared.proc import CommandError, succeeds
 from .utils import tool_available  # noqa: E402
@@ -126,14 +126,20 @@ def conductor_delete_record(server_id: str) -> None:
     })
 
 
-def _notify_action_finish(server_id: str | None, result: str = "success", message: str | None = None, action: str | None = None) -> None:
+def _notify_action_finish(server_id: str | None, result: str = "success", message: str | None = None, action: str | None = None,
+                          target_host: str | None = None) -> None:
+    """Close the server's open action in compute-api. A finished live migration also names its target host, so
+    compute-api can set host and status itself when the conductor cast was lost."""
     if not server_id:
         return
+    body = {"result": result, "message": message, "action": action}
+    if target_host:
+        body["target_host"] = target_host
     try:
         api_url = catalog.url("compute").rstrip("/")
         requests.post(
             f"{api_url}/internal/servers/{server_id}/actions/finish",
-            json={"result": result, "message": message, "action": action},
+            json=body,
             headers=internal_headers(),
             timeout=5,
         )
@@ -161,7 +167,11 @@ def reconcile_stale_domains() -> None:
         return
 
     domain_to_host = {s["libvirt_domain_name"]: s["host"] for s in all_servers if s.get("libvirt_domain_name")}
+    # A migrating server has its domain on both hosts and the API host is not settled yet: leave both copies alone.
+    migrating = {s["libvirt_domain_name"] for s in all_servers if s.get("libvirt_domain_name") and s.get("status") == "MIGRATING"}
     for domain_name in domain_states:
+        if domain_name in migrating:
+            continue
         api_host = domain_to_host.get(domain_name)
         if api_host and api_host != COMPUTE_HOST:
             log.warning("[reconcile] domain %s host in API is %s (this node=%s) — destroying stale domain", domain_name, api_host, COMPUTE_HOST)
@@ -186,6 +196,76 @@ def reconcile_stale_domains() -> None:
                     iscsi.logout(portal, target)
                 except Exception as exc:  # best-effort: the domain is already gone; a stale session only wastes a login
                     log.warning("[reconcile] could not log out %s: %s", target, exc)
+
+
+# How long worker-start recovery waits for an aborted migration job to end, and how often it looks.
+RECOVER_ABORT_WAIT_SECONDS = 30
+_RECOVER_POLL_SECONDS = 1.0
+RECOVERED_MESSAGE = "the compute worker restarted during the live migration; the migration was aborted"
+
+
+def _stop_migration_job(domain: str) -> bool:
+    """True when the domain has no libvirt job (any more): abort a running one and wait for it to end."""
+    if not libvirt_driver.active_job(domain):
+        return True
+    log.warning("[recover] %s still has a libvirt job (the migration libvirtd kept running); aborting it", domain)
+    try:
+        libvirt_driver.abort_job(domain)
+    except Exception as exc:  # the job may have ended on its own meanwhile; the loop below tells
+        log.warning("[recover] abortJob on %s failed: %s", domain, exc)
+    deadline = time.monotonic() + RECOVER_ABORT_WAIT_SECONDS
+    while libvirt_driver.active_job(domain):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_RECOVER_POLL_SECONDS)
+    return True
+
+
+def _recover_migrating_server(server: dict, domain_states: dict) -> None:
+    domain = server.get("libvirt_domain_name")
+    if domain_states.get(domain) != "RUNNING":
+        return  # not here (cold migrate, evacuate, or the guest moved): nothing to decide on this node
+    if not _stop_migration_job(domain):
+        log.warning("[recover] server %s stays MIGRATING: the migration job of %s did not stop within %s s; check "
+                    "`virsh domjobinfo %s` and docs/live-migration.md", server["id"], domain, RECOVER_ABORT_WAIT_SECONDS, domain)
+        return
+    if libvirt_driver.domain_state(domain) != "RUNNING":
+        # the move completed as the job was aborted: ACTIVE with this host would let the target's reconciler destroy it
+        log.warning("[recover] server %s stays MIGRATING: %s is no longer running here after its job ended",
+                    server["id"], domain)
+        return
+    log.warning("[recover] server %s is MIGRATING but its domain runs here with no job — back to ACTIVE", server["id"])
+    conductor_update_server(server["id"], {"status": "ACTIVE", "error_message": None})
+    # "error" makes compute-api move the placement claim back here (it went to the target when the migration began)
+    _notify_action_finish(server["id"], "error", RECOVERED_MESSAGE, "live_migrate")
+
+
+def recover_migrating_servers() -> None:
+    """At worker start: free a server that is still MIGRATING but whose domain runs here.
+
+    A migration is driven by one handler; if the worker restarted while it ran, nothing is left to finish it and the
+    server would stay MIGRATING for good. libvirtd may still be running the peer-to-peer job, which could complete
+    the move later; so a job still running is aborted first. Only when the domain then runs here with no job does
+    the server go back to ACTIVE, with an "error" finish so the claim returns. Never raises.
+    """
+    try:
+        domain_states = libvirt_driver.get_all_domain_states()
+        api_url = catalog.url("compute").rstrip("/")
+        resp = requests.get(f"{api_url}/internal/servers", headers=internal_headers(), timeout=5)
+        if resp.status_code != 200:
+            log.warning("[recover] compute-api answered %s; migrating servers are not recovered", resp.status_code)
+            return
+        all_servers = resp.json().get("servers", [])
+    except Exception as exc:
+        log.warning("[recover] could not recover migrating servers: %s", exc)
+        return
+    for server in all_servers:
+        if server.get("status") != "MIGRATING" or server.get("host") != COMPUTE_HOST:
+            continue
+        try:
+            _recover_migrating_server(server, domain_states)
+        except Exception as exc:
+            log.warning("[recover] could not recover migrating server %s: %s", server.get("id"), exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -961,53 +1041,38 @@ def handle_prefetch_image(args: dict) -> dict:
 
 
 def handle_live_migrate(args: dict) -> None:
-    """Live migrate a running VM to another compute node (Phase 6.1).
+    """Cast from compute-api: live-migrate a running server from this node to args["_target_host"].
 
-    Not reachable: compute-api answers 501 for live-migrate. Kept as the starting point for the real thing, which needs
-    `id` instead of `server_id`, ssh between nodes, taps and OVN binding on the target, and non-shared LVM handled."""
-    server_id = args.get("server_id")
-    target_host = args.get("target_host")
-    log.info("Live migrate request: server=%s target=%s", server_id, target_host)
-    if not server_id or not target_host:
-        conductor_mark_error(server_id or "unknown", "server_id and target_host required for live migration")
-        return
-
-    try:
-        import libvirt
-        conn = libvirt.open(LIBVIRT_URI)
-        if not conn:
-            raise RuntimeError("failed to open libvirt connection")
-
-        dom = None
+    The consumer runs one handler at a time and a migration can take up to LIVE_MIGRATION_TIMEOUT, so it runs in its
+    own thread and reports through the conductor and the action log. It gets its own RPC client: RPCClient.call holds
+    the client's lock while it waits for the reply, which would stall every cast of this worker meanwhile."""
+    def migrate() -> None:
+        rpc = RPCClient(RABBITMQ_URL)
         try:
-            dom = conn.lookupByUUIDString(server_id)
-        except Exception:  # best-effort: falls back to lookup by name
+            live_migration.run(args, rpc, update_server=conductor_update_server, notify=_notify_action_finish)
+        finally:
             try:
-                dom = conn.lookupByName(f"{VM_NAME_PREFIX}-{server_id[:8]}")
-            except Exception:  # best-effort: dom stays None and a 'domain not found' error is raised below
-                pass
+                rpc.close()
+            except Exception as exc:  # best-effort: the migration is over either way
+                log.debug("live migration: closing its RPC client failed: %s", exc)
 
-        if not dom:
-            raise RuntimeError(f"domain for server {server_id} not found")
+    server_id = args.get("id") or args.get("server_id")
+    threading.Thread(target=migrate, name=f"live-migrate-{str(server_id)[:8]}", daemon=True).start()
 
-        # Target URI for migration (shared storage required)
-        target_uri = f"qemu+ssh://{target_host}/system"
 
-        # Perform live migration with persistent and undefine-source flags
-        flags = libvirt.VIR_MIGRATE_LIVE | libvirt.VIR_MIGRATE_PERSIST_DEST | libvirt.VIR_MIGRATE_UNDEFINE_SOURCE
-        new_dom = dom.migrateToURI3(target_uri, flags, None, None)
+def handle_live_migrate_prepare(args: dict) -> dict:
+    """RPC Call from the source worker: get this node ready to receive the domain."""
+    return live_migration.prepare(args, _rpc)
 
-        if new_dom:
-            log.info("Live migration of server %s to %s succeeded", server_id, target_host)
-            conductor_update_server(server_id, {
-                "status": "ACTIVE",
-                "host": target_host,
-            })
-        else:
-            raise RuntimeError("migration returned None")
-    except Exception as exc:
-        log.exception("Live migration failed for server %s: %s", server_id, exc)
-        conductor_mark_error(server_id, f"live migration failed: {exc}")
+
+def handle_live_migrate_finish(args: dict) -> dict:
+    """RPC Call from the source worker: the domain runs here, bind its taps to OVN."""
+    return live_migration.finish(args)
+
+
+def handle_live_migrate_rollback(args: dict) -> dict:
+    """RPC Call from the source worker: the migration failed, undo prepare."""
+    return live_migration.rollback(args, _rpc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1033,12 +1098,15 @@ HANDLERS = {
     "set_password":     handle_set_password,
     "shelve":           handle_shelve,
     "prefetch_image":   handle_prefetch_image,
-    "live_migrate_instance": handle_live_migrate,
+    "live_migrate":     handle_live_migrate,
     # Call (sync reply)
     "health":           handle_health,
     "get_logs":         handle_get_logs,
     "get_console_info": handle_get_console_info,
     "get_metrics":      handle_get_metrics,
+    "live_migrate_prepare":  handle_live_migrate_prepare,
+    "live_migrate_finish":   handle_live_migrate_finish,
+    "live_migrate_rollback": handle_live_migrate_rollback,
     # Hotplug (Cast)
     "attach_volume":    handle_attach_volume,
     "detach_volume":    handle_detach_volume,
@@ -1072,6 +1140,8 @@ def main():
     else:
         log.error("Could not connect to RabbitMQ after 30 attempts")
         sys.exit(1)
+
+    recover_migrating_servers()
 
     threading.Thread(target=sync_power_states_loop, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()

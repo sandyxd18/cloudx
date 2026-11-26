@@ -128,7 +128,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 #### Policy & Audit
 | Feature | Endpoint | Status |
 |---|---|:---:|
-| The effective rule of each of the 57 actions that a policy file can change (22 of `auth-api`, 35 admin-only actions of the other services), and whether it comes from the file or the built-in default | `GET /policy` | ✅ |
+| The effective rule of each of the 58 actions that a policy file can change (22 of `auth-api`, 36 admin-only actions of the other services), and whether it comes from the file or the built-in default | `GET /policy` | ✅ |
 | Check whether the caller's token may perform one of those actions (the rule is evaluated against the token; the other service is not called) | `POST /policy/enforce` | ✅ |
 | Audit log | `GET\|POST /audit-logs` | ✅ |
 
@@ -140,7 +140,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Federation / SAML / OAuth2** | No SSO |
 | **Multi-factor authentication** | None |
 | **Fernet token** | JWT only |
-| **Policy files (oslo.policy)** | Partly: `/etc/cloudx/policy.yaml` (its own rule language, not oslo.policy syntax) overrides the rule of 57 actions (22 of `auth-api` and the 35 admin-only actions of compute, block-store, placement, billing, telemetry, networking, object-store and ha), reloads without a restart and is checked with `cloudx-manage policy check` (`docs/policy.md`). The file has to be the same on every node that runs an API service. Ownership, visibility and state checks, internal routes and the bulk billing and telemetry routes stay in code; there is no per-project policy |
+| **Policy files (oslo.policy)** | Partly: `/etc/cloudx/policy.yaml` (its own rule language, not oslo.policy syntax) overrides the rule of 58 actions (22 of `auth-api` and the 36 admin-only actions of compute, block-store, placement, billing, telemetry, networking, object-store and ha), reloads without a restart and is checked with `cloudx-manage policy check` (`docs/policy.md`). The file has to be the same on every node that runs an API service. Ownership, visibility and state checks, internal routes and the bulk billing and telemetry routes stay in code; there is no per-project policy |
 
 **Estimated Identity similarity: ~75%**
 
@@ -178,7 +178,8 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 #### Migration & Recovery
 | Feature | Endpoint | Status |
 |---|---|:---:|
-| Live migration to a target host (answers 501; planned, use cold migration for now) | `POST /servers/{ref}/live-migrate` | ✗ |
+| **Live migration** of an `ACTIVE` server to another compute node (admin; the scheduler picks the target or `--host` names it; RBD disks, and LVM disks that the target reaches over iSCSI; a network pause of about one to three seconds; a failed migration leaves the server `ACTIVE` on the source; code and unit tests only, not run on a lab yet; see docs/live-migration.md) | `POST /servers/{ref}/live-migrate` | ✅ |
+| **Drain a compute node** (`cloudx host drain`: disables the node, live-migrates its `ACTIVE` servers and cold-migrates the `SHUTOFF` ones, one at a time, and skips what cannot move; `cloudx host enable` puts the node back) | CLI over `PUT /os-services/{host}` and the two calls above | ✅ |
 | Cold migration | `POST /servers/{ref}/migrate` | ✅ |
 | List possible target hosts | `GET /servers/{ref}/migration-candidates` | ✅ |
 | Evacuate a server from a failed host | `POST /servers/{ref}/evacuate` | ✅ |
@@ -270,6 +271,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **vfat config drive format** | ISO9660 only |
 | **Trusted image certificates** | None |
 | **Trigger crash dump** | None |
+| **Live migration beyond the basics** | No block migration (a local LVM volume is never copied), no TLS on the libvirt connection (ssh is used), no zero-loss network handover (OVN multi-chassis is not used), no dashboard button, no automatic evacuation by `ha-api` |
 
 **Estimated Compute similarity: ~85%**
 

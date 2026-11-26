@@ -118,6 +118,8 @@ def test_cli_depends_only_on_python_and_ships_the_command(debs):
     assert mode.startswith("l")
     assert owner == "root/root"
     assert target == "/opt/cloudx/cli/venv/bin/cloudx"
+    # run from an admin machine against every compute node, so it ships with the CLI and not a role package
+    assert entries(debs["cloudx-cli"])["/usr/bin/cloudx-setup-migration-ssh"] == ("-rwxr-xr-x", "root/root", None)
 
 
 def test_relocate_targets_another_venv():

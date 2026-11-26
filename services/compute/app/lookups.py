@@ -44,6 +44,17 @@ def require_unlocked_server(db: Session, ref: str, current: dict):
     return server
 
 
+def require_settled_server(db: Session, ref: str, current: dict):
+    """require_unlocked_server for a lifecycle action, which a MIGRATING server refuses: its domain may run on two
+    nodes and the source worker drives it until the migration ends (the finish hook, worker-start recovery or an
+    evacuate of a forced-down source settle it)."""
+    server = require_unlocked_server(db, ref, current)
+    if server.status == "MIGRATING":
+        raise HTTPException(status_code=409,
+                            detail="server is MIGRATING (a migration is in progress); retry when it has finished")
+    return server
+
+
 def require_server_group(db: Session, ref: str, current: dict) -> ServerGroup:
     """A server group by id, when it has no project or the caller may see its project (the project, the domain admin of
     its domain, the system admin); else by name in the caller's project. 404 otherwise, the same for both."""
