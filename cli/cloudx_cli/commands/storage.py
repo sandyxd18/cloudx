@@ -182,9 +182,9 @@ def volume_type(ctx):
               default="sata_ssd", show_default=True,
               help="Hardware tier hint (informational)")
 @click.option("--max-iops", "max_iops", type=int, default=None,
-              help="Max IOPS (informational, not enforced). E.g. 3000")
+              help="Max IOPS, reads and writes together. Applied when a volume is attached or a server is built (LVM, NFS), or at creation (Ceph). E.g. 3000")
 @click.option("--max-throughput", "max_throughput", type=int, default=None,
-              help="Max throughput in MB/s (informational). E.g. 125")
+              help="Max throughput in MB/s, reads and writes together. Applied like --max-iops. E.g. 125")
 @click.option("--description", "-d", default=None, help="Human-readable description")
 @click.option("--private", is_flag=True, default=False, help="Make type private (admin-only)")
 @click.pass_context

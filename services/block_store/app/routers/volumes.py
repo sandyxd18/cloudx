@@ -13,7 +13,7 @@ from .. import clients
 from ..clients import _response_detail, get_server, server_locked
 from ..config import compute_api_url
 from ..db import DB
-from ..lookups import next_target_device, require_volume
+from ..lookups import next_target_device, require_volume, volume_qos
 from ..models import Snapshot, Volume, VolumeQuota
 from ..schemas import AttachIn, InternalAttachIn, VolumeIn, VolumeInternalIn
 from ..serializers import obj_to_dict, volume_to_os_dict
@@ -104,6 +104,7 @@ def get_volume_internal(ref: str, db: DB):
         "host":     volume.host,
         "target_device": volume.target_device,
         "error_message": volume.error_message,
+        **volume_qos(db, volume),  # the limits of the volume's type: the compute node applies them to the disk
     }
 
 
@@ -275,6 +276,7 @@ def attach_volume(ref: str, payload: AttachIn, current: CurrentUser, db: DB):
                 "backend":     volume.backend or "lvm",
                 "host":        volume.host,
                 "target_dev":  target_device,
+                **volume_qos(db, volume),
             },
             headers=internal_headers(),
             timeout=60,

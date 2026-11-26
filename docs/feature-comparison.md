@@ -505,6 +505,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | LVM snapshot (COW, 20% size) | ✅ |
 | Ceph RBD snapshot | ✅ |
 | QoS on Ceph volumes (`rbd_qos_iops_limit`, `rbd_qos_bps_limit` from the volume type) | ✅ |
+| QoS on LVM (and NFS file) volumes: the volume type's `max_iops` and `max_throughput` become a libvirt `<iotune>` on the disk (data volumes at attach, the root volume when the server is built) | ✅ |
 
 #### Snapshot
 | Feature | Endpoint | Status |
@@ -530,7 +531,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Volume replication** | Cross-host replica, promote/failover (full copy, not 1:1) |
 | **Generic volume groups** | Consistency groups only |
 | **FC backend** | LVM (with iSCSI), Ceph and NFS only |
-| **QoS enforcement on LVM** | `max_iops` / `max_throughput` are applied only on Ceph; LVM volumes ignore them |
+| **QoS limits that follow a type change** | A change to a volume type's `max_iops` / `max_throughput` applies to a volume the next time it is attached or built into a server; a disk already attached to a running VM keeps its limit until then, and a Ceph volume keeps the limit it was created with. The limit is one total for reads and writes together; there are no separate read and write limits |
 
 **Estimated Block Storage similarity: ~82%**
 

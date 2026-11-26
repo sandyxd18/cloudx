@@ -99,7 +99,23 @@ def _rbd_disk_element(parent: ET.Element | None, disk_path: str | Path, target_d
     return disk
 
 
-def _build_boot_disk_element(devices: ET.Element, disk_path: str | Path) -> None:
+def _add_iotune(disk: ET.Element, max_iops: int | None, max_throughput: int | None) -> None:
+    """Throttle a disk in QEMU with <iotune> (a volume type's `max_iops` and `max_throughput` in MB/s, read and write
+    together). A limit that is missing or 0 sets nothing. An RBD disk is not passed here: Ceph keeps the limit on the image."""
+    limits = []
+    if max_throughput and max_throughput > 0:
+        limits.append(("total_bytes_sec", max_throughput * 1024 * 1024))
+    if max_iops and max_iops > 0:
+        limits.append(("total_iops_sec", max_iops))
+    if not limits:
+        return
+    iotune = ET.SubElement(disk, "iotune")
+    for tag, value in limits:
+        ET.SubElement(iotune, tag).text = str(value)
+
+
+def _build_boot_disk_element(devices: ET.Element, disk_path: str | Path,
+                             max_iops: int | None = None, max_throughput: int | None = None) -> None:
     """Append the correct root-disk XML element to <devices> based on path type."""
     path_type = _disk_path_type(disk_path)
 
@@ -110,6 +126,7 @@ def _build_boot_disk_element(devices: ET.Element, disk_path: str | Path) -> None
         ET.SubElement(disk, "source", dev=str(disk_path))
         ET.SubElement(disk, "target", dev="sda", bus="scsi")
         ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit="0")
+        _add_iotune(disk, max_iops, max_throughput)
 
     elif path_type == "rbd":
         # Ceph RBD network disk
@@ -123,6 +140,7 @@ def _build_boot_disk_element(devices: ET.Element, disk_path: str | Path) -> None
         ET.SubElement(disk, "source", file=str(disk_path))
         ET.SubElement(disk, "target", dev="sda", bus="scsi")
         ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit="0")
+        _add_iotune(disk, max_iops, max_throughput)
 
 
 def domain_xml(
@@ -134,6 +152,8 @@ def domain_xml(
     tap_name: str,
     mac_address: str,
     extra_interfaces: list[tuple[str, str]] | None = None,
+    root_max_iops: int | None = None,
+    root_max_throughput: int | None = None,
 ) -> str:
     domain = ET.Element("domain", type="kvm")
     ET.SubElement(domain, "name").text = name
@@ -167,7 +187,7 @@ def domain_xml(
     ET.SubElement(devices, "watchdog", model="i6300esb", action="reset")
 
     # Root disk — auto-detect LVM block / Ceph RBD / legacy file
-    _build_boot_disk_element(devices, disk_path)
+    _build_boot_disk_element(devices, disk_path, root_max_iops, root_max_throughput)
 
     cdrom = ET.SubElement(devices, "disk", type="file", device="cdrom")
     ET.SubElement(cdrom, "driver", name="qemu", type="raw")
@@ -465,8 +485,9 @@ def delete(name: str) -> None:
         conn.close()
 
 
-def disk_device_xml(path: str | Path, target_dev: str = "sdb", disk_format: str = "auto", bus: str = "scsi") -> str:
-    """Build libvirt disk XML for a data volume.
+def disk_device_xml(path: str | Path, target_dev: str = "sdb", disk_format: str = "auto", bus: str = "scsi",
+                    max_iops: int | None = None, max_throughput: int | None = None) -> str:
+    """Build libvirt disk XML for a data volume. `max_iops` and `max_throughput` (MB/s) become an <iotune> on a block or file disk.
 
     Detects path type automatically:
       /dev/... → block device (LVM)       — type=raw, io=native
@@ -483,6 +504,7 @@ def disk_device_xml(path: str | Path, target_dev: str = "sdb", disk_format: str 
         if bus == "scsi" and target_dev.startswith("sd") and len(target_dev) == 3:
             unit = str(ord(target_dev[-1]) - ord("a"))
             ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit=unit)
+        _add_iotune(disk, max_iops, max_throughput)
 
     elif path_type == "rbd":
         disk = _rbd_disk_element(None, path, target_dev, bus)
@@ -497,14 +519,16 @@ def disk_device_xml(path: str | Path, target_dev: str = "sdb", disk_format: str 
         if bus == "scsi" and target_dev.startswith("sd") and len(target_dev) == 3:
             unit = str(ord(target_dev[-1]) - ord("a"))
             ET.SubElement(disk, "address", type="drive", controller="0", bus="0", target="0", unit=unit)
+        _add_iotune(disk, max_iops, max_throughput)
 
     return ET.tostring(disk, encoding="unicode")
 
 
-def attach_disk(name: str, path: str | Path, target_dev: str = "sdb", disk_format: str = "auto", bus: str = "scsi") -> None:
+def attach_disk(name: str, path: str | Path, target_dev: str = "sdb", disk_format: str = "auto", bus: str = "scsi",
+                max_iops: int | None = None, max_throughput: int | None = None) -> None:
     conn, domain = lookup(name)
     try:
-        xml = disk_device_xml(path, target_dev, disk_format, bus)
+        xml = disk_device_xml(path, target_dev, disk_format, bus, max_iops, max_throughput)
         flags = getattr(libvirt, "VIR_DOMAIN_AFFECT_CONFIG", 2)
         if domain.isActive():
             flags |= getattr(libvirt, "VIR_DOMAIN_AFFECT_LIVE", 1)
