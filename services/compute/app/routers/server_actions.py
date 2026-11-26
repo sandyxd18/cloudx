@@ -359,6 +359,11 @@ def remove_server_port(ref: str, port_ref: str, current: CurrentUser, db: DB):
     return {"status": "detaching", "server_id": server.id, "port_id": port["id"]}
 
 
+def _volume_for_worker(payload: VolumeAttachIn) -> dict:
+    """The body as it came, without `max_iops` and `max_throughput` when the volume's type sets none."""
+    return payload.model_dump(exclude={key for key in ("max_iops", "max_throughput") if getattr(payload, key) is None})
+
+
 # Service-to-service (an admin or the internal token, never open): block-store calls these after it has checked the
 # volume, its project and the server lock.
 @router.post("/servers/{ref}/volumes/attach")
@@ -366,7 +371,7 @@ def attach_volume(ref: str, payload: VolumeAttachIn, current: AdminOrInternal, d
     server = require_unlocked_server(db, ref, current)
     if server.status != "ACTIVE":
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE to attach volume; current status is {server.status}")
-    clients.cast_to_worker("attach_volume", {**server_worker_payload(server), "volume": payload.model_dump()})
+    clients.cast_to_worker("attach_volume", {**server_worker_payload(server), "volume": _volume_for_worker(payload)})
     return {"status": "attaching", "server_id": server.id, "volume_id": payload.volume_id}
 
 
@@ -375,5 +380,5 @@ def detach_volume(ref: str, payload: VolumeAttachIn, current: AdminOrInternal, d
     server = require_unlocked_server(db, ref, current)
     if server.status not in {"ACTIVE", "SHUTOFF"}:
         raise HTTPException(status_code=409, detail=f"server must be ACTIVE or SHUTOFF to detach volume; current status is {server.status}")
-    clients.cast_to_worker("detach_volume", {**server_worker_payload(server), "volume": payload.model_dump()})
+    clients.cast_to_worker("detach_volume", {**server_worker_payload(server), "volume": _volume_for_worker(payload)})
     return {"status": "detaching", "server_id": server.id, "volume_id": payload.volume_id}

@@ -6,6 +6,7 @@ websockify.
 """
 import logging
 import os
+import sys
 import xml.etree.ElementTree as ET
 
 from shared.config import load_service_config
@@ -42,6 +43,55 @@ def _domain_owns_port(domain: str, port: int) -> bool:
                 pass
 
 
+WEB_DIR = "/usr/share/novnc"   # the noVNC web client (the novnc apt package)
+PROXY_PORT = "6080"            # keep equal to PROXY_PORT of compute-api's console.py: it is the port in the link
+
+
+def tls_files() -> tuple[str, str] | None:
+    """(certificate, key) when `console_proxy_cert` and `console_proxy_key` are both set, None when neither is (the proxy
+    serves plain http, as before). One of the two alone is a mistake: ValueError, so the proxy does not start half configured.
+    Read from the environment, which load_service_config fills from compute-worker.conf."""
+    cert = os.environ.get("CONSOLE_PROXY_CERT", "").strip()
+    key = os.environ.get("CONSOLE_PROXY_KEY", "").strip()
+    if cert and key:
+        return cert, key
+    if cert or key:
+        missing = "console_proxy_key" if cert else "console_proxy_cert"
+        raise ValueError(f"{missing} is not set: console_proxy_cert and console_proxy_key go together")
+    return None
+
+
+def proxy_args(tls: tuple[str, str] | None) -> list[str]:
+    """Arguments of websockify. With a certificate it serves https only: the console token is in the link, and a plain
+    http connection to the same port would send it in the clear."""
+    args = ["--web", WEB_DIR, "--token-plugin", "console_proxy.ConsoleTokenPlugin"]
+    if tls:
+        args += ["--cert", tls[0], "--key", tls[1], "--ssl-only"]
+    return [*args, PROXY_PORT]
+
+
+def _run(args: list[str]) -> None:
+    from websockify.websocketproxy import websockify_init  # imported here: the plugin and tls_files() work without websockify
+
+    sys.argv = ["websockify", *args]
+    websockify_init()
+
+
+def main() -> None:
+    """Entry point of the `cloudx-novnc-proxy` unit (`python -m console_proxy`): websockify, with TLS when it is configured.
+    A setting that does not make a working https proxy ends the process with the reason (see `journalctl -u cloudx-novnc-proxy`)
+    instead of serving http under a link that says https."""
+    load_service_config("compute-worker")
+    try:
+        tls = tls_files()
+    except ValueError as exc:
+        sys.exit(f"console proxy not started: {exc}")
+    for path in tls or ():
+        if not (os.path.isfile(path) and os.access(path, os.R_OK)):
+            sys.exit(f"console proxy not started: {path} is not a readable file (console_proxy_cert / console_proxy_key)")
+    _run(proxy_args(tls))
+
+
 def _compute_host() -> str:
     return os.environ.get("COMPUTE_HOST", os.environ.get("NODE_NAME", DEFAULT_COMPUTE_HOST))  # same chain as the worker's config.py
 
@@ -75,3 +125,7 @@ class ConsoleTokenPlugin:
         except Exception as exc:  # best-effort: websockify cannot tolerate an exception from a plugin; any failure means no target
             log.warning("console refused: %s", str(exc).replace(token, "<token>"))    # never the token itself
             return None
+
+
+if __name__ == "__main__":
+    main()

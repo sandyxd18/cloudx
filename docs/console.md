@@ -57,6 +57,25 @@ console_proxy_host = 203.0.113.10
 
 Restart the worker (`sudo systemctl restart cloudx-compute-worker`); the worker reports this address to compute-api, and the proxy does not read it. `etc/cloudx/cloudx.conf.sample` has the line. The old `NOVNC_BASE_URL` setting no longer exists and is not read.
 
+### Serving the console over https
+
+The proxy serves plain http unless you give it a certificate. The link carries the console token in its address, so over http the token crosses the network in the clear (it is valid for 300 seconds and for one server). To serve https, set both in `/etc/cloudx/compute-worker/compute-worker.conf` on each compute node:
+
+```ini
+[DEFAULT]
+console_proxy_host = console-1.example.com
+console_proxy_cert = /etc/cloudx/tls/console.crt
+console_proxy_key  = /etc/cloudx/tls/console.key
+```
+
+then `sudo systemctl restart cloudx-compute-worker` (the proxy restarts with it).
+
+- Set both or neither. With both set the proxy accepts **https only** on port 6080, and the console link starts with `https://`. With neither it serves http as before.
+- The files must be readable by root (the proxy runs as root). Put the certificate chain in the certificate file. If one setting is missing or a file cannot be read, the proxy does not start and says why: `journalctl -u cloudx-novnc-proxy`. It does not fall back to http, because the link would say https.
+- The certificate has to cover `console_proxy_host`. Use a certificate that your users' browsers already trust (your own CA, or one from a public CA such as Let's Encrypt). CloudX does not create one. With a self-signed certificate the browser will not open the console inside the dashboard page and shows nothing: open `https://<console_proxy_host>:6080` once in the same browser and accept the certificate, then try the console again.
+- Every compute node needs its own certificate for its own `console_proxy_host`, or one wildcard certificate if the names allow it. The nodes do not share a console address (see the limits in `feature-comparison.md`).
+- The dashboard and the other APIs are still plain http; this only protects the console proxy.
+
 ## Web console (Dashboard)
 
 1. Open the CloudX Dashboard at `http://localhost:8080`.

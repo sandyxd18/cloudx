@@ -96,6 +96,7 @@ def spawn_server(server_id: str, payload: dict) -> dict:
         xml = libvirt_driver.domain_xml(
             domain, int(flavor["ram_mb"]), int(flavor["vcpus"]), disk_path, seed_iso, tap, mac_address,
             extra_interfaces=[(extra_tap, extra["mac_address"]) for extra_tap, extra in zip(extra_taps, extra_ports)],
+            root_max_iops=root_volume.get("max_iops"), root_max_throughput=root_volume.get("max_throughput"),
         )
         (instance_dir / "domain.xml").write_text(xml, encoding="utf-8")
         libvirt_driver.define_and_start(xml)

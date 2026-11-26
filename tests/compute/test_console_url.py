@@ -121,3 +121,14 @@ def test_token_issued_for_node_a_is_refused_for_node_b(api, monkeypatch):
 
     with pytest.raises(ValueError):
         console_token.verify_token(_token_of(url), "node-b")
+
+
+@pytest.mark.parametrize("scheme, expected", [("https", "https"), ("http", "http"), (None, "http"), ("javascript", "http")])
+def test_the_link_uses_the_scheme_the_worker_reports_for_its_proxy(api, monkeypatch, scheme, expected):
+    svc, client, _, _ = api
+    _server(svc, "ACTIVE")
+    _worker_says(svc, monkeypatch, {**VNC, **({"proxy_scheme": scheme} if scheme else {})})
+
+    body = client.get("/servers/srv1/console-url").json()
+
+    assert urlsplit(body["novnc_url"]).scheme == expected

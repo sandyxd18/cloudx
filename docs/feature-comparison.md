@@ -267,7 +267,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | Feature | Notes |
 |---|---|
 | **Separate ephemeral disk** | Volume-first, no ephemeral disk (flavors carry `ephemeral_gb` but it is not used) |
-| **One console proxy address** | Each compute node runs its own proxy (`cloudx-novnc-proxy`, port 6080, plain http, no TLS), so browsers must reach every compute node; the link is not routed through a central proxy |
+| **One console proxy address** | Each compute node runs its own proxy (`cloudx-novnc-proxy`, port 6080; http, or https when `console_proxy_cert` and `console_proxy_key` are set, `docs/console.md`), so browsers must reach every compute node and every node needs its own certificate; the link is not routed through a central proxy |
 | **vfat config drive format** | ISO9660 only |
 | **Trusted image certificates** | None |
 | **Trigger crash dump** | None |
@@ -507,6 +507,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | LVM snapshot (COW, 20% size) | ✅ |
 | Ceph RBD snapshot | ✅ |
 | QoS on Ceph volumes (`rbd_qos_iops_limit`, `rbd_qos_bps_limit` from the volume type) | ✅ |
+| QoS on LVM (and NFS file) volumes: the volume type's `max_iops` and `max_throughput` become a libvirt `<iotune>` on the disk (data volumes at attach, the root volume when the server is built) | ✅ |
 
 #### Snapshot
 | Feature | Endpoint | Status |
@@ -532,7 +533,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 | **Volume replication** | Cross-host replica, promote/failover (full copy, not 1:1) |
 | **Generic volume groups** | Consistency groups only |
 | **FC backend** | LVM (with iSCSI), Ceph and NFS only |
-| **QoS enforcement on LVM** | `max_iops` / `max_throughput` are applied only on Ceph; LVM volumes ignore them |
+| **QoS limits that follow a type change** | A change to a volume type's `max_iops` / `max_throughput` applies to a volume the next time it is attached or built into a server; a disk already attached to a running VM keeps its limit until then, and a Ceph volume keeps the limit it was created with. The limit is one total for reads and writes together; there are no separate read and write limits |
 
 **Estimated Block Storage similarity: ~82%**
 
@@ -737,7 +738,7 @@ Status: ✅ shipped and used in the native (.deb) deployment, ✗ not available.
 ### ❌ Missing Features (vs. the real CloudX Dashboard)
 | Feature | Notes |
 |---|---|
-| **Console over one address or TLS** | The console pages load the noVNC client over plain http from port 6080 of each compute node; there is no TLS and no single address |
+| **Console over one address** | The console pages load the noVNC client from port 6080 of each compute node (https when the node has a certificate and a key, otherwise plain http); there is no single address, and CloudX does not issue the certificates |
 
 **Estimated CloudX Dashboard similarity: ~90%**
 

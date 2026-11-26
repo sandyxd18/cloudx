@@ -7,6 +7,25 @@ schema between releases, so read the upgrade steps before moving a running cloud
 ## Unreleased
 
 ### Added
+- The browser console proxy can serve https. Set `console_proxy_cert` and `console_proxy_key` (a certificate chain and a
+  key file, both readable by root) in `/etc/cloudx/compute-worker/compute-worker.conf` on a compute node and restart
+  `cloudx-compute-worker`: `cloudx-novnc-proxy` then accepts https only on port 6080, and the console link starts with
+  `https://`. Before, the proxy was always plain http and the console token crossed the network in the clear. Without the
+  two settings nothing changes. One of them alone, or a file that cannot be read, stops the proxy with the reason in
+  `journalctl -u cloudx-novnc-proxy` instead of serving http under an https link. CloudX does not create the certificate:
+  use one your users' browsers trust, or accept a self-signed one once by opening `https://<console_proxy_host>:6080`.
+  The unit now starts `python -m console_proxy` (same websockify, same port, same plugin), so the unit file is replaced
+  by the upgrade; `cloudx-compute-api` reads a new optional `proxy_scheme` from the worker and uses `http` when the
+  worker does not send one.
+- A volume type's `max_iops` and `max_throughput` (MB/s) now limit LVM volumes (and NFS file volumes) too. They used to
+  be applied only on Ceph, so an LVM volume ignored them. The compute node sets them as a libvirt `<iotune>` on the
+  disk (one total for reads and writes together): on a data volume when it is attached, and on the root volume when the
+  server is built (so also after a cold migrate or an unshelve). Block-store reads the limits
+  from the type at that moment, so a change to the type applies from the next attach; a disk already attached to a
+  running VM keeps its limit until then. A Ceph volume is not given an `<iotune>`: it keeps the limit set on its RBD
+  image when it was created. No schema change and no configuration change, and the services can be updated in any order:
+  the limits apply once block-store, compute-api and the compute worker are all updated. A `rebuild` and a `rescue`
+  define the domain again without a limit on the root disk (as they do without its data disks).
 - Live migration. `POST /servers/{ref}/live-migrate` (`cloudx server live-migrate SERVER [--host NODE]`) now moves a
   running server to another compute node instead of answering 501. The policy action is `compute:server:live_migrate`
   (`role:admin` by default). The source worker drives it over `qemu+ssh`: it prepares the target (taps, iSCSI logins,
