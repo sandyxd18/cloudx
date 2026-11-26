@@ -441,6 +441,9 @@ def abort_job(name: str) -> None:
 
 # How often migrate_domain looks at the running job. Tests shorten it.
 _MIGRATION_POLL_SECONDS = 1.0
+# migrateSetMaxDowntime usually fails until the job has started, so a failure is only warned about (once) when it has
+# kept failing for this long. Tests shorten it.
+_DOWNTIME_WARN_SECONDS = 10.0
 
 
 def rewrite_disk_sources(xml: str, mapping: dict[str, str]) -> str:
@@ -498,6 +501,7 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
     try:
         deadline = time.monotonic() + timeout
         downtime_set = downtime_warned = False
+        started = time.monotonic()
         worker.start()
         try:  # usually too early (the job has not started); the loop below retries
             domain.migrateSetMaxDowntime(max_downtime_ms)
@@ -513,12 +517,13 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
                     domain.migrateSetMaxDowntime(max_downtime_ms)
                     downtime_set = True
                 except Exception as exc:  # the job may not have started yet; try again on the next tick
-                    if downtime_warned:
-                        log.debug("%s: migrateSetMaxDowntime not accepted yet: %s", name, exc)
-                    else:  # once: the migration then runs with libvirt's own max downtime until a retry succeeds
-                        log.warning("%s: migrateSetMaxDowntime(%s ms) not accepted: %s; retrying while the migration "
-                                    "runs", name, max_downtime_ms, exc)
+                    if not downtime_warned and time.monotonic() - started >= _DOWNTIME_WARN_SECONDS:
+                        # once: the migration runs with libvirt's own max downtime until a retry succeeds
+                        log.warning("%s: migrateSetMaxDowntime(%s ms) still not accepted after %.0f s: %s; retrying "
+                                    "while the migration runs", name, max_downtime_ms, time.monotonic() - started, exc)
                         downtime_warned = True
+                    else:
+                        log.debug("%s: migrateSetMaxDowntime not accepted yet: %s", name, exc)
             try:
                 info = domain.jobInfo()
                 log.debug("%s: migration job %s, %s of %s bytes of memory remaining", name, info[0], info[8], info[6])
@@ -542,7 +547,10 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
         if "error" in outcome:
             raise MigrationError(str(outcome["error"]), job_started=called.is_set()) from outcome["error"]
     finally:
-        conn.close()
+        try:  # a close that fails must not turn a completed migration into an error (the caller would call it unclear)
+            conn.close()
+        except Exception as exc:
+            log.debug("%s: closing the libvirt connection after the migration failed: %s", name, exc)
 
 
 def _ensure_unmanaged_taps(domain) -> None:

@@ -422,19 +422,70 @@ def test_domain_state_is_none_for_a_missing_domain_and_raises_otherwise(fake, mo
 
 # --- follow-ups: max downtime warning (A4), empty settings (A4), IPv6 literals (A5), job_started (A6) ----------
 
-def test_a_max_downtime_that_never_applies_is_warned_about_once(fake, caplog):
-    class Refuses(FakeDomain):
-        def migrateSetMaxDowntime(self, ms, flags=0):
-            raise RuntimeError("Requested operation is not valid: domain is not being migrated")
+class _RefusesDowntime(FakeDomain):
+    """migrateSetMaxDowntime fails the first `refusals` times (all of them when None), like a job not started yet."""
 
-    domain = Refuses(migrate=lambda d: time.sleep(0.4))   # several poll ticks (0.05 s each)
+    def __init__(self, refusals=None, **kw):
+        super().__init__(**kw)
+        self.refusals = refusals
+
+    def migrateSetMaxDowntime(self, ms, flags=0):
+        if self.refusals is None or self.refusals > 0:
+            if self.refusals:
+                self.refusals -= 1
+            raise RuntimeError("Requested operation is not valid: domain is not being migrated")
+        super().migrateSetMaxDowntime(ms, flags)
+
+
+def _downtime_warnings(caplog):
+    return [r for r in caplog.records if r.levelname == "WARNING" and "migrateSetMaxDowntime" in r.getMessage()]
+
+
+def test_a_max_downtime_that_never_applies_is_warned_about_once(fake, caplog, monkeypatch):
+    monkeypatch.setattr(libvirt_driver, "_DOWNTIME_WARN_SECONDS", 0.15)
+    domain = _RefusesDowntime(migrate=lambda d: time.sleep(0.5))   # many poll ticks (0.05 s each)
     fake(domain)
 
     with caplog.at_level("DEBUG", logger="compute-worker"):
         _migrate(domain)
 
-    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "migrateSetMaxDowntime" in r.getMessage()]
-    assert len(warnings) == 1
+    assert len(_downtime_warnings(caplog)) == 1
+
+
+def test_a_max_downtime_accepted_on_a_retry_is_not_warned_about(fake, caplog):
+    # the normal case: refused right after the start and on the first retry, accepted once the job runs
+    domain = _RefusesDowntime(refusals=2, migrate=lambda d: d.downtime_set.wait(5))
+    fake(domain)
+
+    with caplog.at_level("DEBUG", logger="compute-worker"):
+        _migrate(domain)
+
+    assert domain.downtime == 300
+    assert _downtime_warnings(caplog) == []
+
+
+def test_a_short_migration_is_not_warned_about_even_if_the_downtime_never_applied(fake, caplog):
+    domain = _RefusesDowntime(migrate=lambda d: time.sleep(0.3))   # under _DOWNTIME_WARN_SECONDS (10 s)
+    fake(domain)
+
+    with caplog.at_level("DEBUG", logger="compute-worker"):
+        _migrate(domain)
+
+    assert _downtime_warnings(caplog) == []
+
+
+def test_a_failing_close_does_not_turn_a_completed_migration_into_an_error(fake):
+    domain = FakeDomain()
+    conn = fake(domain)
+
+    def close():
+        raise RuntimeError("internal error: client socket is closed")
+
+    conn.close = close
+
+    _migrate(domain)   # does not raise
+
+    assert len(domain.calls) == 1
 
 
 @pytest.mark.parametrize("key", KEYS)

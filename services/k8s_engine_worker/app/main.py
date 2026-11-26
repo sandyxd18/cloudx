@@ -62,8 +62,8 @@ def _delete_vm(server_id: str) -> bool:
     MIGRATING during `cloudx host drain`): the caller keeps its record and the next reconcile tries again."""
     r = requests.delete(f"{_compute()}/servers/{server_id}", headers=internal_headers(), timeout=30)
     if r.status_code == 409:
-        log.info("VM %s cannot be deleted yet (409, e.g. a migration is in progress); retrying on the next reconcile",
-                 server_id)
+        log.warning("VM %s cannot be deleted yet (409, e.g. a migration is in progress); retrying on the next reconcile",
+                    server_id)
         return False
     if r.status_code != 404:  # already gone is fine
         r.raise_for_status()

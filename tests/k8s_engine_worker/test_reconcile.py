@@ -221,3 +221,15 @@ def test_scale_down_keeps_the_node_record_of_a_migrating_vm(env):
 
     assert env.of("DELETE", "/servers/srv-w2")
     assert not env.of("DELETE", "/nodes/node-srv-w2")            # retried on the next tick
+
+
+def test_a_vm_that_stays_busy_is_warned_about_each_pass(env, caplog):
+    env.busy = {"srv-m"}
+    env.clusters = [cluster("DELETING", [n("master", "srv-m")])]
+
+    with caplog.at_level(logging.INFO, logger="k8s-engine-worker"):
+        w.tick()
+        w.tick()
+
+    busy = [r for r in caplog.records if "srv-m" in r.getMessage()]
+    assert [r.levelname for r in busy] == ["WARNING", "WARNING"]   # once per VM per pass
