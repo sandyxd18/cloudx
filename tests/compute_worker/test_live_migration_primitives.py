@@ -4,7 +4,6 @@ import importlib
 import threading
 import time
 import xml.etree.ElementTree as ET
-from types import SimpleNamespace
 
 import pytest
 

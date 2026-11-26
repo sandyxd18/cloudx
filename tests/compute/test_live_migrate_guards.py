@@ -23,7 +23,7 @@ ROUTES = [
 
 
 @pytest.mark.parametrize("method,path,body", [r[1:] for r in ROUTES], ids=[r[0] for r in ROUTES])
-def test_a_migrating_server_refuses_lifecycle_actions(wired, method, path, body):
+def test_a_migrating_server_refuses_lifecycle_actions(wired, method, path, body):  # noqa: F811
     svc, client, state, _ = wired
     _server(svc, "MIGRATING", extra_port_ids="port2")
 
@@ -36,7 +36,7 @@ def test_a_migrating_server_refuses_lifecycle_actions(wired, method, path, body)
 
 
 @pytest.mark.parametrize("method,path,body", [r[1:] for r in ROUTES[:6]], ids=[r[0] for r in ROUTES[:6]])
-def test_the_guard_does_not_touch_other_statuses(wired, method, path, body):
+def test_the_guard_does_not_touch_other_statuses(wired, method, path, body):  # noqa: F811
     svc, client, state, _ = wired
     _server(svc, "ACTIVE")
 
@@ -46,7 +46,7 @@ def test_the_guard_does_not_touch_other_statuses(wired, method, path, body):
     assert len(state["casts"]) == 1
 
 
-def test_evacuate_takes_a_migrating_server_off_a_forced_down_source(wired, monkeypatch):
+def test_evacuate_takes_a_migrating_server_off_a_forced_down_source(wired, monkeypatch):  # noqa: F811
     svc, client, state, _ = wired
     monkeypatch.setattr(svc.clients, "release_server_volumes", lambda server_id: None)
     _server(svc, "MIGRATING")
@@ -62,7 +62,7 @@ def test_evacuate_takes_a_migrating_server_off_a_forced_down_source(wired, monke
     assert _host(svc) == "node-3" and _status(svc) == "REBUILD"
 
 
-def test_evacuate_refuses_a_migrating_server_whose_source_is_up(wired):
+def test_evacuate_refuses_a_migrating_server_whose_source_is_up(wired):  # noqa: F811
     svc, client, state, _ = wired
     _server(svc, "MIGRATING")
 
@@ -72,7 +72,7 @@ def test_evacuate_refuses_a_migrating_server_whose_source_is_up(wired):
     assert state["casts"] == [] and _status(svc) == "MIGRATING"
 
 
-def test_cold_migrate_still_refuses_a_migrating_server(wired):
+def test_cold_migrate_still_refuses_a_migrating_server(wired):  # noqa: F811
     svc, client, state, _ = wired
     _server(svc, "MIGRATING")
 
@@ -94,7 +94,7 @@ def _error_message(svc):
         return db.get(svc.Server, "srv1").error_message
 
 
-def test_success_sets_the_target_host_and_active_when_the_conductor_update_was_lost(wired, internal):
+def test_success_sets_the_target_host_and_active_when_the_conductor_update_was_lost(wired, internal):  # noqa: F811
     svc, client, state, _ = wired
     _server(svc, "MIGRATING", error_message="stale")
 
@@ -105,7 +105,7 @@ def test_success_sets_the_target_host_and_active_when_the_conductor_update_was_l
     assert state["restores"] == []
 
 
-def test_success_without_a_target_host_leaves_the_record_alone(wired, internal):
+def test_success_without_a_target_host_leaves_the_record_alone(wired, internal):  # noqa: F811
     # an older worker sends no target_host: ACTIVE on the source host would let the target's reconciler kill the guest
     svc, client, _, _ = wired
     _server(svc, "MIGRATING")
@@ -115,7 +115,7 @@ def test_success_without_a_target_host_leaves_the_record_alone(wired, internal):
     assert (_host(svc), _status(svc)) == ("node-1", "MIGRATING")
 
 
-def test_error_sets_active_on_the_source_and_restores_the_claim(wired, internal):
+def test_error_sets_active_on_the_source_and_restores_the_claim(wired, internal):  # noqa: F811
     svc, client, state, _ = wired
     _server(svc, "MIGRATING")
 
@@ -127,7 +127,7 @@ def test_error_sets_active_on_the_source_and_restores_the_claim(wired, internal)
 
 @pytest.mark.parametrize("status", ["ACTIVE", "DELETING", "DELETED", "SHUTOFF", "ERROR"])
 @pytest.mark.parametrize("result", ["success", "error"])
-def test_a_server_no_longer_migrating_is_not_changed(wired, internal, status, result):
+def test_a_server_no_longer_migrating_is_not_changed(wired, internal, status, result):  # noqa: F811
     svc, client, _, _ = wired
     _server(svc, status)
 
@@ -136,7 +136,7 @@ def test_a_server_no_longer_migrating_is_not_changed(wired, internal, status, re
     assert (_host(svc), _status(svc)) == ("node-1", status)
 
 
-def test_other_actions_never_change_host_or_status(wired, internal):
+def test_other_actions_never_change_host_or_status(wired, internal):  # noqa: F811
     svc, client, _, _ = wired
     _server(svc, "MIGRATING")
 
