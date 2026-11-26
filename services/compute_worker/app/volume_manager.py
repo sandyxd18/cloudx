@@ -54,6 +54,12 @@ def disconnect(volume_id: str, host: str | None, rpc) -> None:
             log.warning("storage node %s could not unexport %s: %s", host, volume_id, reply["error"])
 
 
+def qos_limits(volume: dict) -> dict:
+    """The `max_iops` and `max_throughput` of a volume record, as keyword arguments for libvirt_driver.attach_disk. Empty when
+    the volume type sets none, so a call without limits looks exactly as it did before."""
+    return {key: volume[key] for key in ("max_iops", "max_throughput") if volume.get(key)}
+
+
 def attach_volume(payload: dict, rpc) -> dict:
     volume = payload["volume"]
     domain = payload.get("libvirt_domain_name")
@@ -65,7 +71,7 @@ def attach_volume(payload: dict, rpc) -> dict:
     disk_format = "qcow2" if path.suffix == ".qcow2" else "raw"
     target = volume.get("target_dev") or _target_dev(volume["volume_id"])
     try:
-        libvirt_driver.attach_disk(domain, path, target, disk_format)
+        libvirt_driver.attach_disk(domain, path, target, disk_format, **qos_limits(volume))
     except Exception:
         if _is_remote(volume):
             disconnect(volume["volume_id"], volume["host"], rpc)

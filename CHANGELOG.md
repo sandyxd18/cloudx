@@ -17,6 +17,15 @@ schema between releases, so read the upgrade steps before moving a running cloud
   The unit now starts `python -m console_proxy` (same websockify, same port, same plugin), so the unit file is replaced
   by the upgrade; `cloudx-compute-api` reads a new optional `proxy_scheme` from the worker and uses `http` when the
   worker does not send one.
+- A volume type's `max_iops` and `max_throughput` (MB/s) now limit LVM volumes (and NFS file volumes) too. They used to
+  be applied only on Ceph, so an LVM volume ignored them. The compute node sets them as a libvirt `<iotune>` on the
+  disk (one total for reads and writes together): on a data volume when it is attached, and on the root volume when the
+  server is built (so also after a cold migrate or an unshelve). Block-store reads the limits
+  from the type at that moment, so a change to the type applies from the next attach; a disk already attached to a
+  running VM keeps its limit until then. A Ceph volume is not given an `<iotune>`: it keeps the limit set on its RBD
+  image when it was created. No schema change and no configuration change, and the services can be updated in any order:
+  the limits apply once block-store, compute-api and the compute worker are all updated. A `rebuild` and a `rescue`
+  define the domain again without a limit on the root disk (as they do without its data disks).
 
 ## 1.0.11 (2026-11-10)
 
