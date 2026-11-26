@@ -49,12 +49,14 @@ All settings are optional and go in `/etc/cloudx/compute-worker/compute-worker.c
 
 | Key | Default | Meaning |
 |---|---|---|
-| `live_migration_host` | the node name (`compute_host`) | The name or address the other nodes use to reach this node. It is what is put into the URI below, so it must match the `Host` names the script wrote, and it is also where the memory stream goes (ports 49152-49215). |
+| `live_migration_host` | the node name (`compute_host`) | The name or address the other nodes use to reach this node. It is what is put into the URI below, so it must match the `Host` names the script wrote, and it is also where the memory stream goes (ports 49152-49215). An IPv6 address is written without brackets (`fd00:10::12`); the worker adds them in both URIs. |
 | `live_migration_uri` | `qemu+ssh://root@{host}/system` | Template of the libvirt connection to the target. `{host}` is replaced by the `live_migration_host` of the target. |
 | `live_migration_timeout` | `1800` | Seconds in total before the migration is aborted and rolled back. |
 | `live_migration_max_downtime_ms` | `300` | The longest pause, in milliseconds, libvirt may take for the last step. |
 | `live_migration_bandwidth_mbps` | `0` | Cap on the memory transfer in megabits per second. `0` means no cap. |
 | `live_migration_auto_converge` | `false` | Slow the vCPUs of a guest that dirties memory faster than it can be sent, so the migration can finish. |
+
+A key that is present but empty (`live_migration_timeout =`) means its default.
 
 ## Moving one server
 
@@ -99,9 +101,13 @@ cloudx host enable comp01              # after the maintenance
    - any other status: skipped, with the reason.
 3. It prints a table of what happened to each server and exits non-zero when any server was skipped or failed.
 
+While it waits, a failed status read is retried: only after 3 failed reads in a row does the server count as `unknown`, and then the drain **stops** without starting the next migration (the first one may still be running) and says so; check the server with `cloudx server show` and run `drain` again. Every exit after the node was disabled, also a failure to list the servers, prints the `cloudx host enable NODE` hint.
+
 `--timeout SECONDS` (default 2400) is how long it waits for **each** migration before counting it as failed; it is not a limit for the whole run. The node is disabled first and **stays disabled**, also after failures. Run `cloudx host enable NODE` to put it back in service. Running `drain` again only handles the servers that are still on the node.
 
 `--dry-run` prints the same plan and changes nothing. Its exit code predicts the real run: it is non-zero when at least one server would be skipped.
+
+A managed Kubernetes cluster that is deleted while one of its node VMs is `MIGRATING` waits for it: compute-api answers 409 for that VM, `cloudx-k8s-engine-worker` deletes the other VMs and tries the busy one again on its next pass, and removes the cluster once all are gone.
 
 ## Limits and failure handling
 
@@ -115,17 +121,17 @@ The reason is the message of the `live_migrate` entry of `GET /servers/{ref}/os-
 
 **libvirt reported an error, but the guest had already moved.** libvirt can fail the call after the target has taken over the guest (the connection drops in the last step). When the domain is then gone from the source, the worker does not roll back: it finishes the migration as a success and the message starts with `migrated, but cleanup failed: libvirt reported an error after the guest had moved`.
 
-**It is unclear where the guest runs.** When the migration call is still running 30 seconds after `abortJob`, the source domain cannot be looked up, or it is there but not running (paused, for example), rolling back could destroy the only running copy. The worker then changes nothing: no rollback, no report to compute-api (so the placement claim stays on the target), and the server stays `MIGRATING` with an `error_message` that starts with `live migration to NODE failed (...) and it is unclear where the guest runs`, logged at ERROR on the source. Lifecycle actions are refused while it is `MIGRATING`. Work out where the guest runs and settle it with the steps below.
+**It is unclear where the guest runs.** When the migration call is still running 30 seconds after `abortJob`, the source domain cannot be looked up, it is there but not running (paused, for example), or it is gone from the source although libvirt was never asked to migrate it (it vanished before the migration call), rolling back could destroy the only running copy and reporting success would be a guess. The worker then changes nothing: no rollback, no report to compute-api (so the placement claim stays on the target), and the server stays `MIGRATING` with an `error_message` that starts with `live migration to NODE failed (...) and it is unclear where the guest runs`, logged at ERROR on the source. Lifecycle actions are refused while it is `MIGRATING`. Work out where the guest runs and settle it with the steps below.
 
 **A migration that completed but was not cleaned up.** When the guest already runs on the target, but removing the old taps, the final port binding on the target, the iSCSI logout or the cleanup of the source directory failed, the action is reported as **success** with a message that starts with `migrated, but cleanup failed:` followed by the failed steps. The server is `ACTIVE` on the target. If the failed step was the final binding of the ports, the network of the guest may be down until an operator binds the ports on the target: on the target node check with `ovs-vsctl` that each tap of the guest (`virsh -c qemu:///system domiflist DOMAIN`) has `external_ids:iface-id` set (`ovs-vsctl get Interface TAP external_ids`), and read the worker log for the reason. If the worker's status update itself could not be sent, the message says `the status update failed`; compute-api then sets the host and `ACTIVE` itself from the report, as long as the server is still `MIGRATING`.
 
-**The worker of the source node restarts during a migration.** libvirtd keeps running the migration job while the worker is gone. When the worker starts, for every `MIGRATING` server whose `host` is that node and whose domain is `RUNNING` there (`recover_migrating_servers`, `services/compute_worker/app/main.py`):
+**The worker of the source node restarts during a migration.** libvirtd keeps running the migration job while the worker is gone. When the worker starts, for every `MIGRATING` server whose `host` is that node, that has an open `live_migrate` action and whose domain is `RUNNING` there (`recover_migrating_servers`, `services/compute_worker/app/main.py`):
 
 - a migration job that is still running is aborted, and the worker waits up to 30 seconds for it to end;
 - if the domain then runs there with no job, the server goes back to `ACTIVE` and the action is closed as an error (`the compute worker restarted during the live migration; the migration was aborted`), which puts the placement claim back on the source;
 - if the job does not stop, or the domain has left the node meanwhile, the server stays `MIGRATING` and the worker logs a warning that names it.
 
-A server whose domain is not running on its `host` is left alone. The target may keep the unbound taps and iSCSI sessions that the preparation made; they do no harm, and the next migration to that node replaces them (`ip link` / `iscsiadm -m session` show them).
+A server whose domain is not running on its `host` is left alone, and so is a `MIGRATING` server without an open `live_migrate` action: that is a cold migration (its `host` is already the target), which its build settles. The target may keep the unbound taps and iSCSI sessions that the preparation made; they do no harm, and the next migration to that node replaces them (`ip link` / `iscsiadm -m session` show them).
 
 ### Settling a server that stays `MIGRATING`
 
@@ -180,6 +186,7 @@ If compute-api logged that the claim could not be put back (`... its placement c
 
 - No block migration, no TLS for the libvirt connection (the ssh connection is encrypted, the memory stream on 49152-49215 is not), no multi-chassis binding, no dashboard button, and `ha-api` never evacuates a `MIGRATING` server on its own (it records it as skipped, with the reason); that case is for an operator.
 - `host drain` migrates one server at a time; a node with many large servers takes long.
+- The worker's report names the `live_migrate` action it belongs to. A late report of an earlier migration of the same server, which arrives after a newer migration has started, only closes its own action: it does not change the status or the placement claim of the newer one. The operator finish call above, which names no action, closes the newest open `live_migrate` action as before.
 - Servers with a local LV on the drained node are always left behind.
 
 ## Troubleshooting
