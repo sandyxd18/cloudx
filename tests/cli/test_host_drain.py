@@ -84,10 +84,11 @@ class Fake:
     """A pretend compute + block-store API. `after` maps a server id to the (status, host) series that GET
     /servers/{id} returns on successive polls (the last one repeats)."""
 
-    def __init__(self, servers, volumes=(), after=None, refuse=()):
+    def __init__(self, servers, volumes=(), after=None, refuse=(), no_answer=()):
         self.servers, self.volumes = servers, list(volumes)
         self.after = {k: list(v) for k, v in (after or {}).items()}
         self.refuse = set(refuse)
+        self.no_answer = set(no_answer)   # the migrate POST of these gets no answer (a requests-level error)
         self.calls = []
         self.sleeps = []
 
@@ -109,6 +110,8 @@ class Fake:
             return {"id": sid, "status": status, "host": host}
         if method == "post" and url.rsplit("/", 2)[-2] in self.refuse:
             raise SystemExit(1)
+        if method == "post" and url.rsplit("/", 2)[-2] in self.no_answer:
+            raise requests.ReadTimeout("read timed out")
         return {"ok": True}
 
 
@@ -353,7 +356,8 @@ def test_an_unknown_status_stops_the_drain_before_the_next_migration(install, er
     assert res.exception is None or isinstance(res.exception, SystemExit), res.exception   # no traceback
     assert [c for c in fake.calls if c[1] == "C/servers/s1"] == [("get", "C/servers/s1", None)] * host_cmd.POLL_FAILURES
     assert not any(c[0] == "post" and "/s2/" in c[1] for c in fake.calls)   # no second migration on top of the first
-    assert "stopped" in res.output and "a" in res.output
+    assert "drain stopped: the state of a is unknown" in res.output
+    assert "not started" in res.output                                     # b is listed, not migrated
     assert "cloudx host enable n1" in res.output
 
 
@@ -366,4 +370,18 @@ def test_a_failed_listing_after_the_disable_still_says_how_to_enable(install, er
     assert res.exit_code != 0
     assert res.exception is None or isinstance(res.exception, SystemExit), res.exception
     assert fake.calls[0] == DISABLE
+    assert "cloudx host enable n1" in res.output
+
+
+def test_a_migrate_request_without_an_answer_stops_the_drain(install):
+    # the request may have reached compute-api: the migration may be running, so no second one is started
+    fake = install(Fake([_server("s1", "a"), _server("s2", "b")], after={"s2": [("ACTIVE", "n3")]}, no_answer={"s1"}))
+
+    res = _drain()
+
+    assert res.exit_code == 1
+    assert res.exception is None or isinstance(res.exception, SystemExit), res.exception
+    assert not any(c[0] == "post" and "/s2/" in c[1] for c in fake.calls)
+    assert not any(c[1] == "C/servers/s1" for c in fake.calls)              # no polling of an unknown request
+    assert "drain stopped: the state of a is unknown" in res.output and "no answer" in res.output
     assert "cloudx host enable n1" in res.output

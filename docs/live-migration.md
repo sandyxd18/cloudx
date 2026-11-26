@@ -101,7 +101,7 @@ cloudx host enable comp01              # after the maintenance
    - any other status: skipped, with the reason.
 3. It prints a table of what happened to each server and exits non-zero when any server was skipped or failed.
 
-While it waits, a failed status read is retried: only after 3 failed reads in a row does the server count as `unknown`, and then the drain **stops** without starting the next migration (the first one may still be running) and says so; check the server with `cloudx server show` and run `drain` again. Every exit after the node was disabled, also a failure to list the servers, prints the `cloudx host enable NODE` hint.
+While it waits, a failed status read is retried: only after 3 failed reads in a row does the server count as `unknown`, and then the drain **stops** without starting the next migration (the first one may still be running) and says so; check the server with `cloudx server show` and run `drain` again. A read that compute-api answers with an error, such as 404 (the server was deleted meanwhile) or 401 (the token expired during a long drain), counts as a failed read too, so three of them in a row also stop the drain. A migrate request that gets no answer (a read timeout) stops the drain the same way, because the migration may have started. One case is not caught: when the connection drops after the request was sent, the CLI cannot tell that apart from a refused request, so it lists that server as failed and goes on with the next one; check it with `cloudx server show` before you rely on the result. Every exit after the node was disabled, also a failure to list the servers, prints the `cloudx host enable NODE` hint.
 
 `--timeout SECONDS` (default 2400) is how long it waits for **each** migration before counting it as failed; it is not a limit for the whole run. The node is disabled first and **stays disabled**, also after failures. Run `cloudx host enable NODE` to put it back in service. Running `drain` again only handles the servers that are still on the node.
 
@@ -131,7 +131,7 @@ The reason is the message of the `live_migrate` entry of `GET /servers/{ref}/os-
 - if the domain then runs there with no job, the server goes back to `ACTIVE` and the action is closed as an error (`the compute worker restarted during the live migration; the migration was aborted`), which puts the placement claim back on the source;
 - if the job does not stop, or the domain has left the node meanwhile, the server stays `MIGRATING` and the worker logs a warning that names it.
 
-A server whose domain is not running on its `host` is left alone, and so is a `MIGRATING` server without an open `live_migrate` action: that is a cold migration (its `host` is already the target), which its build settles. The target may keep the unbound taps and iSCSI sessions that the preparation made; they do no harm, and the next migration to that node replaces them (`ip link` / `iscsiadm -m session` show them).
+A server whose domain is not running on its `host` is left alone, and so is a `MIGRATING` server whose newest open move action (`migrate`, `evacuate` or `live_migrate`) is not a `live_migrate`: that is a cold migration (its `host` is already the target), which its build settles. A new `live_migrate`, `migrate` or `evacuate` request also closes any `live_migrate` action of the server that was left open (its report was lost); that action's message then starts with `superseded by a later ... request`. The target may keep the unbound taps and iSCSI sessions that the preparation made; they do no harm, and the next migration to that node replaces them (`ip link` / `iscsiadm -m session` show them).
 
 ### Settling a server that stays `MIGRATING`
 
@@ -186,7 +186,7 @@ If compute-api logged that the claim could not be put back (`... its placement c
 
 - No block migration, no TLS for the libvirt connection (the ssh connection is encrypted, the memory stream on 49152-49215 is not), no multi-chassis binding, no dashboard button, and `ha-api` never evacuates a `MIGRATING` server on its own (it records it as skipped, with the reason); that case is for an operator.
 - `host drain` migrates one server at a time; a node with many large servers takes long.
-- The worker's report names the `live_migrate` action it belongs to. A late report of an earlier migration of the same server, which arrives after a newer migration has started, only closes its own action: it does not change the status or the placement claim of the newer one. The operator finish call above, which names no action, closes the newest open `live_migrate` action as before.
+- The worker's report names the `live_migrate` action it belongs to. compute-api records that action as soon as the server is `MIGRATING`, before it picks a target. A late report of an earlier migration of the same server, which arrives after a newer request has set the server `MIGRATING`, does not change the status or the placement claim of the newer migration. A request that is refused after that point (no valid host, a volume that is not `in-use`, ...) keeps its `live_migrate` action, closed as an error with the reason. The operator finish call above, which gives no action id, closes the newest open `live_migrate` action as before.
 - Servers with a local LV on the drained node are always left behind.
 
 ## Troubleshooting
