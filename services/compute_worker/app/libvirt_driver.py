@@ -1,3 +1,4 @@
+import ipaddress
 import logging
 import os
 import re
@@ -378,11 +379,26 @@ class MigrationError(RuntimeError):
     """A live migration did not complete: libvirt failed it, or it ran past its timeout and was aborted.
 
     `still_running` is True when the migration call had not returned 30 s after abortJob: libvirt may still finish the
-    move, so nobody can tell yet where the guest will run."""
+    move, so nobody can tell yet where the guest will run. `job_started` is False when migrateToURI3 was never called,
+    so the guest cannot have moved (a domain missing from this node then did not go to the target)."""
 
-    def __init__(self, message: str, *, still_running: bool = False):
+    def __init__(self, message: str, *, still_running: bool = False, job_started: bool = True):
         super().__init__(message)
         self.still_running = still_running
+        self.job_started = job_started
+
+
+def uri_host(host: str) -> str:
+    """`host` as it goes into a URI: an IPv6 literal in brackets (tcp://[fd00::2], qemu+ssh://root@[fd00::2]/system),
+    anything else (a name, an IPv4 address, a value already in brackets) as it is."""
+    if host.startswith("["):
+        return host
+    try:
+        if ipaddress.ip_address(host).version == 6:
+            return f"[{host}]"
+    except ValueError:  # a host name
+        pass
+    return host
 
 
 def domain_state(name: str) -> str | None:
@@ -462,15 +478,17 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
         flags |= getattr(libvirt, "VIR_MIGRATE_AUTO_CONVERGE", 8192)
     params = {getattr(libvirt, "VIR_MIGRATE_PARAM_DEST_XML", "destination_xml"): dest_xml}
     if migration_host:
-        params[getattr(libvirt, "VIR_MIGRATE_PARAM_URI", "migrate_uri")] = f"tcp://{migration_host}"
+        params[getattr(libvirt, "VIR_MIGRATE_PARAM_URI", "migrate_uri")] = f"tcp://{uri_host(migration_host)}"
     if bandwidth_mbps > 0:
         # bandwidth_mbps is megabits per second; libvirt's parameter is MiB/s (rounded, at least 1 so a small value is not "unlimited")
         params[getattr(libvirt, "VIR_MIGRATE_PARAM_BANDWIDTH", "bandwidth")] = max(1, round(bandwidth_mbps * 1_000_000 / 8 / 2**20))
 
     conn, domain = lookup(name)
     outcome: dict[str, BaseException] = {}
+    called = threading.Event()  # migrateToURI3 was entered: from then on the guest may have moved
 
     def run_migration():
+        called.set()
         try:
             domain.migrateToURI3(dest_uri, params, flags)
         except BaseException as exc:  # reported to the caller below
@@ -479,7 +497,7 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
     worker = threading.Thread(target=run_migration, name=f"migrate-{name}", daemon=True)
     try:
         deadline = time.monotonic() + timeout
-        downtime_set = False
+        downtime_set = downtime_warned = False
         worker.start()
         try:  # usually too early (the job has not started); the loop below retries
             domain.migrateSetMaxDowntime(max_downtime_ms)
@@ -495,7 +513,12 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
                     domain.migrateSetMaxDowntime(max_downtime_ms)
                     downtime_set = True
                 except Exception as exc:  # the job may not have started yet; try again on the next tick
-                    log.debug("%s: migrateSetMaxDowntime not accepted yet: %s", name, exc)
+                    if downtime_warned:
+                        log.debug("%s: migrateSetMaxDowntime not accepted yet: %s", name, exc)
+                    else:  # once: the migration then runs with libvirt's own max downtime until a retry succeeds
+                        log.warning("%s: migrateSetMaxDowntime(%s ms) not accepted: %s; retrying while the migration "
+                                    "runs", name, max_downtime_ms, exc)
+                        downtime_warned = True
             try:
                 info = domain.jobInfo()
                 log.debug("%s: migration job %s, %s of %s bytes of memory remaining", name, info[0], info[8], info[6])
@@ -510,14 +533,14 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
                 if worker.is_alive():
                     log.warning("%s: the migration call is still running 30 s after abortJob", name)
                     raise MigrationError(f"timed out after {timeout} s; the migration call is still running after "
-                                         "abortJob", still_running=True)
+                                         "abortJob", still_running=True, job_started=called.is_set())
                 if "error" not in outcome:
                     # it finished between the deadline and the abort: the domain is already on the destination
                     log.info("%s: the migration completed as the timeout was reached; treating it as a success", name)
                     return
-                raise MigrationError(f"timed out after {timeout} s")
+                raise MigrationError(f"timed out after {timeout} s", job_started=called.is_set())
         if "error" in outcome:
-            raise MigrationError(str(outcome["error"])) from outcome["error"]
+            raise MigrationError(str(outcome["error"]), job_started=called.is_set()) from outcome["error"]
     finally:
         conn.close()
 

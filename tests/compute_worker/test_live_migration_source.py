@@ -56,6 +56,7 @@ class Fakes:
         self.migrate_entered = threading.Event()
         self.mappings = []
         self.target_hosts = []
+        self.action_ids = []
         self.source_state = "RUNNING"  # what domain_state answers for the source domain after a failed migration
 
     def log(self, *call):
@@ -70,15 +71,17 @@ class Fakes:
     def update_server(self, server_id, fields):
         self.log("update_server", server_id, fields)
 
-    def notify(self, server_id, result, message, action, target_host=None):
+    def notify(self, server_id, result, message, action, target_host=None, action_id=None):
         self.log("notify", server_id, result, message, action)
         self.target_hosts.append(target_host)
+        self.action_ids.append(action_id)
 
 
 @pytest.fixture
 def fakes(monkeypatch, tmp_path):
     f = Fakes()
     monkeypatch.setattr(live_migration, "COMPUTE_HOST", "node-a")
+    monkeypatch.setattr(live_migration.volume_manager, "COMPUTE_HOST", "node-a")  # the remote-volume rule reads this one
     monkeypatch.setattr(live_migration, "LIVE_MIGRATION_URI", "qemu+ssh://root@{host}/system")
     monkeypatch.setattr(live_migration, "LIVE_MIGRATION_TIMEOUT", 1800)
     monkeypatch.setattr(live_migration, "LIVE_MIGRATION_BANDWIDTH_MBPS", 100)
@@ -560,3 +563,42 @@ def test_notify_sends_the_target_host_only_when_given(monkeypatch):
     assert sent[0] == (f"http://compute.test:8003/internal/servers/{SERVER}/actions/finish",
                        {"result": "success", "message": None, "action": "live_migrate", "target_host": "node-b"})
     assert sent[1][1] == {"result": "error", "message": "boom", "action": "shelve"}  # unchanged for other actions
+
+
+# --- follow-ups: a domain that vanished before the job started (A6), IPv6 in the URI template (A5) -------------
+
+@pytest.mark.parametrize("error", [
+    live_migration.libvirt_driver.MigrationError("domain not found", job_started=False),
+    RuntimeError("Domain not found: no domain with matching name"),   # lookup in migrate_domain, before any call
+], ids=["migration error before the call", "raw lookup error"])
+def test_a_domain_gone_before_the_job_started_is_unclear_not_a_success(fakes, error):
+    fakes.migrate_error = error
+    fakes.source_state = None
+
+    _run(fakes)
+
+    assert fakes.of("live_migrate_rollback") == [] and fakes.of("live_migrate_finish") == []
+    assert fakes.of("notify") == []
+    (fields,) = _updates(fakes)
+    assert set(fields) == {"error_message"} and "unclear" in fields["error_message"]
+
+
+def test_the_libvirt_uri_brackets_an_ipv6_migration_host(fakes):
+    fakes.rpc.replies["live_migrate_prepare"] = {"disk_paths": {}, "migration_host": "fd00::b"}
+
+    _run(fakes)
+
+    ((_name, dest_uri, _xml, kwargs),) = fakes.of("migrate_domain")
+    assert dest_uri == "qemu+ssh://root@[fd00::b]/system"
+    assert kwargs["migration_host"] == "fd00::b"   # migrate_domain brackets the memory stream URI itself
+
+
+@pytest.mark.parametrize("fail", [False, True], ids=["success", "rolled back"])
+def test_the_report_names_the_action_row_compute_api_sent(fakes, fail):
+    if fail:
+        fakes.rpc.raises["live_migrate_prepare"] = RuntimeError("export refused")
+    args = {**_args(fakes), "_action_id": "act-7"}
+
+    live_migration.run(args, fakes.rpc, update_server=fakes.update_server, notify=fakes.notify)
+
+    assert fakes.action_ids == ["act-7"]

@@ -418,3 +418,60 @@ def test_domain_state_is_none_for_a_missing_domain_and_raises_otherwise(fake, mo
     monkeypatch.setattr(libvirt_driver, "connect", lambda: Conn(RuntimeError("libvirtd is down")))
     with pytest.raises(RuntimeError, match="libvirtd is down"):
         libvirt_driver.domain_state("vm1")
+
+
+# --- follow-ups: max downtime warning (A4), empty settings (A4), IPv6 literals (A5), job_started (A6) ----------
+
+def test_a_max_downtime_that_never_applies_is_warned_about_once(fake, caplog):
+    class Refuses(FakeDomain):
+        def migrateSetMaxDowntime(self, ms, flags=0):
+            raise RuntimeError("Requested operation is not valid: domain is not being migrated")
+
+    domain = Refuses(migrate=lambda d: time.sleep(0.4))   # several poll ticks (0.05 s each)
+    fake(domain)
+
+    with caplog.at_level("DEBUG", logger="compute-worker"):
+        _migrate(domain)
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "migrateSetMaxDowntime" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+@pytest.mark.parametrize("key", KEYS)
+def test_an_empty_live_migration_setting_means_the_default(monkeypatch, reloaded_config, key):
+    for k in KEYS:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("COMPUTE_HOST", "node-9")
+    defaults = reloaded_config()
+    expected = getattr(defaults, key)
+
+    monkeypatch.setenv(key, "  ")
+    cfg = reloaded_config()                                # no ValueError at import
+
+    assert getattr(cfg, key) == expected
+
+
+@pytest.mark.parametrize("host,expected", [
+    ("fd00::2", "[fd00::2]"), ("[fd00::2]", "[fd00::2]"), ("10.0.0.2", "10.0.0.2"), ("node-2.mig", "node-2.mig"),
+])
+def test_uri_host_brackets_an_ipv6_literal(host, expected):
+    assert libvirt_driver.uri_host(host) == expected
+
+
+def test_the_memory_stream_uri_brackets_an_ipv6_migration_host(fake):
+    domain = FakeDomain()
+    fake(domain)
+
+    _migrate(domain, migration_host="fd00:10::2")
+
+    assert domain.calls[0][1]["migrate_uri"] == "tcp://[fd00:10::2]"
+
+
+def test_a_migration_error_after_the_call_says_the_job_started(fake):
+    domain = FakeDomain(migrate=lambda d: (_ for _ in ()).throw(RuntimeError("unable to connect")))
+    fake(domain)
+
+    with pytest.raises(libvirt_driver.MigrationError) as err:
+        _migrate(domain)
+
+    assert err.value.job_started is True
