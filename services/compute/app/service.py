@@ -279,8 +279,21 @@ def _check_project_quota(db: Session, project_id: str, requested_vcpus: int, req
     })
 
 
+# Actions that move a server to another node. A new one supersedes a live_migrate row that is still open (its report
+# was lost, or an evacuation closed another row): left open, it would make a restarting worker take a later cold
+# migrate for a live one, and its late report could settle the new move.
+MOVE_ACTIONS = ("live_migrate", "migrate", "evacuate")
+
+
 def record_action(db: Session, server_id: str, action: str, current: dict, result: str | None = None, message: str | None = None, finish: bool = False) -> ServerAction:
     now_dt = datetime.utcnow()
+    if action in MOVE_ACTIONS:  # closed in the same commit as the new row; no status change, no claim restore
+        stale = db.scalars(select(ServerAction).where(
+            ServerAction.server_id == server_id, ServerAction.action == "live_migrate",
+            ServerAction.finish_time.is_(None))).all()
+        for row in stale:
+            row.result, row.finish_time = "error", now_dt
+            row.message = f"superseded by a later {action} request; the outcome of this live migration was never reported"
     sa_row = ServerAction(
         server_id=server_id,
         action=action,

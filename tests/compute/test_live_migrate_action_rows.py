@@ -106,7 +106,8 @@ def test_a_failure_to_record_the_action_puts_the_status_and_the_claim_back(wired
     assert r.status_code >= 500
     assert state["casts"] == []
     assert (_status(svc), _host(svc)) == ("ACTIVE", "node-1")
-    assert state["restores"] == ["node-1"]
+    # the row is recorded before the target is claimed (fix round 1): nothing was claimed, nothing to put back
+    assert state["claims"] == [] and state["restores"] == []
 
 
 def test_internal_servers_names_the_open_live_migrate_action(wired, internal):  # noqa: F811
@@ -121,3 +122,90 @@ def test_internal_servers_names_the_open_live_migrate_action(wired, internal):  
 
     assert servers["srv1"]["live_migrate_action_id"] == "act-2"
     assert servers["srv2"]["live_migrate_action_id"] is None
+
+
+# --- fix round 1: the row is recorded right after MIGRATING, before the payload and the claim --------------------
+
+def test_a_refusal_after_the_row_exists_closes_it_as_error_and_puts_the_status_back(wired):  # noqa: F811
+    svc, client, state, _ = wired
+    _server(svc)
+    state["claim_result"] = None    # live_migration_payload refuses: No valid host was found
+
+    r = client.post("/servers/srv1/live-migrate")
+
+    assert r.status_code == 409
+    assert _status(svc) == "ACTIVE" and state["restores"] == []
+    (row,) = _rows(svc).values()
+    assert row == ("error", True)
+    (action,) = client.get("/servers/srv1/os-instance-actions").json()["instanceActions"]
+    assert action["action"] == "live_migrate" and "No valid host" in action["message"]
+
+
+def test_a_late_finish_of_the_old_row_while_the_new_request_is_being_set_up_does_not_settle(wired, internal,  # noqa: F811
+                                                                                             monkeypatch):
+    svc, client, state, ops = wired
+    _server(svc)
+    _row(svc, "act-1", minutes_ago=5)   # migration #1: the worker set ACTIVE, its notify has not arrived yet
+    real_payload = ops.live_migration_payload
+    seen = {}
+
+    def payload_then_late_finish(db, server, host):
+        with svc.SessionLocal() as other:   # the late notify of #1 lands while #2 builds its payload
+            ops.internal_finish_action("srv1", {"result": "error", "action": "live_migrate", "message": "late",
+                                                "action_id": "act-1"}, other)
+        seen["status"] = _status(svc)
+        return real_payload(db, server, host)
+
+    monkeypatch.setattr(ops, "live_migration_payload", payload_then_late_finish)
+
+    r = client.post("/servers/srv1/live-migrate", json={"host": "node-2"})
+
+    assert r.status_code == 202, r.text
+    assert seen["status"] == "MIGRATING"
+    assert _status(svc) == "MIGRATING" and state["restores"] == []
+
+
+# --- fix round 1: a new move action supersedes an open live_migrate row; /internal/servers looks at move actions ---
+
+def _cold_migrate(client):
+    return client.post("/servers/srv1/migrate", json={"host": "node-2"})
+
+
+def test_a_later_move_action_closes_a_stale_live_migrate_row(wired):  # noqa: F811
+    svc, client, state, _ = wired
+    _server(svc)
+    _row(svc, "act-stale", minutes_ago=60)   # left open: a lost notify, or an evacuation closed another row
+
+    r = _cold_migrate(client)
+    assert r.status_code == 202, r.text
+
+    result, finished = _rows(svc)["act-stale"]
+    assert finished and result == "error"
+    with svc.SessionLocal() as db:
+        assert "superseded" in db.get(svc.ServerAction, "act-stale").message
+    assert state["restores"] == []
+
+
+def test_a_stale_row_does_not_make_a_cold_migrate_look_live_to_a_restarting_worker(wired, internal):  # noqa: F811
+    svc, client, _, _ = wired
+    _server(svc)
+    _row(svc, "act-stale", minutes_ago=60)
+    assert _cold_migrate(client).status_code == 202
+
+    (server,) = client.get("/internal/servers", headers=TOKEN).json()["servers"]
+
+    assert server["status"] == "MIGRATING" and server["live_migrate_action_id"] is None
+
+
+def test_internal_servers_ignores_a_live_migrate_row_older_than_an_open_move(wired, internal):  # noqa: F811
+    svc, client, _, _ = wired
+    _server(svc, "MIGRATING")
+    _row(svc, "act-stale", minutes_ago=60)
+    with svc.SessionLocal() as db:   # a row written by an older compute-api, which did not supersede
+        db.add(svc.ServerAction(id="mig-1", server_id="srv1", action="migrate",
+                                start_time=datetime.utcnow() - timedelta(minutes=1)))
+        db.commit()
+
+    (server,) = client.get("/internal/servers", headers=TOKEN).json()["servers"]
+
+    assert server["live_migrate_action_id"] is None

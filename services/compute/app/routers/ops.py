@@ -18,6 +18,7 @@ from ..lookups import get_flavor, get_server, require_server, require_unlocked_s
 from ..models import ComputeService, Flavor, Server, ServerAction, now
 from ..schemas import MoveIn, ServiceUpdateIn
 from ..service import (
+    MOVE_ACTIONS,
     claim_host,
     compute_hosts,
     fallback_host,
@@ -125,12 +126,19 @@ def internal_finish_action(server_id: str, payload: dict, db: DB):
 @router.get("/internal/servers", dependencies=[InternalAuth])
 def internal_list_servers(db: DB):
     rows = db.scalars(select(Server).where(Server.status != "DELETED")).all()
-    # newest open live_migrate row per server (ascending order: the last one wins). A worker that restarts frees a
-    # MIGRATING server only when it has one: a cold migrate is MIGRATING too and is settled by its build.
-    live = dict(db.execute(select(ServerAction.server_id, ServerAction.id).where(
-        ServerAction.action == "live_migrate", ServerAction.finish_time.is_(None)).order_by(ServerAction.start_time)).all())
+    # The newest open move action of each server (ascending order: the last one wins), named only when it is a
+    # live_migrate. A worker that restarts frees a MIGRATING server only then: a cold migrate is MIGRATING too and is
+    # settled by its build, even when an older live_migrate row was left open.
+    newest = {server_id: (action_id, action) for server_id, action_id, action in db.execute(
+        select(ServerAction.server_id, ServerAction.id, ServerAction.action).where(
+            ServerAction.action.in_(MOVE_ACTIONS), ServerAction.finish_time.is_(None)).order_by(ServerAction.start_time))}
+
+    def live_action(server_id: str) -> str | None:
+        action_id, action = newest.get(server_id, (None, None))
+        return action_id if action == "live_migrate" else None
+
     return {"servers": [{"id": s.id, "host": s.host, "libvirt_domain_name": s.libvirt_domain_name, "status": s.status,
-                         "live_migrate_action_id": live.get(s.id)} for s in rows]}
+                         "live_migrate_action_id": live_action(s.id)} for s in rows]}
 
 
 @router.get("/internal/resize-pending", dependencies=[InternalAuth])
@@ -372,22 +380,30 @@ def live_migrate(ref: str, current: Annotated[dict, Depends(policy.require("comp
     db.refresh(server)
     if taken.rowcount != 1:
         raise HTTPException(status_code=409, detail=f"server status {server.status} cannot be live-migrated (needs ACTIVE)")
+    # The row goes in right after MIGRATING, before the payload is built (several HTTP calls) and the target claimed:
+    # from here on it is the newest open live_migrate row, so a late report of an earlier migration cannot settle this
+    # one. The worker names it in its finish (`_action_id`).
     try:
-        target, cast = live_migration_payload(db, server, host)
-    except Exception:
-        _undo_live_migration_start(db, server, restore_claim=False)  # nothing claimed: the claim is the last step
-        raise
-    try:  # the claim is on the target now: a failure to record the action puts the status and the claim back too
-        row = record_action(db, server.id, "live_migrate", current)
-        cast["_action_id"] = row.id  # the worker names it in its finish, so a late report cannot settle a newer migration
+        action_id = record_action(db, server.id, "live_migrate", current).id
     except Exception:
         db.rollback()
-        _undo_live_migration_start(db, server, restore_claim=True)
+        _undo_live_migration_start(db, server, restore_claim=False)  # nothing claimed yet
         raise
+    try:
+        target, cast = live_migration_payload(db, server, host)
+    except Exception as exc:
+        db.rollback()
+        _undo_live_migration_start(db, server, restore_claim=False)  # nothing claimed: the claim is the last step
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        finish_action(db, server.id, result="error", message=f"live migration refused: {detail}", action="live_migrate",
+                      action_id=action_id)
+        raise
+    cast["_action_id"] = action_id
     try:
         clients.cast_to_worker("live_migrate", cast)
     except Exception as exc:
         _undo_live_migration_start(db, server, restore_claim=True)
-        finish_action(db, server.id, result="error", message=f"could not reach the compute worker: {exc}", action="live_migrate")
+        finish_action(db, server.id, result="error", message=f"could not reach the compute worker: {exc}",
+                      action="live_migrate", action_id=action_id)
         raise HTTPException(status_code=503, detail=f"could not send live_migrate to the compute worker of {server.host}: {exc}") from exc
     return {"server_id": server.id, "from": server.host, "to": target, "status": server.status}
