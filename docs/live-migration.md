@@ -144,7 +144,7 @@ sudo virsh -c qemu:///system list                  # which node runs the guest
 
 `DOMAIN` is `libvirt_domain_name` in `cloudx server show web-1`. While `domjobinfo` shows a job on either node, wait or abort it there (`sudo virsh -c qemu:///system domjobabort DOMAIN`) and look again. Never remove taps or sessions while a job runs.
 
-The steps that settle the record use compute-api's internal finish call, the one the worker makes. Run it on the controller with the internal token (`internal_token` in the `[DEFAULT]` section of the CloudX configuration; do not paste it into notes or tickets). It changes only a server that is still `MIGRATING`:
+The steps that settle the record use compute-api's internal finish call, the one the worker makes. Run it on the controller with the internal token (`internal_token` in the `[DEFAULT]` section of the CloudX configuration; do not paste it into notes or tickets). It changes only a server that is still `MIGRATING`. On the controllers of an HA install the port is held by HAProxy on the virtual IP, so use `http://VIP:8003` instead of `127.0.0.1:8003`:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8003/internal/servers/SERVER_ID/actions/finish \
@@ -155,6 +155,8 @@ curl -sS -X POST http://127.0.0.1:8003/internal/servers/SERVER_ID/actions/finish
 *The domain runs on the source (and nowhere else).* The migration did not happen. Send the call above with `"result": "error"`: the server becomes `ACTIVE` on its host and the placement claim goes back to the source. Restarting the worker on the source (`sudo systemctl restart cloudx-compute-worker`) does the same.
 
 If compute-api logged that the claim could not be put back (`... its placement claim could not be put back on ...`), restore it by hand: the placement API has `POST /allocations` (admin), which replaces all allocations of a consumer. The body is the server id as `consumer_uuid`, its `project_id`, and `{"<source resource provider uuid>": {"resources": {"VCPU": N, "MEMORY_MB": M}}}`, where N and M are the vCPUs and the RAM in MB of the server's flavor (`cloudx server show web-1` names the flavor, `cloudx flavor show FLAVOR` gives `vcpus` and `ram_mb`). `cloudx placement provider-list` shows the provider uuids. Without it the capacity accounting for that server is wrong (the target is charged and the source is not) until the server is moved, resized or deleted.
+
+*The domain is on the source but shut off, and nowhere else.* This is what is left when something destroyed the guest in the middle of the migration; on the lab it was the `ha-watchdog` of an isolated source node. No copy of the guest runs. Send the call above with `"result": "error"`: the server becomes `ACTIVE` on its host and the compute worker's auto-recovery starts the shut-off domain within about a minute (it logs `[auto-recovery] ... attempting auto-restart`). Check afterwards that the disk of the guest is intact.
 
 *The domain runs on the target.* The guest runs there, but its network may not be bound and the server record still says source. The placement claim is already on the target, which is right.
 
