@@ -2,6 +2,7 @@ import importlib
 from datetime import datetime, timedelta
 
 import pytest
+from shared.ha_logic import SHARED_CEPH
 
 T0 = datetime(2026, 10, 19, 12, 0, 0)
 
@@ -12,6 +13,7 @@ class Fake:
         self.srv = [{"id": "ok", "host": "h1", "status": "ACTIVE"}]
         self.vh = {"ok": ["h2"]}
         self.fence_fails = False
+        self.unfenced = []  # volumes on which fence found no Ceph client
         self.status = "ACTIVE"
 
     def servers(self):
@@ -30,6 +32,7 @@ class Fake:
         self.calls.append(("fence", iqn, tuple(ids)))
         if self.fence_fails:
             raise RuntimeError("fence boom")
+        return self.unfenced
 
     def evacuate(self, sid):
         self.calls.append(("evacuate", sid))
@@ -175,3 +178,51 @@ def test_recovery_notes_missing_watchdog(env):
     mon.recover(db, api, h)
     r = db.scalars(m.select(m.Recovery).where(m.Recovery.server_id == "ok")).one()
     assert r.status == "done" and "no watchdog seen" in r.message
+
+
+def test_a_server_on_ceph_only_is_fenced_and_evacuated_without_an_iqn(env):
+    m, mon, db, api = env
+    api.vh["ok"] = [SHARED_CEPH]
+    db.get(m.Host, "h1").initiator_iqn = None  # a Ceph-only node never reports one
+    db.commit()
+    mon.cycle(db, api, T0)
+    mon.cycle(db, api, T0 + timedelta(seconds=31))
+    assert kinds(api) == ["force_down", "fence", "evacuate"]
+    assert api.calls[1] == ("fence", "", ("vol-ok",))
+    assert db.query(m.Recovery).one().status == "done"
+
+
+def test_a_server_with_lvm_and_ceph_volumes_still_needs_the_iqn(env):
+    m, mon, db, api = env
+    api.vh["ok"] = [SHARED_CEPH, "h2"]
+    db.get(m.Host, "h1").initiator_iqn = None
+    db.commit()
+    mon.cycle(db, api, T0)
+    mon.cycle(db, api, T0 + timedelta(seconds=31))
+    assert "fence" not in kinds(api) and "evacuate" not in kinds(api)
+    r = db.query(m.Recovery).one()
+    assert r.status == "skipped" and "initiator iqn" in r.message
+
+
+def test_only_the_servers_that_need_an_iqn_are_skipped_without_one(env):
+    m, mon, db, api = env
+    api.srv.append({"id": "ceph", "host": "h1", "status": "ACTIVE"})
+    api.vh["ceph"] = [SHARED_CEPH]
+    db.add(m.Protected(server_id="ceph", project_id="p1"))
+    db.get(m.Host, "h1").initiator_iqn = None
+    db.commit()
+    mon.cycle(db, api, T0)
+    mon.cycle(db, api, T0 + timedelta(seconds=31))
+    rows = {r.server_id: r for r in db.query(m.Recovery)}
+    assert rows["ok"].status == "skipped" and rows["ceph"].status == "done"
+    assert [c for c in api.calls if c[0] == "fence"] == [("fence", "", ("vol-ceph",))]
+
+
+def test_a_ceph_volume_with_no_client_to_cut_off_is_noted_and_the_server_still_moves(env):
+    m, mon, db, api = env
+    api.vh["ok"] = [SHARED_CEPH]
+    api.unfenced = ["vol-ok"]
+    mon.recover(db, api, db.get(m.Host, "h1"))
+    r = db.scalars(m.select(m.Recovery).where(m.Recovery.server_id == "ok")).one()
+    assert r.status == "done" and "no Ceph client" in r.message and "vol-ok" in r.message
+    assert "evacuate" in kinds(api)

@@ -6,6 +6,20 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Added
+- Instance HA protects servers whose volumes are on Ceph. `cloudx ha protect` used to answer `422 server volumes could
+  not be located` for any server with a Ceph RBD volume, because a Ceph volume has no host in CloudX. A Ceph volume now
+  counts as shared storage (a volume of a known LVM host on the server's own node, or of unknown host, is still
+  refused). Before evacuating, the fence blocklists the Ceph clients that have each of the server's images open (`rbd
+  status`, then `ceph osd blocklist add`) through a new block-store-worker call `fence_volume`; `POST /internal/fence`
+  answers `ok`, `no-watcher` (nothing had the image open: the evacuation goes on and the recovery says so) or an error
+  (the evacuation does not happen). The node's iSCSI initiator name is needed only for servers that have an LVM volume.
+  The cephx user of the block-store worker needs `osd blocklist` (`mon 'profile rbd'` has it). A node that is cut off
+  from Ceph as well loses its watch before the fence and is covered by `ha-watchdog` only (`docs/ha.md`, "Servers on
+  Ceph"). Update block-store, block-store-worker and ha-api together. Run on the 8-node lab (hand-patched files): the
+  old guest's client was blocklisted and the server was `ACTIVE` on the other node; see `docs/ha.md` for what was and
+  was not run.
+
 ### Fixed
 - `ha-watchdog` no longer destroys a protected VM while a live-migration job runs on it. On an isolated source node it used to kill the guest in the middle of the move: the migration failed, no copy of the guest ran, and the server stayed `MIGRATING` until an operator settled it. The watchdog now looks again every 5 seconds and destroys the VM on the first pass after the job has ended, or after `ha_watchdog_migration_grace` seconds (default 1800). Run on the 8-node lab: the watchdog waited while the migration job ran, the migration completed after the speed limit was lifted, and the server was `ACTIVE` on the target (`docs/ha.md`).
 

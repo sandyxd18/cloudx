@@ -79,11 +79,20 @@ def create_volume_internal(payload: VolumeInternalIn, db: DB):
 
 @router.post("/internal/fence", dependencies=[InternalAuth])
 def fence(payload: dict, db: DB):
-    """Revoke a dead compute node's iSCSI access to the given volumes. 200 even when some fail; the caller must read results."""
+    """Cut a dead compute node off the given volumes: revoke its iSCSI ACL (LVM) or blocklist the Ceph clients that have
+    the image open (Ceph, which has no host: any worker does it). 200 even when some fail; the caller must read results:
+    "ok", "no-watcher" (a Ceph image nobody has open) or "error: ...". An LVM volume needs `initiator_iqn`."""
     results = {}
     for vid in payload.get("volume_ids", []):
         try:
-            clients.call_worker(require_volume(db, vid).host, "unexport_volume", {"volume_id": vid, "initiator_iqn": payload["initiator_iqn"]})
+            volume = require_volume(db, vid)
+            if (volume.backend or "").lower() == "ceph":
+                reply = clients.call_worker(None, "fence_volume", {"volume_id": vid})
+                results[vid] = reply.get("result") or "ok"
+                continue
+            if not payload.get("initiator_iqn"):
+                raise RuntimeError("no initiator iqn to revoke")
+            clients.call_worker(volume.host, "unexport_volume", {"volume_id": vid, "initiator_iqn": payload["initiator_iqn"]})
             results[vid] = "ok"
         except Exception as exc:  # best-effort: per-volume failure is reported to the caller, not raised
             results[vid] = f"error: {exc}"[:200]

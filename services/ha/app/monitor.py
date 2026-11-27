@@ -10,7 +10,7 @@ import requests
 from sqlalchemy import select
 
 from shared import catalog
-from shared.ha_logic import is_stale, next_state, partition
+from shared.ha_logic import SHARED_CEPH, is_stale, next_state, partition
 
 log = logging.getLogger("ha-api")
 SERVICES = {"compute": "compute", "block": "volume"}
@@ -41,18 +41,23 @@ class Api:
         return self.call("compute", "GET", f"/servers/{sid}")
 
     def server_volume_hosts(self, sid: str) -> list[str | None]:
-        """Host of every volume attached to the server (root included); [] means unknown."""
+        """Host of every volume attached to the server (root included); [] means unknown. A Ceph volume has no host:
+        it is reported as SHARED_CEPH, an LVM volume without a host as None."""
         items = self.call("block", "GET", "/volumes")["items"]
-        return [v.get("host") for v in items if v.get("attached_to_server_id") == sid]
+        return [v.get("host") or (SHARED_CEPH if (v.get("backend") or "").lower() == "ceph" else None)
+                for v in items if v.get("attached_to_server_id") == sid]
 
     def force_down(self, host: str) -> None:
         self.call("compute", "PUT", f"/os-services/{host}", {"forced_down": True})
 
-    def fence(self, iqn: str, volume_ids: list[str]) -> None:
+    def fence(self, iqn: str, volume_ids: list[str]) -> list[str]:
+        """Cut the dead node off the volumes. Raises when any of them could not be fenced; returns the ids of the Ceph
+        volumes on which no client was found (nothing to cut off: a powered-off node, or a watch that has expired)."""
         res = self.call("block", "POST", "/internal/fence", {"initiator_iqn": iqn, "volume_ids": volume_ids})["results"]
-        bad = {k: v for k, v in res.items() if v != "ok"}
+        bad = {k: v for k, v in res.items() if v not in ("ok", "no-watcher")}
         if bad:
             raise Failure(f"fence failed: {bad}")
+        return [k for k, v in res.items() if v == "no-watcher"]
 
     def evacuate(self, sid: str) -> None:
         self.call("compute", "POST", f"/servers/{sid}/evacuate")
@@ -85,18 +90,22 @@ def _wait_active(api, sid) -> bool:
 
 
 def recover(db, api, h) -> None:
-    """Order is fixed: forced_down, fence iSCSI, evacuate. A fence failure means no evacuate at all."""
+    """Order is fixed: forced_down, fence (iSCSI ACL, Ceph blocklist), evacuate. A fence failure means no evacuate at all."""
     from .main import Protected
     prot = {p.server_id: p.project_id for p in db.scalars(select(Protected))}
     mine = [s for s in api.servers() if s["host"] == h.host and s["id"] in prot and s["status"] != "DELETED"]
-    ok, skipped = partition(mine, set(prot), h.host, {s["id"]: api.server_volume_hosts(s["id"]) for s in mine})
-    if ok and not h.initiator_iqn:
-        skipped += [(sid, "host never reported an initiator iqn; cannot fence") for sid in ok]
-        ok = []
+    vol_hosts = {s["id"]: api.server_volume_hosts(s["id"]) for s in mine}
+    ok, skipped = partition(mine, set(prot), h.host, vol_hosts)
+    if not h.initiator_iqn:  # only an iSCSI volume needs the node's initiator name; a Ceph one is fenced without it
+        needs = [sid for sid in ok if any(x != SHARED_CEPH for x in vol_hosts[sid])]
+        skipped += [(sid, "host never reported an initiator iqn; cannot fence") for sid in needs]
+        ok = [sid for sid in ok if sid not in needs]
+    volumes = {sid: api.server_volume_ids(sid) for sid in ok}
+    unfenced: list[str] = []
     try:
         api.force_down(h.host)
         if ok:
-            api.fence(h.initiator_iqn, [v for sid in ok for v in api.server_volume_ids(sid)])
+            unfenced = api.fence(h.initiator_iqn or "", [v for sid in ok for v in volumes[sid]])
     except Exception as exc:  # best-effort: any failure here must leave the host suspect and block evacuate
         h.fails += 1
         _rec(db, h.host, None, None, "failed", f"fencing attempt {h.fails} failed: {exc}")
@@ -108,11 +117,13 @@ def recover(db, api, h) -> None:
     nowd = "" if h.watchdog_at and (datetime.utcnow() - h.watchdog_at).total_seconds() <= 120 else \
         "no watchdog seen; old VMs may still run"
     for sid in ok:
-        r = _rec(db, h.host, sid, prot[sid], "running", nowd or None)
+        idle = [v for v in volumes[sid] if v in unfenced]
+        note = "; ".join(filter(None, [nowd, f"no Ceph client found on {', '.join(idle)}; only the watchdog stops an old guest" if idle else ""]))
+        r = _rec(db, h.host, sid, prot[sid], "running", note or None)
         try:
             api.evacuate(sid)
             good = _wait_active(api, sid)
-            r.status, r.message = ("done", nowd or None) if good else ("failed", f"not ACTIVE within {VERIFY}s")
+            r.status, r.message = ("done", note or None) if good else ("failed", f"not ACTIVE within {VERIFY}s")
         except Exception as exc:  # best-effort: record and carry on with the next server
             r.status, r.message = "failed", str(exc)[:200]
         r.finished_at = datetime.utcnow()

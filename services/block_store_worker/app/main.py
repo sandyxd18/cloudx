@@ -759,6 +759,13 @@ def handle_unexport_volume(args: dict) -> dict:
     iscsi.unexport(lv, args["initiator_iqn"])
     log.info("Unexported %s from %s", lv, args["initiator_iqn"])
     return {}
+def handle_fence_volume(args: dict) -> dict:
+    """RPC call from block-store for a Ceph volume of a dead compute node: blocklist the clients that have it open."""
+    result = ceph.fence(_lv_name(args["volume_id"]))
+    log.info("Fenced Ceph volume %s: %s", args["volume_id"], result)
+    return {"result": result}
+
+
 def handle_delete_backup(args: dict) -> None:
     """Remove a backup object from MinIO and delete its DB record."""
     backup_id  = args["backup_id"]
@@ -934,6 +941,7 @@ def handle_replica_delete(args: dict) -> None:
 HANDLERS = {
     "export_volume":    handle_export_volume,
     "unexport_volume":  handle_unexport_volume,
+    "fence_volume":     handle_fence_volume,
     "create_volume":    handle_create_volume,
     "delete_volume":    handle_delete_volume,
     "extend_volume":    handle_extend_volume,
