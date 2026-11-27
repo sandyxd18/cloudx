@@ -118,6 +118,7 @@ def test_a_cluster_without_a_project_makes_no_call(monkeypatch, captured, cluste
 
 def test_spawn_creates_as_the_cluster_and_cleans_up_by_server_id(monkeypatch):
     seen = []
+    monkeypatch.setattr(w, "_cluster_sg", lambda cluster: "sg1")
     monkeypatch.setattr(w, "_create_vm", lambda cluster, *a: seen.append(("create", cluster["project_id"])) or "srv1")
     monkeypatch.setattr(w, "_delete_vm", lambda sid: seen.append(("delete", sid)))
     monkeypatch.setattr(w, "_record_node", lambda *a: (_ for _ in ()).throw(RuntimeError("no record")))
