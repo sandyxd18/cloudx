@@ -50,6 +50,12 @@ class Env:
         return next((name for name, sg_id in self.sgs.items() if ref in (name, sg_id)), None)
 
     def get(self, url, **k):
+        if url.endswith("/networks/net-1"):
+            return self._r(200, {"id": "net-1", "subnets": ["sub-4", "sub-6"]})
+        if url.endswith("/subnets/sub-4"):
+            return self._r(200, {"cidr": "10.0.0.0/24", "ip_version": 4})
+        if url.endswith("/subnets/sub-6"):
+            return self._r(200, {"cidr": "fd00:1::/64", "ip_version": 6})
         if "/security-groups/" in url:
             self.calls.append(("GET", url, None))
             name = self._sg_name(url.rsplit("/", 1)[-1])
@@ -278,12 +284,13 @@ def test_every_vm_gets_the_clusters_security_group_which_is_made_once(env):
     assert env.sgs == {SG: "sg-1"}
 
 
-def test_the_security_group_lets_the_nodes_talk_and_keeps_ssh_and_icmp(env):
+def test_the_security_group_lets_the_networks_ipv4_subnets_in_and_keeps_ssh_and_icmp(env):
     env.clusters = [cluster()]
     w.tick()
 
     rules = [b for _, u, b in env.calls if u.endswith("/security-groups/sg-1/rules") or u.endswith("/rules")]
-    assert {"direction": "ingress", "protocol": "any", "remote_group_id": "sg-1"} in rules   # k3s 6443, kubelet, flannel
+    assert {"direction": "ingress", "protocol": "any", "remote_ip_prefix": "10.0.0.0/24"} in rules   # k3s 6443, kubelet, flannel
+    assert not any("remote_group_id" in r for r in rules)   # a rule naming its own group did not let traffic through on OVN
     assert {"direction": "ingress", "protocol": "tcp", "port_min": 22, "port_max": 22, "remote_ip_prefix": "0.0.0.0/0"} in rules
     assert {"direction": "ingress", "protocol": "icmp", "remote_ip_prefix": "0.0.0.0/0"} in rules
     assert len(rules) == 3
@@ -346,3 +353,14 @@ def test_a_cluster_without_a_project_skips_the_security_group(env):
 
     assert not any("/security-groups/" in u for _, u, _ in env.calls)
     assert any(u.endswith("/cls-1234567890ab") for m, u, _ in env.calls if m == "DELETE")
+
+
+def test_a_network_without_an_ipv4_subnet_makes_no_group_and_no_vm(env, monkeypatch):
+    real_get = w.requests.get
+    monkeypatch.setattr(w.requests, "get", lambda url, **k: env._r(200, {"id": "net-1", "subnets": ["sub-6"]})
+                        if url.endswith("/networks/net-1") else real_get(url, **k))
+    env.clusters = [cluster()]
+    w.tick()
+
+    assert env.servers() == [] and env.sgs == {} and env.of("POST", "/security-groups") == []
+    assert [b for _, u, b in env.calls if u.endswith("/status")][-1]["status"] == "ERROR"

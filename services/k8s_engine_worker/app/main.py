@@ -56,28 +56,44 @@ def _cluster_headers(cluster: dict) -> dict:
     return on_behalf_headers(identity)
 
 
+def _network_cidrs(cluster: dict, headers: dict) -> list[str]:
+    """The IPv4 CIDRs of the subnets of the cluster's network."""
+    r = requests.get(f"{_networking()}/networks/{cluster['network_id']}", headers=headers, timeout=10)
+    r.raise_for_status()
+    cidrs = []
+    for subnet_id in r.json().get("subnets", []):
+        s = requests.get(f"{_networking()}/subnets/{subnet_id}", headers=headers, timeout=10)
+        s.raise_for_status()
+        if s.json().get("ip_version", 4) == 4 and s.json().get("cidr"):
+            cidrs.append(s.json()["cidr"])
+    if not cidrs:
+        raise RuntimeError(f"network {cluster['network_id']} has no IPv4 subnet")
+    return cidrs
+
+
 def _cluster_sg(cluster: dict) -> str:
     """Id of the cluster's security group `k8s-<cluster id>`, made on first use.
 
     The default group lets only ssh and icmp in, which stops the nodes from reaching each other (the agents join at the
-    master's port 6443; kubelet and flannel need more), so a worker never joined. This group lets the members of the
-    group talk to each other and keeps ssh and icmp as before. Reaching the API from outside (kubectl) is not opened:
-    add a rule to this group for it."""
+    master's port 6443; kubelet and flannel need more), so a worker never joined. This group lets the cluster's network
+    in on every port (the nodes sit on it) and keeps ssh and icmp as before. The rule names the network's subnets, not
+    the group itself: a rule that names its own group (remote_group_id) did not let the nodes through on the lab's OVN.
+    Reaching the API from outside the network (kubectl) is not opened: add a rule to this group for it."""
     name, headers = _sg_name(cluster["id"]), _cluster_headers(cluster)
     r = requests.get(f"{_networking()}/security-groups/{name}", headers=headers, timeout=10)
     if r.status_code == 200:
         return r.json()["id"]
     if r.status_code != 404:
         r.raise_for_status()
+    rules = [{"direction": "ingress", "protocol": "any", "remote_ip_prefix": cidr} for cidr in _network_cidrs(cluster, headers)]
+    rules += [
+        {"direction": "ingress", "protocol": "tcp", "port_min": 22, "port_max": 22, "remote_ip_prefix": "0.0.0.0/0"},
+        {"direction": "ingress", "protocol": "icmp", "remote_ip_prefix": "0.0.0.0/0"},
+    ]
     r = requests.post(f"{_networking()}/security-groups", headers=headers, timeout=10,
                       json={"name": name, "description": f"nodes of Kubernetes cluster {cluster['name']}"})
     r.raise_for_status()
     sg_id = r.json()["id"]
-    rules = [
-        {"direction": "ingress", "protocol": "any", "remote_group_id": sg_id},
-        {"direction": "ingress", "protocol": "tcp", "port_min": 22, "port_max": 22, "remote_ip_prefix": "0.0.0.0/0"},
-        {"direction": "ingress", "protocol": "icmp", "remote_ip_prefix": "0.0.0.0/0"},
-    ]
     try:
         for rule in rules:
             requests.post(f"{_networking()}/security-groups/{sg_id}/rules", json=rule, headers=headers, timeout=10).raise_for_status()

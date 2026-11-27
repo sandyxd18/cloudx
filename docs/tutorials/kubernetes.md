@@ -65,7 +65,7 @@ cloudx cluster list                       # CREATING -> ACTIVE, with master_ip a
 
 What happens: the worker creates the master VM with a cloud-config that starts `k3s server`; the master waits for `/readyz`, then calls the callback; the worker then creates the worker VMs, which run `k3s agent`, wait until their own node is Ready in the cluster, and then call back. When every node has reported, the cluster is `ACTIVE`. If it is not ready after `ready_timeout` seconds it becomes `ERROR` with the reason in `status_reason`.
 
-The nodes of a cluster sit in their own security group, `k8s-<cluster id>`, created for you: the nodes may talk to each other freely, and ssh and icmp are open. Nothing else is opened from outside, so to run `kubectl` from another machine add a rule for the API port:
+The nodes of a cluster sit in their own security group, `k8s-<cluster id>`, created for you: the network's subnets may reach the nodes on every port (so the nodes talk to each other freely), and ssh and icmp are open from anywhere. Nothing else is opened from outside, so to run `kubectl` from another machine add a rule for the API port:
 
 ```bash
 cloudx security-group rule add k8s-<cluster id> --direction ingress --protocol tcp --port 6443 --remote-ip <your network>

@@ -30,8 +30,11 @@ def _http(monkeypatch, clusters):
         return SimpleNamespace(status_code=code, json=lambda: body, raise_for_status=lambda: None)
 
     # no security group exists yet: the worker makes the cluster's group before its first VM
+    nets = {"/networks/net-1": {"subnets": ["sub-1"]}, "/subnets/sub-1": {"cidr": "10.0.0.0/24", "ip_version": 4}}
     monkeypatch.setattr(w.requests, "get", lambda url, **k: seen.append(("GET", url)) or (
-        resp(None, 404) if "/security-groups/" in url else resp(clusters)))
+        resp(None, 404) if "/security-groups/" in url else
+        resp(next(v for key, v in nets.items() if url.endswith(key))) if any(url.endswith(key) for key in nets) else
+        resp(clusters)))
     monkeypatch.setattr(w.requests, "post", lambda url, **k: seen.append(("POST", url)) or resp({"id": "srv-1"}, 201))
     monkeypatch.setattr(w.requests, "delete", lambda url, **k: seen.append(("DELETE", url)) or resp(None, 204))
     return seen
@@ -43,6 +46,8 @@ def test_calls_go_to_the_catalog_hosts(monkeypatch):
     w.tick()
     assert seen == [("GET", "http://k:8015/internal/k8s-engine/clusters"),
                     ("GET", "http://n:8001/security-groups/k8s-cls-1234567890ab"),
+                    ("GET", "http://n:8001/networks/net-1"),
+                    ("GET", "http://n:8001/subnets/sub-1"),
                     ("POST", "http://n:8001/security-groups"),
                     ("POST", "http://n:8001/security-groups/srv-1/rules"),
                     ("POST", "http://n:8001/security-groups/srv-1/rules"),

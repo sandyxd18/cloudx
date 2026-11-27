@@ -62,10 +62,14 @@ schema between releases, so read the upgrade steps before moving a running cloud
   change: the cloud-config asks the master with `k3s kubectl` and the kubelet's credentials.
 - Kubernetes clusters: the nodes used the project's default security group, which lets only ssh and icmp in, so workers
   could not reach the master's port 6443 and never joined (flannel and kubelet traffic was blocked too). The worker now
-  creates a security group `k8s-<cluster id>` for each cluster (members talk to each other freely, ssh and icmp stay
-  open), puts every node in it and deletes it after the cluster's VMs. Each cluster counts one security group against the
+  creates a security group `k8s-<cluster id>` for each cluster (every port is open to the cluster network's IPv4 subnets, ssh and icmp stay
+  open from anywhere), puts every node in it and deletes it after the cluster's VMs. Each cluster counts one security group against the
   project's quota. Reaching the API from outside is not opened: add a rule to that group. Clusters made before this
   change keep the default group.
+- networking-api: creating and deleting a security group and adding a rule to one now accept a service that holds the
+  internal token and states the caller's project (as showing a group already did), so the Kubernetes engine can make
+  the cluster's group as the cluster's project. Without the internal token and a stated identity the routes still
+  answer 401, and a project cannot see or delete another project's group.
 - Live migration: an IPv6 `live_migration_host` is put in brackets in the libvirt URI and the memory stream URI
   (`tcp://[fd00::2]`); before, the migration could not connect.
 - Live migration: when the source domain is gone although libvirt was never asked to migrate it, the worker no longer
