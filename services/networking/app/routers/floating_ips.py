@@ -50,6 +50,7 @@ def create_floating_ip(payload: FloatingIPIn, current: UserOrInternal, db: DB):
             fixed_ip = port.fixed_ip or port.ip_address
             if router and fixed_ip:
                 ovn_cli.ovn(*nat_rule_args(router.name, floating_ip, fixed_ip))
+                ovn_cli.exempt_metadata_from_nat(router.name)
         except Exception as exc:
             log.warning("Could not setup OVN NAT for new FIP: %s", exc)
 
@@ -91,6 +92,7 @@ def associate_floating_ip(ref: str, payload: FloatingIPAssociateIn, current: Use
     if not fixed_ip:
         raise HTTPException(status_code=400, detail="port has no fixed IP")
     ovn_cli.ovn(*nat_rule_args(router.name, fip.floating_ip, fixed_ip))
+    ovn_cli.exempt_metadata_from_nat(router.name)
     fip.fixed_port_id = port.id
     fip.port_id = port.id
     fip.fixed_ip_address = fixed_ip
