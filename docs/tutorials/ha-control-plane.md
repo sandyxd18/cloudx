@@ -330,7 +330,7 @@ Metadata (`169.254.169.254`) timed out from VMs on the compute nodes: it needs a
 - **Deleting a volume that has snapshots leaves orphans.** On 1.0.0 `cloudx volume delete` accepts a volume with snapshots, and deleting a Ceph snapshot never removed the RBD snapshot, so the image stays behind. Remove snapshots with `rbd snap rm`, or `rbd snap purge`, before `rbd rm`. Fixed in 1.0.1: the delete is refused (409) while snapshots exist, and deleting a Ceph snapshot runs `rbd snap rm`.
 - **A second gateway row does not give a working floating-IP failover here.** With one `gateway_chassis` row, losing the gateway's uplink or its chassis means losing the floating IPs until it comes back. Adding a second row by hand (`ovn-nbctl lrp-set-gateway-chassis <port> comp01 20` and `comp02 10`; the reconciler left it alone) moved the OVN port binding to `comp02` within 14 seconds, yet the floating IP stayed unreachable until `ovn-controller` returned on `comp01`. The cause was not found (a suspect is the provider switch keeping the old MAC location).
 - **Two of three controllers lost is an outage of the control plane**, as for any majority-based design (section 9, B5). Existing VMs and their floating IPs keep working.
-- **Volumes requested while the control plane or RabbitMQ was down stayed in `creating` for good** (six of them in the lab); delete them by hand.
+- **Volumes requested while the control plane or RabbitMQ was down stayed in `creating` for good** (six of them in the lab); delete them by hand. Later releases mark such a volume `error` once it has been `creating` for more than `VOLUME_CREATING_TIMEOUT_SECONDS` (default 3600) with nothing on the backend; then delete it and create it again. This was only unit-tested.
 
 ## 8. Day-two notes
 
