@@ -122,15 +122,28 @@ NODENAME=rabbit@ctl01-c
 # /etc/rabbitmq/rabbitmq.conf
 listeners.tcp.1 = 192.168.29.1:5672
 cluster_partition_handling = pause_minority
-tcp_listen_options.backlog = 128
-tcp_listen_options.nodelay = true
-tcp_listen_options.linger.on = true
-tcp_listen_options.linger.timeout = 0
-tcp_listen_options.exit_on_close = false
-tcp_listen_options.keepalive = true
 ```
 
-The last line, and a kernel setting on all three controllers, make the broker drop the connections of a controller that lost power. Without them the broker keeps them open for a long time, because the CloudX services use an AMQP heartbeat of 600 seconds (a handler can run for minutes and sends none) and TCP keepalive is off by default on the broker's sockets. A message already handed to a consumer on the dead controller then stays unacknowledged, and the operation that needs it (a volume create, for instance) hangs. The other `tcp_listen_options` lines are the RabbitMQ defaults, written out so that nothing depends on how the keys are merged (not checked).
+Add two things on all three controllers so that the broker drops the connections of a controller that lost power. Without them the broker keeps those connections open for many minutes: the CloudX services use an AMQP heartbeat of 600 seconds (a handler can run for minutes and sends none), and the broker's sockets have no TCP keepalive and no user timeout by default. A message already handed to a consumer behind a dead connection then stays unacknowledged, and the operation that needs it (a volume create, for instance) hangs.
+
+```erlang
+%% /etc/rabbitmq/advanced.config  (rabbitmq.conf has no key for a raw socket option such as the user timeout in RabbitMQ 3.12;
+%% the whole list lives here and no tcp_listen_options line stays in rabbitmq.conf; having both was not tried)
+[
+  {rabbit, [
+    {tcp_listen_options, [
+      {backlog, 128},
+      {nodelay, true},
+      {linger, {true, 0}},
+      {exit_on_close, false},
+      {keepalive, true},
+      {raw, 6, 18, <<30000:32/native>>}
+    ]}
+  ]}
+].
+```
+
+`raw, 6, 18` sets `TCP_USER_TIMEOUT` (30000 ms): a connection with data the peer never acknowledged is closed after 30 seconds. `keepalive` covers the idle connections, together with a kernel setting (the kernel default waits 2 hours):
 
 ```ini
 # /etc/sysctl.d/90-cloudx-keepalive.conf, then: sudo sysctl --system
@@ -139,7 +152,9 @@ net.ipv4.tcp_keepalive_intvl = 10
 net.ipv4.tcp_keepalive_probes = 3
 ```
 
-A silent peer is then dropped after about 60 seconds (30 s idle, then three probes 10 s apart); the kernel default is 2 hours. The values apply only to sockets that ask for keepalive. This was not run: the lab of section 9 had the defaults, and the zombie connections described in section 7 were seen there. Check it with `sudo rabbitmqctl list_connections peer_host state` on a surviving controller after a power-off: the dead controller's address should be gone within about a minute and a half.
+Restart RabbitMQ one node at a time (wait for three running nodes in `rabbitmqctl cluster_status` before the next) and check `sudo rabbitmqctl environment | grep -A8 tcp_listen_options`: the list must end with `{raw,6,18,<<48,117,0,0>>}`.
+
+Measured on the lab of section 9 on 2026-11-27, `qm stop` of the controller that held the VIP, counting with `rabbitmqctl list_connections peer_host` the connections still listed from its address (25-30 before): with the defaults (section 7, B11) the connections were still listed after at least five minutes and a volume create hung until they were closed by hand; with only the keepalive lines 26 of 30 were gone after 63 seconds, but 4 that had unsent data stayed for about 400 seconds and one for more than 550 seconds (the kernel gives up after about 15 minutes of retransmissions); with keepalive plus the user timeout all were gone after 49 seconds. One run each, so take the numbers as an order of magnitude.
 
 Start `ctl01`, copy `/var/lib/rabbitmq/.erlang.cookie` to the others (mode 400, owner `rabbitmq`), then on `ctl02` and `ctl03`: `rabbitmqctl stop_app && rabbitmqctl join_cluster rabbit@ctl01-c && rabbitmqctl start_app`. Then:
 
@@ -346,7 +361,7 @@ Metadata (`169.254.169.254`) timed out from VMs on the compute nodes: it needs a
 - **Dashboard sessions are kept in the memcached of one controller.** If that controller dies, its users log in again; the VIP frontend uses `balance source` so a user stays on one controller.
 - **Deleting a volume that has snapshots leaves orphans.** On 1.0.0 `cloudx volume delete` accepts a volume with snapshots, and deleting a Ceph snapshot never removed the RBD snapshot, so the image stays behind. Remove snapshots with `rbd snap rm`, or `rbd snap purge`, before `rbd rm`. Fixed in 1.0.1: the delete is refused (409) while snapshots exist, and deleting a Ceph snapshot runs `rbd snap rm`.
 - **A second gateway row does not give a working floating-IP failover here.** With one `gateway_chassis` row, losing the gateway's uplink or its chassis means losing the floating IPs until it comes back. Adding a second row by hand (`ovn-nbctl lrp-set-gateway-chassis <port> comp01 20` and `comp02 10`; the reconciler left it alone) moved the OVN port binding to `comp02` within 14 seconds, yet the floating IP stayed unreachable until `ovn-controller` returned on `comp01`. The cause was not found (a suspect is the provider switch keeping the old MAC location).
-- **A controller that loses power leaves zombie AMQP connections on the other brokers.** After `qm stop` of the VIP holder (section 9, B11), the connections that came from it (HAProxy and the local services) stayed in `rabbitmqctl list_connections` for at least five minutes, and a volume create whose message had been handed to a consumer behind one of them hung until they were closed by hand (`sudo rabbitmqctl close_connection '<pid>' 'dead host'` for each connection whose `peer_host` is the dead controller). The same stall appeared in B13. The settings in section 3.2 (`tcp_listen_options.keepalive` and the sysctl drop-in) are meant to remove it; they were not run.
+- **A controller that loses power leaves zombie AMQP connections on the other brokers.** After `qm stop` of the VIP holder (section 9, B11), the connections that came from it (HAProxy and the local services) stayed in `rabbitmqctl list_connections` for at least five minutes, and a volume create whose message had been handed to a consumer behind one of them hung until they were closed by hand (`sudo rabbitmqctl close_connection '<pid>' 'dead host'` for each connection whose `peer_host` is the dead controller). The same stall appeared in B13. The `advanced.config` and the sysctl drop-in of section 3.2 remove it (measured there).
 - **Two of three controllers lost is an outage of the control plane**, as for any majority-based design (section 9, B5). Existing VMs and their floating IPs keep working.
 - **Volumes requested while the control plane or RabbitMQ was down stayed in `creating` for good** (six of them in the lab); delete them by hand.
 
