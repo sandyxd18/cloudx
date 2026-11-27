@@ -24,7 +24,7 @@ router = APIRouter()
 
 
 @router.post("/security-groups", status_code=201)
-def create_security_group(payload: SecurityGroupIn, current: CurrentUser, db: DB):
+def create_security_group(payload: SecurityGroupIn, current: UserOrInternal, db: DB):
     if get_by_ref(db, SecurityGroup, payload.name, current=current):
         raise HTTPException(status_code=409, detail="security-group already exists")
     check_quota(db, current.get("project_id"), SecurityGroup, "security_groups")
@@ -118,7 +118,7 @@ def show_security_group(ref: str, current: UserOrInternal, db: DB):
     return sg_to_os_dict(db, group, current, include_rules=True)
 
 @router.delete("/security-groups/{ref}")
-def delete_security_group(ref: str, current: CurrentUser, db: DB):
+def delete_security_group(ref: str, current: UserOrInternal, db: DB):
     group = require_owned(current, db, SecurityGroup, ref, "security-group")
     in_use = [p.name for p in db.scalars(select(Port).where(Port.security_group_ids.is_not(None))).all() if group.id in parse_id_list(p.security_group_ids)]
     if in_use:
@@ -134,7 +134,7 @@ def delete_security_group(ref: str, current: CurrentUser, db: DB):
     return {"status": "deleted", "id": group.id, "name": group.name}
 
 @router.post("/security-groups/{ref}/rules", status_code=201)
-def create_security_group_rule(ref: str, payload: SecurityGroupRuleIn, current: CurrentUser, db: DB):
+def create_security_group_rule(ref: str, payload: SecurityGroupRuleIn, current: UserOrInternal, db: DB):
     group = require_owned(current, db, SecurityGroup, ref, "security-group")
     if payload.direction not in {"ingress", "egress"}:
         raise HTTPException(status_code=400, detail="direction must be ingress or egress")

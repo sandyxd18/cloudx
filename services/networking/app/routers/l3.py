@@ -32,6 +32,7 @@ def _router_external_ip(db, network: Network) -> str:
 def _snat(router_name: str, router_ip: str, port_ip: str) -> None:
     cidr = str(ipaddress.ip_interface(port_ip).network)
     ovn_cli.ovn("--may-exist", "lr-nat-add", router_name, "snat", router_ip, cidr, check=False)
+    ovn_cli.exempt_metadata_from_nat(router_name)
 
 
 @router.post("/routers", status_code=201)

@@ -319,7 +319,7 @@ cloudx volume-type create ceph-rbd --backend ceph --disk-type sata_hdd
 
 Create the provider network as in [quickstart.md](../quickstart.md) step 7 with a range on the provider segment, a tenant network and router, upload CirrOS and boot a VM. Check where the router's gateway landed: `ovn-nbctl --db=<list of three> list gateway_chassis`. In the lab `networking-api`, running on controllers that have no chassis, picked `comp01` and wrote **one** row. Floating IPs answered from the provider segment itself; nothing on the management network could reach them without a route to the provider range, and the Internet was not reachable through the lab's provider gateway.
 
-Metadata (`169.254.169.254`) timed out from VMs on the compute nodes: it needs a host address on the provider network at the gateway node (`scripts/setup-metadata-route.sh`, described as single-node behaviour in [metadata-proxy.md](../metadata-proxy.md)). The guests still got their keys through the config drive.
+Metadata (`169.254.169.254`) timed out from VMs on the compute nodes: it needs a host address on the provider network at the gateway node (`scripts/setup-metadata-route.sh`, described as single-node behaviour in [metadata-proxy.md](../metadata-proxy.md)). The guests still got their keys through the config drive. In a later lab run, with that host address, the script and a router route `169.254.169.254/32` to the host address, the requests reached the proxy but were answered `404`, because the router had translated the source address; with the address set that metadata-proxy.md describes exempted from NAT, guests with and without a floating IP got their own instance id.
 
 ## 7. What did not work the way you would expect
 

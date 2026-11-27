@@ -80,3 +80,53 @@ def test_rule_port_range_is_stored_from_neutron_style_names(api):
 
     assert res.status_code == 201, res.text
     assert (res.json()["port_min"], res.json()["port_max"]) == ("8000", "8100")
+
+
+# --- the k8s engine worker makes a cluster's group as the cluster's project, with the internal token ----------------
+
+def _as_cluster(monkeypatch, project="proj-9"):
+    """Headers of a service call made on behalf of a member of `project` (shared.internal.on_behalf_headers)."""
+    from shared.internal import on_behalf_headers
+
+    monkeypatch.setenv("INTERNAL_TOKEN", "t" * 32)
+    return on_behalf_headers({"sub": "k8s-cluster:cls-1", "username": "k8s-engine", "role": "member", "roles": ["member"],
+                              "project_id": project, "scope_type": "project"})
+
+
+@pytest.fixture
+def internal_api(networking, monkeypatch):
+    """No user override: a call without a user token or the internal token must be refused."""
+    networking.ovn_cli.ovn = lambda *a, check=True, **k: "name : pg_x" if a[:1] == ("--format=list",) else ""
+    networking.client = TestClient(networking.app)
+    return networking
+
+
+def test_an_internal_caller_makes_uses_and_deletes_a_group_as_the_project_it_states(internal_api, monkeypatch):
+    h = _as_cluster(monkeypatch)
+    client = internal_api.client
+
+    made = client.post("/security-groups", json={"name": "k8s-cls-1"}, headers=h)
+    assert made.status_code == 201, made.text
+    assert made.json()["project_id"] == "proj-9"                       # the stated project, not the synthetic admin's
+    gid = made.json()["id"]
+
+    rule = client.post(f"/security-groups/{gid}/rules", headers=h,
+                       json={"direction": "ingress", "protocol": "any", "remote_group_id": gid})
+    assert rule.status_code == 201, rule.text
+    assert client.get("/security-groups/k8s-cls-1", headers=h).json()["id"] == gid
+
+    other = _as_cluster(monkeypatch, project="proj-other")             # another project cannot see or delete it
+    assert client.get("/security-groups/k8s-cls-1", headers=other).status_code == 404
+    assert client.delete(f"/security-groups/{gid}", headers=other).status_code == 404
+
+    assert client.delete(f"/security-groups/{gid}", headers=h).status_code == 200
+
+
+def test_without_a_user_token_or_the_internal_token_the_group_routes_stay_closed(internal_api, monkeypatch):
+    monkeypatch.setenv("INTERNAL_TOKEN", "t" * 32)
+    client = internal_api.client
+
+    assert client.post("/security-groups", json={"name": "x"}).status_code == 401
+    assert client.post("/security-groups", json={"name": "x"}, headers={"X-Internal-Token": "wrong"}).status_code == 401
+    assert client.delete("/security-groups/x").status_code == 401
+    assert client.post("/security-groups/x/rules", json={"direction": "ingress"}).status_code == 401

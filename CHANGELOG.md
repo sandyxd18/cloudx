@@ -62,6 +62,38 @@ schema between releases, so read the upgrade steps before moving a running cloud
   the check off) and nothing exists on the backend. A volume whose backend object exists is left alone, because the
   handler may still be converting an image into it. The conductor's `list_all_volumes` now also returns `created_at`; a
   worker that does not receive it never judges a `creating` volume, so the services can be updated in any order.
+- Security group rules that name a remote group (`remote_group_id`) now let traffic through between members that run on
+  different compute nodes. Before, the rule matched `inport == @group`, which ovn-controller expands only to the ports
+  bound on the node that evaluates the packet, so a member on another node never matched: two servers of the same group
+  could talk when they shared a node and not otherwise (found with a TCP connection between two servers while one was
+  live-migrated). The rule now matches the address set OVN keeps for every port group (`ip4.src == $<group>_ip4`, `ip4.dst`
+  for egress, `_ip6` for IPv6 rules), which holds the addresses of all the group's ports on every node. The address sets
+  are made by OVN; nothing to configure. Rules are re-applied whenever a group's rules or ports change, so existing
+  rules are fixed by the next change to the group (or restart the networking-api and add or remove any rule).
+- Kubernetes clusters: a worker no longer reports ready before it has joined. The worker VM used to start `k3s agent`,
+  wait a fixed 20 seconds and call back whatever happened, so a cluster could be `ACTIVE` while its Kubernetes API listed
+  only the master. The VM now waits (up to ten minutes) until its own node is `Ready` in the cluster, and a worker that
+  cannot join never calls back, so the cluster ends in `ERROR` at `ready_timeout` with the reason. The VM images need no
+  change: the cloud-config asks the master with `k3s kubectl` and the kubelet's credentials.
+- Kubernetes clusters: the nodes used the project's default security group, which lets only ssh and icmp in, so workers
+  could not reach the master's port 6443 and never joined (flannel and kubelet traffic was blocked too). The worker now
+  creates a security group `k8s-<cluster id>` for each cluster (every port is open to the cluster network's IPv4 subnets, ssh and icmp stay
+  open from anywhere), puts every node in it and deletes it after the cluster's VMs. Each cluster counts one security group against the
+  project's quota. Reaching the API from outside is not opened: add a rule to that group. Clusters made before this
+  change keep the default group.
+- networking-api: creating and deleting a security group and adding a rule to one now accept a service that holds the
+  internal token and states the caller's project (as showing a group already did), so the Kubernetes engine can make
+  the cluster's group as the cluster's project. Without the internal token and a stated identity the routes still
+  answer 401, and a project cannot see or delete another project's group.
+- The metadata service (`169.254.169.254`) answered `404` to every VM that came through a router. The router's NAT
+  rules rewrote the request's source address (to the router's external address, or to the floating IP), and
+  `metadata-proxy` finds the VM by its source address. networking-api now makes the address set `cloudx_metadata` in the
+  OVN NAT database and lists it as `exempted_ext_ips` on every NAT row of every router, so traffic to the metadata
+  address is not translated. It does so when a subnet `snat` row or a floating IP is added and again at every start, so
+  existing routers and floating IPs are fixed by restarting networking-api; no schema change. The rest of the setup is as
+  before (`docs/metadata-proxy.md`): a route for the address on the router and the host rule from
+  `scripts/setup-metadata-route.sh`; only VMs whose traffic leaves through the proxy's node are served. Found on the
+  8-node lab.
 - Live migration: an IPv6 `live_migration_host` is put in brackets in the libvirt URI and the memory stream URI
   (`tcp://[fd00::2]`); before, the migration could not connect.
 - Live migration: when the source domain is gone although libvirt was never asked to migrate it, the worker no longer

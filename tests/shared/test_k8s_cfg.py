@@ -55,3 +55,78 @@ def test_boot_scripts_wait_for_k3s_so_systemd_run_does_not_kill_it():
         assert cfg.index('      wait') > cfg.index('/ready')
         assert 'systemd-run' in cfg and 'nohup' not in cfg
         assert '--property=Delegate=yes' in cfg  # kubelet needs the cgroup subtree, else kubepods is missing
+
+
+# --- the worker only reports ready once its own node is Ready in the cluster ---------------------------------------
+import os
+import stat
+import subprocess
+import textwrap
+
+
+def _boot_script(cfg: str) -> str:
+    """The body of /usr/local/bin/cloudx-k3s-boot.sh from a rendered cloud-config."""
+    lines = cfg.split("    content: |\n", 1)[1].split("runcmd:", 1)[0].splitlines()
+    return textwrap.dedent("\n".join(lines)) + "\n"
+
+
+def _run_boot_script(tmp_path, cfg, ready_after):
+    """Run the worker boot script with stand-ins for k3s, curl and sleep. `k3s kubectl` answers False until it was asked
+    `ready_after` times, then True (a node that never joins: ready_after=None). Returns (kubectl asks, curl calls)."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    state = tmp_path / "asked"
+    state.write_text("0")
+    curl_log = tmp_path / "curl.log"
+    stubs = {
+        "k3s": f"""#!/bin/bash
+case "$1" in
+  agent) exit 0 ;;
+  kubectl)
+    n=$(( $(cat {state}) + 1 )); echo $n > {state}
+    echo "$@" >> {tmp_path}/kubectl.log
+    if [ "{ready_after}" != "None" ] && [ $n -ge {ready_after if ready_after is not None else 0} ]; then echo True; else echo False; fi ;;
+esac
+""",
+        "curl": f"#!/bin/bash\necho \"$@\" >> {curl_log}\nexit 0\n",
+        "sleep": "#!/bin/bash\nexit 0\n",
+    }
+    for name, body in stubs.items():
+        path = bin_dir / name
+        path.write_text(body)
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    script = tmp_path / "boot.sh"
+    script.write_text(_boot_script(cfg))
+    subprocess.run(["bash", str(script)], env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}, check=True, timeout=30)
+    calls = curl_log.read_text().splitlines() if curl_log.exists() else []
+    return int(state.read_text()), calls
+
+
+WORKER = ("cls-abc123", "10.0.0.7", "jt_0123456789abcdef", CB, "ct_0123456789abcdef")
+
+
+def test_the_worker_reports_ready_only_after_its_node_is_ready(tmp_path):
+    asked, curl_calls = _run_boot_script(tmp_path, render_worker(*WORKER), ready_after=3)
+
+    assert asked == 3                      # it kept asking until the node answered Ready
+    assert len(curl_calls) == 1 and "/clusters/cls-abc123/ready" in curl_calls[0]
+
+
+def test_a_worker_whose_node_never_joins_never_reports_ready(tmp_path):
+    asked, curl_calls = _run_boot_script(tmp_path, render_worker(*WORKER), ready_after=None)
+
+    assert asked >= 100                    # about ten minutes of five-second checks, then it gives up
+    assert curl_calls == []                # the cluster then ends in ERROR at the ready timeout, not in a false ACTIVE
+
+
+def test_the_worker_asks_its_own_node_through_the_kubelet_credentials(tmp_path):
+    _run_boot_script(tmp_path, render_worker(*WORKER), ready_after=1)
+
+    asked = (tmp_path / "kubectl.log").read_text()
+    assert "--kubeconfig /var/lib/rancher/k3s/agent/kubelet.kubeconfig" in asked
+    assert "get node" in asked and "Ready" in asked
+
+
+def test_the_worker_script_has_no_fixed_sleep_before_the_callback():
+    script = _boot_script(render_worker(*WORKER))
+    assert "sleep 20" not in script
