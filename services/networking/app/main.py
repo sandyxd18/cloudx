@@ -9,7 +9,7 @@ from shared.cors import cors_origins
 from shared.schema import require_schema
 from sqlalchemy import text
 
-from .bootstrap import bootstrap_default_security_group, bootstrap_router_advertisements
+from .bootstrap import bootstrap_default_security_group, bootstrap_metadata_nat_exemption, bootstrap_router_advertisements
 from .config import log
 from .db import DB, engine
 from .routers import (
@@ -58,6 +58,10 @@ def startup():
         bootstrap_router_advertisements()
     except Exception as exc:
         print(f"router advertisements bootstrap skipped: {exc}", flush=True)
+    try:
+        bootstrap_metadata_nat_exemption()
+    except Exception as exc:
+        print(f"metadata NAT exemption bootstrap skipped: {exc}", flush=True)
 
 @app.get("/health")
 def health():

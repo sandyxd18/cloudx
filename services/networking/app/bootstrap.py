@@ -2,8 +2,8 @@ from sqlalchemy import select
 
 from .config import DEFAULT_SECURITY_GROUP_ALLOW_ICMP, DEFAULT_SECURITY_GROUP_ALLOW_SSH
 from .db import SessionLocal
-from .models import Network, RouterInterface, SecurityGroup, SecurityGroupRule, Subnet, now
-from .ovn_cli import apply_security_group_acls, ensure_router_port_ra, ensure_security_group_port_group
+from .models import Network, Router, RouterInterface, SecurityGroup, SecurityGroupRule, Subnet, now
+from .ovn_cli import apply_security_group_acls, ensure_router_port_ra, ensure_security_group_port_group, exempt_metadata_from_nat
 from .serializers import get_by_ref, network_mtu
 
 
@@ -67,5 +67,16 @@ def bootstrap_router_advertisements() -> None:
     try:
         for iface, subnet in db.execute(select(RouterInterface, Subnet).join(Subnet, Subnet.id == RouterInterface.subnet_id).where(Subnet.ip_version == 6)).all():
             ensure_router_port_ra(iface.router_port_name, subnet, network_mtu(db.get(Network, subnet.network_id)))
+    finally:
+        db.close()
+
+
+def bootstrap_metadata_nat_exemption() -> None:
+    """NAT rows made before the metadata address was exempted from NAT get it now (same value every start, harmless,
+    and every networking-api instance does it)."""
+    db = SessionLocal()
+    try:
+        for name in db.scalars(select(Router.name)).all():
+            exempt_metadata_from_nat(name)
     finally:
         db.close()
