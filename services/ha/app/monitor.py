@@ -79,10 +79,12 @@ def _rec(db, host, sid, project, status, msg=None):
     return r
 
 
-def _wait_active(api, sid) -> bool:
+def _wait_for(api, sid, want: str) -> bool:
+    """True once the server has the status `want`: the one compute gives it back after the rebuild, which is the status
+    it had before (ACTIVE or SHUTOFF; a server that was in ERROR comes back ACTIVE)."""
     end = time.monotonic() + VERIFY
     while True:
-        if api.server_status(sid) == "ACTIVE":
+        if api.server_status(sid) == want:
             return True
         if time.monotonic() >= end:
             return False
@@ -100,6 +102,7 @@ def recover(db, api, h) -> None:
         needs = [sid for sid in ok if any(x != SHARED_CEPH for x in vol_hosts[sid])]
         skipped += [(sid, "host never reported an initiator iqn; cannot fence") for sid in needs]
         ok = [sid for sid in ok if sid not in needs]
+    want = {s["id"]: "SHUTOFF" if s["status"] == "SHUTOFF" else "ACTIVE" for s in mine}
     volumes = {sid: api.server_volume_ids(sid) for sid in ok}
     unfenced: list[str] = []
     try:
@@ -122,8 +125,8 @@ def recover(db, api, h) -> None:
         r = _rec(db, h.host, sid, prot[sid], "running", note or None)
         try:
             api.evacuate(sid)
-            good = _wait_active(api, sid)
-            r.status, r.message = ("done", note or None) if good else ("failed", f"not ACTIVE within {VERIFY}s")
+            good = _wait_for(api, sid, want[sid])
+            r.status, r.message = ("done", note or None) if good else ("failed", f"not {want[sid]} within {VERIFY}s")
         except Exception as exc:  # best-effort: record and carry on with the next server
             r.status, r.message = "failed", str(exc)[:200]
         r.finished_at = datetime.utcnow()
