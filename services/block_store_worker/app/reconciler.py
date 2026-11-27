@@ -13,6 +13,8 @@ Drift scenarios this fixes:
   • Volume stuck in "creating" for longer than VOLUME_CREATING_TIMEOUT_SECONDS
     with no backend object → mark error (the create request was lost, e.g.
     with a broker that lost quorum, or the worker died before it started).
+  • A volume that is already error with nothing on the backend is left alone, so the reason stored with it
+    (from the handler or from the rule above) stays readable.
 
 Scheduling: background thread (daemon) started in block-store-worker main.py,
 sleeping RECONCILE_INTERVAL_SECONDS between passes. Default = 3600 (1 hour).
@@ -179,8 +181,13 @@ def reconcile_volumes(rpc_client) -> None:
                 )
             continue
 
-        # 1. DB says available/in-use/error but physical missing
-        if not physical_exists and db_status in ("available", "in-use", "error"):
+        # 1a. Already error and still nothing on the backend: leave it. Marking it again on every pass (of every worker)
+        #     replaced the reason that was stored with the generic one below.
+        if not physical_exists and db_status == "error":
+            continue
+
+        # 1. DB says available/in-use but physical missing
+        if not physical_exists and db_status in ("available", "in-use"):
             log.warning(
                 "[reconcile] volume %s (%s): status=%s but backend missing → marking error",
                 vol.get("name"), vol["id"], db_status,

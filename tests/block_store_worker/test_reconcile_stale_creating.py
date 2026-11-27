@@ -120,3 +120,37 @@ def test_another_nodes_lvm_volume_is_still_not_ours_to_judge(monkeypatch):
     reconciler.reconcile_volumes(rpc)
 
     assert rpc.casts == []
+
+
+def errored(vol_id, backend="ceph"):
+    return {"id": vol_id, "name": vol_id, "status": "error", "backend": backend, "host": None, "path": "",
+            "created_at": datetime.utcnow() - timedelta(seconds=7200)}
+
+
+def test_a_volume_that_is_already_error_keeps_its_own_message(monkeypatch):
+    # every pass of every worker used to re-mark it with "Physical storage object missing on node", which replaced
+    # the reason the handler or the reconciler had stored (found in the lab: the stale-creating message lasted 5 s)
+    monkeypatch.setattr(reconciler.ceph, "exists", lambda name: False)
+    rpc = FakeRpc([errored("failed")])
+
+    reconciler.reconcile_volumes(rpc)
+
+    assert rpc.casts == []
+
+
+def test_an_available_volume_whose_backend_is_gone_is_still_marked_error(monkeypatch):
+    monkeypatch.setattr(reconciler.ceph, "exists", lambda name: False)
+    rpc = FakeRpc([{**errored("gone"), "status": "available"}])
+
+    reconciler.reconcile_volumes(rpc)
+
+    assert flagged(rpc)["gone"]["error_message"] == "Physical storage object missing on node"
+
+
+def test_an_error_volume_whose_backend_is_back_still_recovers_to_available(monkeypatch):
+    monkeypatch.setattr(reconciler.ceph, "exists", lambda name: True)
+    rpc = FakeRpc([errored("back")])
+
+    reconciler.reconcile_volumes(rpc)
+
+    assert [(m, a["fields"]["status"]) for m, a in rpc.casts] == [("update_volume", "available")]
