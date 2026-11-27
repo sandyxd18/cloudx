@@ -6,6 +6,9 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Fixed
+- `ha-watchdog` no longer destroys a protected VM while a live-migration job runs on it. On an isolated source node it used to kill the guest in the middle of the move: the migration failed, no copy of the guest ran, and the server stayed `MIGRATING` until an operator settled it. The watchdog now looks again every 5 seconds and destroys the VM on the first pass after the job has ended, or after `ha_watchdog_migration_grace` seconds (default 1800). Unit tests only; not run on a lab.
+
 ## 1.0.15 (2026-11-27)
 
 ### Added

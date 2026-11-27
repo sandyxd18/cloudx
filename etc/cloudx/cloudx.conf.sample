@@ -57,6 +57,7 @@ database_public_url = http://127.0.0.1:8019
 # ha_watchdog_peers = http://<other compute node>:8021
 # ha_watchdog_timeout = 45
 # ha_watchdog_dry_run = false
+# ha_watchdog_migration_grace = 1800   # seconds a VM with a live-migration job running is left alone
 dns_platform_domain = cloud.lab
 # Set both to two IPs of the node that runs cloudx-dns-worker (see docs/dns.md). Without dns_resolver_address,
 # new subnets hand dns_upstream to VMs instead of the platform resolver.

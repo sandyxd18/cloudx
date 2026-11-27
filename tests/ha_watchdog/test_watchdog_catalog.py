@@ -40,6 +40,7 @@ def make(monkeypatch, tmp_path):
 
         m = importlib.reload(m)
         m.calls, m.peers = [], [True]
+        m.migrating = lambda domain: False  # these tests are not about migration; `calls` records destroys only
 
         def request(method, url, **kw):
             if url.endswith("/internal/protected-domains/h1"):
