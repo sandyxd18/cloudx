@@ -55,6 +55,14 @@ schema between releases, so read the upgrade steps before moving a running cloud
   49152-49215 between the compute nodes) and the limits.
 
 ### Fixed
+- Security group rules that name a remote group (`remote_group_id`) now let traffic through between members that run on
+  different compute nodes. Before, the rule matched `inport == @group`, which ovn-controller expands only to the ports
+  bound on the node that evaluates the packet, so a member on another node never matched: two servers of the same group
+  could talk when they shared a node and not otherwise (found with a TCP connection between two servers while one was
+  live-migrated). The rule now matches the address set OVN keeps for every port group (`ip4.src == $<group>_ip4`, `ip4.dst`
+  for egress, `_ip6` for IPv6 rules), which holds the addresses of all the group's ports on every node. The address sets
+  are made by OVN; nothing to configure. Rules are re-applied whenever a group's rules or ports change, so existing
+  rules are fixed by the next change to the group (or restart the networking-api and add or remove any rule).
 - Kubernetes clusters: a worker no longer reports ready before it has joined. The worker VM used to start `k3s agent`,
   wait a fixed 20 seconds and call back whatever happened, so a cluster could be `ACTIVE` while its Kubernetes API listed
   only the master. The VM now waits (up to ten minutes) until its own node is `Ready` in the cluster, and a worker that

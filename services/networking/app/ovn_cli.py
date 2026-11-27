@@ -423,8 +423,12 @@ def acl_match(security_group_id: str, rule: SecurityGroupRule) -> str:
     if rule.remote_ip_prefix and not _matches_any_ipv6(rule.remote_ip_prefix, v6):
         parts.append(f"{remote_field} == {rule.remote_ip_prefix}")
     if rule.remote_group_id:
-        remote_port_field = "inport" if rule.direction == "ingress" else "outport"
-        parts.append(f"{remote_port_field} == @{port_group_name(rule.remote_group_id)}")
+        # Match the remote group by the address set OVN keeps for every port group, not by `inport == @group`:
+        # ovn-controller expands `@group` only to the ports bound on the chassis that evaluates the packet, so a member
+        # on another compute node never matched. northd creates `<port group>_ip4` and `<port group>_ip6` itself, with
+        # the addresses of all the group's ports on every chassis. Never create address sets with those names: the
+        # duplicate stops northd ("multiple rows in Address_Set table to have identical values").
+        parts.append(f"{remote_field} == ${port_group_name(rule.remote_group_id)}_{'ip6' if v6 else 'ip4'}")
     return " && ".join(parts)
 
 def acl_priority(rule: SecurityGroupRule) -> str:
