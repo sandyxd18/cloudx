@@ -124,6 +124,38 @@ listeners.tcp.1 = 192.168.29.1:5672
 cluster_partition_handling = pause_minority
 ```
 
+Add two things on all three controllers so that the broker drops the connections of a controller that lost power. Without them the broker keeps those connections open for many minutes: the CloudX services use an AMQP heartbeat of 600 seconds (a handler can run for minutes and sends none), and the broker's sockets have no TCP keepalive and no user timeout by default. A message already handed to a consumer behind a dead connection then stays unacknowledged, and the operation that needs it (a volume create, for instance) hangs.
+
+```erlang
+%% /etc/rabbitmq/advanced.config  (rabbitmq.conf has no key for a raw socket option such as the user timeout in RabbitMQ 3.12;
+%% the whole list lives here and no tcp_listen_options line stays in rabbitmq.conf; having both was not tried)
+[
+  {rabbit, [
+    {tcp_listen_options, [
+      {backlog, 128},
+      {nodelay, true},
+      {linger, {true, 0}},
+      {exit_on_close, false},
+      {keepalive, true},
+      {raw, 6, 18, <<30000:32/native>>}
+    ]}
+  ]}
+].
+```
+
+`raw, 6, 18` sets `TCP_USER_TIMEOUT` (30000 ms): a connection with data the peer never acknowledged is closed after 30 seconds. `keepalive` covers the idle connections, together with a kernel setting (the kernel default waits 2 hours):
+
+```ini
+# /etc/sysctl.d/90-cloudx-keepalive.conf, then: sudo sysctl --system
+net.ipv4.tcp_keepalive_time = 30
+net.ipv4.tcp_keepalive_intvl = 10
+net.ipv4.tcp_keepalive_probes = 3
+```
+
+Restart RabbitMQ one node at a time (wait for three running nodes in `rabbitmqctl cluster_status` before the next) and check `sudo rabbitmqctl environment | grep -A8 tcp_listen_options`: the list must end with `{raw,6,18,<<48,117,0,0>>}`.
+
+Measured on the lab of section 9 on 2026-11-27, `qm stop` of the controller that held the VIP, counting with `rabbitmqctl list_connections peer_host` the connections still listed from its address (25-30 before): with the defaults (section 7, B11) the connections were still listed after at least five minutes and a volume create hung until they were closed by hand; with only the keepalive lines 26 of 30 were gone after 63 seconds, but 4 that had unsent data stayed for about 400 seconds and one for more than 550 seconds (the kernel gives up after about 15 minutes of retransmissions); with keepalive plus the user timeout all were gone after 49 seconds. One run each, so take the numbers as an order of magnitude.
+
 Start `ctl01`, copy `/var/lib/rabbitmq/.erlang.cookie` to the others (mode 400, owner `rabbitmq`), then on `ctl02` and `ctl03`: `rabbitmqctl stop_app && rabbitmqctl join_cluster rabbit@ctl01-c && rabbitmqctl start_app`. Then:
 
 ```bash
@@ -329,6 +361,7 @@ Metadata (`169.254.169.254`) timed out from VMs on the compute nodes: it needs a
 - **Dashboard sessions are kept in the memcached of one controller.** If that controller dies, its users log in again; the VIP frontend uses `balance source` so a user stays on one controller.
 - **Deleting a volume that has snapshots leaves orphans.** On 1.0.0 `cloudx volume delete` accepts a volume with snapshots, and deleting a Ceph snapshot never removed the RBD snapshot, so the image stays behind. Remove snapshots with `rbd snap rm`, or `rbd snap purge`, before `rbd rm`. Fixed in 1.0.1: the delete is refused (409) while snapshots exist, and deleting a Ceph snapshot runs `rbd snap rm`.
 - **A second gateway row does not give a working floating-IP failover here.** With one `gateway_chassis` row, losing the gateway's uplink or its chassis means losing the floating IPs until it comes back. Adding a second row by hand (`ovn-nbctl lrp-set-gateway-chassis <port> comp01 20` and `comp02 10`; the reconciler left it alone) moved the OVN port binding to `comp02` within 14 seconds, yet the floating IP stayed unreachable until `ovn-controller` returned on `comp01`. The cause was not found (a suspect is the provider switch keeping the old MAC location).
+- **A controller that loses power leaves zombie AMQP connections on the other brokers.** After `qm stop` of the VIP holder (section 9, B11), the connections that came from it (HAProxy and the local services) stayed in `rabbitmqctl list_connections` for at least five minutes, and a volume create whose message had been handed to a consumer behind one of them hung until they were closed by hand (`sudo rabbitmqctl close_connection '<pid>' 'dead host'` for each connection whose `peer_host` is the dead controller). The same stall appeared in B13. The `advanced.config` and the sysctl drop-in of section 3.2 remove it (measured there).
 - **Two of three controllers lost is an outage of the control plane**, as for any majority-based design (section 9, B5). Existing VMs and their floating IPs keep working.
 - **Volumes requested while the control plane or RabbitMQ was down stayed in `creating` for good** (six of them in the lab); delete them by hand. Later releases mark such a volume `error` once it has been `creating` for more than `VOLUME_CREATING_TIMEOUT_SECONDS` (default 3600) with nothing on the backend; then delete it and create it again. This was only unit-tested.
 
@@ -357,6 +390,10 @@ Before B10 the compute nodes still reached the catalog through `ctl01` (see sect
 | B8 | `compute-worker` and `libvirtd` stopped on a compute node | host `fenced` and the protected VM (LVM root on the other node) evacuated and running after 96 s; recovered by hand as in [ha.md](../ha.md) |
 | B9 | all CloudX and data-tier services stopped on the three controllers, then started controller by controller (a service restart, not a node reboot; HAProxy and keepalived were still running on `ctl01`) | reads back 60 s and writes 68 s after the last start script returned; RPC took about 3 minutes more (volume creation ran at about 50 s each while a backlog drained) |
 | B10 | the whole stack stopped on `ctl01` alone (Patroni leader and VIP holder), after fixing `auth_api_url` on the compute nodes | VIP to `ctl02`, leader to `ctl03`; read gap 19.5 s, write gap 26.2 s; both compute nodes stayed `up` in `ha-api` with no false fencing; RPC failed during the outage and stalled about 40 s again after `ctl01` came back (queue mirrors re-synchronising, not verified) |
+| B11 | `qm stop` (power off) of `ctl01`: VIP holder, Patroni leader, OVN leader | VIP, leader and OVN leader moved; read gap 37 s, write 38 s, network write 37 s; floating IP of a running VM never paused more than 0.21 s; an RPC volume create hung until the zombie connections of section 7 were closed by hand |
+| B12 | `ctl01` started again | read, write and network probes: no failure, gaps 4-6 s; RPC cycle no failure (longest gap 9 s); `ctl01` rejoined Patroni as replica |
+| B13 | `qm stop` of `ctl02` (the new VIP holder, a Patroni replica) | read gap 19 s, write 24 s, network write 29 s; a volume create stayed in `creating` until `ctl02` was started again |
+| B14 | `qm stop` of `ctl01` and `ctl02` together (two of three, as B5 but a power loss) | writes, reads and RPC failed; PostgreSQL read-only, etcd unhealthy, RabbitMQ paused (`pause_minority`), OVN NB without a leader; VIP stayed on `ctl03`; floating IP of a running VM longest gap 0.22 s over 10040 replies; reads and writes back 62-67 s and RPC 90 s after the two were started; RabbitMQ on `ctl01` crash-looped for about 40 minutes (`Feature flags: no connection to node`) until the `ctl01-03` lines were put back in `/etc/hosts`, which cloud-init had rewritten at boot on the two restarted VMs (add the lines to `/etc/cloud/templates/hosts.debian.tmpl` as well) |
 
 Running every service on three controllers showed no duplicate work: ten VMs created in a burst were handled without duplicates (for the nine servers whose id the conductor logged, exactly one controller logged work), with no lock or duplicate-key errors in the journals of `conductor`, `reaper`, `compute-api`, `block-store-api`, `placement-api`, `networking-api` and `image-worker`. During the burst `server list` took 8-10 s per call.
 
