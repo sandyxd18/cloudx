@@ -1,4 +1,5 @@
 import importlib
+import json
 
 import pytest
 
@@ -20,6 +21,8 @@ def w(monkeypatch, tmp_path):
     import services.ha_watchdog.app.main as m
     m = importlib.reload(m)
     m.calls, m.net = [], {"up": True, "state": "up", "peers": [True]}
+    m.busy = set()  # domains that have a live-migration job running
+    m.migrating = lambda domain: domain in m.busy
 
     def fetch(method, path):
         if not m.net["up"]:
@@ -182,3 +185,85 @@ def test_reach_answers_401_to_a_non_ascii_token_and_200_to_the_right_one(w):
     assert _reach_status(w, "wrong") == 401
     assert _reach_status(w, None) == 401
     assert _reach_status(w, "tok") == 200
+
+
+def test_a_migrating_domain_is_left_alone_while_its_job_runs(w):
+    st = w.State(0)
+    isolate(w, st)
+    w.busy.add("dom1")
+    w.step(st, 46)
+    assert w.calls == [] and not w.FLAG.exists()
+    assert st.killed is False  # it looks again on the next pass
+
+
+def test_the_domain_is_destroyed_on_the_pass_after_its_job_ends(w):
+    st = w.State(0)
+    isolate(w, st)
+    w.busy.add("dom1")
+    w.step(st, 46)
+    assert w.calls == []  # nothing while the job runs
+    w.busy.clear()
+    w.step(st, 51)
+    assert w.calls == [(["destroy", "dom1"], True)]
+    w.step(st, 56)
+    assert len(w.calls) == 1  # never twice
+
+
+def test_only_the_domain_without_a_job_is_destroyed_at_first(w):
+    st = w.State(0)
+    isolate(w, st)
+    w.CACHE.write_text(json.dumps({"domains": ["dom1", "dom2"]}))
+    w.busy.add("dom1")
+    w.step(st, 46)
+    assert w.calls == [(["destroy", "dom2"], True)]
+    assert st.killed is False
+    w.busy.clear()
+    w.step(st, 51)
+    assert [c[0] for c in w.calls] == [["destroy", "dom2"], ["destroy", "dom1"]]
+    w.step(st, 56)
+    assert len(w.calls) == 2
+
+
+def test_a_job_that_outlasts_the_grace_no_longer_protects_the_domain(w):
+    w.MIGRATION_GRACE = 100
+    st = w.State(0)
+    isolate(w, st)
+    w.busy.add("dom1")
+    w.step(st, 46)
+    w.step(st, 100)  # 54 s since the first deferral
+    assert w.calls == []
+    w.step(st, 147)  # 101 s
+    assert w.calls == [(["destroy", "dom1"], True)]
+
+
+def test_ha_api_coming_back_resets_the_grace_clock(w):
+    st = w.State(0)
+    isolate(w, st)
+    w.busy.add("dom1")
+    w.step(st, 46)
+    assert st.busy_since == 46
+    w.net["up"] = True
+    w.step(st, 50)
+    assert st.busy_since is None
+
+
+class Out:
+    def __init__(self, stdout, returncode=0):
+        self.stdout, self.returncode = stdout, returncode
+
+
+@pytest.mark.parametrize("text,rc,expected", [
+    ("Job type:         None\n\n", 0, False),
+    ("Job type:         Unbounded\nOperation:        Outgoing migration\n", 0, True),
+    ("Job type:         Bounded\nOperation:        Incoming migration\n", 0, True),
+    ("Job type:         Unbounded\nOperation:        Snapshot\n", 0, False),
+    ("Job type:         Unbounded\n", 0, True),  # a libvirt that names no operation: assume a migration
+    ("error: Requested operation is not valid: domain is not running\n", 1, False),
+    ("", 0, False),
+])
+def test_migrating_reads_the_job_that_virsh_reports(w, monkeypatch, text, rc, expected):
+    m = importlib.reload(w)
+    seen = []
+    monkeypatch.setattr(m, "run", lambda cmd, check=True: seen.append(cmd) or Out(text, rc))
+    assert m.migrating("dom1") is expected
+    assert seen == [["virsh", "-c", m.LIBVIRT_URI, "domjobinfo", "dom1"]]
