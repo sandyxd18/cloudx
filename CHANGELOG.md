@@ -21,6 +21,10 @@ schema between releases, so read the upgrade steps before moving a running cloud
   was not run.
 
 ### Fixed
+- Instance HA no longer records a successful recovery of a stopped (`SHUTOFF`) protected VM as `failed`. Evacuate gives
+  such a VM back as `SHUTOFF`, but ha-api waited for `ACTIVE` for 300 seconds, then wrote `not ACTIVE within 300s`, and
+  the next protected VMs of the same host waited those 300 seconds first. It now waits for the status the VM had
+  (`ACTIVE` or `SHUTOFF`; a VM in `ERROR` is still expected `ACTIVE`). Unit tests only; not run on a lab.
 - `ha-watchdog` no longer destroys a protected VM while a live-migration job runs on it. On an isolated source node it used to kill the guest in the middle of the move: the migration failed, no copy of the guest ran, and the server stayed `MIGRATING` until an operator settled it. The watchdog now looks again every 5 seconds and destroys the VM on the first pass after the job has ended, or after `ha_watchdog_migration_grace` seconds (default 1800). Run on the 8-node lab: the watchdog waited while the migration job ran, the migration completed after the speed limit was lifted, and the server was `ACTIVE` on the target (`docs/ha.md`).
 
 ## 1.0.15 (2026-11-27)

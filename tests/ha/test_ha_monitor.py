@@ -226,3 +226,40 @@ def test_a_ceph_volume_with_no_client_to_cut_off_is_noted_and_the_server_still_m
     r = db.scalars(m.select(m.Recovery).where(m.Recovery.server_id == "ok")).one()
     assert r.status == "done" and "no Ceph client" in r.message and "vol-ok" in r.message
     assert "evacuate" in kinds(api)
+
+
+def test_a_stopped_server_is_done_when_it_is_shutoff_again_on_the_new_node(env):
+    # evacuate rebuilds a SHUTOFF server as SHUTOFF (compute keeps the status it had): waiting for ACTIVE would mark a
+    # successful recovery `failed` after VERIFY seconds
+    m, mon, db, api = env
+    api.srv[0]["status"] = "SHUTOFF"
+    api.status = "SHUTOFF"
+    mon.recover(db, api, db.get(m.Host, "h1"))
+    r = db.scalars(m.select(m.Recovery).where(m.Recovery.server_id == "ok")).one()
+    assert r.status == "done"
+
+
+def test_a_stopped_server_that_ends_in_error_is_failed_with_the_status_it_should_have_reached(env):
+    m, mon, db, api = env
+    api.srv[0]["status"] = "SHUTOFF"
+    api.status = "ERROR"
+    mon.recover(db, api, db.get(m.Host, "h1"))
+    r = db.scalars(m.select(m.Recovery).where(m.Recovery.server_id == "ok")).one()
+    assert r.status == "failed" and "SHUTOFF" in r.message
+
+
+def test_a_running_server_that_comes_back_stopped_is_still_failed(env):
+    m, mon, db, api = env
+    api.status = "SHUTOFF"  # the server was ACTIVE: ending SHUTOFF is not what was asked
+    mon.recover(db, api, db.get(m.Host, "h1"))
+    r = db.scalars(m.select(m.Recovery).where(m.Recovery.server_id == "ok")).one()
+    assert r.status == "failed" and "ACTIVE" in r.message
+
+
+def test_an_errored_server_is_expected_to_come_back_active(env):
+    m, mon, db, api = env
+    api.srv[0]["status"] = "ERROR"
+    api.status = "ACTIVE"
+    mon.recover(db, api, db.get(m.Host, "h1"))
+    r = db.scalars(m.select(m.Recovery).where(m.Recovery.server_id == "ok")).one()
+    assert r.status == "done"

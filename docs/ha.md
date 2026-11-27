@@ -16,7 +16,7 @@ Automatically recovers protected VMs when a compute node dies. It covers the bas
 3. Only VMs in `ha_protected` are handled. With no protected VMs, the host is just marked `forced_down`.
 4. Pre-check: a VM whose root or data volume is on the dead host, or whose location is unknown, is recorded as `skipped` and not evacuated.
 5. Required order: `forced_down=true`, revoke the iSCSI ACL of every LVM volume and blocklist the clients of every Ceph volume of the VMs that passed, and only then `evacuate`. The node's `initiator_iqn` is needed only for a VM that has an LVM volume. If fencing fails there is no evacuate; the host stays `suspect` and is retried, at most 3 times, then it stops until an operator steps in.
-6. Each VM is verified `ACTIVE` within 300 seconds. The result is in `GET /recoveries` (`done`, `failed`, `skipped`).
+6. Each VM is verified within 300 seconds: `ACTIVE`, or `SHUTOFF` for a VM that was stopped (evacuate keeps the status it had; a VM in `ERROR` comes back `ACTIVE`). The result is in `GET /recoveries` (`done`, `failed`, `skipped`). Up to 1.0.15 only `ACTIVE` counted, so a stopped VM was recorded `failed` after 300 seconds although it had moved, and the VMs after it on the same host waited those 300 seconds. Found by reading the code; unit tests only, not run on a lab.
 7. The host becomes `fenced`. A heartbeat that returns changes nothing.
 
 ## Recovering a node (manual)
