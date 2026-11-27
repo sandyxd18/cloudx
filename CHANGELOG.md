@@ -55,6 +55,17 @@ schema between releases, so read the upgrade steps before moving a running cloud
   49152-49215 between the compute nodes) and the limits.
 
 ### Fixed
+- Kubernetes clusters: a worker no longer reports ready before it has joined. The worker VM used to start `k3s agent`,
+  wait a fixed 20 seconds and call back whatever happened, so a cluster could be `ACTIVE` while its Kubernetes API listed
+  only the master. The VM now waits (up to ten minutes) until its own node is `Ready` in the cluster, and a worker that
+  cannot join never calls back, so the cluster ends in `ERROR` at `ready_timeout` with the reason. The VM images need no
+  change: the cloud-config asks the master with `k3s kubectl` and the kubelet's credentials.
+- Kubernetes clusters: the nodes used the project's default security group, which lets only ssh and icmp in, so workers
+  could not reach the master's port 6443 and never joined (flannel and kubelet traffic was blocked too). The worker now
+  creates a security group `k8s-<cluster id>` for each cluster (members talk to each other freely, ssh and icmp stay
+  open), puts every node in it and deletes it after the cluster's VMs. Each cluster counts one security group against the
+  project's quota. Reaching the API from outside is not opened: add a rule to that group. Clusters made before this
+  change keep the default group.
 - Live migration: an IPv6 `live_migration_host` is put in brackets in the libvirt URI and the memory stream URI
   (`tcp://[fd00::2]`); before, the migration could not connect.
 - Live migration: when the source domain is gone although libvirt was never asked to migrate it, the worker no longer

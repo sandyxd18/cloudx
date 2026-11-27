@@ -24,8 +24,11 @@ def _callback(cluster_id: str, role: str, callback_url: str, callback_token: str
         f"-d \"{{\\\"role\\\":\\\"{role}\\\",\\\"ip\\\":\\\"$IP\\\",\\\"node_name\\\":\\\"$(hostname)\\\"}}\" {url} && break\n"
         "        sleep 5\n"
         "      done\n"
-        "      wait  # the unit owns k3s: when this script exits systemd kills the whole cgroup\n"
     )
+
+
+# the unit owns k3s: when the boot script exits systemd kills the whole cgroup, so every script ends here
+_WAIT = "      wait\n"
 
 
 def render_master(cluster_id: str, name: str, join_token: str, admin_token: str, callback_url: str, callback_token: str) -> str:
@@ -50,6 +53,7 @@ def render_master(cluster_id: str, name: str, join_token: str, admin_token: str,
         "        sleep 5\n"
         "      done\n"
         + _callback(cluster_id, "master", callback_url, callback_token)
+        + _WAIT
         + "runcmd:\n  - [ systemd-run, --unit=cloudx-k3s-boot, --property=Delegate=yes, /usr/local/bin/cloudx-k3s-boot.sh ]\n"
     )
 
@@ -65,8 +69,20 @@ def render_worker(cluster_id: str, master_ip: str, join_token: str, callback_url
         "    content: |\n"
         "      #!/bin/bash\n"
         "      IP=$(hostname -I | awk '{print $1}')\n"
+        "      NODE=$(hostname | tr '[:upper:]' '[:lower:]')\n"
         f"      k3s agent --server https://{master_ip}:6443 --token {join_token} >/var/log/k3s.log 2>&1 &\n"
-        "      sleep 20\n"
+        # Report ready only when this node is Ready in the cluster, asked with the kubelet's own credentials. A node
+        # that cannot join (for example a security group that blocks the master's port 6443) never reports, so the
+        # cluster ends in ERROR at the ready timeout instead of a false ACTIVE with a missing worker.
+        "      READY=0\n"
+        "      for i in $(seq 1 120); do\n"
+        "        if [ \"$(k3s kubectl --kubeconfig /var/lib/rancher/k3s/agent/kubelet.kubeconfig get node \"$NODE\" "
+        "-o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null)\" = True ]; then READY=1; break; fi\n"
+        "        sleep 5\n"
+        "      done\n"
+        "      if [ \"$READY\" = 1 ]; then\n"
         + _callback(cluster_id, "worker", callback_url, callback_token)
+        + "      fi\n"
+        + _WAIT
         + "runcmd:\n  - [ systemd-run, --unit=cloudx-k3s-boot, --property=Delegate=yes, /usr/local/bin/cloudx-k3s-boot.sh ]\n"
     )

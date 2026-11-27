@@ -7,10 +7,16 @@
 1. `cloudx cluster create` creates a cluster row with status `CREATING`, along with a random `join_token` and `admin_token`. The API only records the intent.
 2. `cloudx-k8s-engine-worker` (controller, polls every 5 seconds) creates the master VM through the compute API with cloud-config `user_data`.
 3. The master VM runs `k3s server`, waits for `/readyz`, then calls the callback `POST /internal/k8s-engine/clusters/{id}/ready` on the controller.
-4. Once the master is ready, the worker creates `worker_count` worker VMs. Each worker runs `k3s agent` and calls the same callback.
+4. Once the master is ready, the worker creates `worker_count` worker VMs. Each worker runs `k3s agent`, waits until its own node is `Ready` in the cluster (it asks the master with the kubelet's credentials, for up to ten minutes), and only then calls the same callback. A worker that cannot join never calls back.
 5. All nodes ready: status `ACTIVE`. Past `READY_TIMEOUT` (900 seconds): status `ERROR` with a `status_reason`.
 
 A callback is used because the controller and compute have no route to the tenant network. The VM must be able to reach `callback_url`.
+
+## Security group
+
+Before the first VM of a cluster, the worker creates a security group `k8s-<cluster id>` in the cluster's project and puts every node of the cluster in it (the default group is not used). It has three ingress rules: everything between members of the group (the agents join at the master's port 6443; kubelet and flannel use more ports), ssh (tcp 22) from anywhere, and icmp from anywhere. Egress is open. The group is deleted with the cluster, after its VMs. Each cluster counts one security group against the project's quota.
+
+Reaching the Kubernetes API from outside the group (for `kubectl`) is not opened: add a rule yourself, for example `cloudx security-group rule add k8s-<cluster id> --direction ingress --protocol tcp --port 6443 --remote-ip <your network>`. A cluster created before this change keeps its VMs in the default group; its workers only join if you open the group yourself.
 
 ## K3s image
 
@@ -56,6 +62,7 @@ cloudx cluster delete <id>     # status DELETING; the worker deletes all VMs and
 
 ## Troubleshooting
 
+- A cluster stuck in `CREATING` that has fewer nodes than expected: a worker that cannot reach the master never reports ready, so the cluster ends in `ERROR` at the timeout instead of showing `ACTIVE`. Check the security group of the cluster, and `/var/log/k3s.log` on the worker.
 - A cluster stuck in `CREATING`: check `cloudx cluster show <id>` (`status_reason`), `journalctl -u cloudx-k8s-engine-worker`, and whether the VMs can reach `callback_url`.
 - On the VM: `/var/log/cloudx-k3s-boot.log` and `/var/log/k3s.log`.
 - `ERROR`: the recorded VMs are cleaned up when the cluster is deleted; delete the cluster and create it again.

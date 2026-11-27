@@ -9,7 +9,7 @@ from tests.k8s_engine_worker.test_reconcile import cluster
 
 @pytest.fixture(autouse=True)
 def no_overrides(monkeypatch):
-    for key in ("K8S_ENGINE_API_URL", "COMPUTE_API_URL"):
+    for key in ("K8S_ENGINE_API_URL", "COMPUTE_API_URL", "NETWORKING_API_URL"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("INTERNAL_TOKEN", "internal_0123456789")
 
@@ -29,23 +29,30 @@ def _http(monkeypatch, clusters):
     def resp(body=None, code=200):
         return SimpleNamespace(status_code=code, json=lambda: body, raise_for_status=lambda: None)
 
-    monkeypatch.setattr(w.requests, "get", lambda url, **k: seen.append(("GET", url)) or resp(clusters))
+    # no security group exists yet: the worker makes the cluster's group before its first VM
+    monkeypatch.setattr(w.requests, "get", lambda url, **k: seen.append(("GET", url)) or (
+        resp(None, 404) if "/security-groups/" in url else resp(clusters)))
     monkeypatch.setattr(w.requests, "post", lambda url, **k: seen.append(("POST", url)) or resp({"id": "srv-1"}, 201))
     monkeypatch.setattr(w.requests, "delete", lambda url, **k: seen.append(("DELETE", url)) or resp(None, 204))
     return seen
 
 
 def test_calls_go_to_the_catalog_hosts(monkeypatch):
-    _hosts(monkeypatch, **{"k8s-engine": "http://k:8015/", "compute": "http://c:8000/"})
+    _hosts(monkeypatch, **{"k8s-engine": "http://k:8015/", "compute": "http://c:8000/", "network": "http://n:8001/"})
     seen = _http(monkeypatch, [cluster()])
     w.tick()
     assert seen == [("GET", "http://k:8015/internal/k8s-engine/clusters"),
+                    ("GET", "http://n:8001/security-groups/k8s-cls-1234567890ab"),
+                    ("POST", "http://n:8001/security-groups"),
+                    ("POST", "http://n:8001/security-groups/srv-1/rules"),
+                    ("POST", "http://n:8001/security-groups/srv-1/rules"),
+                    ("POST", "http://n:8001/security-groups/srv-1/rules"),
                     ("POST", "http://c:8000/servers"),
                     ("POST", "http://k:8015/internal/k8s-engine/clusters/cls-1234567890ab/nodes")]
 
 
 def test_unresolvable_compute_creates_nothing_and_the_tick_survives(monkeypatch, caplog):
-    _hosts(monkeypatch, **{"k8s-engine": "http://k:8015"})
+    _hosts(monkeypatch, **{"k8s-engine": "http://k:8015", "network": "http://n:8001"})
     seen = _http(monkeypatch, [cluster()])
     w.tick()
     assert [c for c in seen if c[0] == "POST" and c[1].endswith("/servers")] == []
