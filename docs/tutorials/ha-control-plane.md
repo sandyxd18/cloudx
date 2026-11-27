@@ -337,7 +337,7 @@ Metadata (`169.254.169.254`) timed out from VMs on the compute nodes: it needs a
 - Cold start of the whole control plane: start etcd, Patroni, RabbitMQ and the OVN database servers on all three controllers (do not wait for each one: etcd and RabbitMQ wait for their peers), then `ovn-northd`, nginx, the `cloudx-*` units, HAProxy and keepalived. Use `systemctl list-unit-files 'cloudx-*.service'` to list the units: a glob such as `systemctl start 'cloudx-*'` only matches units that are already loaded and may start nothing.
 - After the cluster-ctl network of a controller was cut and restored, Patroni rejoined it as a replica by itself and etcd, RabbitMQ and the OVN databases rejoined too. Every controller-side fault in section 9 recovered without a manual step once the fault was removed, apart from the OVN restart trap in section 3.3 and B1b, where keepalived had to be restarted by hand.
 - The default quota is 10 instances per project.
-- `cloudx-setup-ceph-secret` creates a different libvirt secret UUID on each compute node. That does not matter for evacuation, which rebuilds the domain on the target.
+- `cloudx-setup-ceph-secret` creates a different libvirt secret UUID on each compute node. That does not matter for evacuation, which rebuilds the domain on the target. It did stop live migration of a Ceph-backed server (`Secret not found: no secret with matching uuid`) until the target's UUID was written into the migrated XML (see [live-migration.md](../live-migration.md)); with an older worker on the target, give both nodes the same UUID.
 
 ## 9. What was measured
 

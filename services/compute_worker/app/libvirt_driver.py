@@ -93,7 +93,7 @@ def _rbd_disk_element(parent: ET.Element | None, disk_path: str | Path, target_d
     source = ET.SubElement(disk, "source", protocol="rbd", name=f"{pool}/{image}")
     for host, port in hosts:
         ET.SubElement(source, "host", name=host, port=port)
-    secret_uuid = _os.getenv("CEPH_SECRET_UUID", "").strip()
+    secret_uuid = ceph_secret_uuid()
     if secret_uuid:
         auth = ET.SubElement(disk, "auth", username=_os.getenv("CEPH_USER", "cloudx"))
         ET.SubElement(auth, "secret", type="ceph", uuid=secret_uuid)
@@ -456,6 +456,28 @@ def rewrite_disk_sources(xml: str, mapping: dict[str, str]) -> str:
             if current is not None and current in mapping:
                 source.set(attr, mapping[current])
     return ET.tostring(root, encoding="unicode")
+
+
+def ceph_secret_uuid() -> str:
+    """UUID of the libvirt secret that holds the cephx key on THIS node (CEPH_SECRET_UUID), or '' when none is set.
+    cloudx-setup-ceph-secret makes a different one on every node."""
+    return os.getenv("CEPH_SECRET_UUID", "").strip()
+
+
+def rewrite_ceph_secret(xml: str, uuid: str | None) -> str:
+    """Point the cephx <auth><secret type='ceph'> of every disk at `uuid`, the secret of the node the guest moves to.
+    The domain XML names the secret of the node it runs on and libvirt starts the guest on the target with that
+    exact UUID, which fails there ("Secret not found") when the target's secret has another one. Returns `xml`
+    itself when there is nothing to change (no UUID given, or every RBD disk already names it)."""
+    if not uuid:
+        return xml
+    root = ET.fromstring(xml)
+    changed = False
+    for secret in root.findall("./devices/disk/auth/secret"):
+        if secret.get("type") == "ceph" and secret.get("uuid") != uuid:
+            secret.set("uuid", uuid)
+            changed = True
+    return ET.tostring(root, encoding="unicode") if changed else xml
 
 
 def domain_xml_for_migration(name: str) -> str:

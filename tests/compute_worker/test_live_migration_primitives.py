@@ -45,6 +45,43 @@ def test_rewrite_also_replaces_a_file_source():
     assert _sources(out)[:2] == _sources(DOMAIN_XML)[:2]
 
 
+SECRET_SRC = "ef91ae50-963b-4ef0-83c4-3addc0439d80"
+SECRET_DST = "60062793-f144-44b4-85a1-8f328769b4c6"
+
+CEPH_XML = f"""<domain type="kvm"><name>vm1</name><devices>
+  <disk type="network" device="disk"><driver name="qemu" type="raw"/><source protocol="rbd" name="volumes/a"><host name="10.0.0.1" port="6789"/></source><auth username="cloudx"><secret type="ceph" uuid="{SECRET_SRC}"/></auth><target dev="vda" bus="virtio"/></disk>
+  <disk type="network" device="disk"><driver name="qemu" type="raw"/><source protocol="rbd" name="volumes/b"><host name="10.0.0.1" port="6789"/></source><auth username="cloudx"><secret type="ceph" uuid="{SECRET_SRC}"/></auth><target dev="vdb" bus="virtio"/></disk>
+  <disk type="network" device="disk"><driver name="qemu" type="raw"/><source protocol="iscsi" name="iqn.x/0"><host name="10.0.0.2" port="3260"/></source><auth username="u"><secret type="iscsi" uuid="{SECRET_SRC}"/></auth><target dev="sdc" bus="scsi"/></disk>
+  <disk type="block" device="disk"><driver name="qemu" type="raw"/><source dev="/dev/vg/v1"/><target dev="sdd" bus="scsi"/></disk>
+</devices></domain>"""
+
+
+def _secret_uuids(xml):
+    return [(s.get("type"), s.get("uuid")) for s in ET.fromstring(xml).findall("./devices/disk/auth/secret")]
+
+
+def test_rewrite_ceph_secret_points_every_rbd_disk_at_the_target_secret():
+    out = libvirt_driver.rewrite_ceph_secret(CEPH_XML, SECRET_DST)
+
+    assert _secret_uuids(out) == [("ceph", SECRET_DST), ("ceph", SECRET_DST), ("iscsi", SECRET_SRC)]
+
+
+@pytest.mark.parametrize("target_uuid", ["", None, SECRET_SRC])
+def test_rewrite_ceph_secret_changes_nothing_without_a_different_target_uuid(target_uuid):
+    assert libvirt_driver.rewrite_ceph_secret(CEPH_XML, target_uuid) == CEPH_XML
+
+
+def test_rewrite_ceph_secret_leaves_a_domain_without_rbd_auth_alone():
+    assert libvirt_driver.rewrite_ceph_secret(DOMAIN_XML, SECRET_DST) == DOMAIN_XML
+
+
+def test_ceph_secret_uuid_reads_the_workers_setting(monkeypatch):
+    monkeypatch.setenv("CEPH_SECRET_UUID", f"  {SECRET_DST}\n")
+    assert libvirt_driver.ceph_secret_uuid() == SECRET_DST
+    monkeypatch.delenv("CEPH_SECRET_UUID")
+    assert libvirt_driver.ceph_secret_uuid() == ""
+
+
 class FakeLibvirt:
     """A libvirt module with only what migrate_domain and domain_xml_for_migration read."""
     VIR_MIGRATE_LIVE = 1

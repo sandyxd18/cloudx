@@ -8,7 +8,7 @@ Live migration moves a running server to another compute node without stopping i
 
 | Disk of the server | Live migration |
 |---|---|
-| Root or data volume on Ceph RBD | Yes. Every compute node opens the image. |
+| Root or data volume on Ceph RBD | Yes. Every compute node opens the image, with its own libvirt secret: the target tells the source its `ceph_secret_uuid` (the one `cloudx-setup-ceph-secret` wrote to its `compute-worker.conf`) and the source puts it into the XML it sends. |
 | LVM volume on another node (the server reaches it over iSCSI) | Yes. The target logs in to the same volume and the source logs out afterwards. |
 | LVM volume on the node the server runs on | Only with `cloudx server live-migrate`: the target then reads the volume over iSCSI from the source node. `cloudx host drain` does **not** move such a server, because the volume stays on the node that is being emptied. It is skipped and listed. |
 
@@ -204,6 +204,7 @@ sudo virsh -c qemu+ssh://root@comp02/system list               # the URI the wor
 | `live migration failed: ... Connection refused` or a timeout on port 49152-49215 | The memory ports are blocked between the nodes. |
 | The migration fails at once with an unknown method error | The target node still runs an older worker. Upgrade the compute nodes before compute-api; with an older worker on the source node the server can stay `MIGRATING` (restart that worker, see above). |
 | `server ... cannot be live-migrated (needs ACTIVE)` | The server is not `ACTIVE`, or another migration is running. |
+| `live migration failed: Secret not found: no secret with matching uuid ...` | The target's worker is older than the source's and does not send its `ceph_secret_uuid`, so the XML names the source's libvirt secret. Upgrade the target first. Until then give both nodes the same UUID: define the secret on the target with the source's UUID (`virsh secret-define`, same usage name `client.cloudx secret`), run `cloudx-setup-ceph-secret` there (it keeps the UUID and sets the key) and restart `cloudx-compute-worker`. |
 | `... have the same iSCSI initiator name ...` | Two compute nodes share `/etc/iscsi/initiatorname.iscsi` (cloned from one template). Give one a new name (prerequisite 3). |
 | `server is MIGRATING (a migration is in progress) ...` on start, stop, delete and so on | A migration runs. Wait for it to end; if it never does, see *Settling a server that stays `MIGRATING`*. |
 | `drain` exits non-zero but every row says `skipped` | These servers have a local LV on the node, or are `PAUSED`, `SUSPENDED` and so on. Fix them one by one or accept that they stay. |

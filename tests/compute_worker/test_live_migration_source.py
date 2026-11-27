@@ -212,6 +212,35 @@ def test_dest_xml_uses_the_target_paths_only_for_changed_disks(fakes):
     assert "volumes/v-rbd" in dest_xml and "/dev/vg/volume-v-root" not in dest_xml
 
 
+CEPH_DOMAIN_XML = """<domain type='kvm'><name>vm1</name><devices>
+<disk type='network' device='disk'><source protocol='rbd' name='volumes/v-rbd'/><auth username='cloudx'><secret type='ceph' uuid='ef91ae50-963b-4ef0-83c4-3addc0439d80'/></auth><target dev='vda'/></disk>
+<interface type='ethernet'><target dev='tap-a'/></interface>
+</devices></domain>"""
+
+
+def test_dest_xml_names_the_targets_ceph_secret(fakes, monkeypatch):
+    # a Ceph-backed guest fails to start on the target with "Secret not found" when the XML names the source's secret
+    monkeypatch.setattr(live_migration.libvirt_driver, "domain_xml_for_migration", lambda name: CEPH_DOMAIN_XML)
+    fakes.rpc.replies["live_migrate_prepare"] = {
+        "disk_paths": DISK_PATHS, "migration_host": "node-b.mig", "ceph_secret_uuid": "60062793-f144-44b4-85a1-8f328769b4c6"}
+
+    _run(fakes)
+
+    ((_name, _uri, dest_xml, _kw),) = fakes.of("migrate_domain")
+    assert "60062793-f144-44b4-85a1-8f328769b4c6" in dest_xml
+    assert "ef91ae50-963b-4ef0-83c4-3addc0439d80" not in dest_xml
+
+
+def test_dest_xml_keeps_the_secret_when_the_target_names_none(fakes, monkeypatch):
+    # a target that runs an older worker, or has no Ceph configured, sends no UUID: nothing is rewritten
+    monkeypatch.setattr(live_migration.libvirt_driver, "domain_xml_for_migration", lambda name: CEPH_DOMAIN_XML)
+
+    _run(fakes)
+
+    ((_name, _uri, dest_xml, _kw),) = fakes.of("migrate_domain")
+    assert "ef91ae50-963b-4ef0-83c4-3addc0439d80" in dest_xml
+
+
 def test_a_volume_left_out_of_disk_paths_is_skipped(fakes, caplog):
     fakes.rpc.replies["live_migrate_prepare"] = {"disk_paths": {"v-rbd": RBD}, "migration_host": "node-b.mig"}
     volumes = [

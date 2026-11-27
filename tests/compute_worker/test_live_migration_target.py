@@ -31,6 +31,7 @@ class Fakes:
 @pytest.fixture
 def fakes(monkeypatch, tmp_path):
     f = Fakes()
+    monkeypatch.delenv("CEPH_SECRET_UUID", raising=False)
     monkeypatch.setattr(live_migration, "COMPUTE_HOST", "node-b")
     monkeypatch.setattr(live_migration, "LIVE_MIGRATION_HOST", "node-b.mig")
     nm = live_migration.network_manager
@@ -109,6 +110,21 @@ def test_prepare_plugs_taps_without_binding_and_returns_disk_paths(fakes):
         "migration_host": "node-b.mig",
     }
     assert fakes.of("connect") == [("v-remote",)]  # RBD and this node's own LV need no session
+
+
+def test_prepare_tells_the_source_this_nodes_ceph_secret_uuid(fakes, monkeypatch):
+    # the libvirt secret of client.cloudx has a different UUID on every node; the source needs this one for the XML
+    monkeypatch.setenv("CEPH_SECRET_UUID", "60062793-f144-44b4-85a1-8f328769b4c6")
+
+    result = live_migration.prepare(_args(fakes), rpc=object())
+
+    assert result["ceph_secret_uuid"] == "60062793-f144-44b4-85a1-8f328769b4c6"
+
+
+def test_prepare_sends_no_ceph_secret_uuid_when_none_is_configured(fakes, monkeypatch):
+    monkeypatch.delenv("CEPH_SECRET_UUID", raising=False)
+
+    assert "ceph_secret_uuid" not in live_migration.prepare(_args(fakes), rpc=object())
 
 
 def test_prepare_recreates_the_config_drive_at_the_same_path(fakes):

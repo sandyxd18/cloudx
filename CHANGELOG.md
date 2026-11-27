@@ -66,6 +66,11 @@ schema between releases, so read the upgrade steps before moving a running cloud
   the reason. A new `live_migrate`, `migrate` or `evacuate` request closes a `live_migrate` action that was left open
   (message `superseded by a later ... request`). A restarting worker frees a `MIGRATING` server only when its newest open
   move action is a `live_migrate`, so it leaves a cold migration alone.
+- Live migration of a server with a Ceph RBD disk no longer fails with `Secret not found: no secret with matching uuid`.
+  `cloudx-setup-ceph-secret` gives every compute node its own libvirt secret UUID and the domain XML named the one of
+  the source node, which the target does not have. The target now answers its `ceph_secret_uuid` in the prepare step
+  and the source writes it into the XML it sends. A target on an older worker sends none, so the XML stays as it was and
+  both nodes still need the same UUID; upgrade the compute nodes first (as before). Found on the 8-node lab.
 - An empty `live_migration_*` setting in `compute-worker.conf` (for example `live_migration_timeout =`) means the
   default. Before, an empty number stopped the compute worker at start with a `ValueError`.
 - Deleting a managed Kubernetes cluster while one of its node VMs is `MIGRATING` (for example during `host drain`):

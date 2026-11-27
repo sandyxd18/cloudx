@@ -124,7 +124,11 @@ def prepare(args: dict, rpc) -> dict:
         if not dir_existed:
             shutil.rmtree(instance_dir, ignore_errors=True)
         raise
-    return {"disk_paths": disk_paths, "migration_host": LIVE_MIGRATION_HOST}
+    reply = {"disk_paths": disk_paths, "migration_host": LIVE_MIGRATION_HOST}
+    secret = libvirt_driver.ceph_secret_uuid()
+    if secret:  # the source has to name this node's secret, not its own, in the XML it sends here
+        reply["ceph_secret_uuid"] = secret
+    return reply
 
 
 def finish(args: dict) -> dict:
@@ -320,7 +324,10 @@ def _run(args: dict, rpc, update_server, notify) -> None:
     try:
         prepared = _call(rpc, target, "live_migrate_prepare", args, PREPARE_TIMEOUT)
         mapping = _disk_mapping(server_id, volumes, prepared.get("disk_paths") or {})
-        dest_xml = libvirt_driver.rewrite_disk_sources(libvirt_driver.domain_xml_for_migration(domain), mapping)
+        dest_xml = libvirt_driver.rewrite_ceph_secret(
+            libvirt_driver.rewrite_disk_sources(libvirt_driver.domain_xml_for_migration(domain), mapping),
+            prepared.get("ceph_secret_uuid"),
+        )
         taps = libvirt_driver.interface_taps(domain)  # read now: the domain is gone from here once it has migrated
         # one address for both the libvirt connection and the QEMU memory stream (VIR_MIGRATE_PARAM_URI)
         migration_host = prepared.get("migration_host") or target
