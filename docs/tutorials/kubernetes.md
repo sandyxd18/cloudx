@@ -63,7 +63,13 @@ cloudx cluster create demo --template <template id> --network demo-net --masters
 cloudx cluster list                       # CREATING -> ACTIVE, with master_ip and status_reason
 ```
 
-What happens: the worker creates the master VM with a cloud-config that starts `k3s server`; the master waits for `/readyz`, then calls the callback; the worker then creates the worker VMs, which run `k3s agent` and call back. When every node has reported, the cluster is `ACTIVE`. If it is not ready after `ready_timeout` seconds it becomes `ERROR` with the reason in `status_reason`.
+What happens: the worker creates the master VM with a cloud-config that starts `k3s server`; the master waits for `/readyz`, then calls the callback; the worker then creates the worker VMs, which run `k3s agent`, wait until their own node is Ready in the cluster, and then call back. When every node has reported, the cluster is `ACTIVE`. If it is not ready after `ready_timeout` seconds it becomes `ERROR` with the reason in `status_reason`.
+
+The nodes of a cluster sit in their own security group, `k8s-<cluster id>`, created for you: the network's subnets may reach the nodes on every port (so the nodes talk to each other freely), and ssh and icmp are open from anywhere. Nothing else is opened from outside, so to run `kubectl` from another machine add a rule for the API port:
+
+```bash
+cloudx security-group rule add k8s-<cluster id> --direction ingress --protocol tcp --port 6443 --remote-ip <your network>
+```
 
 ## 5. Use it
 
@@ -86,6 +92,7 @@ cloudx cluster delete <cluster id>                # DELETING; the worker deletes
 - `cloudx cluster show <id>`: `status_reason` says what the worker saw.
 - `journalctl -u cloudx-k8s-engine-worker` on the controller.
 - On a VM (console or SSH): `/var/log/cloudx-k3s-boot.log` and `/var/log/k3s.log`.
+- A cluster that never reaches `ACTIVE` and ends in `ERROR` after the timeout usually has a worker that could not join: check `/var/log/k3s.log` on it and the rules of the group `k8s-<cluster id>`.
 - Whether the VM can reach `callback_url` (`curl` it from the VM).
 - Delete the cluster and create it again; an `ERROR` cluster's VMs are cleaned up when you delete it.
 
