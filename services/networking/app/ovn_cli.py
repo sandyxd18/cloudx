@@ -1,5 +1,6 @@
 import ipaddress
 import json
+import logging
 import os
 import socket
 
@@ -8,9 +9,11 @@ from shared.proc import run
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .config import INTERNAL_VIP_ADDRESS, OVN_NB_DB, PROVIDER_BRIDGE, PROVIDER_PHYSNET
+from .config import INTERNAL_VIP_ADDRESS, METADATA_LINK_LOCAL, OVN_NB_DB, PROVIDER_BRIDGE, PROVIDER_PHYSNET
 from .ipam import parse_id_list, subnet_dns
 from .models import Network, Port, Router, SecurityGroup, SecurityGroupRule, stable_mac
+
+log = logging.getLogger("networking-api")
 
 # ovn-nbctl/ovs-vsctl get --timeout=8 themselves; this is the hard stop if the process hangs anyway.
 OVN_TIMEOUT = 20
@@ -341,6 +344,49 @@ def ensure_router_gateway_ovn(router: Router, network: Network, router_ip: str |
         print(f"gateway chassis set: {lrp} -> {chassis_id}", flush=True)
     else:
         print("WARNING: could not find local chassis ID from OVN SB; run lrp-set-gateway-chassis manually", flush=True)
+
+# OVN address set holding the metadata address; the NAT rows of every router exempt it (see exempt_metadata_from_nat).
+METADATA_ADDRESS_SET = "cloudx_metadata"
+
+
+def _metadata_address_set() -> str:
+    """UUID of the address set with the metadata address; made when it does not exist yet."""
+    found = ovn("--bare", "--columns=_uuid", "find", "address_set", f"name={METADATA_ADDRESS_SET}", check=False)
+    if found:
+        return found.split()[0]
+    created = ovn("create", "address_set", f"name={METADATA_ADDRESS_SET}", f"addresses={METADATA_LINK_LOCAL}", check=False)
+    if created:
+        return created.split()[0]
+    # another networking-api instance created it between our find and create (the name is unique): find it again
+    found = ovn("--bare", "--columns=_uuid", "find", "address_set", f"name={METADATA_ADDRESS_SET}", check=False)
+    return found.split()[0] if found else ""
+
+
+def exempt_metadata_from_nat(router_name: str) -> None:
+    """Leave traffic to the metadata address (169.254.169.254) out of every NAT rule of the router.
+
+    A VM asks the metadata proxy for its data, and the proxy finds the VM by the request's source address. The router's
+    `snat` rule (and a floating IP's `dnat_and_snat`) rewrote that source to the router or floating address, so the proxy
+    answered 404 for every guest. `exempted_ext_ips` on the NAT row names an address set whose destinations are not
+    translated. Run it after any NAT row is added; setting the same value again is harmless. It never raises: a NAT row
+    that cannot be exempted only means the metadata proxy cannot tell that VM apart, which the config drive covers."""
+    try:
+        rows = ovn("get", "logical_router", router_name, "nat", check=False).strip("[] \n")
+        uuids = [u.strip() for u in rows.split(",") if u.strip()]
+        if not uuids:
+            return
+        address_set = _metadata_address_set()
+        if not address_set:
+            log.warning("metadata NAT exemption: no address set %s on %s", METADATA_ADDRESS_SET, router_name)
+            return
+        # one ovn-nbctl call for all rows: the commands are separated by "--"
+        command: list[str] = []
+        for uuid in uuids:
+            command += (["--"] if command else []) + ["set", "nat", uuid, f"exempted_ext_ips={address_set}"]
+        ovn(*command, check=False)
+    except Exception as exc:  # the caller's own work (a FIP, a router interface) must not fail because of this
+        log.warning("metadata NAT exemption for %s skipped: %s", router_name, exc)
+
 
 def nat_rule_args(router_name: str, external_ip: str, logical_ip: str) -> list[str]:
     return ["--may-exist", "lr-nat-add", router_name, "dnat_and_snat", external_ip, logical_ip]

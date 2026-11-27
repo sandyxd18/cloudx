@@ -70,6 +70,15 @@ schema between releases, so read the upgrade steps before moving a running cloud
   internal token and states the caller's project (as showing a group already did), so the Kubernetes engine can make
   the cluster's group as the cluster's project. Without the internal token and a stated identity the routes still
   answer 401, and a project cannot see or delete another project's group.
+- The metadata service (`169.254.169.254`) answered `404` to every VM that came through a router. The router's NAT
+  rules rewrote the request's source address (to the router's external address, or to the floating IP), and
+  `metadata-proxy` finds the VM by its source address. networking-api now makes the address set `cloudx_metadata` in the
+  OVN NAT database and lists it as `exempted_ext_ips` on every NAT row of every router, so traffic to the metadata
+  address is not translated. It does so when a subnet `snat` row or a floating IP is added and again at every start, so
+  existing routers and floating IPs are fixed by restarting networking-api; no schema change. The rest of the setup is as
+  before (`docs/metadata-proxy.md`): a route for the address on the router and the host rule from
+  `scripts/setup-metadata-route.sh`; only VMs whose traffic leaves through the proxy's node are served. Found on the
+  8-node lab.
 - Live migration: an IPv6 `live_migration_host` is put in brackets in the libvirt URI and the memory stream URI
   (`tcp://[fd00::2]`); before, the migration could not connect.
 - Live migration: when the source domain is gone although libvirt was never asked to migrate it, the worker no longer
