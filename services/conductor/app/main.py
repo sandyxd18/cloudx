@@ -395,7 +395,7 @@ def handle_list_all_volumes(_args: dict) -> dict:
         rows = db.execute(
             text(
                 "SELECT id, name, status, backend, host, path, size_gb, "
-                "attached_to_server_id, target_device, project_id "
+                "attached_to_server_id, target_device, project_id, created_at "
                 "FROM block_store_volumes"
             ),
         ).mappings().all()

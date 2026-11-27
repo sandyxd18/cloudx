@@ -10,6 +10,9 @@ Drift scenarios this fixes:
     manual cleanup, storage failure) → mark volume in DB as error.
   • Volume stuck in "deleting" but backend already gone → hard-delete DB record.
   • DB says error, but backend object re-appears (LV restored) → set available.
+  • Volume stuck in "creating" for longer than VOLUME_CREATING_TIMEOUT_SECONDS
+    with no backend object → mark error (the create request was lost, e.g.
+    with a broker that lost quorum, or the worker died before it started).
 
 Scheduling: background thread (daemon) started in block-store-worker main.py,
 sleeping RECONCILE_INTERVAL_SECONDS between passes. Default = 3600 (1 hour).
@@ -21,6 +24,7 @@ import os
 import socket
 import threading
 import time
+from datetime import datetime, timezone
 
 sys = __import__("sys")
 os_mod = os  # shadow to keep linter happy
@@ -33,6 +37,10 @@ log = logging.getLogger("block-store-reconciler")
 RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL_SECONDS", "60"))
 # LVM objects live on one node: a worker may only judge the ones it owns
 BLOCK_STORE_HOST = os.getenv("BLOCK_STORE_HOST") or socket.gethostname()
+# A create handler makes the backend object within seconds or minutes. A volume still "creating" after this long with
+# nothing on the backend never reached a handler: the message was lost with the broker, or the worker died first.
+# Long on purpose, so a slow image conversion is never cut short. 0 switches the check off.
+CREATING_TIMEOUT = int(os.getenv("VOLUME_CREATING_TIMEOUT_SECONDS", "3600"))
 
 
 def _owned_by_other_node(record: dict) -> bool:
@@ -46,6 +54,23 @@ _RECONCILE_MANAGED_VOLUME_STATUSES = {
     "deleting",
     "creating",
 }
+
+
+def _creating_too_long(volume: dict) -> bool:
+    """True when the volume has been "creating" for more than CREATING_TIMEOUT seconds; False when it is not known."""
+    if CREATING_TIMEOUT <= 0:
+        return False
+    made = volume.get("created_at")
+    if isinstance(made, str):
+        try:
+            made = datetime.fromisoformat(made)
+        except ValueError:
+            return False
+    if not isinstance(made, datetime):
+        return False
+    if made.tzinfo is not None:
+        made = made.astimezone(timezone.utc).replace(tzinfo=None)  # the column holds naive UTC (datetime.utcnow)
+    return (datetime.utcnow() - made).total_seconds() > CREATING_TIMEOUT
 
 
 def _lv_name(volume_id: str) -> str:
@@ -137,8 +162,25 @@ def reconcile_volumes(rpc_client) -> None:
         if physical_exists is None:
             continue  # could not check this pass; do not touch the record
 
-        # 1. DB says available/in-use/creating/error but physical missing
-        if not physical_exists and db_status in ("available", "in-use", "error"):  # "creating": the LV is still being built, the create handler owns errors
+        # 0. DB says creating, nothing on the backend and far too long ago: the create request never reached a handler.
+        #    A younger one is still the handler's; one whose object exists may be mid-conversion and is left alone.
+        if not physical_exists and db_status == "creating":
+            if _creating_too_long(vol):
+                log.warning(
+                    "[reconcile] volume %s (%s): creating for more than %ds with no backend object → marking error",
+                    vol.get("name"), vol["id"], CREATING_TIMEOUT,
+                )
+                rpc_client.cast(
+                    "conductor", "mark_volume_error",
+                    {"volume_id": vol["id"], "error_message": (
+                        f"Creation did not finish within {CREATING_TIMEOUT} s and nothing exists on the backend "
+                        "(the request was lost or the worker stopped); delete the volume and create it again"
+                    )},
+                )
+            continue
+
+        # 1. DB says available/in-use/error but physical missing
+        if not physical_exists and db_status in ("available", "in-use", "error"):
             log.warning(
                 "[reconcile] volume %s (%s): status=%s but backend missing → marking error",
                 vol.get("name"), vol["id"], db_status,

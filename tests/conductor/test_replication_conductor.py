@@ -88,3 +88,32 @@ def test_handle_update_volume_garbage_datetime_ignored(monkeypatch, tmp_path):
         assert row[0] == "synced"
         assert row[1] is None
         assert row[2] == "node-3"
+
+
+def test_list_all_volumes_carries_created_at_for_the_reconciler(monkeypatch, tmp_path):
+    db_path = tmp_path / "conductor.sqlite"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+
+    conductor_main.engine.dispose()
+    conductor_main.engine = conductor_main.create_engine(f"sqlite:///{db_path}", pool_pre_ping=True)
+    conductor_main.SessionLocal = conductor_main.sessionmaker(bind=conductor_main.engine)
+
+    with conductor_main.SessionLocal() as db:
+        db.execute(
+            conductor_main.text(
+                "CREATE TABLE block_store_volumes (id VARCHAR PRIMARY KEY, name VARCHAR, status VARCHAR, backend VARCHAR, "
+                "host VARCHAR, path VARCHAR, size_gb INTEGER, attached_to_server_id VARCHAR, target_device VARCHAR, "
+                "project_id VARCHAR, created_at TIMESTAMP)"
+            )
+        )
+        db.execute(
+            conductor_main.text(
+                "INSERT INTO block_store_volumes (id, name, status, backend, size_gb, created_at) "
+                "VALUES ('v1', 'v1', 'creating', 'ceph', 1, '2026-11-27 06:25:49')"
+            )
+        )
+        db.commit()
+
+    volumes = conductor_main.handle_list_all_volumes({})["volumes"]
+
+    assert [(v["id"], str(v["created_at"])) for v in volumes] == [("v1", "2026-11-27 06:25:49")]
