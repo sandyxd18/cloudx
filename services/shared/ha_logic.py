@@ -2,6 +2,9 @@
 from datetime import datetime
 
 MAX_FENCE_FAILS = 3
+# What the volume listing of ha-api reports as the "host" of a Ceph volume: it is on no compute node, so it survives
+# any of them, and no real host name can look like this.
+SHARED_CEPH = "(ceph)"
 
 def is_stale(last_seen: datetime, now: datetime, limit: int = 60) -> bool:
     return (now - last_seen).total_seconds() > limit

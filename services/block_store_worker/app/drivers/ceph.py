@@ -44,6 +44,17 @@ def _rbd(*args: str, timeout: float | None = 300) -> str:
     return output(cmd, timeout=timeout)  # CommandError (a RuntimeError) on failure
 
 
+def _ceph(*args: str, timeout: float | None = 60) -> str:
+    """The `ceph` CLI with the cluster settings `_rbd` uses."""
+    cmd = ["ceph", "--conf", CEPH_CONF]
+    if CEPH_USER:
+        cmd += ["--id", CEPH_USER]
+    if CEPH_KEYRING:
+        cmd += ["--keyring", CEPH_KEYRING]
+    cmd += list(args)
+    return output(cmd, timeout=timeout)
+
+
 def pool() -> str:
     if not CEPH_POOL:
         raise RuntimeError("CEPH_POOL is not configured. Set it in .env")
@@ -123,6 +134,19 @@ def _info_exists(spec: str) -> bool:
         if "No such file or directory" in str(exc):   # rbd: error opening image ...: (2) No such file or directory
             return False
         raise
+
+
+def fence(image_name: str) -> str:
+    """Blocklist every client that has the image open, so a guest on a dead node cannot write to it any more.
+    Images are made with the layering feature only: there is no exclusive lock whose owner could be named, so the
+    watchers (`rbd status`) are the clients. "ok", or "no-watcher" when nobody has the image open (a powered-off node,
+    or a watch that has already expired). A refused blocklist (the cephx key needs `osd blocklist`) raises."""
+    status = json.loads(_rbd("status", f"{pool()}/{image_name}", "--format", "json") or "{}")
+    addresses = [w["address"] for w in status.get("watchers", []) if w.get("address")]
+    for address in addresses:
+        _ceph("osd", "blocklist", "add", address)
+        log.info("Blocklisted %s of image %s", address, image_name)
+    return "ok" if addresses else "no-watcher"
 
 
 def exists(image_name: str) -> bool:

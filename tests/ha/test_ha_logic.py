@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "services"))
 
-from shared.ha_logic import is_stale, next_state, partition  # noqa: E402
+from shared.ha_logic import SHARED_CEPH, is_stale, next_state, partition  # noqa: E402
 
 NOW = datetime(2026, 10, 19, 12, 0, 0)
 
@@ -39,6 +39,14 @@ def test_partition_skips_a_server_that_is_live_migrating():
     ids, skipped = partition(servers, {"moving", "ok"}, "h1", vols)
     assert ids == ["ok"]
     assert dict(skipped) == {"moving": "live migration in progress; check the target before evacuating"}
+
+
+def test_partition_a_ceph_volume_is_on_no_host_and_never_on_the_failed_one():
+    servers = [{"id": n, "host": "h1", "status": "ACTIVE"} for n in ("ceph", "mixed", "mixed-bad", "unknown")]
+    vols = {"ceph": [SHARED_CEPH], "mixed": [SHARED_CEPH, "h3"], "mixed-bad": [SHARED_CEPH, "h1"], "unknown": [SHARED_CEPH, None]}
+    ids, skipped = partition(servers, set(vols), "h1", vols)
+    assert ids == ["ceph", "mixed"]
+    assert dict(skipped) == {"mixed-bad": "volume on failed host", "unknown": "volume host unknown"}
 
 
 def test_partition_server_without_volumes_is_skipped():

@@ -6,7 +6,7 @@ Automatically recovers protected VMs when a compute node dies. It covers the bas
 
 - `ha-api` (controller, port 8020, one process with one monitor thread). Tables `ha_hosts`, `ha_protected`, `ha_recoveries`. No new worker.
 - `cloudx-compute-worker` sends a heartbeat every 10 seconds to `POST /internal/heartbeat/{host}`, together with that node's `initiator_iqn`. A failed send is only logged.
-- block-store has a new internal endpoint `POST /internal/fence`: it asks the block-store-worker that owns each volume to run `unexport_volume` (revoking the iSCSI ACL). The result comes back per volume.
+- block-store has a new internal endpoint `POST /internal/fence`: it asks the block-store-worker that owns each LVM volume to run `unexport_volume` (revoking the iSCSI ACL), and any block-store-worker to run `fence_volume` for each Ceph volume (blocklisting the clients that have the image open, see "Servers on Ceph"). The result comes back per volume (`ok`, `no-watcher` or an error).
 - compute: `PUT /os-services/{host}` and `POST /servers/{id}/evacuate` now accept the internal token as well as admin.
 
 ## Flow
@@ -15,13 +15,13 @@ Automatically recovers protected VMs when a compute node dies. It covers the bas
 2. If it is still silent after 30 more seconds, the host is considered dead. A heartbeat that comes back before then cancels everything (no fencing, no evacuate).
 3. Only VMs in `ha_protected` are handled. With no protected VMs, the host is just marked `forced_down`.
 4. Pre-check: a VM whose root or data volume is on the dead host, or whose location is unknown, is recorded as `skipped` and not evacuated.
-5. Required order: `forced_down=true`, revoke the iSCSI ACL of every volume of the VMs that passed, and only then `evacuate`. If fencing fails there is no evacuate; the host stays `suspect` and is retried, at most 3 times, then it stops until an operator steps in.
+5. Required order: `forced_down=true`, revoke the iSCSI ACL of every LVM volume and blocklist the clients of every Ceph volume of the VMs that passed, and only then `evacuate`. The node's `initiator_iqn` is needed only for a VM that has an LVM volume. If fencing fails there is no evacuate; the host stays `suspect` and is retried, at most 3 times, then it stops until an operator steps in.
 6. Each VM is verified `ACTIVE` within 300 seconds. The result is in `GET /recoveries` (`done`, `failed`, `skipped`).
 7. The host becomes `fenced`. A heartbeat that returns changes nothing.
 
 ## Recovering a node (manual)
 
-1. Make sure the node is healthy; old VMs on that node may still be running and must be cleaned up (`virsh destroy` and `undefine`, iSCSI logout).
+1. Make sure the node is healthy; old VMs on that node may still be running and must be cleaned up (`virsh destroy` and `undefine`, iSCSI logout). A Ceph client that was blocklisted stays blocked for an hour (the Ceph default); a new qemu process connects with a new address and is not affected.
 2. `PUT /os-services/{host}` with `{"forced_down": false}`.
 3. `cloudx ha reset HOST`.
 
@@ -43,9 +43,17 @@ For comparison: Masakari detects failures through Pacemaker/Corosync and uses ST
 
 - CLI: `cloudx ha hosts | protect SERVER | unprotect SERVER | protected | recoveries | reset HOST`.
 - Dashboard: High availability.
-- A VM can only be protected when all its volumes are on other hosts and its location is known (422 otherwise).
-- A Ceph RBD volume has no host in CloudX, so a server with a Ceph volume (root or data) is refused with `422 server volumes could not be located`. Today only servers whose volumes are LVM volumes on other compute nodes can be protected. Found on the lab on 2026-11-27.
+- A VM can only be protected when none of its volumes is on its own node and every volume's location is known (422 otherwise). A Ceph RBD volume counts as known: it is on no compute node. Up to 1.0.15 a server with a Ceph volume was refused with `422 server volumes could not be located`.
 - A server that is `MIGRATING` is never evacuated automatically: it is recorded as `skipped` (`live migration in progress; check the target before evacuating`) and an operator decides (`docs/live-migration.md`). The watchdog does not look at the migration state: it destroys the protected domains of an isolated node also while one of them is being migrated away. On the lab this left no running copy of the guest: the server stays `MIGRATING` (message `... it is unclear where the guest runs`) until an operator settles it with the steps in `docs/live-migration.md`.
+
+## Servers on Ceph
+
+A server whose volumes are Ceph RBD images (alone, or next to LVM volumes on other nodes) can be protected. Ceph has no ACL to revoke, so before `evacuate` the fence blocklists the clients that have each image open: `rbd status` gives the watchers (the address of the guest's Ceph client on the dead node, with its nonce), and `ceph osd blocklist add ADDRESS` cuts each of them off. Only that guest's client is cut off: other guests on the node keep their I/O, and the node can use Ceph again after it is reset. Images are created with the `layering` feature only, so there is no exclusive lock to name an owner; the watchers are the clients.
+
+- The cephx user of the block-store worker (`CEPH_USER`) needs permission to blocklist: `mon 'profile rbd'` includes it. With a narrower `mon` cap the fence fails with `EACCES`, the recovery is recorded as `failed` and the server is not evacuated.
+- An image nobody has open at that moment is reported `no-watcher`. It does not stop the evacuation (that is what a powered-off node looks like), and the recovery's message says `no Ceph client found on VOLUME; only the watchdog stops an old guest`.
+- Known hole: a node that is cut off from Ceph as well as from ha-api loses its watch after about 30 seconds, before ha-api fences (60 + 30 seconds). There is then no watcher to blocklist, and the old guest could write again when the node reconnects. Only `ha-watchdog` covers that case. Turn the watchdog on for any node that runs protected servers on Ceph.
+- Run in unit tests only; not yet run on a lab.
 
 ## Configuration
 

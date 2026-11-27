@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from shared.auth_middleware import require_auth
+from shared.ha_logic import SHARED_CEPH
 
 
 class FakeApi:
@@ -71,6 +72,20 @@ def test_protect_rejects_volume_on_own_host(ha):
     ha.fake.vols = []
     assert ha.put("/protected/s1").status_code == 422
     ha.fake.vols = [None]
+    assert ha.put("/protected/s1").status_code == 422
+
+
+def test_protect_accepts_a_server_whose_volumes_are_on_ceph(ha):
+    ha.fake.vols = [SHARED_CEPH]
+    assert ha.put("/protected/s1").status_code == 200
+    ha.fake.vols = [SHARED_CEPH, "h2"]  # Ceph and an LVM volume on another node
+    assert ha.put("/protected/s1").status_code == 200
+
+
+def test_protect_still_refuses_an_lvm_volume_on_the_servers_node_next_to_ceph(ha):
+    ha.fake.vols = [SHARED_CEPH, "h1"]
+    assert ha.put("/protected/s1").status_code == 422
+    ha.fake.vols = [SHARED_CEPH, None]  # a volume of unknown host next to a Ceph one
     assert ha.put("/protected/s1").status_code == 422
 
 

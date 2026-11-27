@@ -6,6 +6,18 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+### Added
+- Instance HA protects servers whose volumes are on Ceph. `cloudx ha protect` used to answer `422 server volumes could
+  not be located` for any server with a Ceph RBD volume, because a Ceph volume has no host in CloudX. A Ceph volume now
+  counts as shared storage (a volume of a known LVM host on the server's own node, or of unknown host, is still
+  refused). Before evacuating, the fence blocklists the Ceph clients that have each of the server's images open (`rbd
+  status`, then `ceph osd blocklist add`) through a new block-store-worker call `fence_volume`; `POST /internal/fence`
+  answers `ok`, `no-watcher` (nothing had the image open: the evacuation goes on and the recovery says so) or an error
+  (the evacuation does not happen). The node's iSCSI initiator name is needed only for servers that have an LVM volume.
+  The cephx user of the block-store worker needs `osd blocklist` (`mon 'profile rbd'` has it). A node that is cut off
+  from Ceph as well loses its watch before the fence and is covered by `ha-watchdog` only (`docs/ha.md`, "Servers on
+  Ceph"). Update block-store, block-store-worker and ha-api together. Unit tests only; not run on a lab.
+
 ## 1.0.15 (2026-11-27)
 
 ### Added
