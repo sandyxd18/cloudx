@@ -55,6 +55,13 @@ schema between releases, so read the upgrade steps before moving a running cloud
   49152-49215 between the compute nodes) and the limits.
 
 ### Fixed
+- A volume whose create request was lost no longer stays in `creating` forever. This happened when the broker lost
+  quorum or a worker died before it handled the message: the volume had no backend object and the reconciler skipped
+  `creating` on purpose. Now the block-store reconciler marks a volume `error` (with a message that says to delete it and
+  create it again) when it has been `creating` for more than `VOLUME_CREATING_TIMEOUT_SECONDS` (default 3600, 0 switches
+  the check off) and nothing exists on the backend. A volume whose backend object exists is left alone, because the
+  handler may still be converting an image into it. The conductor's `list_all_volumes` now also returns `created_at`; a
+  worker that does not receive it never judges a `creating` volume, so the services can be updated in any order.
 - Live migration: an IPv6 `live_migration_host` is put in brackets in the libvirt URI and the memory stream URI
   (`tcp://[fd00::2]`); before, the migration could not connect.
 - Live migration: when the source domain is gone although libvirt was never asked to migrate it, the worker no longer

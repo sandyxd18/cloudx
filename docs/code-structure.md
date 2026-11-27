@@ -87,6 +87,8 @@ tests/
   `tests/test_error_handling.py` fails on new silent handlers that have no reason.
 - Reconcilers (block_store_worker, networking, image_worker) act on what they observe. A failed existence check
   returns `None` (unknown) and the record is skipped; only `False` means "does not exist".
+  A volume that stays `creating` for more than `VOLUME_CREATING_TIMEOUT_SECONDS` (default 3600) with no backend object is
+  marked `error`: its create request never reached a handler.
 - RabbitMQ events and response enrichment (image names, floating IPs, and so on) are best-effort: failures are logged as
   warning/debug and do not fail the request.
 
