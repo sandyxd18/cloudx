@@ -16,7 +16,9 @@ schema between releases, so read the upgrade steps before moving a running cloud
   (the evacuation does not happen). The node's iSCSI initiator name is needed only for servers that have an LVM volume.
   The cephx user of the block-store worker needs `osd blocklist` (`mon 'profile rbd'` has it). A node that is cut off
   from Ceph as well loses its watch before the fence and is covered by `ha-watchdog` only (`docs/ha.md`, "Servers on
-  Ceph"). Update block-store, block-store-worker and ha-api together. Unit tests only; not run on a lab.
+  Ceph"). Update block-store, block-store-worker and ha-api together. Run on the 8-node lab (hand-patched files): the
+  old guest's client was blocklisted and the server was `ACTIVE` on the other node; see `docs/ha.md` for what was and
+  was not run.
 
 ## 1.0.15 (2026-11-27)
 
