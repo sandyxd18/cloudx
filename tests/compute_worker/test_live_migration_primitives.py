@@ -45,6 +45,43 @@ def test_rewrite_also_replaces_a_file_source():
     assert _sources(out)[:2] == _sources(DOMAIN_XML)[:2]
 
 
+SECRET_SRC = "ef91ae50-963b-4ef0-83c4-3addc0439d80"
+SECRET_DST = "60062793-f144-44b4-85a1-8f328769b4c6"
+
+CEPH_XML = f"""<domain type="kvm"><name>vm1</name><devices>
+  <disk type="network" device="disk"><driver name="qemu" type="raw"/><source protocol="rbd" name="volumes/a"><host name="10.0.0.1" port="6789"/></source><auth username="cloudx"><secret type="ceph" uuid="{SECRET_SRC}"/></auth><target dev="vda" bus="virtio"/></disk>
+  <disk type="network" device="disk"><driver name="qemu" type="raw"/><source protocol="rbd" name="volumes/b"><host name="10.0.0.1" port="6789"/></source><auth username="cloudx"><secret type="ceph" uuid="{SECRET_SRC}"/></auth><target dev="vdb" bus="virtio"/></disk>
+  <disk type="network" device="disk"><driver name="qemu" type="raw"/><source protocol="iscsi" name="iqn.x/0"><host name="10.0.0.2" port="3260"/></source><auth username="u"><secret type="iscsi" uuid="{SECRET_SRC}"/></auth><target dev="sdc" bus="scsi"/></disk>
+  <disk type="block" device="disk"><driver name="qemu" type="raw"/><source dev="/dev/vg/v1"/><target dev="sdd" bus="scsi"/></disk>
+</devices></domain>"""
+
+
+def _secret_uuids(xml):
+    return [(s.get("type"), s.get("uuid")) for s in ET.fromstring(xml).findall("./devices/disk/auth/secret")]
+
+
+def test_rewrite_ceph_secret_points_every_rbd_disk_at_the_target_secret():
+    out = libvirt_driver.rewrite_ceph_secret(CEPH_XML, SECRET_DST)
+
+    assert _secret_uuids(out) == [("ceph", SECRET_DST), ("ceph", SECRET_DST), ("iscsi", SECRET_SRC)]
+
+
+@pytest.mark.parametrize("target_uuid", ["", None, SECRET_SRC])
+def test_rewrite_ceph_secret_changes_nothing_without_a_different_target_uuid(target_uuid):
+    assert libvirt_driver.rewrite_ceph_secret(CEPH_XML, target_uuid) == CEPH_XML
+
+
+def test_rewrite_ceph_secret_leaves_a_domain_without_rbd_auth_alone():
+    assert libvirt_driver.rewrite_ceph_secret(DOMAIN_XML, SECRET_DST) == DOMAIN_XML
+
+
+def test_ceph_secret_uuid_reads_the_workers_setting(monkeypatch):
+    monkeypatch.setenv("CEPH_SECRET_UUID", f"  {SECRET_DST}\n")
+    assert libvirt_driver.ceph_secret_uuid() == SECRET_DST
+    monkeypatch.delenv("CEPH_SECRET_UUID")
+    assert libvirt_driver.ceph_secret_uuid() == ""
+
+
 class FakeLibvirt:
     """A libvirt module with only what migrate_domain and domain_xml_for_migration read."""
     VIR_MIGRATE_LIVE = 1
@@ -418,3 +455,111 @@ def test_domain_state_is_none_for_a_missing_domain_and_raises_otherwise(fake, mo
     monkeypatch.setattr(libvirt_driver, "connect", lambda: Conn(RuntimeError("libvirtd is down")))
     with pytest.raises(RuntimeError, match="libvirtd is down"):
         libvirt_driver.domain_state("vm1")
+
+
+# --- follow-ups: max downtime warning (A4), empty settings (A4), IPv6 literals (A5), job_started (A6) ----------
+
+class _RefusesDowntime(FakeDomain):
+    """migrateSetMaxDowntime fails the first `refusals` times (all of them when None), like a job not started yet."""
+
+    def __init__(self, refusals=None, **kw):
+        super().__init__(**kw)
+        self.refusals = refusals
+
+    def migrateSetMaxDowntime(self, ms, flags=0):
+        if self.refusals is None or self.refusals > 0:
+            if self.refusals:
+                self.refusals -= 1
+            raise RuntimeError("Requested operation is not valid: domain is not being migrated")
+        super().migrateSetMaxDowntime(ms, flags)
+
+
+def _downtime_warnings(caplog):
+    return [r for r in caplog.records if r.levelname == "WARNING" and "migrateSetMaxDowntime" in r.getMessage()]
+
+
+def test_a_max_downtime_that_never_applies_is_warned_about_once(fake, caplog, monkeypatch):
+    monkeypatch.setattr(libvirt_driver, "_DOWNTIME_WARN_SECONDS", 0.15)
+    domain = _RefusesDowntime(migrate=lambda d: time.sleep(0.5))   # many poll ticks (0.05 s each)
+    fake(domain)
+
+    with caplog.at_level("DEBUG", logger="compute-worker"):
+        _migrate(domain)
+
+    assert len(_downtime_warnings(caplog)) == 1
+
+
+def test_a_max_downtime_accepted_on_a_retry_is_not_warned_about(fake, caplog):
+    # the normal case: refused right after the start and on the first retry, accepted once the job runs
+    domain = _RefusesDowntime(refusals=2, migrate=lambda d: d.downtime_set.wait(5))
+    fake(domain)
+
+    with caplog.at_level("DEBUG", logger="compute-worker"):
+        _migrate(domain)
+
+    assert domain.downtime == 300
+    assert _downtime_warnings(caplog) == []
+
+
+def test_a_short_migration_is_not_warned_about_even_if_the_downtime_never_applied(fake, caplog):
+    domain = _RefusesDowntime(migrate=lambda d: time.sleep(0.3))   # under _DOWNTIME_WARN_SECONDS (10 s)
+    fake(domain)
+
+    with caplog.at_level("DEBUG", logger="compute-worker"):
+        _migrate(domain)
+
+    assert _downtime_warnings(caplog) == []
+
+
+def test_a_failing_close_does_not_turn_a_completed_migration_into_an_error(fake):
+    domain = FakeDomain()
+    conn = fake(domain)
+
+    def close():
+        raise RuntimeError("internal error: client socket is closed")
+
+    conn.close = close
+
+    _migrate(domain)   # does not raise
+
+    assert len(domain.calls) == 1
+
+
+@pytest.mark.parametrize("key", KEYS)
+def test_an_empty_live_migration_setting_means_the_default(monkeypatch, reloaded_config, key):
+    for k in KEYS:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("COMPUTE_HOST", "node-9")
+    defaults = reloaded_config()
+    expected = getattr(defaults, key)
+
+    monkeypatch.setenv(key, "  ")
+    cfg = reloaded_config()                                # no ValueError at import
+
+    assert getattr(cfg, key) == expected
+
+
+@pytest.mark.parametrize("host,expected", [
+    ("fd00::2", "[fd00::2]"), ("[fd00::2]", "[fd00::2]"), ("10.0.0.2", "10.0.0.2"), ("node-2.mig", "node-2.mig"),
+])
+def test_uri_host_brackets_an_ipv6_literal(host, expected):
+    assert libvirt_driver.uri_host(host) == expected
+
+
+def test_the_memory_stream_uri_brackets_an_ipv6_migration_host(fake):
+    domain = FakeDomain()
+    fake(domain)
+
+    _migrate(domain, migration_host="fd00:10::2")
+
+    assert domain.calls[0][1]["migrate_uri"] == "tcp://[fd00:10::2]"
+
+
+def test_a_migration_error_after_the_call_says_the_job_started(fake):
+    domain = FakeDomain(migrate=lambda d: (_ for _ in ()).throw(RuntimeError("unable to connect")))
+    fake(domain)
+
+    with pytest.raises(libvirt_driver.MigrationError) as err:
+        _migrate(domain)
+
+    assert err.value.job_started is True

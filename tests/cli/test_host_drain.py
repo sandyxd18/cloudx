@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
@@ -83,26 +84,34 @@ class Fake:
     """A pretend compute + block-store API. `after` maps a server id to the (status, host) series that GET
     /servers/{id} returns on successive polls (the last one repeats)."""
 
-    def __init__(self, servers, volumes=(), after=None, refuse=()):
+    def __init__(self, servers, volumes=(), after=None, refuse=(), no_answer=()):
         self.servers, self.volumes = servers, list(volumes)
         self.after = {k: list(v) for k, v in (after or {}).items()}
         self.refuse = set(refuse)
+        self.no_answer = set(no_answer)   # the migrate POST of these gets no answer (a requests-level error)
         self.calls = []
         self.sleeps = []
 
     def __call__(self, method, url, profile="default", **kw):
         self.calls.append((method, url.replace(C, "C").replace(V, "V"), kw.get("json")))
         if method == "get" and url == f"{C}/servers?limit=1000":
+            if isinstance(self.servers, BaseException):
+                raise self.servers
             return {"items": self.servers}
         if method == "get" and url == f"{V}/volumes":
             return {"items": self.volumes}
         if method == "get" and url.startswith(f"{C}/servers/"):
             sid = url.rsplit("/", 1)[1]
             series = self.after[sid]
-            status, host = series.pop(0) if len(series) > 1 else series[0]
+            item = series.pop(0) if len(series) > 1 else series[0]
+            if isinstance(item, BaseException):  # a failed poll: SystemExit from _api, or a requests error
+                raise item
+            status, host = item
             return {"id": sid, "status": status, "host": host}
         if method == "post" and url.rsplit("/", 2)[-2] in self.refuse:
             raise SystemExit(1)
+        if method == "post" and url.rsplit("/", 2)[-2] in self.no_answer:
+            raise requests.ReadTimeout("read timed out")
         return {"ok": True}
 
 
@@ -321,3 +330,58 @@ def test_a_short_page_ends_the_listing(install, monkeypatch):
 
     assert res.exit_code == 0, res.output
     assert [c[1] for c in fake.calls if c[1].startswith("C/servers?")] == ["C/servers?limit=2", "C/servers?limit=2&marker=s2"]
+
+
+# --- follow-ups: a failed poll is retried, an unknown status stops the drain (C1); the enable hint (C2) -------
+
+def test_a_few_failed_polls_are_retried_and_the_drain_goes_on(install):
+    fake = install(Fake([_server("s1", "a"), _server("s2", "b")],
+                        after={"s1": [SystemExit(1), requests.Timeout("read timed out"), ("ACTIVE", "n2")],
+                               "s2": [("ACTIVE", "n3")]}))
+
+    res = _drain()
+
+    assert res.exit_code == 0, res.output
+    assert ("post", "C/servers/s2/live-migrate", None) in fake.calls
+    assert "Traceback" not in res.output
+
+
+@pytest.mark.parametrize("error", [SystemExit(1), requests.Timeout("read timed out")], ids=["api error", "timeout"])
+def test_an_unknown_status_stops_the_drain_before_the_next_migration(install, error):
+    fake = install(Fake([_server("s1", "a"), _server("s2", "b")], after={"s1": [error], "s2": [("ACTIVE", "n3")]}))
+
+    res = _drain()
+
+    assert res.exit_code != 0
+    assert res.exception is None or isinstance(res.exception, SystemExit), res.exception   # no traceback
+    assert [c for c in fake.calls if c[1] == "C/servers/s1"] == [("get", "C/servers/s1", None)] * host_cmd.POLL_FAILURES
+    assert not any(c[0] == "post" and "/s2/" in c[1] for c in fake.calls)   # no second migration on top of the first
+    assert "drain stopped: the state of a is unknown" in res.output
+    assert "not started" in res.output                                     # b is listed, not migrated
+    assert "cloudx host enable n1" in res.output
+
+
+@pytest.mark.parametrize("error", [SystemExit(1), requests.Timeout("read timed out")], ids=["api error", "timeout"])
+def test_a_failed_listing_after_the_disable_still_says_how_to_enable(install, error):
+    fake = install(Fake(error))
+
+    res = _drain()
+
+    assert res.exit_code != 0
+    assert res.exception is None or isinstance(res.exception, SystemExit), res.exception
+    assert fake.calls[0] == DISABLE
+    assert "cloudx host enable n1" in res.output
+
+
+def test_a_migrate_request_without_an_answer_stops_the_drain(install):
+    # the request may have reached compute-api: the migration may be running, so no second one is started
+    fake = install(Fake([_server("s1", "a"), _server("s2", "b")], after={"s2": [("ACTIVE", "n3")]}, no_answer={"s1"}))
+
+    res = _drain()
+
+    assert res.exit_code == 1
+    assert res.exception is None or isinstance(res.exception, SystemExit), res.exception
+    assert not any(c[0] == "post" and "/s2/" in c[1] for c in fake.calls)
+    assert not any(c[1] == "C/servers/s1" for c in fake.calls)              # no polling of an unknown request
+    assert "drain stopped: the state of a is unknown" in res.output and "no answer" in res.output
+    assert "cloudx host enable n1" in res.output

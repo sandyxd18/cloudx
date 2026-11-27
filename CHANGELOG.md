@@ -54,6 +54,32 @@ schema between releases, so read the upgrade steps before moving a running cloud
   node root access to every other one; `docs/live-migration.md` explains the prerequisites, the open ports (TCP 22 and
   49152-49215 between the compute nodes) and the limits.
 
+### Fixed
+- Live migration: an IPv6 `live_migration_host` is put in brackets in the libvirt URI and the memory stream URI
+  (`tcp://[fd00::2]`); before, the migration could not connect.
+- Live migration: when the source domain is gone although libvirt was never asked to migrate it, the worker no longer
+  reports the guest as moved to the target; the outcome is unclear and the server stays `MIGRATING` with an
+  `error_message`.
+- Live migration: compute-api records the `live_migrate` action as soon as the server is `MIGRATING` and casts its id;
+  the worker's report names it. A late report of an earlier migration no longer sets a newer migration's server back
+  to `ACTIVE` or moves its placement claim. A request refused after that point keeps its action, closed as an error with
+  the reason. A new `live_migrate`, `migrate` or `evacuate` request closes a `live_migrate` action that was left open
+  (message `superseded by a later ... request`). A restarting worker frees a `MIGRATING` server only when its newest open
+  move action is a `live_migrate`, so it leaves a cold migration alone.
+- Live migration of a server with a Ceph RBD disk no longer fails with `Secret not found: no secret with matching uuid`.
+  `cloudx-setup-ceph-secret` gives every compute node its own libvirt secret UUID and the domain XML named the one of
+  the source node, which the target does not have. The target now answers its `ceph_secret_uuid` in the prepare step
+  and the source writes it into the XML it sends. A target on an older worker sends none, so the XML stays as it was and
+  both nodes still need the same UUID; upgrade the compute nodes first (as before). Found on the 8-node lab.
+- An empty `live_migration_*` setting in `compute-worker.conf` (for example `live_migration_timeout =`) means the
+  default. Before, an empty number stopped the compute worker at start with a `ValueError`.
+- Deleting a managed Kubernetes cluster while one of its node VMs is `MIGRATING` (for example during `host drain`):
+  the worker deletes the other VMs and retries the busy one on its next pass instead of failing the pass.
+- `cloudx host drain` retries a failed status read (3 in a row before giving up). When the state of a server stays
+  unknown, or a migrate request gets no answer, it stops instead of starting the next migration on top of one that may
+  still run; a read timeout no longer ends in a traceback. Every exit after the node was disabled, also a failed server listing, prints the
+  `cloudx host enable NODE` hint.
+
 Upgrade: no schema change. Update all compute nodes first, then compute-api. A server can still stay `MIGRATING` in rare
 cases (a migration job that cannot be aborted, or an unclear outcome); `docs/live-migration.md` says how to settle it. The code is covered by unit tests; it has not been run on a lab yet.
 

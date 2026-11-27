@@ -31,6 +31,7 @@ class Fakes:
 @pytest.fixture
 def fakes(monkeypatch, tmp_path):
     f = Fakes()
+    monkeypatch.delenv("CEPH_SECRET_UUID", raising=False)
     monkeypatch.setattr(live_migration, "COMPUTE_HOST", "node-b")
     monkeypatch.setattr(live_migration, "LIVE_MIGRATION_HOST", "node-b.mig")
     nm = live_migration.network_manager
@@ -109,6 +110,21 @@ def test_prepare_plugs_taps_without_binding_and_returns_disk_paths(fakes):
         "migration_host": "node-b.mig",
     }
     assert fakes.of("connect") == [("v-remote",)]  # RBD and this node's own LV need no session
+
+
+def test_prepare_tells_the_source_this_nodes_ceph_secret_uuid(fakes, monkeypatch):
+    # the libvirt secret of client.cloudx has a different UUID on every node; the source needs this one for the XML
+    monkeypatch.setenv("CEPH_SECRET_UUID", "60062793-f144-44b4-85a1-8f328769b4c6")
+
+    result = live_migration.prepare(_args(fakes), rpc=object())
+
+    assert result["ceph_secret_uuid"] == "60062793-f144-44b4-85a1-8f328769b4c6"
+
+
+def test_prepare_sends_no_ceph_secret_uuid_when_none_is_configured(fakes, monkeypatch):
+    monkeypatch.delenv("CEPH_SECRET_UUID", raising=False)
+
+    assert "ceph_secret_uuid" not in live_migration.prepare(_args(fakes), rpc=object())
 
 
 def test_prepare_recreates_the_config_drive_at_the_same_path(fakes):
@@ -296,3 +312,73 @@ def test_distinct_or_unknown_initiator_names_are_accepted(fakes, source_iqn):
     args = {**_args(fakes), "_source_initiator_iqn": source_iqn}
 
     assert "v-remote" in live_migration.prepare(args, rpc=object())["disk_paths"]
+
+
+# --- follow-ups: prepare cleanup isolation (A1), finish MAC precedence (A2), one remote-volume rule (A3) ---------
+
+def test_prepare_cleanup_runs_every_step_when_delete_tap_raises(fakes, monkeypatch):
+    volumes = [
+        {"volume_id": "v-remote", "host": "storage-1", "path": "/dev/vg/a", "backend": "lvm", "target_dev": "sdb"},
+        {"volume_id": "v-remote2", "host": "storage-2", "path": "/dev/vg/b", "backend": "lvm", "target_dev": "sdc"},
+    ]
+    fakes.fail_connect = {"v-remote2"}
+
+    def delete_tap(name):
+        fakes.log("delete_tap", name)
+        raise RuntimeError("ovs-vsctl gone")
+
+    monkeypatch.setattr(live_migration.network_manager, "delete_tap", delete_tap)
+
+    with pytest.raises(RuntimeError, match="export refused"):  # the original error, not the cleanup's
+        live_migration.prepare(_args(fakes, volumes), rpc=object())
+
+    assert len(fakes.of("delete_tap")) == 2  # every tap is tried
+    assert ("v-remote", "storage-1") in fakes.of("disconnect")
+    assert not fakes.instance_dir.exists()
+
+
+def test_prepare_cleanup_removes_a_tap_that_failed_half_way(fakes, monkeypatch):
+    def plug_tap(name):
+        fakes.log("plug_tap", name)
+        raise RuntimeError("ovs-vsctl add-port failed")
+
+    monkeypatch.setattr(live_migration.network_manager, "plug_tap", plug_tap)
+
+    with pytest.raises(RuntimeError, match="add-port"):
+        live_migration.prepare(_args(fakes), rpc=object())
+
+    ((first,),) = fakes.of("create_tap")
+    assert (first,) in fakes.of("delete_tap")
+
+
+def test_prepare_cleanup_removes_a_tap_whose_creation_raised(fakes, monkeypatch):
+    def create_tap(name):
+        fakes.log("create_tap", name)
+        raise RuntimeError("ip tuntap failed after the device appeared")
+
+    monkeypatch.setattr(live_migration.network_manager, "create_tap", create_tap)
+
+    with pytest.raises(RuntimeError, match="tuntap"):
+        live_migration.prepare(_args(fakes), rpc=object())
+
+    ((first,),) = fakes.of("create_tap")
+    assert fakes.of("delete_tap") == [(first,)]
+
+
+def test_finish_binds_the_primary_tap_with_the_payload_mac_first_like_spawn(fakes):
+    args = {**_args(fakes), "mac_address": "fa:16:3e:00:00:99"}  # spawn_server built the NIC with this one
+
+    live_migration.finish(args)
+
+    by_logical = {logical: mac for (_tap, logical, mac, _sid) in fakes.of("set_tap_binding")}
+    assert by_logical == {"lp-main": "fa:16:3e:00:00:99", "extra-name": "fa:16:3e:00:00:02"}
+
+
+def test_the_remote_volume_rule_is_volume_managers(fakes, monkeypatch):
+    monkeypatch.setattr(live_migration.volume_manager, "COMPUTE_HOST", "storage-1")  # the one binding that counts
+
+    result = live_migration.prepare(_args(fakes), rpc=object())
+
+    # v-remote lives on storage-1, which volume_manager now calls this node: no session; v-local is remote now
+    assert fakes.of("connect") == [("v-local",)]
+    assert result["disk_paths"]["v-remote"] == "/dev/vg/v-remote"

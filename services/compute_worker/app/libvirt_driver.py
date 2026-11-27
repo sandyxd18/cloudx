@@ -1,3 +1,4 @@
+import ipaddress
 import logging
 import os
 import re
@@ -92,7 +93,7 @@ def _rbd_disk_element(parent: ET.Element | None, disk_path: str | Path, target_d
     source = ET.SubElement(disk, "source", protocol="rbd", name=f"{pool}/{image}")
     for host, port in hosts:
         ET.SubElement(source, "host", name=host, port=port)
-    secret_uuid = _os.getenv("CEPH_SECRET_UUID", "").strip()
+    secret_uuid = ceph_secret_uuid()
     if secret_uuid:
         auth = ET.SubElement(disk, "auth", username=_os.getenv("CEPH_USER", "cloudx"))
         ET.SubElement(auth, "secret", type="ceph", uuid=secret_uuid)
@@ -378,11 +379,26 @@ class MigrationError(RuntimeError):
     """A live migration did not complete: libvirt failed it, or it ran past its timeout and was aborted.
 
     `still_running` is True when the migration call had not returned 30 s after abortJob: libvirt may still finish the
-    move, so nobody can tell yet where the guest will run."""
+    move, so nobody can tell yet where the guest will run. `job_started` is False when migrateToURI3 was never called,
+    so the guest cannot have moved (a domain missing from this node then did not go to the target)."""
 
-    def __init__(self, message: str, *, still_running: bool = False):
+    def __init__(self, message: str, *, still_running: bool = False, job_started: bool = True):
         super().__init__(message)
         self.still_running = still_running
+        self.job_started = job_started
+
+
+def uri_host(host: str) -> str:
+    """`host` as it goes into a URI: an IPv6 literal in brackets (tcp://[fd00::2], qemu+ssh://root@[fd00::2]/system),
+    anything else (a name, an IPv4 address, a value already in brackets) as it is."""
+    if host.startswith("["):
+        return host
+    try:
+        if ipaddress.ip_address(host).version == 6:
+            return f"[{host}]"
+    except ValueError:  # a host name
+        pass
+    return host
 
 
 def domain_state(name: str) -> str | None:
@@ -425,6 +441,9 @@ def abort_job(name: str) -> None:
 
 # How often migrate_domain looks at the running job. Tests shorten it.
 _MIGRATION_POLL_SECONDS = 1.0
+# migrateSetMaxDowntime usually fails until the job has started, so a failure is only warned about (once) when it has
+# kept failing for this long. Tests shorten it.
+_DOWNTIME_WARN_SECONDS = 10.0
 
 
 def rewrite_disk_sources(xml: str, mapping: dict[str, str]) -> str:
@@ -437,6 +456,28 @@ def rewrite_disk_sources(xml: str, mapping: dict[str, str]) -> str:
             if current is not None and current in mapping:
                 source.set(attr, mapping[current])
     return ET.tostring(root, encoding="unicode")
+
+
+def ceph_secret_uuid() -> str:
+    """UUID of the libvirt secret that holds the cephx key on THIS node (CEPH_SECRET_UUID), or '' when none is set.
+    cloudx-setup-ceph-secret makes a different one on every node."""
+    return os.getenv("CEPH_SECRET_UUID", "").strip()
+
+
+def rewrite_ceph_secret(xml: str, uuid: str | None) -> str:
+    """Point the cephx <auth><secret type='ceph'> of every disk at `uuid`, the secret of the node the guest moves to.
+    The domain XML names the secret of the node it runs on and libvirt starts the guest on the target with that
+    exact UUID, which fails there ("Secret not found") when the target's secret has another one. Returns `xml`
+    itself when there is nothing to change (no UUID given, or every RBD disk already names it)."""
+    if not uuid:
+        return xml
+    root = ET.fromstring(xml)
+    changed = False
+    for secret in root.findall("./devices/disk/auth/secret"):
+        if secret.get("type") == "ceph" and secret.get("uuid") != uuid:
+            secret.set("uuid", uuid)
+            changed = True
+    return ET.tostring(root, encoding="unicode") if changed else xml
 
 
 def domain_xml_for_migration(name: str) -> str:
@@ -462,15 +503,17 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
         flags |= getattr(libvirt, "VIR_MIGRATE_AUTO_CONVERGE", 8192)
     params = {getattr(libvirt, "VIR_MIGRATE_PARAM_DEST_XML", "destination_xml"): dest_xml}
     if migration_host:
-        params[getattr(libvirt, "VIR_MIGRATE_PARAM_URI", "migrate_uri")] = f"tcp://{migration_host}"
+        params[getattr(libvirt, "VIR_MIGRATE_PARAM_URI", "migrate_uri")] = f"tcp://{uri_host(migration_host)}"
     if bandwidth_mbps > 0:
         # bandwidth_mbps is megabits per second; libvirt's parameter is MiB/s (rounded, at least 1 so a small value is not "unlimited")
         params[getattr(libvirt, "VIR_MIGRATE_PARAM_BANDWIDTH", "bandwidth")] = max(1, round(bandwidth_mbps * 1_000_000 / 8 / 2**20))
 
     conn, domain = lookup(name)
     outcome: dict[str, BaseException] = {}
+    called = threading.Event()  # migrateToURI3 was entered: from then on the guest may have moved
 
     def run_migration():
+        called.set()
         try:
             domain.migrateToURI3(dest_uri, params, flags)
         except BaseException as exc:  # reported to the caller below
@@ -479,7 +522,8 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
     worker = threading.Thread(target=run_migration, name=f"migrate-{name}", daemon=True)
     try:
         deadline = time.monotonic() + timeout
-        downtime_set = False
+        downtime_set = downtime_warned = False
+        started = time.monotonic()
         worker.start()
         try:  # usually too early (the job has not started); the loop below retries
             domain.migrateSetMaxDowntime(max_downtime_ms)
@@ -495,7 +539,13 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
                     domain.migrateSetMaxDowntime(max_downtime_ms)
                     downtime_set = True
                 except Exception as exc:  # the job may not have started yet; try again on the next tick
-                    log.debug("%s: migrateSetMaxDowntime not accepted yet: %s", name, exc)
+                    if not downtime_warned and time.monotonic() - started >= _DOWNTIME_WARN_SECONDS:
+                        # once: the migration runs with libvirt's own max downtime until a retry succeeds
+                        log.warning("%s: migrateSetMaxDowntime(%s ms) still not accepted after %.0f s: %s; retrying "
+                                    "while the migration runs", name, max_downtime_ms, time.monotonic() - started, exc)
+                        downtime_warned = True
+                    else:
+                        log.debug("%s: migrateSetMaxDowntime not accepted yet: %s", name, exc)
             try:
                 info = domain.jobInfo()
                 log.debug("%s: migration job %s, %s of %s bytes of memory remaining", name, info[0], info[8], info[6])
@@ -510,16 +560,19 @@ def migrate_domain(name: str, dest_uri: str, dest_xml: str, *, timeout: int, ban
                 if worker.is_alive():
                     log.warning("%s: the migration call is still running 30 s after abortJob", name)
                     raise MigrationError(f"timed out after {timeout} s; the migration call is still running after "
-                                         "abortJob", still_running=True)
+                                         "abortJob", still_running=True, job_started=called.is_set())
                 if "error" not in outcome:
                     # it finished between the deadline and the abort: the domain is already on the destination
                     log.info("%s: the migration completed as the timeout was reached; treating it as a success", name)
                     return
-                raise MigrationError(f"timed out after {timeout} s")
+                raise MigrationError(f"timed out after {timeout} s", job_started=called.is_set())
         if "error" in outcome:
-            raise MigrationError(str(outcome["error"])) from outcome["error"]
+            raise MigrationError(str(outcome["error"]), job_started=called.is_set()) from outcome["error"]
     finally:
-        conn.close()
+        try:  # a close that fails must not turn a completed migration into an error (the caller would call it unclear)
+            conn.close()
+        except Exception as exc:
+            log.debug("%s: closing the libvirt connection after the migration failed: %s", name, exc)
 
 
 def _ensure_unmanaged_taps(domain) -> None:

@@ -56,6 +56,7 @@ class Fakes:
         self.migrate_entered = threading.Event()
         self.mappings = []
         self.target_hosts = []
+        self.action_ids = []
         self.source_state = "RUNNING"  # what domain_state answers for the source domain after a failed migration
 
     def log(self, *call):
@@ -70,15 +71,17 @@ class Fakes:
     def update_server(self, server_id, fields):
         self.log("update_server", server_id, fields)
 
-    def notify(self, server_id, result, message, action, target_host=None):
+    def notify(self, server_id, result, message, action, target_host=None, action_id=None):
         self.log("notify", server_id, result, message, action)
         self.target_hosts.append(target_host)
+        self.action_ids.append(action_id)
 
 
 @pytest.fixture
 def fakes(monkeypatch, tmp_path):
     f = Fakes()
     monkeypatch.setattr(live_migration, "COMPUTE_HOST", "node-a")
+    monkeypatch.setattr(live_migration.volume_manager, "COMPUTE_HOST", "node-a")  # the remote-volume rule reads this one
     monkeypatch.setattr(live_migration, "LIVE_MIGRATION_URI", "qemu+ssh://root@{host}/system")
     monkeypatch.setattr(live_migration, "LIVE_MIGRATION_TIMEOUT", 1800)
     monkeypatch.setattr(live_migration, "LIVE_MIGRATION_BANDWIDTH_MBPS", 100)
@@ -207,6 +210,35 @@ def test_dest_xml_uses_the_target_paths_only_for_changed_disks(fakes):
     assert DISK_PATHS["v-root"] in dest_xml and "/dev/vg/volume-v-b" in dest_xml
     assert SRC_REMOTE in dest_xml  # unchanged: the same storage-1 session path on both nodes
     assert "volumes/v-rbd" in dest_xml and "/dev/vg/volume-v-root" not in dest_xml
+
+
+CEPH_DOMAIN_XML = """<domain type='kvm'><name>vm1</name><devices>
+<disk type='network' device='disk'><source protocol='rbd' name='volumes/v-rbd'/><auth username='cloudx'><secret type='ceph' uuid='ef91ae50-963b-4ef0-83c4-3addc0439d80'/></auth><target dev='vda'/></disk>
+<interface type='ethernet'><target dev='tap-a'/></interface>
+</devices></domain>"""
+
+
+def test_dest_xml_names_the_targets_ceph_secret(fakes, monkeypatch):
+    # a Ceph-backed guest fails to start on the target with "Secret not found" when the XML names the source's secret
+    monkeypatch.setattr(live_migration.libvirt_driver, "domain_xml_for_migration", lambda name: CEPH_DOMAIN_XML)
+    fakes.rpc.replies["live_migrate_prepare"] = {
+        "disk_paths": DISK_PATHS, "migration_host": "node-b.mig", "ceph_secret_uuid": "60062793-f144-44b4-85a1-8f328769b4c6"}
+
+    _run(fakes)
+
+    ((_name, _uri, dest_xml, _kw),) = fakes.of("migrate_domain")
+    assert "60062793-f144-44b4-85a1-8f328769b4c6" in dest_xml
+    assert "ef91ae50-963b-4ef0-83c4-3addc0439d80" not in dest_xml
+
+
+def test_dest_xml_keeps_the_secret_when_the_target_names_none(fakes, monkeypatch):
+    # a target that runs an older worker, or has no Ceph configured, sends no UUID: nothing is rewritten
+    monkeypatch.setattr(live_migration.libvirt_driver, "domain_xml_for_migration", lambda name: CEPH_DOMAIN_XML)
+
+    _run(fakes)
+
+    ((_name, _uri, dest_xml, _kw),) = fakes.of("migrate_domain")
+    assert "ef91ae50-963b-4ef0-83c4-3addc0439d80" in dest_xml
 
 
 def test_a_volume_left_out_of_disk_paths_is_skipped(fakes, caplog):
@@ -560,3 +592,42 @@ def test_notify_sends_the_target_host_only_when_given(monkeypatch):
     assert sent[0] == (f"http://compute.test:8003/internal/servers/{SERVER}/actions/finish",
                        {"result": "success", "message": None, "action": "live_migrate", "target_host": "node-b"})
     assert sent[1][1] == {"result": "error", "message": "boom", "action": "shelve"}  # unchanged for other actions
+
+
+# --- follow-ups: a domain that vanished before the job started (A6), IPv6 in the URI template (A5) -------------
+
+@pytest.mark.parametrize("error", [
+    live_migration.libvirt_driver.MigrationError("domain not found", job_started=False),
+    RuntimeError("Domain not found: no domain with matching name"),   # lookup in migrate_domain, before any call
+], ids=["migration error before the call", "raw lookup error"])
+def test_a_domain_gone_before_the_job_started_is_unclear_not_a_success(fakes, error):
+    fakes.migrate_error = error
+    fakes.source_state = None
+
+    _run(fakes)
+
+    assert fakes.of("live_migrate_rollback") == [] and fakes.of("live_migrate_finish") == []
+    assert fakes.of("notify") == []
+    (fields,) = _updates(fakes)
+    assert set(fields) == {"error_message"} and "unclear" in fields["error_message"]
+
+
+def test_the_libvirt_uri_brackets_an_ipv6_migration_host(fakes):
+    fakes.rpc.replies["live_migrate_prepare"] = {"disk_paths": {}, "migration_host": "fd00::b"}
+
+    _run(fakes)
+
+    ((_name, dest_uri, _xml, kwargs),) = fakes.of("migrate_domain")
+    assert dest_uri == "qemu+ssh://root@[fd00::b]/system"
+    assert kwargs["migration_host"] == "fd00::b"   # migrate_domain brackets the memory stream URI itself
+
+
+@pytest.mark.parametrize("fail", [False, True], ids=["success", "rolled back"])
+def test_the_report_names_the_action_row_compute_api_sent(fakes, fail):
+    if fail:
+        fakes.rpc.raises["live_migrate_prepare"] = RuntimeError("export refused")
+    args = {**_args(fakes), "_action_id": "act-7"}
+
+    live_migration.run(args, fakes.rpc, update_server=fakes.update_server, notify=fakes.notify)
+
+    assert fakes.action_ids == ["act-7"]

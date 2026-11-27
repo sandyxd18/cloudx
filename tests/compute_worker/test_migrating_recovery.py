@@ -26,7 +26,7 @@ def env(monkeypatch):
     monkeypatch.setattr(main.libvirt_driver, "delete", lambda n: seen["deleted"].append(n))
     monkeypatch.setattr(main.network_manager, "delete_tap", lambda t: None)
     monkeypatch.setattr(main, "conductor_update_server", lambda sid, fields: seen["updates"].append((sid, fields)))
-    monkeypatch.setattr(main, "_notify_action_finish", lambda *a: seen["notified"].append(a))
+    monkeypatch.setattr(main, "_notify_action_finish", lambda *a, **k: seen["notified"].append(a + ((k,) if k else ())))
     monkeypatch.setattr(main, "RECOVER_ABORT_WAIT_SECONDS", 0.2)
     monkeypatch.setattr(main, "_RECOVER_POLL_SECONDS", 0.01)
 
@@ -178,3 +178,37 @@ def test_one_failing_server_does_not_stop_the_others(env, monkeypatch):
 
     assert env["updates"] == [("srv-2", {"status": "ACTIVE", "error_message": None})]
     assert [n[0] for n in env["notified"]] == ["srv-2"]
+
+
+# --- follow-up A7: only a live migration is recovered here, and its own action row is named -------------------
+
+def test_recover_leaves_a_cold_migrating_server_alone(env):
+    # a cold migrate is MIGRATING with host = target and the build's domain running here; it has no open live_migrate
+    server = {**_server("MIGRATING", "node-a"), "live_migrate_action_id": None}
+    env["setup"]([server], {"vm-1": "RUNNING"})
+
+    main.recover_migrating_servers()
+
+    assert env["updates"] == [] and env["notified"] == [] and env["aborts"] == []
+
+
+def test_recover_names_the_open_live_migrate_action(env):
+    server = {**_server("MIGRATING", "node-a"), "live_migrate_action_id": "act-7"}
+    env["setup"]([server], {"vm-1": "RUNNING"})
+
+    main.recover_migrating_servers()
+
+    assert env["updates"] == [("srv-1", {"status": "ACTIVE", "error_message": None})]
+    assert env["notified"] == [ABORTED + ({"action_id": "act-7"},)]
+
+
+def test_notify_action_finish_sends_the_action_id(monkeypatch):
+    sent = []
+    monkeypatch.setenv("COMPUTE_API_URL", "http://compute.test:8003")
+    monkeypatch.setattr(main.requests, "post", lambda url, json=None, **k: sent.append((url, json)))
+
+    main._notify_action_finish("srv-1", "error", "boom", "live_migrate", action_id="act-7")
+    main._notify_action_finish("srv-1", "error", "boom", "live_migrate")
+
+    assert sent[0][1] == {"result": "error", "message": "boom", "action": "live_migrate", "action_id": "act-7"}
+    assert "action_id" not in sent[1][1]

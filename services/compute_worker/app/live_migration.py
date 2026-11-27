@@ -56,9 +56,9 @@ def _logical_port(port: dict) -> str:
 
 
 def _reaches_over_iscsi(volume: dict) -> bool:
-    """An LV on another storage node. An RBD image is opened over Ceph on every node, and an LV on this node is local."""
-    host = volume.get("host")
-    return bool(host) and host != COMPUTE_HOST and not volume_manager._is_rbd(volume.get("path"))
+    """An LV on another storage node. An RBD image is opened over Ceph on every node, and an LV on this node is local.
+    The same rule volume_manager.connect applies, so both read one COMPUTE_HOST."""
+    return volume_manager._is_remote(volume)
 
 
 def _refuse_a_shared_initiator_name(args: dict) -> None:
@@ -88,8 +88,8 @@ def prepare(args: dict, rpc) -> dict:
         instance_dir.mkdir(parents=True, exist_ok=True)
         # no iface-id yet: the source still owns the OVN port, and two chassis claiming it would make OVN flap
         for tap, _port in _taps(args):
+            taps.append(tap)  # before create_tap: a tap it half made before raising is removed as well
             network_manager.create_tap(tap)
-            taps.append(tap)
             network_manager.plug_tap(tap)
         for volume in args.get("_volumes") or []:
             volume_id, path = volume["volume_id"], volume.get("path")
@@ -110,8 +110,12 @@ def prepare(args: dict, rpc) -> dict:
         console_log.chmod(0o666)
         worker.expose_to_host_libvirt(instance_dir, seed_iso, console_log)
     except Exception:
+        # every step runs and none replaces the original error, which is raised below
         for tap in taps:
-            network_manager.delete_tap(tap)
+            try:
+                network_manager.delete_tap(tap)
+            except Exception as exc:
+                log.warning("prepare cleanup: could not delete tap %s: %s", tap, exc)
         for volume in connected:
             try:
                 volume_manager.disconnect(volume["volume_id"], volume.get("host"), rpc)
@@ -120,14 +124,19 @@ def prepare(args: dict, rpc) -> dict:
         if not dir_existed:
             shutil.rmtree(instance_dir, ignore_errors=True)
         raise
-    return {"disk_paths": disk_paths, "migration_host": LIVE_MIGRATION_HOST}
+    reply = {"disk_paths": disk_paths, "migration_host": LIVE_MIGRATION_HOST}
+    secret = libvirt_driver.ceph_secret_uuid()
+    if secret:  # the source has to name this node's secret, not its own, in the XML it sends here
+        reply["ceph_secret_uuid"] = secret
+    return reply
 
 
 def finish(args: dict) -> dict:
     """The domain runs here: give each tap the OVN identity (iface-id and the rest) so the port moves to this chassis."""
     server_id = _server_id(args)
-    for tap, port in _taps(args):
-        mac = port.get("mac_address") or args.get("mac_address")
+    for i, (tap, port) in enumerate(_taps(args)):
+        # the MAC the domain was built with: worker.spawn_server prefers the payload's MAC for the primary NIC
+        mac = (args.get("mac_address") or port.get("mac_address")) if i == 0 else port.get("mac_address")
         network_manager.set_tap_binding(tap, _logical_port(port), mac, server_id)
     return {"status": "ok"}
 
@@ -251,6 +260,12 @@ def _report(server_id: str, fields: dict, result: str, message: str | None, upda
     notify(server_id, result, message, "live_migrate", **extra)
 
 
+def _with_action_id(args: dict) -> dict:
+    """The notify's keyword for the action row compute-api made for this migration (`_action_id` in the cast): the
+    finish hook then settles the server only when that row is the newest open live_migrate one."""
+    return {"action_id": args["_action_id"]} if args.get("_action_id") else {}
+
+
 def _own_initiator_iqn() -> str | None:
     """This node's iSCSI initiator name, or None on a node without open-iscsi (RBD only)."""
     try:
@@ -264,7 +279,8 @@ def _outcome_after_failure(domain: str, exc: Exception) -> str:
     """Where is the guest after migrate_domain raised? "source": the job has ended and the domain still runs here, so
     the target can be rolled back. "target": the domain has left this node (libvirt raised after the destination took
     over, e.g. the connection dropped in the confirm step). "unclear": the migration call may still be running, the
-    lookup failed, or the domain is here but not running; rolling back could destroy the only running copy."""
+    lookup failed, the domain is here but not running, or it is gone although no migration job was started (MigrationError
+    .job_started); rolling back could destroy the only running copy, and reporting success would be a guess."""
     if getattr(exc, "still_running", False):
         return "unclear"
     try:
@@ -273,7 +289,12 @@ def _outcome_after_failure(domain: str, exc: Exception) -> str:
         log.error("live migration: could not look up %s on this node after the failure: %s", domain, lookup_exc)
         return "unclear"
     if state is None:
-        return "target"
+        # Gone from here. Only a migration that was started can have taken it to the target; an error raised before
+        # migrateToURI3 (the domain lookup in migrate_domain, say) means it vanished some other way.
+        if getattr(exc, "job_started", False):
+            return "target"
+        log.error("live migration: %s is gone from this node, but no migration job was started", domain)
+        return "unclear"
     return "source" if state == "RUNNING" else "unclear"
 
 
@@ -293,7 +314,8 @@ def _run(args: dict, rpc, update_server, notify) -> None:
     if reason:
         log.error("live migration of %s: %s", server_id, reason)
         if server_id:
-            _report(server_id, {"status": "ACTIVE", "error_message": None}, "error", reason, update_server, notify)
+            _report(server_id, {"status": "ACTIVE", "error_message": None}, "error", reason, update_server, notify,
+                    **_with_action_id(args))
         return
     volumes = args.get("_volumes") or []
     log.info("live migration of %s (%s): %s -> %s", server_id, domain, COMPUTE_HOST, target)
@@ -302,13 +324,16 @@ def _run(args: dict, rpc, update_server, notify) -> None:
     try:
         prepared = _call(rpc, target, "live_migrate_prepare", args, PREPARE_TIMEOUT)
         mapping = _disk_mapping(server_id, volumes, prepared.get("disk_paths") or {})
-        dest_xml = libvirt_driver.rewrite_disk_sources(libvirt_driver.domain_xml_for_migration(domain), mapping)
+        dest_xml = libvirt_driver.rewrite_ceph_secret(
+            libvirt_driver.rewrite_disk_sources(libvirt_driver.domain_xml_for_migration(domain), mapping),
+            prepared.get("ceph_secret_uuid"),
+        )
         taps = libvirt_driver.interface_taps(domain)  # read now: the domain is gone from here once it has migrated
         # one address for both the libvirt connection and the QEMU memory stream (VIR_MIGRATE_PARAM_URI)
         migration_host = prepared.get("migration_host") or target
         migrating = True
         libvirt_driver.migrate_domain(
-            domain, LIVE_MIGRATION_URI.format(host=migration_host), dest_xml,
+            domain, LIVE_MIGRATION_URI.format(host=libvirt_driver.uri_host(migration_host)), dest_xml,
             timeout=LIVE_MIGRATION_TIMEOUT, bandwidth_mbps=LIVE_MIGRATION_BANDWIDTH_MBPS,
             max_downtime_ms=LIVE_MIGRATION_MAX_DOWNTIME_MS, auto_converge=LIVE_MIGRATION_AUTO_CONVERGE,
             migration_host=migration_host,
@@ -335,7 +360,7 @@ def _run(args: dict, rpc, update_server, notify) -> None:
             except Exception as rollback_exc:
                 log.warning("live migration of %s: rollback on %s failed: %s", server_id, target, rollback_exc)
             _report(server_id, {"status": "ACTIVE", "error_message": None}, "error", f"live migration failed: {exc}",
-                    update_server, notify)
+                    update_server, notify, **_with_action_id(args))
             return
         log.warning("live migration of %s: libvirt reported %s, but the domain has left this node; finishing the "
                     "migration on %s", server_id, exc, target)
@@ -370,4 +395,4 @@ def _run(args: dict, rpc, update_server, notify) -> None:
         if finish_failed:
             message += (f"; the guest's network may be down until an operator re-binds its ports on {target}")
     _report(server_id, {"host": target, "status": "ACTIVE", "error_message": None}, "success", message,
-            update_server, notify, target_host=target)
+            update_server, notify, target_host=target, **_with_action_id(args))

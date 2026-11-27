@@ -127,14 +127,17 @@ def conductor_delete_record(server_id: str) -> None:
 
 
 def _notify_action_finish(server_id: str | None, result: str = "success", message: str | None = None, action: str | None = None,
-                          target_host: str | None = None) -> None:
+                          target_host: str | None = None, action_id: str | None = None) -> None:
     """Close the server's open action in compute-api. A finished live migration also names its target host, so
-    compute-api can set host and status itself when the conductor cast was lost."""
+    compute-api can set host and status itself when the conductor cast was lost, and the id of its action row, so a
+    late report of an older migration does not settle a newer one."""
     if not server_id:
         return
     body = {"result": result, "message": message, "action": action}
     if target_host:
         body["target_host"] = target_host
+    if action_id:
+        body["action_id"] = action_id
     try:
         api_url = catalog.url("compute").rstrip("/")
         requests.post(
@@ -222,9 +225,14 @@ def _stop_migration_job(domain: str) -> bool:
 
 
 def _recover_migrating_server(server: dict, domain_states: dict) -> None:
+    if "live_migrate_action_id" in server and not server["live_migrate_action_id"]:
+        # no open live_migrate action: a cold migrate (MIGRATING with host = its target, the build's domain running
+        # here). Its own build path settles it; an "error" live_migrate finish would close a stale row and re-claim.
+        # (A compute-api that does not send the field gets the old behaviour.)
+        return
     domain = server.get("libvirt_domain_name")
     if domain_states.get(domain) != "RUNNING":
-        return  # not here (cold migrate, evacuate, or the guest moved): nothing to decide on this node
+        return  # not here (evacuate, or the guest moved): nothing to decide on this node
     if not _stop_migration_job(domain):
         log.warning("[recover] server %s stays MIGRATING: the migration job of %s did not stop within %s s; check "
                     "`virsh domjobinfo %s` and docs/live-migration.md", server["id"], domain, RECOVER_ABORT_WAIT_SECONDS, domain)
@@ -237,7 +245,9 @@ def _recover_migrating_server(server: dict, domain_states: dict) -> None:
     log.warning("[recover] server %s is MIGRATING but its domain runs here with no job — back to ACTIVE", server["id"])
     conductor_update_server(server["id"], {"status": "ACTIVE", "error_message": None})
     # "error" makes compute-api move the placement claim back here (it went to the target when the migration began)
-    _notify_action_finish(server["id"], "error", RECOVERED_MESSAGE, "live_migrate")
+    action_id = server.get("live_migrate_action_id")
+    _notify_action_finish(server["id"], "error", RECOVERED_MESSAGE, "live_migrate",
+                          **({"action_id": action_id} if action_id else {}))
 
 
 def recover_migrating_servers() -> None:

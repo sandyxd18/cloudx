@@ -45,9 +45,16 @@ CONSOLE_PROXY_HOST = os.getenv("CONSOLE_PROXY_HOST") or COMPUTE_HOST
 
 # Live migration. The host is the address other nodes use to reach this one; the URI is a template for the libvirt
 # connection to the destination ({host} is replaced by the destination's live_migration_host).
-LIVE_MIGRATION_HOST = os.getenv("LIVE_MIGRATION_HOST") or COMPUTE_HOST
-LIVE_MIGRATION_URI = os.getenv("LIVE_MIGRATION_URI", "qemu+ssh://root@{host}/system")
-LIVE_MIGRATION_TIMEOUT = int(os.getenv("LIVE_MIGRATION_TIMEOUT", "1800"))
-LIVE_MIGRATION_MAX_DOWNTIME_MS = int(os.getenv("LIVE_MIGRATION_MAX_DOWNTIME_MS", "300"))
-LIVE_MIGRATION_BANDWIDTH_MBPS = int(os.getenv("LIVE_MIGRATION_BANDWIDTH_MBPS", "0"))  # megabits per second, 0 = unlimited
-LIVE_MIGRATION_AUTO_CONVERGE = os.getenv("LIVE_MIGRATION_AUTO_CONVERGE", "false").strip().lower() in ("true", "1", "yes")
+# An empty value (`live_migration_timeout =` in the conf file) means the default, never an error at import.
+
+
+def _setting(name: str, default: str) -> str:
+    return (os.getenv(name) or "").strip() or default
+
+
+LIVE_MIGRATION_HOST = _setting("LIVE_MIGRATION_HOST", COMPUTE_HOST)
+LIVE_MIGRATION_URI = _setting("LIVE_MIGRATION_URI", "qemu+ssh://root@{host}/system")
+LIVE_MIGRATION_TIMEOUT = int(_setting("LIVE_MIGRATION_TIMEOUT", "1800"))
+LIVE_MIGRATION_MAX_DOWNTIME_MS = int(_setting("LIVE_MIGRATION_MAX_DOWNTIME_MS", "300"))
+LIVE_MIGRATION_BANDWIDTH_MBPS = int(_setting("LIVE_MIGRATION_BANDWIDTH_MBPS", "0"))  # megabits per second, 0 = unlimited
+LIVE_MIGRATION_AUTO_CONVERGE = _setting("LIVE_MIGRATION_AUTO_CONVERGE", "false").lower() in ("true", "1", "yes")
