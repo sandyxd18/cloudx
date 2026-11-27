@@ -55,6 +55,12 @@ schema between releases, so read the upgrade steps before moving a running cloud
   49152-49215 between the compute nodes) and the limits.
 
 ### Fixed
+- A volume in `error` kept losing its error message. The block-store reconciler marked every volume that was already
+  `error` and had no backend object as `error` again on each pass (every 60 seconds, on every worker), and the generic
+  text `Physical storage object missing on node` replaced the reason that was stored: the one a failed create had
+  written, and the one the stale-`creating` check below writes. Found in the lab, where the new text was readable for
+  a few seconds. A volume that is already `error` is now left alone. An `available` or `in-use` volume whose backend
+  object is gone is still marked `error`, and an `error` volume whose object comes back still returns to `available`.
 - A volume whose create request was lost no longer stays in `creating` forever. This happened when the broker lost
   quorum or a worker died before it handled the message: the volume had no backend object and the reconciler skipped
   `creating` on purpose. Now the block-store reconciler marks a volume `error` (with a message that says to delete it and
