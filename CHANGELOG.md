@@ -55,6 +55,14 @@ schema between releases, so read the upgrade steps before moving a running cloud
   49152-49215 between the compute nodes) and the limits.
 
 ### Fixed
+- Security group rules that name a remote group (`remote_group_id`) now let traffic through between members that run on
+  different compute nodes. Before, the rule matched `inport == @group`, which ovn-controller expands only to the ports
+  bound on the node that evaluates the packet, so a member on another node never matched: two servers of the same group
+  could talk when they shared a node and not otherwise (found with a TCP connection between two servers while one was
+  live-migrated). The rule now matches the address set OVN keeps for every port group (`ip4.src == $<group>_ip4`, `ip4.dst`
+  for egress, `_ip6` for IPv6 rules), which holds the addresses of all the group's ports on every node. The address sets
+  are made by OVN; nothing to configure. Rules are re-applied whenever a group's rules or ports change, so existing
+  rules are fixed by the next change to the group (or restart the networking-api and add or remove any rule).
 - Live migration: an IPv6 `live_migration_host` is put in brackets in the libvirt URI and the memory stream URI
   (`tcp://[fd00::2]`); before, the migration could not connect.
 - Live migration: when the source domain is gone although libvirt was never asked to migrate it, the worker no longer
