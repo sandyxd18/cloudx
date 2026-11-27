@@ -3,6 +3,8 @@
 If ha-api is unreachable for HA_WATCHDOG_TIMEOUT seconds and the node is isolated (a peer still reaches ha-api, or no
 peer answers), the protected VMs of this node are destroyed so ha-api can evacuate them without a duplicate running.
 Deliberately not a thread of compute-worker: a hung worker must not take the watchdog down with it.
+A domain that has a live-migration job running is left alone for up to HA_WATCHDOG_MIGRATION_GRACE seconds: ha-api does not
+evacuate a MIGRATING server, so nothing runs a second copy, and destroying it would kill the guest in the middle of the move.
 ponytail: needs at least two compute nodes (peers); the protected list can be a few seconds stale.
 """
 from __future__ import annotations
@@ -37,6 +39,7 @@ STATE_DIR = Path(os.getenv("HA_WATCHDOG_STATE_DIR", "/var/lib/cloudx/ha-watchdog
 FLAG = STATE_DIR / "fenced"   # compute-worker reads this path: while it exists, no auto-restart
 CACHE = STATE_DIR / "protected.json"
 HA_URL_FILE = STATE_DIR / "ha_api_url"   # last ha-api URL that resolved; used when the catalog cannot be reached
+MIGRATION_GRACE = float(os.getenv("HA_WATCHDOG_MIGRATION_GRACE", "1800"))  # the default live_migration_timeout
 INTERVAL = 5
 FRESH = 20  # a peer counts our contact with ha-api as alive for this long
 
@@ -45,6 +48,8 @@ class State:
     def __init__(self, now: float):
         self.last_ok = now
         self.killed = False
+        self.busy_since: float | None = None  # when a domain was first left alone because of a migration job
+        self.destroyed: set[str] = set()  # destroyed during this isolation, so a later pass does not do it twice
 
 
 def _saved_ha_url() -> str:
@@ -122,6 +127,25 @@ def load_cache() -> list[str]:
         return []
 
 
+def migrating(domain: str) -> bool:
+    """True when libvirt runs a migration job on the domain. A job of another kind (a snapshot, a save) does not count,
+    because ha-api evacuates such a server; a libvirt that names no operation is taken to mean a migration."""
+    r = run(["virsh", "-c", LIBVIRT_URI, "domjobinfo", domain], check=False)
+    if r.returncode != 0:
+        return False  # not running: nothing to protect
+    kind = operation = ""
+    for line in (r.stdout or "").splitlines():
+        key, _, value = line.partition(":")
+        key, value = key.strip().lower(), value.strip().lower()
+        if key == "job type":
+            kind = value
+        elif key == "operation":
+            operation = value
+    if kind in ("", "none"):
+        return False
+    return not operation or "migration" in operation
+
+
 def kill(domains: list[str]) -> None:
     if DRY_RUN:
         log.warning("dry-run: would destroy %s", domains)
@@ -136,7 +160,8 @@ def kill(domains: list[str]) -> None:
 def step(st: State, now: float) -> None:
     ok, r = fetch("GET", f"/internal/protected-domains/{HOST}")
     if ok:
-        st.last_ok, st.killed = now, False
+        st.last_ok, st.killed, st.busy_since = now, False, None
+        st.destroyed.clear()
         if r is not None and r.status_code == 200:
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             CACHE.write_text(json.dumps(r.json()))
@@ -148,12 +173,22 @@ def step(st: State, now: float) -> None:
         return
     if st.killed or now - st.last_ok < TIMEOUT:
         return
-    domains = load_cache()
+    domains = [d for d in load_cache() if d not in st.destroyed]
     verdict = decide(now, st.last_ok, TIMEOUT, ask_peers(), bool(PEERS), domains)
     log.warning("ha-api silent for %.0fs: %s", now - st.last_ok, verdict)
     if verdict == "kill":
-        kill(domains)
-        st.killed = True
+        busy = [d for d in domains if migrating(d)]
+        if busy and st.busy_since is None:
+            st.busy_since = now
+        if busy and now - st.busy_since < MIGRATION_GRACE:
+            log.warning("not destroying %s yet: a live migration is running", busy)
+            domains = [d for d in domains if d not in busy]
+        else:
+            busy = []
+        if domains:
+            kill(domains)
+            st.destroyed.update(domains)
+        st.killed = not busy  # while a domain waits for its migration, look again on the next pass
 
 
 def serve_reach(st: State) -> None:
