@@ -44,6 +44,8 @@ For comparison: Masakari detects failures through Pacemaker/Corosync and uses ST
 - CLI: `cloudx ha hosts | protect SERVER | unprotect SERVER | protected | recoveries | reset HOST`.
 - Dashboard: High availability.
 - A VM can only be protected when all its volumes are on other hosts and its location is known (422 otherwise).
+- A Ceph RBD volume has no host in CloudX, so a server with a Ceph volume (root or data) is refused with `422 server volumes could not be located`. Today only servers whose volumes are LVM volumes on other compute nodes can be protected. Found on the lab on 2026-11-27.
+- A server that is `MIGRATING` is never evacuated automatically: it is recorded as `skipped` (`live migration in progress; check the target before evacuating`) and an operator decides (`docs/live-migration.md`). The watchdog does not look at the migration state: it destroys the protected domains of an isolated node also while one of them is being migrated away. On the lab this left no running copy of the guest: the server stays `MIGRATING` (message `... it is unclear where the guest runs`) until an operator settles it with the steps in `docs/live-migration.md`.
 
 ## Configuration
 
@@ -58,6 +60,14 @@ Two CirrOS VMs (one with its root on the storage node, one on the compute node),
 - Negative: the storage node was shut down. The VM whose root was on the storage node was recorded as `skipped` (`volume on failed host`) and not evacuated. The other VM was evacuated.
 - Blip: the worker was stopped for 20 seconds and then started. No action; the host went back to `up`.
 - Found during testing: `PUT /os-services` and `evacuate` originally accepted only an admin JWT, so ha-api was rejected (401). Fixed with `AdminOrInternal`.
+
+Run again on 2026-11-27 with the 1.0.15 packages (ha-api on the three controllers, `comp01` and `comp02`, one protected CirrOS server `ha-t2` with an LVM root volume on the other compute node). The watchdog unit is disabled after an install and its conf is empty, so it was configured (`ha_watchdog_host`, `ha_watchdog_peers` pointing at the other node, no `ha_api_url` override) and started on both nodes. The ha-api path was cut with `iptables -I OUTPUT -p tcp --dport 8020 -j DROP`; use `DROP`, because a refused connection counts as reachable.
+
+- Both nodes cut off for 56 seconds: at 45 s each watchdog logged `hold` (no peer reached ha-api either) and again at 55 s. No domain was destroyed, no fence flag was written, both hosts stayed `up`, no recovery was started.
+- Only the node of the protected server cut off: at 45 s the watchdog logged `kill`, destroyed the domain and wrote the fence flag. ha-api marked the host `suspect` at 82 s, `recovering` at 105 s and `fenced` at 116 s; the recovery started 55 s after the destroy, was `done`, and the server was `ACTIVE` on the other node. A server that was not protected, on the same node, was not touched.
+- A protected server migrating away from the node that was cut off (migration held at 1 MiB/s with `virsh migrate-setspeed`, so it was still running): at 45 s the watchdog destroyed the domain on the source and the migration failed (`domain is not running`); the domain on the target was removed. ha-api marked the host `suspect` at 64 s, recorded the recovery as `skipped` (`live migration in progress; check the target before evacuating`) at about 91 s and `fenced` the host at 104 s. The server stayed `MIGRATING` on the source with no running guest anywhere. After the rule was removed, the host reset and the server settled with the internal finish call (`result` `error`), it was `ACTIVE`, and the compute worker's auto-recovery started the shut-off domain about a minute later.
+- When the guest had already moved before the cut (the migration took a few seconds), nothing was lost: the watchdog of the old node still used its cached list, tried to destroy the domain that is no longer there (`rc=1`) and wrote the fence flag; ha-api did not evacuate anything because no protected server was left on that host.
+- Recovery by hand (rule removed, `forced_down` false, `cloudx ha reset comp01`): the host was `up` again, the watchdog removed the fence flag, and compute-worker destroyed the stale domain on the old node (`host in API is comp02`).
 
 ## Two ha-api instances
 

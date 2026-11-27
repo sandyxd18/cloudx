@@ -2,7 +2,7 @@
 
 Live migration moves a running server to another compute node without stopping it. `cloudx host drain` uses it to empty a node before maintenance. Cold migration (`POST /servers/{ref}/migrate`, which restarts the server on the target) still exists and is what `drain` uses for stopped servers.
 
-> Status: the code is covered by unit tests with a fake libvirt and a fake RPC. It has not been run on a lab yet, so the network pause below is the design estimate and not a measurement.
+> Status: the code is covered by unit tests with a fake libvirt and a fake RPC, and it was run on the 8-node lab (three controllers, three Ceph nodes, two compute nodes, CirrOS servers and a k3s cluster) on 2026-11-27. The results are in "What was run on a lab" at the end of this page. The lab has two compute nodes; a bigger cloud, other guests and a slower network can behave differently.
 
 ## What can be moved
 
@@ -82,7 +82,7 @@ While a server is `MIGRATING`, start, stop, reboot, pause, resume, suspend, rebu
 
 ### The network pause
 
-The guest is paused for a short moment while the last memory is copied (`live_migration_max_downtime_ms`). After that the network port of the guest has to be bound on the new node: the worker removes the tap on the source, then binds the port on the target. Expect a network pause of **one to three seconds**; Established TCP connections should survive a pause of that length. There is no guarantee of zero packet loss (OVN multi-chassis binding, which would avoid the pause, is not used).
+The guest is paused for a short moment while the last memory is copied (`live_migration_max_downtime_ms`). After that the network port of the guest has to be bound on the new node: the worker removes the tap on the source, then binds the port on the target. Expect a network pause of **one to three seconds**; Established TCP connections should survive a pause of that length. On the lab it was shorter, 0.6 to 0.8 seconds, with idle CirrOS servers between two virtual machines on one host; do not plan around the lab figure. There is no guarantee of zero packet loss (OVN multi-chassis binding, which would avoid the pause, is not used).
 
 ## Draining a node
 
@@ -144,7 +144,7 @@ sudo virsh -c qemu:///system list                  # which node runs the guest
 
 `DOMAIN` is `libvirt_domain_name` in `cloudx server show web-1`. While `domjobinfo` shows a job on either node, wait or abort it there (`sudo virsh -c qemu:///system domjobabort DOMAIN`) and look again. Never remove taps or sessions while a job runs.
 
-The steps that settle the record use compute-api's internal finish call, the one the worker makes. Run it on the controller with the internal token (`internal_token` in the `[DEFAULT]` section of the CloudX configuration; do not paste it into notes or tickets). It changes only a server that is still `MIGRATING`:
+The steps that settle the record use compute-api's internal finish call, the one the worker makes. Run it on the controller with the internal token (`internal_token` in the `[DEFAULT]` section of the CloudX configuration; do not paste it into notes or tickets). It changes only a server that is still `MIGRATING`. On the controllers of an HA install the port is held by HAProxy on the virtual IP, so use `http://VIP:8003` instead of `127.0.0.1:8003`:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8003/internal/servers/SERVER_ID/actions/finish \
@@ -155,6 +155,8 @@ curl -sS -X POST http://127.0.0.1:8003/internal/servers/SERVER_ID/actions/finish
 *The domain runs on the source (and nowhere else).* The migration did not happen. Send the call above with `"result": "error"`: the server becomes `ACTIVE` on its host and the placement claim goes back to the source. Restarting the worker on the source (`sudo systemctl restart cloudx-compute-worker`) does the same.
 
 If compute-api logged that the claim could not be put back (`... its placement claim could not be put back on ...`), restore it by hand: the placement API has `POST /allocations` (admin), which replaces all allocations of a consumer. The body is the server id as `consumer_uuid`, its `project_id`, and `{"<source resource provider uuid>": {"resources": {"VCPU": N, "MEMORY_MB": M}}}`, where N and M are the vCPUs and the RAM in MB of the server's flavor (`cloudx server show web-1` names the flavor, `cloudx flavor show FLAVOR` gives `vcpus` and `ram_mb`). `cloudx placement provider-list` shows the provider uuids. Without it the capacity accounting for that server is wrong (the target is charged and the source is not) until the server is moved, resized or deleted.
+
+*The domain is on the source but shut off, and nowhere else.* This is what is left when something destroyed the guest in the middle of the migration; on the lab it was the `ha-watchdog` of an isolated source node. No copy of the guest runs. Send the call above with `"result": "error"`: the server becomes `ACTIVE` on its host and the compute worker's auto-recovery starts the shut-off domain within about a minute (it logs `[auto-recovery] ... attempting auto-restart`). Check afterwards that the disk of the guest is intact.
 
 *The domain runs on the target.* The guest runs there, but its network may not be bound and the server record still says source. The placement claim is already on the target, which is right.
 
@@ -208,3 +210,24 @@ sudo virsh -c qemu+ssh://root@comp02/system list               # the URI the wor
 | `... have the same iSCSI initiator name ...` | Two compute nodes share `/etc/iscsi/initiatorname.iscsi` (cloned from one template). Give one a new name (prerequisite 3). |
 | `server is MIGRATING (a migration is in progress) ...` on start, stop, delete and so on | A migration runs. Wait for it to end; if it never does, see *Settling a server that stays `MIGRATING`*. |
 | `drain` exits non-zero but every row says `skipped` | These servers have a local LV on the node, or are `PAUSED`, `SUSPENDED` and so on. Fix them one by one or accept that they stay. |
+
+## What was run on a lab
+
+Run on 2026-11-27 on the 8-node lab (three controllers, three Ceph nodes, compute nodes `comp01` and `comp02`; CirrOS `tiny` servers; the probe was a ping every 0.2 s plus an open ssh session from the host that carries the provider network). The packages were the builds of the branches that were merged afterwards, not the release files.
+
+| What | Result |
+|---|---|
+| Root disk on Ceph RBD, `comp01` to `comp02` | Network pause 0.61 s (two pings lost), the ssh session and the guest uptime kept. |
+| Root disk on LVM, LV local on the target | Pause 0.83 s. |
+| Root disk on LVM, LV on the source (the target logs in over iSCSI) | Pause 0.63 s. |
+| Server with an LVM and a Ceph data volume | The MD5 of a file written before the move was the same after it. |
+| `cloudx host drain comp02`, two servers | 14 s; the node stays disabled until `cloudx host enable`. With four Ceph-root servers 28 s, and nothing was left on the source (no domain, tap or instance directory). |
+| `cloudx host drain comp01` with eight servers, two of them `SHUTOFF`, one with a local LV | 2 min 44 s. The `SHUTOFF` servers were cold-migrated, the server with the local LV was listed as skipped and the command exited 1. `--dry-run` printed the same plan and changed nothing. |
+| Migrate to the node the server is on | `409`. |
+| QEMU ports 49152-49215 blocked on the target | Rolled back in about 9 s, the server `ACTIVE` on the source, no ping lost, the reason in `os-instance-actions`. |
+| Source worker restarted in the middle of a migration (bandwidth capped at 10 Mbit/s) | The job was aborted and the server was `ACTIVE` on the source again about 6 s later. |
+| Guest that rewrites about 70 MB/s of memory, bandwidth capped at 100 Mbit/s | With `live_migration_auto_converge = false` it stopped at `live_migration_timeout` (90 s in the test) and rolled back; with `true` it finished in about 50 s with a pause of 0.59 s. |
+| `live_migration_host` set to an IPv6 address | Worked in both directions; the packet counters showed the memory stream on IPv6 only. |
+| A k3s cluster (one master, two workers) | Master moved in 10 s with 1 of 144 API probes failed; both workers moved with none failed out of 140; all nodes `Ready`, the pods with no restart. `cloudx cluster delete` right after a migration removed the VMs in about 13 s. |
+
+What the lab did not cover: more than two compute nodes, a locked server in a drain, and traffic from outside the cloud to a floating IP during a move. The guest memory in the test was small; a large, busy guest needs `live_migration_timeout` and the bandwidth settings tuned for it.

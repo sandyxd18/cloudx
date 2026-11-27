@@ -6,6 +6,8 @@ schema between releases, so read the upgrade steps before moving a running cloud
 
 ## Unreleased
 
+## 1.0.15 (2026-11-27)
+
 ### Added
 - The browser console proxy can serve https. Set `console_proxy_cert` and `console_proxy_key` (a certificate chain and a
   key file, both readable by root) in `/etc/cloudx/compute-worker/compute-worker.conf` on a compute node and restart
@@ -126,7 +128,7 @@ schema between releases, so read the upgrade steps before moving a running cloud
   `cloudx host enable NODE` hint.
 
 Upgrade: no schema change. Update all compute nodes first, then compute-api. A server can still stay `MIGRATING` in rare
-cases (a migration job that cannot be aborted, or an unclear outcome); `docs/live-migration.md` says how to settle it. The code is covered by unit tests; it has not been run on a lab yet.
+cases (a migration job that cannot be aborted, or an unclear outcome); `docs/live-migration.md` says how to settle it. The code is covered by unit tests, and live migration and `host drain` were run on the 8-node lab (results in `docs/live-migration.md`, "What was run on a lab").
 
 ## 1.0.11 (2026-11-10)
 
